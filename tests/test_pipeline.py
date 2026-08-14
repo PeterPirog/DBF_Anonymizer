@@ -7,6 +7,7 @@ identyczny ze źródłowym.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -240,6 +241,21 @@ class TestAnonymizeDirectory:
         """Nieistniejący katalog → FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
             anonymize_directory(tmp_path / "nonexistent")
+
+    def test_emits_diagnostic_phase_logs(self, sample_dbf_dir: Path, caplog):
+        caplog.set_level(logging.INFO, logger="dbf_anonymizer")
+
+        result = anonymize_directory(sample_dbf_dir, workers=1, salt="logs")
+
+        assert result.failed == 0
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("phase=export event=start" in message for message in messages)
+        assert any(
+            "phase=dictionary event=text_domain_ready" in message
+            for message in messages
+        )
+        assert any("alphabet_size=" in message for message in messages)
+        assert any("phase=anonymize event=done" in message for message in messages)
 
 
 class TestMakeRecovery:

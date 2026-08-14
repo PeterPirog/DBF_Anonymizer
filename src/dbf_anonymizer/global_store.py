@@ -6,8 +6,10 @@ działa jeden writer; procesy kodujące i dekodujące otwierają bazę read-only
 """
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -15,16 +17,40 @@ from typing import Any, Iterable
 
 from .dictionary import FieldDict, TableDict, normalize_relative_path
 from .schema import TableSchema
-from .transforms import _byte_len_cp1250
+from .transforms import _byte_len
 
 GLOBAL_DICTIONARY_FILENAME = "dictionary.sqlite3"
-GLOBAL_DICTIONARY_VERSION = 3
-_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+GLOBAL_DICTIONARY_VERSION = 4
+_SUPPORTED_DICTIONARY_VERSIONS = {3, GLOBAL_DICTIONARY_VERSION}
+_LEGACY_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+_ALPHABET_PRIORITY = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    + "".join(chr(codepoint) for codepoint in range(33, 127))
+)
 _QUERY_BATCH_SIZE = 800
+logger = logging.getLogger(__name__)
 
 
 class GlobalDictionaryError(RuntimeError):
     """Błąd spójności lub pojemności globalnego słownika."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "GLOBAL_DICTIONARY_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.details = details or {}
+        detail_text = " ".join(
+            f"{key}={_log_value(value)}"
+            for key, value in sorted(self.details.items())
+        )
+        rendered = f"[{code}] {message}"
+        if detail_text:
+            rendered = f"{rendered} | {detail_text}"
+        super().__init__(rendered)
 
 
 class GlobalDictionaryStore:
@@ -53,8 +79,23 @@ class GlobalDictionaryStore:
             self.connection.rollback()
         self.connection.close()
 
-    def initialize(self, *, options: dict[str, Any], salt: str) -> None:
+    def initialize(
+        self,
+        *,
+        options: dict[str, Any],
+        salt: str,
+        text_encodings: Iterable[str] = ("cp1250",),
+        text_alphabet: str | None = None,
+    ) -> None:
         """Tworzy schemat nowego słownika i zapisuje parametry transformacji."""
+        encodings = normalize_encodings(text_encodings)
+        alphabet = text_alphabet or build_common_single_byte_alphabet(encodings)
+        if not alphabet:
+            raise GlobalDictionaryError(
+                "Brak wspólnych drukowalnych znaków jednobajtowych dla kodowań",
+                code="EMPTY_TEXT_ALPHABET",
+                details={"encodings": ",".join(encodings)},
+            )
         self.connection.executescript(
             """
             CREATE TABLE metadata (
@@ -81,6 +122,18 @@ class GlobalDictionaryStore:
                 ON text_map(byte_length, original)
                 WHERE anonymized IS NULL;
 
+            CREATE TABLE text_sources (
+                original TEXT NOT NULL COLLATE BINARY,
+                relative_path TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                encoding TEXT NOT NULL,
+                byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+                PRIMARY KEY (original, relative_path, field_name)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX text_sources_length
+                ON text_sources(byte_length, relative_path, field_name);
+
             CREATE TABLE memo_values (
                 relative_path TEXT NOT NULL,
                 field_name TEXT NOT NULL,
@@ -97,6 +150,9 @@ class GlobalDictionaryStore:
             "text_mode": options.get("text_mode", "same_length"),
             "mapping_scope": "global_database",
             "salt_sha256": hashlib.sha256(salt.encode("utf-8")).hexdigest(),
+            "text_encodings": encodings,
+            "text_alphabet": alphabet,
+            "text_alphabet_size": len(alphabet),
         }
         self.connection.executemany(
             "INSERT INTO metadata(key, value_json) VALUES (?, ?)",
@@ -113,11 +169,18 @@ class GlobalDictionaryStore:
         ).fetchall()
         values = {row["key"]: json.loads(row["value_json"]) for row in rows}
         version = int(values.get("schema_version", 0))
-        if version != GLOBAL_DICTIONARY_VERSION:
+        if version not in _SUPPORTED_DICTIONARY_VERSIONS:
             raise GlobalDictionaryError(
-                f"Nieobsługiwana wersja słownika SQLite: {version}"
+                f"Nieobsługiwana wersja słownika SQLite: {version}",
+                code="UNSUPPORTED_DICTIONARY_VERSION",
+                details={"version": version},
             )
         return values
+
+    def text_alphabet(self) -> str:
+        """Zwraca alfabet pseudonimów zapisany razem ze słownikiem."""
+        options = self.options()
+        return str(options.get("text_alphabet") or _LEGACY_ALPHABET)
 
     def commit(self) -> None:
         self.connection.commit()
@@ -134,15 +197,97 @@ class GlobalDictionaryStore:
         ).fetchall()
         return [str(row["relative_path"]) for row in rows]
 
-    def add_text_values(self, values: Iterable[Any]) -> None:
-        """Dodaje unikalne niepuste wartości C bez ładowania całej mapy do RAM."""
+    def add_text_values(
+        self,
+        values: Iterable[Any],
+        *,
+        encoding: str = "cp1250",
+        relative_path: str = "<unknown>",
+        field_name: str = "<unknown>",
+    ) -> int:
+        """Dodaje wartości C wraz z bezpiecznym kontekstem diagnostycznym.
+
+        Zwraca liczbę różnych niepustych wartości znalezionych w danym polu.
+        Pełne wartości pozostają wyłącznie w sensytywnym SQLite; komunikaty błędów
+        zawierają ścieżkę/pole/liczności, ale nie dane osobowe.
+        """
+        normalized_encoding = normalize_encoding(encoding)
+        path = normalize_relative_path(relative_path)
         normalized = sorted(
             {str(value) for value in values if value is not None and value != ""}
         )
+        rows: list[tuple[str, int]] = []
+        for value in normalized:
+            try:
+                byte_length = _byte_len(value, normalized_encoding)
+            except UnicodeEncodeError as exc:
+                raise GlobalDictionaryError(
+                    "Wartość tekstowa nie jest reprezentowalna w stronie kodowej DBF",
+                    code="TEXT_ENCODING_ERROR",
+                    details={
+                        "encoding": normalized_encoding,
+                        "field": field_name,
+                        "path": path,
+                        "value_sha256": hashlib.sha256(
+                            value.encode("utf-8")
+                        ).hexdigest()[:16],
+                    },
+                ) from exc
+            if byte_length <= 0:
+                continue
+            rows.append((value, byte_length))
+
+        existing_lengths = self._existing_text_lengths([value for value, _ in rows])
+        for value, byte_length in rows:
+            existing_length = existing_lengths.get(value)
+            if existing_length is not None and existing_length != byte_length:
+                raise GlobalDictionaryError(
+                    "Ta sama wartość ma różną długość bajtową w używanych kodowaniach",
+                    code="INCONSISTENT_TEXT_BYTE_LENGTH",
+                    details={
+                        "current_encoding": normalized_encoding,
+                        "current_length": byte_length,
+                        "existing_length": existing_length,
+                        "field": field_name,
+                        "path": path,
+                        "value_sha256": hashlib.sha256(
+                            value.encode("utf-8")
+                        ).hexdigest()[:16],
+                    },
+                )
         self.connection.executemany(
             "INSERT OR IGNORE INTO text_map(original, byte_length) VALUES (?, ?)",
-            [(value, _byte_len_cp1250(value)) for value in normalized],
+            rows,
         )
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO text_sources(
+                original, relative_path, field_name, encoding, byte_length
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (value, path, field_name, normalized_encoding, byte_length)
+                for value, byte_length in rows
+            ],
+        )
+        return len(rows)
+
+    def _existing_text_lengths(self, values: list[str]) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for offset in range(0, len(values), _QUERY_BATCH_SIZE):
+            batch = values[offset:offset + _QUERY_BATCH_SIZE]
+            if not batch:
+                continue
+            placeholders = ",".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"SELECT original, byte_length FROM text_map "
+                f"WHERE original IN ({placeholders})",
+                batch,
+            ).fetchall()
+            result.update(
+                {str(row["original"]): int(row["byte_length"]) for row in rows}
+            )
+        return result
 
     def add_memo_values(
         self,
@@ -170,16 +315,38 @@ class GlobalDictionaryStore:
 
     def assign_anonymous_values(self, *, salt: str) -> None:
         """Nadaje odwracalne, globalnie unikalne pseudonimy wszystkim tekstom."""
+        alphabet = self.text_alphabet()
         counts = self.connection.execute(
             "SELECT byte_length, COUNT(*) AS count FROM text_map GROUP BY byte_length"
         ).fetchall()
         for row in counts:
             length = int(row["byte_length"])
-            capacity = len(_ALPHABET) ** length
-            if int(row["count"]) > capacity:
+            count = int(row["count"])
+            capacity = len(alphabet) ** length
+            logger.info(
+                "phase=dictionary event=capacity_check byte_length=%d "
+                "distinct_values=%d alphabet_size=%d capacity=%d",
+                length,
+                count,
+                len(alphabet),
+                capacity,
+            )
+            if count > capacity:
+                sources = self._capacity_sources(length)
                 raise GlobalDictionaryError(
-                    f"Za dużo różnych wartości o długości {length}: "
-                    f"{row['count']} > {capacity}; odwracalne mapowanie jest niemożliwe"
+                    "Za mała przestrzeń pseudonimów dla odwracalnego mapowania",
+                    code="TEXT_DOMAIN_CAPACITY",
+                    details={
+                        "alphabet_size": len(alphabet),
+                        "byte_length": length,
+                        "capacity": capacity,
+                        "distinct_values": count,
+                        "encodings": ",".join(
+                            str(item)
+                            for item in self.options().get("text_encodings", [])
+                        ),
+                        "sources": sources,
+                    },
                 )
 
         while True:
@@ -197,13 +364,14 @@ class GlobalDictionaryStore:
             for row in pending:
                 original = str(row["original"])
                 length = int(row["byte_length"])
-                capacity = len(_ALPHABET) ** length
+                capacity = len(alphabet) ** length
                 start, step = _probe_parameters(original, salt, capacity)
                 max_attempts = capacity if capacity <= 1_000_000 else 1_000_000
                 for attempt in range(max_attempts):
                     candidate = _encode_index(
                         (start + attempt * step) % capacity,
                         length,
+                        alphabet,
                     )
                     try:
                         self.connection.execute(
@@ -215,13 +383,38 @@ class GlobalDictionaryStore:
                         continue
                 else:
                     raise GlobalDictionaryError(
-                        f"Nie znaleziono wolnego pseudonimu dla wartości o długości {length}"
+                        "Nie znaleziono wolnego pseudonimu mimo dostępnej pojemności",
+                        code="TEXT_DOMAIN_EXHAUSTED",
+                        details={
+                            "alphabet_size": len(alphabet),
+                            "byte_length": length,
+                            "max_attempts": max_attempts,
+                        },
                     )
             self.connection.commit()
-        self._remove_fixed_points(salt=salt)
+        self._remove_fixed_points(salt=salt, alphabet=alphabet)
         self.connection.commit()
 
-    def _remove_fixed_points(self, *, salt: str) -> None:
+    def _capacity_sources(self, byte_length: int, limit: int = 12) -> str:
+        rows = self.connection.execute(
+            """
+            SELECT relative_path, field_name, encoding, COUNT(*) AS value_count
+            FROM text_sources
+            WHERE byte_length = ?
+            GROUP BY relative_path, field_name, encoding
+            ORDER BY value_count DESC, relative_path, field_name
+            LIMIT ?
+            """,
+            (byte_length, limit),
+        ).fetchall()
+        if not rows:
+            return "unavailable"
+        return ";".join(
+            f"{row['relative_path']}:{row['field_name']}:{row['encoding']}:{row['value_count']}"
+            for row in rows
+        )
+
+    def _remove_fixed_points(self, *, salt: str, alphabet: str) -> None:
         """Gwarantuje, że niepusty tekst nigdy nie mapuje się sam na siebie."""
         fixed_points = self.connection.execute(
             """
@@ -241,7 +434,7 @@ class GlobalDictionaryStore:
             if current is None or str(current["anonymized"]) != original:
                 continue
 
-            capacity = len(_ALPHABET) ** length
+            capacity = len(alphabet) ** length
             start, step = _probe_parameters(original, f"{salt}\0derangement", capacity)
             max_attempts = capacity if capacity <= 1_000_000 else 1_000_000
             replacement: str | None = None
@@ -249,6 +442,7 @@ class GlobalDictionaryStore:
                 candidate = _encode_index(
                     (start + attempt * step) % capacity,
                     length,
+                    alphabet,
                 )
                 if candidate == original:
                     continue
@@ -281,8 +475,9 @@ class GlobalDictionaryStore:
             ).fetchone()
             if partner is None:
                 raise GlobalDictionaryError(
-                    f"Nie można zmienić pseudonimu identycznego z oryginałem "
-                    f"dla długości {length}"
+                    "Nie można usunąć pseudonimu identycznego z oryginałem",
+                    code="TEXT_DERANGEMENT_FAILED",
+                    details={"byte_length": length},
                 )
             partner_original = str(partner["original"])
             partner_anonymized = str(partner["anonymized"])
@@ -388,6 +583,75 @@ def global_dictionary_path(dictionary_dir: str | Path) -> Path:
     return Path(dictionary_dir) / GLOBAL_DICTIONARY_FILENAME
 
 
+def normalize_encoding(encoding: str) -> str:
+    """Normalizuje nazwę strony kodowej zgodnie z rejestrem kodeków Pythona."""
+    raw = str(encoding or "").strip()
+    if not raw or raw.casefold() in {"auto", "unknown", "none"}:
+        raise GlobalDictionaryError(
+            "Schemat DBF nie zawiera jednoznacznej strony kodowej",
+            code="UNKNOWN_TEXT_ENCODING",
+            details={"encoding": raw or "<empty>"},
+        )
+    try:
+        return codecs.lookup(raw).name
+    except LookupError as exc:
+        raise GlobalDictionaryError(
+            "Python nie obsługuje strony kodowej podanej przez schemat DBF",
+            code="UNSUPPORTED_TEXT_ENCODING",
+            details={"encoding": raw},
+        ) from exc
+
+
+def normalize_encodings(encodings: Iterable[str]) -> list[str]:
+    normalized = sorted({normalize_encoding(encoding) for encoding in encodings})
+    if not normalized:
+        raise GlobalDictionaryError(
+            "Nie znaleziono kodowania dla pól tekstowych DBF",
+            code="NO_TEXT_ENCODINGS",
+        )
+    return normalized
+
+
+def build_common_single_byte_alphabet(encodings: Iterable[str]) -> str:
+    """Buduje drukowalny alfabet 1-bajtowy wspólny dla stron kodowych.
+
+    Usuwamy białe i kontrolne znaki, ponieważ końcowa spacja pola C może zostać
+    obcięta przez czytnik DBF. Usuwamy też duplikaty ``casefold``, aby nie
+    wprowadzać oczywistych par A/a do indeksów używających porównań bez wielkości
+    liter. Pozostałe znaki, w tym interpunkcja i znaki narodowe, są dozwolone.
+    """
+    normalized = normalize_encodings(encodings)
+    per_encoding: list[set[str]] = []
+    for encoding in normalized:
+        characters: set[str] = set()
+        for byte_value in range(1, 256):
+            raw = bytes([byte_value])
+            try:
+                character = raw.decode(encoding, errors="strict")
+                if (
+                    len(character) == 1
+                    and character.isprintable()
+                    and not character.isspace()
+                    and character.encode(encoding, errors="strict") == raw
+                ):
+                    characters.add(character)
+            except UnicodeError:
+                continue
+        per_encoding.append(characters)
+
+    common = set.intersection(*per_encoding)
+    ordered_candidates = list(_ALPHABET_PRIORITY) + sorted(common, key=ord)
+    alphabet: list[str] = []
+    seen_casefold: set[str] = set()
+    for character in ordered_candidates:
+        folded = character.casefold()
+        if character not in common or folded in seen_casefold:
+            continue
+        seen_casefold.add(folded)
+        alphabet.append(character)
+    return "".join(alphabet)
+
+
 def _probe_parameters(value: str, salt: str, capacity: int) -> tuple[int, int]:
     payload = f"{salt}\0{value}".encode("utf-8")
     start = int.from_bytes(hashlib.sha256(b"start\0" + payload).digest(), "big") % capacity
@@ -398,10 +662,15 @@ def _probe_parameters(value: str, salt: str, capacity: int) -> tuple[int, int]:
     return start, step
 
 
-def _encode_index(index: int, length: int) -> str:
-    chars = [_ALPHABET[0]] * length
-    base = len(_ALPHABET)
+def _encode_index(index: int, length: int, alphabet: str) -> str:
+    chars = [alphabet[0]] * length
+    base = len(alphabet)
     for position in range(length - 1, -1, -1):
         index, remainder = divmod(index, base)
-        chars[position] = _ALPHABET[remainder]
+        chars[position] = alphabet[remainder]
     return "".join(chars)
+
+
+def _log_value(value: Any) -> str:
+    text = str(value)
+    return json.dumps(text, ensure_ascii=False, separators=(",", ":"))

@@ -32,13 +32,18 @@ def _seed_for(value: str, salt: str) -> int:
     return int.from_bytes(h[:8], "big")
 
 
+def _byte_len(text: str, encoding: str) -> int:
+    """Długość tekstu w bajtach w zadanej stronie kodowej.
+
+    Błąd kodowania jest celowo propagowany. Cichy fallback do UTF-8 dawałby
+    długość niezgodną z fizycznym polem DBF i mógłby prowadzić do obcięcia danych.
+    """
+    return len(text.encode(encoding, errors="strict"))
+
+
 def _byte_len_cp1250(text: str) -> int:
-    """Długość tekstu w bajtach po zakodowaniu cp1250."""
-    try:
-        return len(text.encode("cp1250"))
-    except (UnicodeEncodeError, LookupError):
-        # fallback: utf-8 (rzadko dla danych VFP)
-        return len(text.encode("utf-8", errors="replace"))
+    """Zgodność starszego API: długość tekstu w bajtach CP1250."""
+    return _byte_len(text, "cp1250")
 
 
 def _gen_masked_string(byte_length: int, value: str, salt: str) -> str:
