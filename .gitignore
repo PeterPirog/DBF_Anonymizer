@@ -216,3 +216,32 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DBF_Anonymizer — dictionary files (contains original→anonymized mappings, SENSITIVE)
+dictionary_*.json
+dictionary_*.jsonl
+*_dictionary.json
+
+dictionaries/
+
+# Anonymizer output directories (generated, not source)
+*_anonymized/
+*_recovered/
+anon_output/
+recovered_output/
+
+# Intermediate JSONL / schemas / temp work
+var/
+tmp/
+jsonl_source/
+jsonl_anonymized/
+jsonl_recovered/
+
+# DBF sample data (do not ship real DBF through git)
+*.dbf
+*.fpt
+*.cdx
+
+# Self-test artifacts
+selftest_report.json
+*_quality_report.jsonl
