@@ -221,6 +221,8 @@ __marimo__/
 dictionary_*.json
 dictionary_*.jsonl
 *_dictionary.json
+dictionary.sqlite3
+dictionary.sqlite3-*
 
 dictionaries/
 

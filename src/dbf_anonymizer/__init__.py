@@ -6,18 +6,29 @@ Public API:
 Anonimizacja zastępuje wartości tekstowe ciągami o identycznej długości bajtowej,
 zachowuje unikalność kolumn unikatowych, pola N/F/L pozostawia bez zmian,
 daty/czas przesuwa o stałą liczbę dni, a pola M/G maskuje ('MEMO') lub zachowuje.
-Słownik (dictionary_*.json) pozwala odtworzyć oryginalne dane — jest SENSITIWNY
-i musi być w .gitignore.
+Globalny słownik SQLite (dictionary.sqlite3) pozwala odtworzyć oryginalne dane —
+jest SENSITIWNY i musi być w .gitignore. Odczyt starszych JSON v1/v2 pozostaje
+dostępny dla zgodności wstecznej.
 """
 from __future__ import annotations
 
-from .anonymizer import AnonymizeOptions, anonymize_records, recover_records
+from .anonymizer import (
+    AnonymizeOptions,
+    anonymize_records,
+    build_shared_dictionary,
+    recover_records,
+)
 from .dictionary import (
     FieldDict,
     TableDict,
     dictionary_filename,
     load_dictionary,
     save_dictionary,
+)
+from .global_store import (
+    GLOBAL_DICTIONARY_FILENAME,
+    GlobalDictionaryStore,
+    global_dictionary_path,
 )
 from .pipeline import (
     AnonymizeResult,
@@ -44,6 +55,7 @@ __all__ = [
     # Opcje i per-tabela
     "AnonymizeOptions",
     "anonymize_records",
+    "build_shared_dictionary",
     "recover_records",
     # Słownik
     "FieldDict",
@@ -51,6 +63,9 @@ __all__ = [
     "dictionary_filename",
     "save_dictionary",
     "load_dictionary",
+    "GLOBAL_DICTIONARY_FILENAME",
+    "GlobalDictionaryStore",
+    "global_dictionary_path",
     # Schema
     "FieldInfo",
     "TableSchema",
@@ -62,4 +77,4 @@ __all__ = [
     "shift_datetime",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

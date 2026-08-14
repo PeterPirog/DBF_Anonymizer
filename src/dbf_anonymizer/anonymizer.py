@@ -1,18 +1,28 @@
-"""Orkiestracja per-tabela — łączy schema+transforms+uniqueness+dictionary.
+"""Transformacje rekordów ze słownikiem globalnym lub starszym per tabela.
 
-Dwie główne operacje:
-- anonymize_records(schema, records, options, salt) → (anonymized_records, TableDict)
-- recover_records(schema, anon_records, table_dict) → recovered_records
+Główne operacje:
+- anonymize_records(...) → kodowanie rekordów mapą z globalnego SQLite,
+- recover_records(...) → dekodowanie z uwzględnieniem ścieżki pliku.
+
+``build_shared_dictionary`` pozostaje publiczne dla zgodności ze starszym
+formatem JSON v2; nowy pipeline katalogowy zawsze używa mapowania globalnego.
 
 Kluczowe: usuwa __dbfbridge_raw_record__ z rekordów, by reconstruct_dbf zbudował
 DBF z zaanonimizowanych wartości pól (nie z surowych bajtów).
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .dictionary import FieldDict, TableDict, column_mapping_to_field_dict, reverse_field_dict_values
+from .dictionary import (
+    FieldDict,
+    TableDict,
+    column_mapping_to_field_dict,
+    normalize_relative_path,
+    reverse_field_dict_values,
+)
 from .schema import DELETED_KEY, FieldInfo, TableSchema
 from .transforms import (
     identity,
@@ -23,7 +33,7 @@ from .transforms import (
     shift_date,
     shift_datetime,
 )
-from .uniqueness import build_column_mapping, detect_unique_columns
+from .uniqueness import ColumnMapping, build_column_mapping
 
 
 @dataclass
@@ -45,6 +55,9 @@ def anonymize_records(
     schema: TableSchema,
     records: list[dict[str, Any]],
     options: AnonymizeOptions,
+    *,
+    table_dict: TableDict | None = None,
+    global_text_mapping: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], TableDict]:
     """Anonimizuje rekordy JSONL jednej tabeli wg schematu.
 
@@ -52,41 +65,43 @@ def anonymize_records(
     są pomijane (nie anonimizowane, ale zachowane w wyniku jako-takie jeśli
     zostały przekazane — pipeline je filtruje).
     """
-    # 1. Rozdziel rekordy danych od raportów dbfbridge
-    data_records: list[dict[str, Any]] = []
-    for rec in records:
-        if rec.get("type") in ("summary", "table"):
-            continue
-        data_records.append(rec)
-
-    # 2. Detekcja unikatowych kolumn C
-    c_field_names = [f.name for f in schema.fields if f.is_text]
-    uniqueness = detect_unique_columns(data_records, c_field_names)
-
-    # 3. Buduj mapowania dla kolumn C
-    c_mappings: dict[str, Any] = {}  # field_name -> ColumnMapping
-    for fname in c_field_names:
-        finfo = schema.field_by_name(fname)
-        if finfo is None:
-            continue
-        mapping = build_column_mapping(
-            field_name=fname,
-            records=data_records,
-            length=finfo.length,
-            unique=uniqueness.get(fname, False),
-            salt=options.salt,
+    data_records = _data_records(records)
+    if table_dict is None and global_text_mapping is None:
+        table_dict = build_shared_dictionary(
+            schema.table_name,
+            [(schema.relative_path, schema, records)],
+            options,
         )
-        c_mappings[fname] = mapping
+    elif table_dict is None:
+        table_dict = _metadata_table_dictionary(schema, options)
 
-    # 4. Offset dni (stały dla katalogu — przekazany w options)
-    offset_days = _resolve_date_offset(options)
+    effective_options = AnonymizeOptions(
+        memo_mode=str(table_dict.options.get("memo_mode", options.memo_mode)),
+        date_offset_days=int(table_dict.options.get("date_offset_days", options.date_offset_days)),
+        text_mode=str(table_dict.options.get("text_mode", options.text_mode)),
+        salt=options.salt,
+        seed=options.seed,
+    )
+    offset_days = _resolve_date_offset(effective_options)
+    c_mappings: dict[str, ColumnMapping] = {}
+    if global_text_mapping is not None:
+        shared_mapping = ColumnMapping(
+            field_name="__global__",
+            unique=True,
+            forward=dict(global_text_mapping),
+        )
+        c_mappings = {
+            field.name: shared_mapping for field in schema.fields if field.is_text
+        }
+    else:
+        for fname, field_dict in table_dict.fields.items():
+            if field_dict.dbf_type == "C":
+                c_mappings[fname] = ColumnMapping(
+                    field_name=fname,
+                    unique=field_dict.unique,
+                    forward=dict(field_dict.values),
+                )
 
-    # 5. Transformuj rekordy
-    #    Przy trybie mask dla M/G zbieraj oryginały pozycyjnie (w kolejności rekordów)
-    #    do słownika — recovery przywróci je pozycyjnie.
-    memo_originals: dict[str, list[Any]] = {
-        f.name: [] for f in schema.fields if f.is_memo and options.memo_mode == "mask"
-    }
     anonymized: list[dict[str, Any]] = []
     for rec in data_records:
         anon_rec: dict[str, Any] = {}
@@ -102,30 +117,137 @@ def anonymize_records(
                 # Nieznane pole — zachowaj bez zmian
                 anon_rec[key] = value
                 continue
-            # Dla M/G w trybie mask zapisz oryginał pozycyjnie
-            if finfo.is_memo and options.memo_mode == "mask":
-                memo_originals[key].append(value)
-            anon_rec[key] = _transform_field(finfo, value, c_mappings.get(key), offset_days, options)
+            anon_rec[key] = _transform_field(
+                finfo,
+                value,
+                c_mappings.get(finfo.name),
+                offset_days,
+                effective_options,
+            )
         anonymized.append(anon_rec)
+    return anonymized, table_dict
 
-    # 6. Buduj słownik tabeli
+
+def _metadata_table_dictionary(
+    schema: TableSchema,
+    options: AnonymizeOptions,
+) -> TableDict:
+    """Tworzy lekkie metadane, gdy mapowanie C pochodzi z globalnego SQLite."""
+    offset_days = _resolve_date_offset(options)
     table_dict = TableDict(
         table=schema.table_name,
         relative_path=schema.relative_path,
+        relative_paths=[schema.relative_path],
         options={
             "memo_mode": options.memo_mode,
             "date_offset_days": offset_days,
             "text_mode": options.text_mode,
         },
     )
-    for finfo in schema.fields:
-        fd = _build_field_dict(finfo, c_mappings.get(finfo.name), offset_days, options)
-        # Dla M/G w trybie mask zapisz oryginały pozycyjnie
-        if finfo.is_memo and options.memo_mode == "mask":
-            fd.memo_originals = list(memo_originals.get(finfo.name, []))
-        table_dict.fields[finfo.name] = fd
+    for field in schema.fields:
+        table_dict.fields[field.name] = _build_field_dict(
+            field, None, offset_days, options
+        )
+    return table_dict
 
-    return anonymized, table_dict
+
+def _data_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Usuwa rekordy raportowe ``table``/``summary`` generowane przez dbfbridge."""
+    return [rec for rec in records if rec.get("type") not in ("summary", "table")]
+
+
+def build_shared_dictionary(
+    table_name: str,
+    tables: list[tuple[str, TableSchema, list[dict[str, Any]]]],
+    options: AnonymizeOptions,
+) -> TableDict:
+    """Buduje wspólny słownik dla wszystkich plików o tej samej nazwie.
+
+    Mapowania pól C powstają z sumy wartości ze wszystkich lokalizacji. Dzięki
+    temu ta sama wartość w tym samym polu jest kodowana identycznie niezależnie
+    od katalogu. Oryginały memo pozostają rozdzielone według ścieżki względnej,
+    co umożliwia bezbłędne odtworzenie każdego pliku.
+    """
+    if not tables:
+        raise ValueError(f"Brak tabel do zbudowania słownika: {table_name}")
+
+    ordered = sorted(tables, key=lambda item: normalize_relative_path(item[0]).casefold())
+    relative_paths = [normalize_relative_path(item[0]) for item in ordered]
+    field_defs: dict[str, FieldInfo] = {}
+    text_values: dict[str, list[str]] = {}
+    text_seen: dict[str, set[str]] = {}
+    text_unique: dict[str, bool] = {}
+    memo_by_path: dict[str, dict[str, list[Any]]] = {}
+
+    for relative_path, schema, records in ordered:
+        rel_key = normalize_relative_path(relative_path)
+        for finfo in schema.fields:
+            existing = field_defs.get(finfo.name)
+            if existing is not None and existing.dbf_type != finfo.dbf_type:
+                raise ValueError(
+                    f"Niezgodny typ pola {finfo.name} w grupie {table_name}: "
+                    f"{existing.dbf_type} != {finfo.dbf_type} ({rel_key})"
+                )
+            if existing is None or finfo.length > existing.length:
+                field_defs[finfo.name] = finfo
+            if finfo.is_text:
+                text_values.setdefault(finfo.name, [])
+                text_seen.setdefault(finfo.name, set())
+                text_unique.setdefault(finfo.name, True)
+            if finfo.is_memo and options.memo_mode == "mask":
+                memo_by_path.setdefault(finfo.name, {})[rel_key] = []
+
+        for rec in _data_records(records):
+            for finfo in schema.fields:
+                value = rec.get(finfo.name)
+                if finfo.is_text and value not in (None, ""):
+                    sval = str(value)
+                    if sval in text_seen[finfo.name]:
+                        text_unique[finfo.name] = False
+                    else:
+                        text_seen[finfo.name].add(sval)
+                        text_values[finfo.name].append(sval)
+                elif finfo.is_memo and options.memo_mode == "mask":
+                    memo_by_path[finfo.name][rel_key].append(value)
+
+    offset_days = _resolve_date_offset(options)
+    table_dict = TableDict(
+        table=table_name,
+        relative_path=relative_paths[0],
+        relative_paths=relative_paths,
+        options={
+            "memo_mode": options.memo_mode,
+            "date_offset_days": offset_days,
+            "text_mode": options.text_mode,
+        },
+    )
+
+    for finfo in field_defs.values():
+        mapping: ColumnMapping | None = None
+        if finfo.is_text:
+            synthetic_records = [{finfo.name: value} for value in text_values[finfo.name]]
+            mapping = build_column_mapping(
+                field_name=finfo.name,
+                records=synthetic_records,
+                length=finfo.length,
+                unique=text_unique[finfo.name] and bool(synthetic_records),
+                salt=options.salt,
+            )
+        field_dict = _build_field_dict(finfo, mapping, offset_days, options)
+        if finfo.is_memo and options.memo_mode == "mask":
+            field_dict.memo_originals_by_path = {
+                path: list(values) for path, values in memo_by_path[finfo.name].items()
+            }
+            # Pojedynczą listę zachowujemy tylko dla kompatybilności słownika
+            # jednej tabeli. Przy wielu plikach nie duplikujemy potencjalnie
+            # dużych memo — źródłem prawdy jest memo_originals_by_path.
+            if len(relative_paths) == 1:
+                field_dict.memo_originals = list(
+                    field_dict.memo_originals_by_path.get(relative_paths[0], [])
+                )
+        table_dict.fields[finfo.name] = field_dict
+
+    return table_dict
 
 
 def _transform_field(
@@ -187,6 +309,9 @@ def recover_records(
     schema: TableSchema,
     anonymized_records: list[dict[str, Any]],
     table_dict: TableDict,
+    *,
+    relative_path: str | None = None,
+    global_reverse_mapping: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Odwraca anonimizację — przywraca pierwotne wartości z zaanonimizowanych.
 
@@ -195,22 +320,50 @@ def recover_records(
     """
     # Przygotuj odwrócone mapowania dla C
     c_backward: dict[str, dict[str, str]] = {}
-    for fname, fd in table_dict.fields.items():
-        if fd.dbf_type == "C" and fd.values:
-            c_backward[fname] = reverse_field_dict_values(fd)
+    if global_reverse_mapping is not None:
+        shared_backward = dict(global_reverse_mapping)
+        c_backward = {
+            field.name: shared_backward for field in schema.fields if field.is_text
+        }
+    else:
+        for fname, fd in table_dict.fields.items():
+            if fd.dbf_type == "C" and fd.values:
+                c_backward[fname] = reverse_field_dict_values(fd)
 
-    # Dla M/G w trybie mask: przygotuj listy oryginałów pozycyjnych
+    # Dla M/G w trybie mask: przygotuj listy oryginałów pozycyjnych wybranego
+    # pliku. Starsze słowniki nie mają memo_originals_by_path, dlatego nadal
+    # obsługujemy pojedynczą listę memo_originals.
+    rel_key = normalize_relative_path(relative_path or schema.relative_path)
     memo_pos: dict[str, list[Any]] = {}
     memo_idx: dict[str, int] = {}
     for fname, fd in table_dict.fields.items():
-        if fd.dbf_type in ("M", "G") and fd.memo_mode == "mask":
-            memo_pos[fname] = list(fd.memo_originals)
+        schema_field = schema.field_by_name(fname)
+        if (
+            schema_field is not None
+            and schema_field.is_memo
+            and fd.dbf_type in ("M", "G")
+            and fd.memo_mode == "mask"
+        ):
+            if fd.memo_originals_by_path:
+                if rel_key not in fd.memo_originals_by_path:
+                    raise ValueError(
+                        f"Brak danych memo dla {rel_key} w słowniku {table_dict.table}"
+                    )
+                memo_pos[fname] = list(fd.memo_originals_by_path[rel_key])
+            else:
+                memo_pos[fname] = list(fd.memo_originals)
             memo_idx[fname] = 0
 
+    data_records = _data_records(anonymized_records)
+    for fname, originals in memo_pos.items():
+        if len(originals) != len(data_records):
+            raise ValueError(
+                f"Niezgodna liczba wartości memo dla {rel_key}/{fname}: "
+                f"{len(originals)} != {len(data_records)}"
+            )
+
     recovered: list[dict[str, Any]] = []
-    for rec in anonymized_records:
-        if rec.get("type") in ("summary", "table"):
-            continue
+    for rec in data_records:
         rec_out: dict[str, Any] = {}
         for key, value in rec.items():
             if key == DELETED_KEY:

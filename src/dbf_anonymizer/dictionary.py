@@ -1,18 +1,19 @@
-"""Słownik kodujący per-tabela — zapis/odczyt dictionary_[nazwa].json.
+"""Starszy słownik JSON per nazwa tabeli DBF (zgodność formatów v1/v2).
 
 Słownik przechowuje:
-- metadane tabeli (nazwa, opcje anonimizacji, offset dni),
+- metadane tabel o tej samej nazwie (ścieżki względne i opcje anonimizacji),
 - per-pole: typ, czy unikatowe, mapowanie oryginał↔anonim (dla C/M),
   offset dni (dla D/T), tryb (dla M/G).
 
-Słownik jest SENSITIWNY (pozwala odtworzyć oryginalne dane) — musi być
-w .gitignore i nie wysyłany na GitHub.
+Nowy pipeline zapisuje jeden globalny plik SQLite. Ten moduł pozostaje potrzebny
+do recovery wcześniejszych wyników i dla zgodności publicznego API. Słownik jest
+SENSITIWNY — musi być w .gitignore i nie może być wysyłany na GitHub.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .uniqueness import ColumnMapping
@@ -32,21 +33,28 @@ class FieldDict:
     memo_mode: str = "mask"     # 'mask' lub 'keep'
     # dla M/G w trybie mask: oryginalne wartości w kolejności rekordów
     # ( Recovery przywraca pozycyjnie, bo wszystkie stały się 'MEMO'. )
-    memo_originals: list[str] = field(default_factory=list)
+    memo_originals: list[Any] = field(default_factory=list)
+    # W słowniku współdzielonym memo musi być odtwarzane osobno dla każdego
+    # pliku, ponieważ po anonimizacji wszystkie niepuste wartości mają postać
+    # ``MEMO``. Kluczem jest znormalizowana ścieżka względna (POSIX).
+    memo_originals_by_path: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
 class TableDict:
-    """Słownik dla jednej tabeli DBF."""
+    """Słownik współdzielony przez tabele DBF o tej samej nazwie."""
     table: str                  # nazwa pliku np. "bok.dbf"
-    relative_path: str          # ścieżka względem źródła
+    relative_path: str          # pierwsza ścieżka (zgodność ze starszym formatem)
     options: dict[str, Any] = field(default_factory=dict)
     fields: dict[str, FieldDict] = field(default_factory=dict)
+    relative_paths: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "version": 2,
             "table": self.table,
             "relative_path": self.relative_path,
+            "relative_paths": self.relative_paths or ([self.relative_path] if self.relative_path else []),
             "options": self.options,
             "fields": {
                 name: {
@@ -57,6 +65,7 @@ class TableDict:
                     "offset_days": fd.offset_days,
                     "memo_mode": fd.memo_mode,
                     "memo_originals": fd.memo_originals,
+                    "memo_originals_by_path": fd.memo_originals_by_path,
                 }
                 for name, fd in self.fields.items()
             },
@@ -74,13 +83,29 @@ class TableDict:
                 offset_days=int(fd_data.get("offset_days") or 0),
                 memo_mode=fd_data.get("memo_mode", "mask"),
                 memo_originals=list(fd_data.get("memo_originals") or []),
+                memo_originals_by_path={
+                    normalize_relative_path(path): list(values or [])
+                    for path, values in (fd_data.get("memo_originals_by_path") or {}).items()
+                },
             )
+        relative_path = normalize_relative_path(data.get("relative_path", ""))
+        relative_paths = [
+            normalize_relative_path(path)
+            for path in (data.get("relative_paths") or ([relative_path] if relative_path else []))
+        ]
         return cls(
             table=data.get("table", ""),
-            relative_path=data.get("relative_path", ""),
+            relative_path=relative_path,
             options=dict(data.get("options") or {}),
             fields=fields,
+            relative_paths=relative_paths,
         )
+
+
+def normalize_relative_path(path: str | Path) -> str:
+    """Normalizuje klucz pliku w słowniku niezależnie od systemu operacyjnego."""
+    raw = str(path).replace("\\", "/")
+    return PurePosixPath(raw).as_posix() if raw else ""
 
 
 def dictionary_filename(table_name: str) -> str:
@@ -99,10 +124,12 @@ def save_dictionary(table_dict: TableDict, dict_dir: Path) -> Path:
     dict_dir.mkdir(parents=True, exist_ok=True)
     fname = dictionary_filename(table_dict.table)
     path = dict_dir / fname
-    path.write_text(
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
         json.dumps(table_dict.to_json(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    temporary.replace(path)
     return path
 
 

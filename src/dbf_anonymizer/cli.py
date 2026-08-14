@@ -2,9 +2,10 @@
 
 Użycie:
     dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT]
-        [--memo mask|keep] [--date-offset N] [--salt S]
-    dbf-anonymizer recover <anon_dir> <dict_dir> [--out OUT]
-    dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N] [--keep-temp]
+        [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
+    dbf-anonymizer recover <anon_dir> <dict_dir> [--out OUT] [--workers N]
+    dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N]
+        [--workers N] [--keep-temp]
 
 Punkt wejścia z pyproject.toml: ``dbf-anonymizer`` = ``dbf_anonymizer.cli:main``.
 Można też uruchomić: ``python -m dbf_anonymizer``.
@@ -45,7 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Anonimizuje wszystkie pliki DBF w katalogu źródłowym. Tworzy katalog "
             "wyjściowy z identyczną strukturą plików DBF (zanonimizowane dane) oraz "
-            "słownik dictionary_<nazwa>.json per tabela (SENSITIWNY — .gitignore)."
+            "jeden globalny dictionary.sqlite3 dla całej bazy "
+            "(SENSITIWNY — .gitignore)."
         ),
     )
     p_anon.add_argument("directory", type=Path, help="Katalog źródłowy z plikami DBF.")
@@ -63,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
                         default=True, help="Nie nadpisuj istniejących plików wyjściowych.")
     p_anon.add_argument("--keep-temp", dest="keep_temp", action="store_true",
                         help="Zachowaj pośrednie JSONL w var/ (debug).")
+    p_anon.add_argument("--workers", type=_non_negative_int, default=0,
+                        help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
     p_anon.set_defaults(func=_cmd_anonymize)
 
     # recover
@@ -77,13 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("anonymized_dir", type=Path,
                        help="Katalog z zaanonimizowanymi plikami DBF.")
     p_rec.add_argument("dictionary_dir", type=Path,
-                       help="Katalog ze słownikami (dictionary_*.json).")
+                       help="Katalog z dictionary.sqlite3 (lub starszymi JSON v1/v2).")
     p_rec.add_argument("--out", "--output", dest="output", type=Path, default=None,
                        help="Katalog wyjściowy (domyślnie: <anonymized>_recovered).")
     p_rec.add_argument("--no-overwrite", dest="overwrite", action="store_false",
                        default=True, help="Nie nadpisuj istniejących plików wyjściowych.")
     p_rec.add_argument("--keep-temp", dest="keep_temp", action="store_true",
                        help="Zachowaj pośrednie JSONL (debug).")
+    p_rec.add_argument("--workers", type=_non_negative_int, default=0,
+                       help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
     p_rec.set_defaults(func=_cmd_recover)
 
     # self-test
@@ -104,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--salt", default="", help="Sól maskowania pól C.")
     p_st.add_argument("--keep-temp", dest="keep_temp", action="store_true",
                       help="Zachowaj katalogi pośrednie w var/ (debug).")
+    p_st.add_argument("--workers", type=_non_negative_int, default=0,
+                      help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
     p_st.set_defaults(func=_cmd_self_test)
 
     return parser
@@ -119,6 +127,7 @@ def _cmd_anonymize(args: argparse.Namespace) -> int:
         salt=args.salt,
         overwrite=args.overwrite,
         keep_temp=args.keep_temp,
+        workers=args.workers,
     )
     _print_anonymize_result(result)
     return result.exit_code
@@ -131,6 +140,7 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         output_dir=args.output,
         overwrite=args.overwrite,
         keep_temp=args.keep_temp,
+        workers=args.workers,
     )
     _print_recovery_result(result)
     return result.exit_code
@@ -143,6 +153,7 @@ def _cmd_self_test(args: argparse.Namespace) -> int:
         date_offset_days=args.date_offset,
         salt=args.salt,
         keep_temp=args.keep_temp,
+        workers=args.workers,
     )
     _print_self_test_report(report)
     return report.exit_code
@@ -224,6 +235,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nPrzerwano.", file=sys.stderr)
         return 130
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("wartość musi być >= 0")
+    return parsed
 
 
 if __name__ == "__main__":

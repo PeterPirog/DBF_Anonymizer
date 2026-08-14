@@ -40,6 +40,65 @@ def multi_dbf_dir(tmp_path: Path) -> Path:
     return src_dir
 
 
+@pytest.fixture
+def duplicate_name_dbf_dir(tmp_path: Path) -> Path:
+    """Dwa różne pliki ``klienci.dbf`` w osobnych podkatalogach."""
+    src_dir = tmp_path / "source"
+    branch_a = src_dir / "oddzial_a"
+    branch_b = src_dir / "oddzial_b"
+    branch_a.mkdir(parents=True)
+    branch_b.mkdir(parents=True)
+
+    _create_duplicate_named_table(
+        branch_a / "klienci.dbf",
+        [
+            ("SHARED", "Jan Wspólny", "memo oddział A"),
+            ("A001", "Anna A", "tylko A"),
+        ],
+    )
+    # SHARED jest celowo na innej pozycji. Niezależne mapowania per plik
+    # używałyby innego indeksu soli i mogłyby dać inny anonim.
+    _create_duplicate_named_table(
+        branch_b / "klienci.dbf",
+        [
+            ("B001", "Beata B", "tylko B"),
+            ("SHARED", "Jan Wspólny", "memo oddział B"),
+        ],
+    )
+    return src_dir
+
+
+@pytest.fixture
+def relational_dbf_dir(tmp_path: Path) -> Path:
+    """Dwie tabele o różnych nazwach połączone tekstowym kluczem klienta."""
+    src_dir = tmp_path / "source"
+    src_dir.mkdir()
+
+    clients = dbf.Table(
+        str(src_dir / "klienci.dbf"),
+        "ID C(10); NAME C(20)",
+        dbf_type="vfp",
+        codepage="cp1250",
+    )
+    clients.open(mode=dbf.READ_WRITE)
+    clients.append({"ID": "K001", "NAME": "Jan Kowalski"})
+    clients.append({"ID": "K002", "NAME": "Anna Nowak"})
+    clients.close()
+
+    orders = dbf.Table(
+        str(src_dir / "zamowienia.dbf"),
+        "ORDER_ID C(10); CLIENT_ID C(10)",
+        dbf_type="vfp",
+        codepage="cp1250",
+    )
+    orders.open(mode=dbf.READ_WRITE)
+    # K001 jest na innej pozycji i w polu o innej nazwie niż klienci.ID.
+    orders.append({"ORDER_ID": "Z001", "CLIENT_ID": "K002"})
+    orders.append({"ORDER_ID": "Z002", "CLIENT_ID": "K001"})
+    orders.close()
+    return src_dir
+
+
 def _create_sample_table(dbf_path: Path) -> None:
     """Tworzy tabelę klienci.dbf: ID C(10) unikalne, NAME C(20), AGE N(3,0),
     ACTIVE L, BORN D, NOTE M (memo), z polskimi znakami i deleted record."""
@@ -96,4 +155,21 @@ def _create_products_table(dbf_path: Path) -> None:
     ]
     for rec in records:
         table.append(rec)
+    table.close()
+
+
+def _create_duplicate_named_table(
+    dbf_path: Path,
+    rows: list[tuple[str, str, str]],
+) -> None:
+    """Tworzy małą tabelę do testów wspólnego słownika i memo per ścieżka."""
+    table = dbf.Table(
+        str(dbf_path),
+        "ID C(10); NAME C(20); NOTE M",
+        dbf_type="vfp",
+        codepage="cp1250",
+    )
+    table.open(mode=dbf.READ_WRITE)
+    for identifier, name, note in rows:
+        table.append({"ID": identifier, "NAME": name, "NOTE": note})
     table.close()
