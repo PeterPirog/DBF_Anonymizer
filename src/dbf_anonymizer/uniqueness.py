@@ -108,6 +108,11 @@ def build_column_mapping(
         while anon in used_anons and attempt < idx + 10000:
             attempt += 1
             anon = _gen_masked_string(target_bytes, value, f"{salt}|{field_name}|{attempt}")
+        if anon in used_anons:
+            raise ValueError(
+                f"Nie można utworzyć odwracalnego mapowania dla pola {field_name}: "
+                f"za mało unikalnych masek o długości {target_bytes}"
+            )
         used_anons.add(anon)
         mapping.forward[value] = anon
 

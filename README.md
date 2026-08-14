@@ -4,7 +4,10 @@ Framework do anonimizacji plików DBF (Visual FoxPro 9.0) z odwracalnym słownik
 
 Narzędzie zastępuje dane we wszystkich plikach `.dbf` w katalogu źródłowym, tworząc
 katalog wyjściowy z **identyczną strukturą plików DBF**, ale z zaanonimizowanymi danymi.
-Słownik (`dictionary_<nazwa>.json` per tabela) pozwala odtworzyć oryginalne wartości.
+Wszystkie pola tekstowe `C` we wszystkich tabelach korzystają z jednego globalnego
+słownika SQLite (`dictionary.sqlite3`). Ten sam tekst otrzymuje dokładnie ten sam
+pseudonim niezależnie od nazwy tabeli, pola i katalogu, dlatego tekstowe klucze
+główne/obce zachowują spójność relacyjną. Kosztowne etapy są wykonywane równolegle.
 
 ## Zasady anonimizacji
 
@@ -28,7 +31,7 @@ DBF źródłowy
   → anonymize_records (transformacja pól, usunięcie __dbfbridge_raw_record__)
   → zapis zaanonimizowanego JSONL
   → reconstruct_dbf (dbfbridge) → DBF zaanonimizowany
-  → save_dictionary (słownik oryginał↔anonim)
+  → globalny dictionary.sqlite3 (oryginał↔anonim, UNIQUE w obu kierunkach)
 
 Recovery (odwrotny):
 DBF zaanonimizowany
@@ -60,13 +63,13 @@ Wymaga Python ≥ 3.10. Zależności: `dbfbridge` (z [dbfbridge repo](https://gi
 ```bash
 # Anonimizuj katalog → <dir>_anonymized + <dir>_dict
 dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT] \
-    [--memo mask|keep] [--date-offset N] [--salt S]
+    [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
 
 # Odtwórz oryginał z zaanonimizowanego + słowników → <anon>_recovered
-dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT]
+dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] [--workers N]
 
 # Self-test: round-trip source → anonymized → recovered, porównanie kanoniczne
-dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N] [--salt S]
+dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
 ```
 
 Można też uruchomić przez `python -m dbf_anonymizer <command>`.
@@ -75,7 +78,7 @@ Można też uruchomić przez `python -m dbf_anonymizer <command>`.
 
 ```bash
 # Anonimizacja z maskowaniem memo i przesunięciem dat o 30 dni
-dbf-anonymizer anonymize E:\data\bok --memo mask --date-offset 30 --salt "proj-2024"
+dbf-anonymizer anonymize E:\data\bok --memo mask --date-offset 30 --salt "proj-2024" --workers 4
 
 # Recovery (wymaga katalogu zaanonimizowanego i słowników)
 dbf-anonymizer recover E:\data\bok_anonymized E:\data\bok_dict
@@ -84,51 +87,71 @@ dbf-anonymizer recover E:\data\bok_anonymized E:\data\bok_dict
 dbf-anonymizer self-test E:\data\bok
 ```
 
+`--workers 0` (wartość domyślna) automatycznie dobiera liczbę procesów,
+`--workers 1` wymusza tryb sekwencyjny, a `--workers N` uruchamia maksymalnie N
+procesów. Każdy plik ma izolowany katalog tymczasowy, więc zadania nie kolidują.
+
+### Spójność relacyjna i SQLite
+
+Przykładowo wartość `K001` w `klienci.ID`, `zamowienia.CLIENT_ID` oraz
+`archiwum/klienci.ID` jest mapowana na jeden pseudonim. Mapowanie nie zawiera nazwy
+tabeli ani pola w kluczu — kluczem jest dokładna wartość tekstowa. `NULL` i pusty
+tekst pozostają bez zmian.
+
+SQLite jest celowym wyborem zamiast dużego JSON lub Redis:
+
+- indeksy `PRIMARY KEY`/`UNIQUE` gwarantują bijekcję i wykrywają kolizje;
+- budowa używa jednego writera i transakcji, bez trzymania całej bazy w RAM;
+- procesy robocze wykonują tylko wsadowe odczyty read-only;
+- słownik jest jednym przenośnym, atomowo zapisanym plikiem — bez osobnego serwera;
+- Redis nie jest potrzebny i utrudniałby trwały, odwracalny zapis końcowy.
+
+Mapowanie zachowuje długość bajtową wartości. Jeżeli dla bardzo krótkiej długości
+nie istnieje wystarczająco dużo różnych pseudonimów (np. ponad 36 wartości C(1)),
+konwersja kończy się błędem zamiast utworzyć nieodwracalną kolizję.
+Pseudonim nie może być identyczny z oryginałem. Jeżeli eksport choć jednej tabeli
+się nie powiedzie, kodowanie pozostałych tabel nie rozpocznie się — globalny
+słownik nigdy nie jest budowany na niepełnym obrazie bazy.
+
 ## Python API
 
 ```python
 from dbf_anonymizer import anonymize_directory, make_dbf_recovery, self_test
 
-# Anonimizacja
-result = anonymize_directory(
-    "E:/data/bok",
-    memo_mode="mask",       # 'mask' lub 'keep'
-    date_offset_days=30,    # 0 = bez zmian
-    salt="my-secret",
-)
-print(f"OK={result.ok}, błędy={result.failed}")
-# Wynik: result.output (katalog _anonymized), result.dictionary_dir (katalog _dict)
+if __name__ == "__main__":  # wymagane przez multiprocessing w Windows
+    result = anonymize_directory(
+        "E:/data/bok",
+        memo_mode="mask",       # 'mask' lub 'keep'
+        date_offset_days=30,    # 0 = bez zmian
+        salt="my-secret",
+        workers=4,             # None/0 = automatycznie, 1 = sekwencyjnie
+    )
+    print(f"OK={result.ok}, błędy={result.failed}")
 
-# Recovery
-rec = make_dbf_recovery(result.output, result.dictionary_dir)
-# Wynik: rec.output (katalog _recovered)
-
-# Self-test (round-trip + porównanie kanoniczne)
-report = self_test("E:/data/bok", memo_mode="mask")
-print(f"PASS: {report.successful}, dopasowania: {report.canonical_matches}")
+    rec = make_dbf_recovery(result.output, result.dictionary_dir, workers=4)
+    report = self_test("E:/data/bok", memo_mode="mask", workers=4)
+    print(f"PASS: {report.successful}, dopasowania: {report.canonical_matches}")
 ```
 
-## Słownik (SENSITIWNY!)
+## Globalny słownik SQLite (SENSITIWNY!)
 
-Plik `dictionary_<nazwa_tabeli>.json` zawiera mapowanie oryginał↔anonim dla pól C
-oraz oryginalne wartości M/G (w trybie `mask`). Pozwala odtworzyć pierwotne dane.
+Plik `dictionary.sqlite3` zawiera wspólne mapowanie oryginał↔anonim dla pól C
+ze wszystkich tabel oraz oryginalne wartości M/G (w trybie `mask`) indeksowane
+według ścieżki względnej, pola i numeru rekordu. Pozwala odtworzyć każdą tabelę.
 
 **Słownik jest w `.gitignore`** — NIE wysyłaj go na GitHub/serwer!
 
-Struktura słownika:
-```json
-{
-  "table": "klienci.dbf",
-  "relative_path": "klienci.dbf",
-  "options": {"memo_mode": "mask", "date_offset_days": 30, "text_mode": "same_length"},
-  "fields": {
-    "ID": {"name": "ID", "dbf_type": "C", "unique": true, "values": {"K001": "AB3X9K2PQR", ...}},
-    "NAME": {"name": "NAME", "dbf_type": "C", "unique": false, "values": {"Jan Kowalski": "XK7M2N...", ...}},
-    "BORN": {"name": "BORN", "dbf_type": "D", "offset_days": 30},
-    "NOTE": {"name": "NOTE", "dbf_type": "M", "memo_mode": "mask", "memo_originals": ["Klient VIP", ...]}
-  }
-}
+Najważniejsze tabele wewnętrzne:
+
+```text
+text_map(original PRIMARY KEY, anonymized UNIQUE, byte_length)
+memo_values(relative_path, field_name, record_index, value_json)
+files(relative_path PRIMARY KEY, table_name)
+metadata(key PRIMARY KEY, value_json)
 ```
+
+Recovery nadal odczytuje starsze słowniki JSON v1/v2, ale nowe anonimizacje
+zawsze tworzą globalny format SQLite v3.
 
 ## Self-test
 
@@ -148,15 +171,16 @@ dbf-anonymizer self-test E:\data\bok
 ## Testy
 
 ```bash
-pytest                    # wszystkie 40 testów
+pytest                    # wszystkie testy
 pytest tests/test_pipeline.py -v   # testy round-trip
 ```
 
 Testy obejmują:
 - `test_transforms.py` — mask_char (długość bajtowa, determinizm), memo, date shift/recover
 - `test_uniqueness.py` — detekcja unikalnych kolumn, bijekcja, polskie znaki
-- `test_pipeline.py` — round-trip self-test (mask/keep, date offset, salt, multi-table),
-  struktura wyjścia, słowniki, unikalność po anonimizacji
+- `test_pipeline.py` — round-trip, duplikaty nazw, multiprocessing oraz spójność
+  klucza tekstowego między różnymi tabelami i polami
+- `test_global_store.py` — bijekcja, determinizm i granice pojemności SQLite
 
 Fixture DBF generowane przez bibliotekę `dbf` (VfpTable, cp1250, memo, polskie znaki,
 deleted records, kolumny unikalne i nieunikalne).
@@ -168,12 +192,13 @@ src/dbf_anonymizer/
   __init__.py     — public API
   __main__.py     — python -m entry point
   cli.py          — argparse CLI (anonymize/recover/self-test)
-  pipeline.py     — anonymize_directory, make_dbf_recovery, self_test
-  anonymizer.py   — anonymize_records/recover_records (per-tabela)
+  pipeline.py     — multiprocessing, anonymize_directory, make_dbf_recovery, self_test
+  anonymizer.py   — transformacje rekordów, anonymize_records/recover_records
+  global_store.py — globalny dictionary.sqlite3, bijekcja i wsadowe lookupy
   schema.py       — ładowanie _schema.json z dbfbridge
   transforms.py   — mask_char, mask_memo, shift_date, identity (+ odwrotności)
   uniqueness.py   — detekcja unikalnych kolumn C, bijekcja
-  dictionary.py   — zapis/odczyt dictionary_*.json
+  dictionary.py   — zgodność wsteczna: odczyt/zapis dictionary_*.json v1/v2
 tests/
   conftest.py     — fixture DBF (klienci.dbf, produkty.dbf)
   test_transforms.py
@@ -184,7 +209,7 @@ tests/
 ## .gitignore
 
 Repozytorium ignoruje:
-- `dictionary_*.json` — słowniki (SENSITIWNE)
+- `dictionary.sqlite3*`, `dictionary_*.json` — słowniki (SENSITIWNE)
 - `*_anonymized/`, `*_recovered/` — katalogi wyjściowe
 - `var/` — pośrednie JSONL
 - `*.dbf`, `*.fpt`, `*.cdx` — pliki DBF (nie wysyłaj danych przez git)

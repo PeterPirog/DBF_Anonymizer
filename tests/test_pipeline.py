@@ -6,6 +6,7 @@ identyczny ze źródłowym.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from dbf_anonymizer import (
     make_dbf_recovery,
     self_test,
 )
-from dbf_anonymizer.dictionary import dictionary_filename
+from dbf_anonymizer.global_store import GlobalDictionaryStore, global_dictionary_path
 
 
 class TestSelfTestSingleTable:
@@ -69,6 +70,140 @@ class TestSelfTestMultiTable:
         assert report.successful
 
 
+class TestDuplicateTableNames:
+    """Wspólny słownik dla tej samej nazwy pliku w różnych katalogach."""
+
+    def test_shared_dictionary_and_parallel_encoding(
+        self,
+        duplicate_name_dbf_dir: Path,
+        tmp_path: Path,
+    ):
+        from dbfbridge import export_dbf
+
+        result = anonymize_directory(
+            duplicate_name_dbf_dir,
+            memo_mode="mask",
+            salt="shared-test",
+            workers=2,
+        )
+        assert result.failed == 0, [table.errors for table in result.tables]
+        assert len(result.tables) == 2
+
+        dictionary_path = global_dictionary_path(result.dictionary_dir)
+        with GlobalDictionaryStore(dictionary_path, read_only=True) as store:
+            assert set(store.registered_files()) == {
+                "oddzial_a/klienci.dbf",
+                "oddzial_b/klienci.dbf",
+            }
+            assert store.memo_values("oddzial_a/klienci.dbf", "NOTE") == [
+                "memo oddział A", "tylko A"
+            ]
+            assert store.memo_values("oddzial_b/klienci.dbf", "NOTE") == [
+                "tylko B", "memo oddział B"
+            ]
+            shared_anonymous_id = store.forward_many(["SHARED"])["SHARED"]
+        for branch in ("oddzial_a", "oddzial_b"):
+            export_dir = tmp_path / f"export_{branch}"
+            export_dbf(
+                result.output / branch / "klienci.dbf",
+                export_dir,
+                formats=("jsonl",),
+                memo="inline",
+                deleted="include",
+                overwrite=True,
+                validate=False,
+            )
+            records = [
+                json.loads(line)
+                for line in (export_dir / "klienci.jsonl").read_text(
+                    encoding="utf-8-sig"
+                ).splitlines()
+                if line.strip()
+            ]
+            assert shared_anonymous_id in {
+                record.get("ID")
+                for record in records
+                if record.get("type") not in ("summary", "table")
+            }
+
+    def test_parallel_roundtrip_uses_relative_paths(
+        self,
+        duplicate_name_dbf_dir: Path,
+    ):
+        report = self_test(
+            duplicate_name_dbf_dir,
+            memo_mode="mask",
+            workers=2,
+        )
+        assert report.canonical_mismatches == 0, [
+            table.errors for table in report.tables if table.errors
+        ]
+        assert report.canonical_matches == 2
+        assert {table.relative_path for table in report.tables} == {
+            "oddzial_a/klienci.dbf",
+            "oddzial_b/klienci.dbf",
+        }
+        assert report.successful
+
+
+class TestGlobalRelationalMapping:
+    """Ten sam klucz tekstowy musi być identyczny w różnych tabelach i polach."""
+
+    def test_foreign_key_uses_same_global_mapping(
+        self,
+        relational_dbf_dir: Path,
+        tmp_path: Path,
+    ):
+        from dbfbridge import export_dbf
+
+        result = anonymize_directory(
+            relational_dbf_dir,
+            salt="relational-test",
+            workers=2,
+        )
+        assert result.failed == 0, [table.errors for table in result.tables]
+
+        with GlobalDictionaryStore(
+            global_dictionary_path(result.dictionary_dir), read_only=True
+        ) as store:
+            anonymous_k001 = store.forward_many(["K001"])["K001"]
+
+        exported: dict[str, list[dict]] = {}
+        for table_name in ("klienci", "zamowienia"):
+            export_dir = tmp_path / f"export_{table_name}"
+            export_dbf(
+                result.output / f"{table_name}.dbf",
+                export_dir,
+                formats=("jsonl",),
+                memo="inline",
+                deleted="include",
+                overwrite=True,
+                validate=False,
+            )
+            exported[table_name] = [
+                json.loads(line)
+                for line in (export_dir / f"{table_name}.jsonl").read_text(
+                    encoding="utf-8-sig"
+                ).splitlines()
+                if line.strip()
+            ]
+
+        client_ids = {
+            record.get("ID") for record in exported["klienci"] if "ID" in record
+        }
+        foreign_keys = {
+            record.get("CLIENT_ID")
+            for record in exported["zamowienia"]
+            if "CLIENT_ID" in record
+        }
+        assert anonymous_k001 in client_ids
+        assert anonymous_k001 in foreign_keys
+
+        report = self_test(relational_dbf_dir, workers=2)
+        assert report.successful
+        assert report.canonical_matches == 2
+
+
 class TestAnonymizeDirectory:
     """Testy anonymize_directory — struktura wyjścia i słowniki."""
 
@@ -85,7 +220,7 @@ class TestAnonymizeDirectory:
         result = anonymize_directory(sample_dbf_dir, memo_mode="mask")
         assert result.exit_code in (0, 2)
         assert result.failed == 0
-        dict_file = result.dictionary_dir / dictionary_filename("klienci.dbf")
+        dict_file = global_dictionary_path(result.dictionary_dir)
         assert dict_file.is_file(), f"Słownik nie istnieje: {dict_file}"
 
     def test_anonymized_data_differs(self, sample_dbf_dir: Path):
@@ -93,17 +228,13 @@ class TestAnonymizeDirectory:
         result = anonymize_directory(sample_dbf_dir, memo_mode="mask", salt="test")
         assert result.exit_code in (0, 2)
         assert result.failed == 0
-        # Słownik zawiera mapowanie oryginał→anonim
-        import json
-        dict_file = result.dictionary_dir / dictionary_filename("klienci.dbf")
-        data = json.loads(dict_file.read_text(encoding="utf-8"))
-        # ID jest unikalną kolumną C — powinno mieć mapowanie
-        id_field = data["fields"]["ID"]
-        assert id_field["unique"] is True
-        assert len(id_field["values"]) > 0
-        # oryginały i anonimy różne
-        for orig, anon in id_field["values"].items():
-            assert orig != anon
+        with GlobalDictionaryStore(
+            global_dictionary_path(result.dictionary_dir), read_only=True
+        ) as store:
+            mapping = store.forward_many(["K001", "K002", "K003", "K004", "K005"])
+        assert len(mapping) == 5
+        for original, anonymous in mapping.items():
+            assert original != anonymous
 
     def test_exit_code_on_failure(self, tmp_path: Path):
         """Nieistniejący katalog → FileNotFoundError."""
