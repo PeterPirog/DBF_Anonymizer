@@ -101,6 +101,8 @@ kod wyjścia polecenia. Dzięki temu do analizy wystarcza sam pełny plik logu.
 | `CDX_REINDEX_FAILED` | kopiowanie definicji, otwarcie VFP lub REINDEX nie powiodły się |
 | `VFP_AUTOMATION_FAILED` | COM VFP zwrócił błąd; szczegóły są w `error=` |
 | `RAW_PATCH_*` | nie można bezpiecznie przywrócić surowych N/F/L |
+| `HEADER_LAYOUT_*` | nie można bezpiecznie przywrócić źródłowego układu nagłówka VFP |
+| `CANONICAL_MISMATCH_REPAIRED_BY_RAW_IDENTITY_PATCH` | różnice N/F/L naprawiono dokładnymi bajtami i potwierdzono ponowną sumą kanoniczną |
 | `INCOMPLETE_EXPORT` | co najmniej jedna tabela nie została wyeksportowana |
 | `GLOBAL_MAPPING_MISSING` | anonim nie istnieje w przekazanym słowniku |
 | `INCREMENTAL_DICTIONARY_CONFIG_MISMATCH` | słownik pochodzi z innej konfiguracji |

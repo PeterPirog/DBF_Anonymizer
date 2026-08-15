@@ -86,7 +86,12 @@ def load_schema(schema_path: Path) -> TableSchema:
     dbf_meta = data.get("dbf", {}) or {}
     encoding = data.get("text_encoding", "cp1250")
     if isinstance(encoding, dict):
-        encoding = str(encoding.get("codepage") or "cp1250")
+        encoding = str(
+            encoding.get("declared_or_detected_encoding")
+            or encoding.get("codepage")
+            or dbf_meta.get("encoding")
+            or "cp1250"
+        )
 
     memo_meta = data.get("memo", {}) or {}
     has_memo = bool(memo_meta.get("has_memo") or memo_meta.get("present") or
@@ -99,7 +104,10 @@ def load_schema(schema_path: Path) -> TableSchema:
             continue
         dbf_type = str(fld.get("dbf_type") or fld.get("type") or "").upper()
         length = int(fld.get("length") or 0)
-        decimal_raw = fld.get("decimal")
+        decimal_raw = fld.get("decimal_count")
+        if decimal_raw is None:
+            # Zgodność ze starszymi, ręcznie tworzonymi schematami.
+            decimal_raw = fld.get("decimal")
         decimal = int(decimal_raw) if decimal_raw is not None else None
         fields_list.append(FieldInfo(name=name, dbf_type=dbf_type, length=length, decimal=decimal))
 

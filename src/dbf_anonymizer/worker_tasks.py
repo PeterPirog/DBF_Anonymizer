@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from .anonymizer import AnonymizeOptions, recover_records
 from .dictionary import dictionary_filename, load_dictionary
 from .global_store import GlobalDictionaryStore, global_dictionary_path
 from .jsonstream import atomic_jsonl_writer, iter_jsonl, write_records
+from .layout import allow_generated_vfp_backlink, restore_source_header_layout
 from .rawpatch import restore_identity_field_bytes
 from .schema import is_data_record, load_schema
 from .tableio import anonymize_jsonl, count_data_records, recover_jsonl
@@ -163,6 +165,7 @@ def anonymize_prepared_worker(
             f"actual={written} path={prepared.relative_path}"
         )
     shutil.copyfile(prepared.schema_path, anonymous_schema)
+    allow_generated_vfp_backlink(anonymous_schema)
     reconstruction = _reconstruct_isolated(
         source_dir=anonymous_dir,
         staging_output=Path(prepared.job_root) / "reconstructed",
@@ -244,6 +247,7 @@ def recover_one_table_worker(
             f"actual={written} path={relative_path}"
         )
     shutil.copyfile(schema_path, recovered_schema)
+    allow_generated_vfp_backlink(recovered_schema)
     reconstruction = _reconstruct_isolated(
         source_dir=recovered_dir,
         staging_output=job_root / "reconstructed",
@@ -289,26 +293,99 @@ def _reconstruct_isolated(
             f"[RECONSTRUCTION_FAILED] {context} "
             f"error_type={type(exc).__name__} error={exc}"
         ) from exc
-    if not any(item.status == "FAILED" for item in reconstruction.results):
-        reconstructed_dbfs = [
-            path for path in staging_output.iterdir()
-            if path.is_file()
-            and path.suffix.casefold() == ".dbf"
-            and path.stem.casefold() == table_stem.casefold()
-        ]
-        if len(reconstructed_dbfs) != 1:
-            raise RuntimeError(
-                f"[RECONSTRUCTED_DBF_AMBIGUOUS] table={table_stem} "
-                f"count={len(reconstructed_dbfs)}"
-            )
-        restore_identity_field_bytes(reconstructed_dbfs[0], raw_records_path, schema_path)
-        publish_reconstructed_table(
-            staging_output,
-            output_parent,
-            table_stem,
-            overwrite=True,
+    failed = any(item.status == "FAILED" for item in reconstruction.results)
+    reconstructed_dbfs = [
+        path for path in staging_output.iterdir()
+        if path.is_file()
+        and path.suffix.casefold() == ".dbf"
+        and path.stem.casefold() == table_stem.casefold()
+    ]
+    if failed and not _only_canonical_mismatch(reconstruction):
+        return reconstruction
+    if len(reconstructed_dbfs) != 1:
+        if failed:
+            return reconstruction
+        raise RuntimeError(
+            f"[RECONSTRUCTED_DBF_AMBIGUOUS] table={table_stem} "
+            f"count={len(reconstructed_dbfs)}"
         )
+
+    reconstructed_dbf = reconstructed_dbfs[0]
+    restore_source_header_layout(reconstructed_dbf, schema_path)
+    restore_identity_field_bytes(reconstructed_dbf, raw_records_path, schema_path)
+    if failed:
+        matches, expected_hash, actual_hash = _canonical_jsonl_matches_dbf(
+            reconstructed_dbf,
+            records_path,
+            schema_path,
+        )
+        if not matches:
+            return reconstruction
+        _mark_canonical_repair(
+            reconstruction,
+            expected_hash=expected_hash,
+            actual_hash=actual_hash,
+        )
+    publish_reconstructed_table(
+        staging_output,
+        output_parent,
+        table_stem,
+        overwrite=True,
+    )
     return reconstruction
+
+
+def _only_canonical_mismatch(reconstruction: Any) -> bool:
+    failed = [item for item in reconstruction.results if item.status == "FAILED"]
+    return bool(failed) and all(
+        item.errors
+        and all(
+            str(error).startswith("Canonical checksum mismatch")
+            for error in item.errors
+        )
+        for item in failed
+    )
+
+
+def _canonical_jsonl_matches_dbf(
+    dbf_path: Path,
+    records_path: Path,
+    schema_path: Path,
+) -> tuple[bool, str, str]:
+    """Ponownie sprawdza kanoniczność po bezpiecznej łatce N/F/L."""
+
+    from dbf_bridge.importer.checksum import CanonicalChecksum
+    from dbf_bridge.importer.reconstruct import checksum_dbf
+
+    raw_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    expected = CanonicalChecksum(raw_schema)
+    for record in iter_jsonl(records_path):
+        expected.update(record)
+    expected_hash = expected.hexdigest()
+    actual_hash = checksum_dbf(dbf_path, raw_schema).hexdigest()
+    return expected_hash == actual_hash, expected_hash, actual_hash
+
+
+def _mark_canonical_repair(
+    reconstruction: Any,
+    *,
+    expected_hash: str,
+    actual_hash: str,
+) -> None:
+    warning = (
+        "[CANONICAL_MISMATCH_REPAIRED_BY_RAW_IDENTITY_PATCH] "
+        "Dokładne bajty pól N/F/L przywrócono i ponowna suma kanoniczna jest zgodna."
+    )
+    for item in reconstruction.results:
+        if item.status != "FAILED":
+            continue
+        item.errors = []
+        item.differences = []
+        item.canonical_match = True
+        item.input_canonical_sha256 = expected_hash
+        item.reconstructed_canonical_sha256 = actual_hash
+        item.warnings.append(warning)
+        item.status = "WARNING"
 
 
 def _apply_reconstruct_result(outcome: Any, result: Any) -> None:

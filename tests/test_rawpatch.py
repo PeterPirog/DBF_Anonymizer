@@ -8,6 +8,7 @@ from dbf_anonymizer.rawpatch import (
     restore_identity_field_bytes,
 )
 from dbf_anonymizer.schema import FieldInfo, TableSchema
+from dbf_anonymizer.schema import load_schema
 
 
 def test_n_4_1_uses_placeholder_then_restores_raw_bytes(tmp_path: Path):
@@ -52,3 +53,33 @@ def test_n_4_1_uses_placeholder_then_restores_raw_bytes(tmp_path: Path):
 
     assert restore_identity_field_bytes(target, jsonl, schema_path) == 1
     assert target.read_bytes()[header_length:] == raw_record
+
+
+def test_dbfbridge_decimal_count_triggers_n_4_1_placeholder(tmp_path: Path):
+    schema_path = tmp_path / "table_schema.json"
+    schema_path.write_text(
+        json.dumps({
+            "table": "pers_nob_arch.DBF",
+            "relative_path": "DANE/pers_nob_arch.DBF",
+            "text_encoding": {
+                "declared_or_detected_encoding": "cp1250",
+            },
+            "fields": [
+                {
+                    "name": "VALUE",
+                    "dbf_type": "N",
+                    "length": 4,
+                    "decimal_count": 1,
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    records, replacements = make_numeric_values_reconstructable(
+        [{"VALUE": "-32"}],
+        load_schema(schema_path),
+    )
+
+    assert records == [{"VALUE": 0}]
+    assert replacements == 1

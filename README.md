@@ -238,8 +238,11 @@ Testy obejmują:
 - `test_pipeline.py` — round-trip, duplikaty nazw, multiprocessing oraz spójność
   klucza tekstowego między różnymi tabelami i polami
 - `test_global_store.py` — bijekcja, determinizm i granice pojemności SQLite
-- `test_atomicfs.py`, `test_rawpatch.py`, `test_vfp.py` — publikacja katalogów,
-  regresja `N(4,1)` oraz kopiowanie definicji/REINDEX CDX
+- `test_atomicfs.py`, `test_rawpatch.py`, `test_layout.py`, `test_vfp.py` —
+  publikacja katalogów, regresja `N(4,1)`, warianty nagłówka VFP oraz
+  kopiowanie definicji/REINDEX CDX
+- `test_schema.py`, `test_worker_tasks.py` — zgodność schematu dbfbridge i
+  końcowa walidacja kanoniczna po bezpiecznej łatce pól N/F/L
 
 Pełny `pytest` uruchamia się w GitHub Actions na Windows. Realny test COM VFP
 może działać na runnerze self-hosted z etykietami `Windows` i `vfp9` po ustawieniu
@@ -263,6 +266,7 @@ src/dbf_anonymizer/
   pipeline.py     — multiprocessing, anonymize_directory, make_dbf_recovery, self_test
   atomicfs.py     — staging i transakcyjna publikacja całych katalogów
   tableio.py      — strumieniowe partie JSONL i wsadowe lookupy SQLite
+  layout.py       — normalizacja opcjonalnego obszaru backlink nagłówka VFP
   rawpatch.py     — dokładne bajty nietransformowanych N/F/L
   vfp.py          — definicje CDX, COM VFP i obowiązkowy REINDEX
   verification.py— strumieniowy round-trip i test VFP/CDX
