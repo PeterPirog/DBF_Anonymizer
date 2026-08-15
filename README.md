@@ -73,10 +73,7 @@ Visual FoxPro (`VisualFoxPro.Application`).
 
 ```bash
 # Anonimizuj katalog → <dir>_anonymized + <dir>_dict
-dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT] \
-    [--memo mask|keep] [--date-offset N] [--salt S] [--workers N] \
-    [--batch-size N] [--fresh-dictionary] [--vfp-progid PROGID] \
-    [--log-level LEVEL] [--log-file FILE]
+dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT]
 
 # Odtwórz oryginał z zaanonimizowanego + słowników → <anon>_recovered
 dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] \
@@ -91,16 +88,25 @@ Można też uruchomić przez `python -m dbf_anonymizer <command>`.
 
 ### Przykłady
 
-```bash
-# Anonimizacja z maskowaniem memo i przesunięciem dat o 30 dni
-dbf-anonymizer anonymize D:\data\bok --memo mask --date-offset 30 --salt "proj-2024" --workers 4
+```powershell
+# Wersja minimalna: wynik i słownik powstaną obok katalogu źródłowego
+dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B"
+
+# Tylko własny katalog wyniku: słownik powstanie obok niego jako CWOM-B_dict
+dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
+  --out "D:\Warp_directory\CWOM-B_anonymized"
 
 # Recovery (wymaga katalogu zaanonimizowanego i słowników)
-dbf-anonymizer recover D:\data\bok_anonymized D:\data\bok_dict
+dbf-anonymizer recover "D:\DANE_WOM\CWOM-B_anonymized" "D:\DANE_WOM\CWOM-B_dict"
 
 # Self-test — weryfikacja round-trip
-dbf-anonymizer self-test D:\data\bok
+dbf-anonymizer self-test "D:\DANE_WOM\CWOM-B"
 ```
+
+Bez `--out` wynik trafia do `<katalog_źródłowy>_anonymized`. Bez `--dict-dir`
+słownik trafia do `<nazwa_katalogu_źródłowego>_dict` na tym samym poziomie co
+katalog wyniku — również wtedy, gdy `--out` wskazuje inną lokalizację. Pozostałe
+opcje pokazuje `dbf-anonymizer anonymize --help`.
 
 `--workers 0` (wartość domyślna) automatycznie dobiera liczbę procesów,
 `--workers 1` wymusza tryb sekwencyjny, a `--workers N` uruchamia maksymalnie N
@@ -113,13 +119,12 @@ Przykładowo wartość `K001` w `klienci.ID`, `zamowienia.CLIENT_ID` oraz
 tabeli ani pola w kluczu — kluczem jest dokładna wartość tekstowa. `NULL` i pusty
 tekst pozostają bez zmian.
 
-SQLite jest celowym wyborem zamiast dużego JSON lub Redis:
+SQLite zapewnia trwały, globalny słownik dla całej bazy:
 
 - indeksy `PRIMARY KEY`/`UNIQUE` gwarantują bijekcję i wykrywają kolizje;
 - budowa używa jednego writera i transakcji, bez trzymania całej bazy w RAM;
 - procesy robocze wykonują tylko wsadowe odczyty read-only;
-- słownik jest jednym przenośnym, atomowo zapisanym plikiem — bez osobnego serwera;
-- Redis nie jest potrzebny i utrudniałby trwały, odwracalny zapis końcowy.
+- słownik jest jednym przenośnym, atomowo zapisanym plikiem.
 
 Przy kolejnej anonimizacji do tego samego `--dict-dir` istniejące mapowania C są
 domyślnie zachowywane, a metadane bieżących plików i pozycyjne memo odświeżane.
