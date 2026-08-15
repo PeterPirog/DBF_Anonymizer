@@ -13,16 +13,20 @@ from pathlib import Path
 import pytest
 
 from dbf_anonymizer import (
+    AnonymizeOptions,
     anonymize_directory,
     make_dbf_recovery,
     self_test,
 )
 from dbf_anonymizer.global_store import GlobalDictionaryStore, global_dictionary_path
 from dbf_anonymizer.pipeline import (
+    TableOutcome,
     _numeric_width_context,
+    _parallel_prepared,
     _publish_reconstructed_table,
 )
 from dbf_anonymizer.schema import FieldInfo, TableSchema
+from dbf_anonymizer.worker_tasks import PreparedTable
 
 
 class TestSelfTestSingleTable:
@@ -283,12 +287,65 @@ class TestAnonymizeDirectory:
         assert any("alphabet_size=" in message for message in messages)
         assert any("phase=anonymize event=done" in message for message in messages)
 
+    def test_logs_failure_returned_by_worker_with_table_and_error_code(
+        self,
+        tmp_path: Path,
+        caplog,
+        monkeypatch,
+    ):
+        prepared = PreparedTable(
+            source=str(tmp_path / "problem.dbf"),
+            relative_path="DANE/problem.dbf",
+            job_root=str(tmp_path / "job"),
+            jsonl_path=str(tmp_path / "problem.jsonl"),
+            schema_path=str(tmp_path / "problem_schema.json"),
+            records=12,
+        )
+
+        def returned_failure(*args, **kwargs):
+            return TableOutcome(
+                table="problem.dbf",
+                relative_path="DANE/problem.dbf",
+                status="FAILED",
+                records=12,
+                errors=[
+                    "[DBFBRIDGE_RECONSTRUCTION_FAILED] source=problem "
+                    "error=synthetic"
+                ],
+            )
+
+        monkeypatch.setattr(
+            "dbf_anonymizer.pipeline._anonymize_prepared_worker",
+            returned_failure,
+        )
+        caplog.set_level(logging.ERROR, logger="dbf_anonymizer.pipeline")
+
+        outcomes = _parallel_prepared(
+            [prepared],
+            output=tmp_path / "output",
+            dictionary_dir=tmp_path / "dictionary",
+            options=AnonymizeOptions(),
+            batch_size=5000,
+            workers=1,
+        )
+
+        assert outcomes[0].status == "FAILED"
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "phase=anonymize event=file_failed path=DANE/problem.dbf" in message
+            and "error_code=DBFBRIDGE_RECONSTRUCTION_FAILED" in message
+            and "error=synthetic" in message
+            for message in messages
+        )
+
     def test_cdx_failure_does_not_publish_partial_generation(
         self,
         sample_dbf_dir: Path,
         tmp_path: Path,
+        caplog,
         monkeypatch,
     ):
+        caplog.set_level(logging.ERROR, logger="dbf_anonymizer.pipeline")
         output = tmp_path / "published-output"
         dictionary = tmp_path / "published-dictionary"
         output.mkdir()
@@ -319,6 +376,12 @@ class TestAnonymizeDirectory:
             dictionary / "generation.txt"
         ).read_text(encoding="utf-8") == "old-dictionary"
         assert not (output / "klienci.dbf").exists()
+        assert any(
+            "phase=pipeline event=publication_blocked operation=anonymize" in
+            record.getMessage()
+            and "failed_paths=klienci.dbf" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestParallelReconstructionIsolation:
