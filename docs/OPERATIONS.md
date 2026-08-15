@@ -19,6 +19,30 @@ $vfp.Quit()
 
 ## Anonimizacja
 
+Wersja minimalna — `workers=0` i pozostałe ustawienia domyślne są stosowane
+automatycznie:
+
+```powershell
+dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B"
+```
+
+Powstaną katalogi `D:\DANE_WOM\CWOM-B_anonymized` oraz
+`D:\DANE_WOM\CWOM-B_dict`.
+
+Jeżeli podasz tylko `--out`, słownik nadal zostanie utworzony automatycznie obok
+wyniku:
+
+```powershell
+dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
+  --out "D:\Warp_directory\CWOM-B_anonymized"
+```
+
+W tym przykładzie domyślny słownik trafi do
+`D:\Warp_directory\CWOM-B_dict`. `--dict-dir` jest potrzebne wyłącznie wtedy,
+gdy chcesz wskazać inną lokalizację.
+
+Wersja z jawnymi opcjami operacyjnymi:
+
 ```powershell
 chcp 65001
 $env:PYTHONUTF8 = "1"
