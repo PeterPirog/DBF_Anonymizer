@@ -90,6 +90,12 @@ Każdy błąd ma stabilny kod w nawiasach, `phase`, `event`, ścieżkę tabeli i
 wyjątku. Wklej cały plik logu; wartości tekstowe wrażliwe są zastępowane
 skrótem SHA-256. Najważniejsze kody:
 
+Jeżeli proces roboczy zwróci błąd bez podniesienia wyjątku, log zawiera osobny
+wpis `event=file_failed` dla każdej przyczyny z `path`, `table`, `error_index`,
+`error_count` i `error_code`. `event=publication_blocked` wymienia wszystkie
+tabele blokujące atomową publikację, a końcowy `phase=cli event=done` zapisuje
+kod wyjścia polecenia. Dzięki temu do analizy wystarcza sam pełny plik logu.
+
 | Kod | Znaczenie |
 |---|---|
 | `CDX_REINDEX_FAILED` | kopiowanie definicji, otwarcie VFP lub REINDEX nie powiodły się |
