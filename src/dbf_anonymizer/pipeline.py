@@ -187,6 +187,69 @@ def _blocked_outcome(prepared: _PreparedTable, exc: BaseException) -> TableOutco
     return outcome
 
 
+def _diagnostic_code(message: str, fallback: str) -> str:
+    """Wyciąga stabilny kod ``[CODE]`` bez modyfikowania treści diagnostyki."""
+    if message.startswith("[") and "]" in message:
+        candidate = message[1:message.index("]")]
+        if candidate and all(
+            character.isupper() or character.isdigit() or character == "_"
+            for character in candidate
+        ):
+            return candidate
+    return fallback
+
+
+def _log_returned_failure(phase: str, outcome: TableOutcome) -> None:
+    """Loguje błędy zwrócone w ``TableOutcome`` przez proces roboczy.
+
+    Wyjątki podniesione przez worker są logowane w gałęzi ``except``. Ta funkcja
+    obsługuje odmienny przypadek: biblioteka rekonstrukcji zwróciła wynik
+    ``FAILED`` zamiast podnieść wyjątek.
+    """
+    if outcome.status != "FAILED":
+        return
+    if not outcome.errors:
+        outcome.errors.append(
+            f"[WORKER_FAILED_WITHOUT_DETAILS] path={outcome.relative_path}"
+        )
+    error_count = len(outcome.errors)
+    for error_index, error in enumerate(outcome.errors, start=1):
+        logger.error(
+            "phase=%s event=file_failed path=%s table=%s error_index=%d "
+            "error_count=%d error_code=%s error=%r",
+            phase,
+            outcome.relative_path,
+            outcome.table,
+            error_index,
+            error_count,
+            _diagnostic_code(error, "WORKER_RETURNED_FAILED"),
+            error,
+        )
+
+
+def _log_publication_blocked(
+    operation: str,
+    outcomes: list[TableOutcome],
+    *,
+    output: Path,
+    dictionary_dir: Path | None = None,
+) -> None:
+    failed_paths = "|".join(
+        item.relative_path
+        for item in sorted(outcomes, key=lambda value: value.relative_path.casefold())
+        if item.status == "FAILED"
+    )
+    logger.error(
+        "phase=pipeline event=publication_blocked operation=%s failed=%d "
+        "failed_paths=%s output=%s dictionary_dir=%s",
+        operation,
+        sum(item.status == "FAILED" for item in outcomes),
+        failed_paths,
+        output,
+        dictionary_dir if dictionary_dir is not None else "-",
+    )
+
+
 def _set_exit_code(outcomes: list[TableOutcome]) -> int:
     if any(item.status == "FAILED" for item in outcomes):
         return 1
@@ -303,11 +366,11 @@ def _parallel_prepared(
     if max_workers == 1:
         for item in prepared:
             try:
-                outcomes.append(
-                    _anonymize_prepared_worker(
-                        item, str(output), str(dictionary_dir), options, batch_size
-                    )
+                outcome = _anonymize_prepared_worker(
+                    item, str(output), str(dictionary_dir), options, batch_size
                 )
+                _log_returned_failure("anonymize", outcome)
+                outcomes.append(outcome)
             except Exception as exc:
                 logger.exception(
                     "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
@@ -330,7 +393,9 @@ def _parallel_prepared(
             for future in as_completed(futures):
                 item = futures[future]
                 try:
-                    outcomes.append(future.result())
+                    outcome = future.result()
+                    _log_returned_failure("anonymize", outcome)
+                    outcomes.append(outcome)
                 except Exception as exc:
                     logger.exception(
                         "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
@@ -375,7 +440,9 @@ def _parallel_recovery(
     if max_workers == 1:
         for job in jobs:
             try:
-                outcomes.append(_recover_one_table_worker(*job))
+                outcome = _recover_one_table_worker(*job)
+                _log_returned_failure("recovery", outcome)
+                outcomes.append(outcome)
             except Exception as exc:
                 logger.exception(
                     "phase=recovery event=file_failed path=%s error_type=%s error=%s",
@@ -388,7 +455,9 @@ def _parallel_recovery(
             for future in as_completed(futures):
                 job = futures[future]
                 try:
-                    outcomes.append(future.result())
+                    outcome = future.result()
+                    _log_returned_failure("recovery", outcome)
+                    outcomes.append(outcome)
                 except Exception as exc:
                     logger.exception(
                         "phase=recovery event=file_failed path=%s error_type=%s error=%s",
@@ -643,6 +712,12 @@ def anonymize_directory(
                 key=lambda item: item.relative_path.casefold(),
             )
             result.exit_code = 1
+            _log_publication_blocked(
+                "anonymize",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
 
         try:
@@ -661,6 +736,12 @@ def anonymize_directory(
             result.global_error = str(exc)
             result.tables = [_blocked_outcome(item, exc) for item in prepared]
             result.exit_code = 1
+            _log_publication_blocked(
+                "anonymize",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
 
         result.tables = sorted(
@@ -683,6 +764,12 @@ def anonymize_directory(
             )
         result.exit_code = _set_exit_code(result.tables)
         if result.exit_code == 1:
+            _log_publication_blocked(
+                "anonymize",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
 
         write_manifest(
@@ -776,6 +863,12 @@ def make_dbf_recovery(
             )
         result.exit_code = _set_exit_code(result.tables)
         if result.exit_code == 1:
+            _log_publication_blocked(
+                "recovery",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
         dictionary_file = global_dictionary_path(dict_dir)
         write_manifest(
