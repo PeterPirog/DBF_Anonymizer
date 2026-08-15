@@ -136,6 +136,13 @@ Kody błędów, np. `TEXT_ENCODING_ERROR`, `INCONSISTENT_TEXT_BYTE_LENGTH` i
 `TEXT_DOMAIN_CAPACITY`, zawierają kontekst tabeli/pola/kodowania bez wypisywania
 pełnych wartości danych osobowych. Nieoczekiwane wyjątki zapisują traceback.
 
+Każdy proces rekonstruuje DBF/FPT w osobnym katalogu zadania. Do katalogu
+wynikowego trafiają atomowo wyłącznie artefakty danej tabeli; roboczy
+`reconstruction_report.jsonl` nie jest współdzielony przez procesy. Zapobiega
+to błędowi Windows `WinError 32` podczas równoległego przetwarzania wielu tabel
+w tym samym katalogu. Błąd zapisu pola N/F zawiera ścieżkę tabeli, numer rekordu,
+nazwę pola, deklarację szerokości oraz reprezentację, która się nie mieści.
+
 ## Python API
 
 ```python
