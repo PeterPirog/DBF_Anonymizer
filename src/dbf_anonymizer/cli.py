@@ -2,7 +2,6 @@
 
 Użycie:
     dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT]
-        [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
     dbf-anonymizer recover <anon_dir> <dict_dir> [--out OUT] [--workers N]
     dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N]
         [--workers N] [--keep-temp]
@@ -55,7 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_anon.add_argument("--out", "--output", dest="output", type=Path, default=None,
                         help="Katalog wyjściowy (domyślnie: <directory>_anonymized).")
     p_anon.add_argument("--dict-dir", dest="dict_dir", type=Path, default=None,
-                        help="Katalog słowników (domyślnie: <directory>_dict).")
+                        help=(
+                            "Katalog słownika (domyślnie: <directory>_dict obok "
+                            "katalogu wyjściowego)."
+                        ))
     p_anon.add_argument("--memo", choices=["mask", "keep"], default="mask",
                         help="Pola M/G: 'mask' → 'MEMO' (domyślnie), 'keep' → bez zmian.")
     p_anon.add_argument("--date-offset", dest="date_offset", type=int, default=0,

@@ -234,6 +234,22 @@ class TestAnonymizeDirectory:
         dict_file = global_dictionary_path(result.dictionary_dir)
         assert dict_file.is_file(), f"Słownik nie istnieje: {dict_file}"
 
+    def test_default_dictionary_is_sibling_of_custom_output(
+        self,
+        sample_dbf_dir: Path,
+        tmp_path: Path,
+    ):
+        output = tmp_path / "publikacja" / "baza-anonimowa"
+
+        result = anonymize_directory(sample_dbf_dir, output_dir=output)
+
+        assert result.exit_code in (0, 2)
+        assert result.output == output.resolve()
+        assert result.dictionary_dir == (
+            output.parent / f"{sample_dbf_dir.name}_dict"
+        ).resolve()
+        assert global_dictionary_path(result.dictionary_dir).is_file()
+
     def test_anonymized_data_differs(self, sample_dbf_dir: Path):
         """Po anonimizacji pola tekstowe różnią się od oryginału."""
         result = anonymize_directory(sample_dbf_dir, memo_mode="mask", salt="test")
