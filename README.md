@@ -69,11 +69,32 @@ Wymaga Python ≥ 3.10. Zależności: `dbfbridge` (z [dbfbridge repo](https://gi
 Dla źródeł z CDX wymagany jest Windows i zarejestrowany serwer COM pełnego
 Visual FoxPro (`VisualFoxPro.Application`).
 
+### Krótka konfiguracja Windows przez `.env`
+
+W katalogu repozytorium wykonaj raz:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Przykład zawiera ścieżki `D:\DANE_WOM\CWOM-B`, katalogi wynikowe pod
+`D:\Warp_directory` oraz instalację
+`C:\Program Files (x86)\Microsoft Visual FoxPro 9\vfp9.exe`. Po sprawdzeniu
+wartości anonimizację uruchamia krótkie polecenie:
+
+```powershell
+dbf-anonymizer anonymize
+```
+
+Zmienne ustawione jawnie w PowerShell oraz argumenty CLI mają pierwszeństwo.
+Lokalny `.env` jest w `.gitignore`; `.env.example` nie zawiera tajnej soli.
+
 ## CLI
 
 ```bash
 # Anonimizuj katalog → <dir>_anonymized + <dir>_dict
-dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT]
+dbf-anonymizer anonymize [<dir>] [--out OUT] [--dict-dir DICT]
 
 # Odtwórz oryginał z zaanonimizowanego + słowników → <anon>_recovered
 dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] \
@@ -89,6 +110,9 @@ Można też uruchomić przez `python -m dbf_anonymizer <command>`.
 ### Przykłady
 
 ```powershell
+# Gdy skonfigurowano .env
+dbf-anonymizer anonymize
+
 # Wersja minimalna: wynik i słownik powstaną obok katalogu źródłowego
 dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B"
 
@@ -166,6 +190,26 @@ stagingowego trafiają wyłącznie artefakty danej tabeli; roboczy
 to błędowi Windows `WinError 32` podczas równoległego przetwarzania wielu tabel
 w tym samym katalogu. Cały staging i słownik są publikowane dopiero po
 rekonstrukcji wszystkich tabel oraz REINDEX każdego CDX.
+
+### Wczesna kontrola CDX i wykluczenia
+
+Przed eksportem pipeline odczytuje flagę strukturalnego indeksu z nagłówka
+każdego DBF. Jeżeli flaga jest ustawiona, ale nie istnieje CDX o tym samym
+rdzeniu, operacja kończy się natychmiast kodem `SOURCE_CDX_MISSING`. Brak indeksu
+nie jest więc wykrywany dopiero po zbudowaniu wielomilionowego słownika.
+
+`FOXUSER.DBF` jest domyślnie pomijany jako zasób ustawień środowiska VFP.
+Każde pominięcie jest zapisane w logu jako `event=file_excluded` i w manifeście
+`excluded_tables`. Tabel aplikacyjnych, np. `pomoc.dbf`, nie należy pomijać tylko
+po to, aby ominąć błąd CDX — najpierw trzeba odzyskać odpowiadający plik CDX.
+Świadome wykluczenie ma postać `--exclude "DANE/pomoc.dbf"` albo wpisu
+`DBF_ANON_EXCLUDE=DANE/pomoc.dbf` w `.env`. Opcja `--include-system-files`
+włącza również `FOXUSER.DBF`.
+
+`DBF_ANON_VFP_EXE` pozwala wcześnie sprawdzić, czy wskazany `vfp9.exe` istnieje.
+Sam `REINDEX` nadal jest wykonywany przez COM określony w
+`DBF_ANON_VFP_PROGID`, ponieważ ten interfejs zapewnia kontrolowane otwarcie,
+przebudowę i odczyt tagów.
 
 ## Python API
 

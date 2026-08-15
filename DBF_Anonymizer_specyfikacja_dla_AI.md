@@ -110,6 +110,11 @@ Jeśli w tym samym katalogu istnieje plik o tym samym rdzeniu i jednym z tych
 rozszerzeń, odpowiadający DBF nie jest traktowany jak tabela danych. Zmiana tej
 reguły wymaga fixture VFP oraz jednoznacznego uzasadnienia.
 
+`FOXUSER.DBF` jest domyślnie pomijany jako techniczny zasób ustawień środowiska
+VFP. Inne wykluczenia są dozwolone tylko jako jawne wzorce operatora. Każde
+wykluczenie MUSI trafić do logu i pola `excluded_tables` manifestu. Nie wolno
+wykluczać czynnej tabeli aplikacyjnej tylko po to, aby ominąć brak CDX.
+
 ### 2.3. Ścieżka względna jest częścią tożsamości pliku
 
 W bazie mogą istnieć pliki o tej samej nazwie, np.:
@@ -316,20 +321,22 @@ Kolejność etapów jest częścią kontraktu bezpieczeństwa:
 
 1. Walidacja źródła, opcji, katalogów, liczby workerów i wielkości partii.
 2. Rekurencyjne znalezienie wszystkich DBF danych.
-3. Równoległy eksport każdego DBF przez dbfbridge do izolowanego
+3. Preflight CDX: odczyt flagi strukturalnego indeksu z nagłówka DBF i
+   natychmiastowy `SOURCE_CDX_MISSING`, jeżeli brak CDX o tym samym rdzeniu.
+4. Równoległy eksport każdego DBF przez dbfbridge do izolowanego
    `JSONL + _schema.json`, z memo inline i rekordami deleted.
-4. Jeśli eksport choć jednej tabeli się nie uda — `INCOMPLETE_EXPORT`, brak
+5. Jeśli eksport choć jednej tabeli się nie uda — `INCOMPLETE_EXPORT`, brak
    budowy słownika i brak publikacji.
-5. Budowa jednego globalnego słownika SQLite na podstawie kompletnego obrazu
+6. Budowa jednego globalnego słownika SQLite na podstawie kompletnego obrazu
    bazy.
-6. Równoległa, strumieniowa transformacja JSONL w partiach.
-7. Rekonstrukcja DBF/FPT w osobnym katalogu każdego zadania.
-8. Kontrolowana normalizacja nagłówka VFP i przywrócenie surowych `N/F/L`.
-9. Ponowna walidacja kanoniczna, jeśli dbfbridge zgłosił wyłącznie różnicę,
+7. Równoległa, strumieniowa transformacja JSONL w partiach.
+8. Rekonstrukcja DBF/FPT w osobnym katalogu każdego zadania.
+9. Kontrolowana normalizacja nagłówka VFP i przywrócenie surowych `N/F/L`.
+10. Ponowna walidacja kanoniczna, jeśli dbfbridge zgłosił wyłącznie różnicę,
    którą może naprawić łatka identity.
-10. Kopiowanie definicji CDX i obowiązkowy `REINDEX` w pełnym VFP.
-11. Utworzenie manifestu integralności DBF/FPT/CDX.
-12. Jednoczesna publikacja kompletnego katalogu wyniku oraz słownika.
+11. Kopiowanie definicji CDX i obowiązkowy `REINDEX` w pełnym VFP.
+12. Utworzenie manifestu integralności DBF/FPT/CDX i wykluczeń.
+13. Jednoczesna publikacja kompletnego katalogu wyniku oraz słownika.
 
 Nie wolno budować słownika na części tabel po niepełnym eksporcie. Taki słownik
 nie reprezentowałby całej bazy i mógłby inaczej przydzielić pseudonimy.
@@ -443,7 +450,8 @@ Wymagany algorytm dla każdej tabeli ze strukturalnym CDX:
 9. Zamknąć tabelę i zwolnić obiekt COM również po błędzie.
 
 Jeśli źródłowy DBF ma flagę indeksu strukturalnego, ale nie ma odpowiadającego
-CDX, operacja MUSI zakończyć się `SOURCE_CDX_MISSING`.
+CDX, operacja MUSI zakończyć się `SOURCE_CDX_MISSING` przed eksportem i budową
+słownika.
 
 Jeżeli Windows, COM VFP, definicje tagów, `REINDEX` lub weryfikacja zawiodą,
 operacja MUSI zakończyć się `CDX_REINDEX_FAILED` i zablokować publikację.
@@ -580,8 +588,23 @@ $vfp.Quit()
 Minimalny publiczny kontrakt CLI ma pozostać prosty:
 
 ```text
-dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT]
+dbf-anonymizer anonymize [<dir>] [--out OUT] [--dict-dir DICT]
 ```
+
+Operator może skopiować śledzony `.env.example` do ignorowanego `.env` i wpisać
+tam źródło, wynik, słownik, log, sól, workerów oraz konfigurację VFP. Wartości
+środowiska PowerShell mają pierwszeństwo przed plikiem, a argumenty CLI przed
+wartościami domyślnymi. `.env` NIE MOŻE trafić do Git.
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+dbf-anonymizer anonymize
+```
+
+`DBF_ANON_VFP_EXE` może wskazywać pełną ścieżkę `vfp9.exe` do wczesnej
+walidacji instalacji. Kontrolowane otwarcie i `REINDEX` nadal MUSZĄ używać COM z
+`DBF_ANON_VFP_PROGID`.
 
 Przykład z samym źródłem:
 

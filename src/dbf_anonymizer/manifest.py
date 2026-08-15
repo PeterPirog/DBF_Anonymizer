@@ -24,6 +24,7 @@ def write_manifest(
     source: str | Path,
     tables: list[dict[str, Any]],
     dictionary_sha256: str | None = None,
+    excluded_tables: list[dict[str, str]] | None = None,
 ) -> Path:
     target_root = Path(root)
     artifacts: list[dict[str, Any]] = []
@@ -45,6 +46,7 @@ def write_manifest(
         "source": str(Path(source).resolve()),
         "dictionary_sha256": dictionary_sha256,
         "tables": tables,
+        "excluded_tables": excluded_tables or [],
         "artifacts": artifacts,
     }
     path = target_root / MANIFEST_FILENAME
