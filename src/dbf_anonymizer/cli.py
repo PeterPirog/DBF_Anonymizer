@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.executable,
     )
     try:
-        return args.func(args)
+        exit_code = args.func(args)
     except FileNotFoundError as exc:
         cli_logger.error(
             "phase=cli event=failed error_code=FILE_NOT_FOUND error=%s",
@@ -304,6 +304,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Błąd krytyczny: {exc}", file=sys.stderr)
         return 1
+    cli_logger.info(
+        "phase=cli event=done command=%s exit_code=%d",
+        args.command,
+        exit_code,
+    )
+    return exit_code
 
 
 def _add_logging_arguments(parser: argparse.ArgumentParser) -> None:
