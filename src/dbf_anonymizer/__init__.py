@@ -77,4 +77,4 @@ __all__ = [
     "shift_datetime",
 ]
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"

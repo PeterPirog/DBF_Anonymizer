@@ -106,3 +106,42 @@ def test_common_alphabet_uses_printable_codepage_characters():
     assert all(len(character.encode("cp852")) == 1 for character in shared)
     assert all(character.isprintable() and not character.isspace() for character in cp1250)
     assert len({character.casefold() for character in cp1250}) == len(cp1250)
+
+
+def test_incremental_generation_preserves_existing_mapping(tmp_path: Path):
+    path = tmp_path / "dictionary.sqlite3"
+    with GlobalDictionaryStore(path) as store:
+        store.initialize(
+            options={"memo_mode": "mask", "date_offset_days": 0, "text_mode": "same_length"},
+            salt="stable",
+            text_encodings=["cp1250"],
+        )
+        store.add_text_values(
+            ["K001"], encoding="cp1250", relative_path="old.dbf", field_name="ID"
+        )
+        store.assign_anonymous_values(salt="stable")
+        old_value = store.forward_many(["K001"])["K001"]
+        store.prepare_incremental(
+            options={"memo_mode": "mask", "date_offset_days": 0, "text_mode": "same_length"},
+            salt="stable",
+            text_encodings=["cp1250"],
+        )
+        store.add_text_values(
+            ["K001", "K002"], encoding="cp1250", relative_path="new.dbf", field_name="ID"
+        )
+        store.assign_anonymous_values(salt="stable")
+        mapping = store.forward_many(["K001", "K002"])
+
+    assert mapping["K001"] == old_value
+    assert mapping["K002"] != "K002"
+
+
+def test_missing_mapping_error_does_not_disclose_value(tmp_path: Path):
+    path = tmp_path / "dictionary.sqlite3"
+    with GlobalDictionaryStore(path) as store:
+        store.initialize(options={}, salt="", text_encodings=["cp1250"])
+        with pytest.raises(GlobalDictionaryError) as error:
+            store.forward_many(["PESEL-SECRET"])
+
+    assert "PESEL-SECRET" not in str(error.value)
+    assert "GLOBAL_MAPPING_MISSING" in str(error.value)

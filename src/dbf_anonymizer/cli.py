@@ -68,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Zachowaj pośrednie JSONL w var/ (debug).")
     p_anon.add_argument("--workers", type=_non_negative_int, default=0,
                         help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    p_anon.add_argument("--batch-size", type=_positive_int, default=5000,
+                        help="Rekordy JSONL na partię (domyślnie 5000).")
+    p_anon.add_argument(
+        "--fresh-dictionary",
+        action="store_true",
+        help="Nie zachowuj istniejących mapowań; zbuduj słownik od zera.",
+    )
+    p_anon.add_argument(
+        "--vfp-progid",
+        default="VisualFoxPro.Application",
+        help="ProgID serwera COM VFP używanego do obowiązkowego REINDEX CDX.",
+    )
     _add_logging_arguments(p_anon)
     p_anon.set_defaults(func=_cmd_anonymize)
 
@@ -92,6 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Zachowaj pośrednie JSONL (debug).")
     p_rec.add_argument("--workers", type=_non_negative_int, default=0,
                        help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    p_rec.add_argument("--batch-size", type=_positive_int, default=5000,
+                       help="Rekordy JSONL na partię (domyślnie 5000).")
+    p_rec.add_argument(
+        "--vfp-progid",
+        default="VisualFoxPro.Application",
+        help="ProgID serwera COM VFP używanego do obowiązkowego REINDEX CDX.",
+    )
     _add_logging_arguments(p_rec)
     p_rec.set_defaults(func=_cmd_recover)
 
@@ -115,6 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Zachowaj katalogi pośrednie w var/ (debug).")
     p_st.add_argument("--workers", type=_non_negative_int, default=0,
                       help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    p_st.add_argument("--batch-size", type=_positive_int, default=5000,
+                      help="Rekordy JSONL na partię (domyślnie 5000).")
+    p_st.add_argument(
+        "--vfp-progid",
+        default="VisualFoxPro.Application",
+        help="ProgID serwera COM VFP do REINDEX i testu otwarcia/CDX.",
+    )
     _add_logging_arguments(p_st)
     p_st.set_defaults(func=_cmd_self_test)
 
@@ -132,6 +158,9 @@ def _cmd_anonymize(args: argparse.Namespace) -> int:
         overwrite=args.overwrite,
         keep_temp=args.keep_temp,
         workers=args.workers,
+        batch_size=args.batch_size,
+        reuse_dictionary=not args.fresh_dictionary,
+        vfp_progid=args.vfp_progid,
     )
     _print_anonymize_result(result)
     return result.exit_code
@@ -145,6 +174,8 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         overwrite=args.overwrite,
         keep_temp=args.keep_temp,
         workers=args.workers,
+        batch_size=args.batch_size,
+        vfp_progid=args.vfp_progid,
     )
     _print_recovery_result(result)
     return result.exit_code
@@ -158,6 +189,8 @@ def _cmd_self_test(args: argparse.Namespace) -> int:
         salt=args.salt,
         keep_temp=args.keep_temp,
         workers=args.workers,
+        batch_size=args.batch_size,
+        vfp_progid=args.vfp_progid,
     )
     _print_self_test_report(report)
     return report.exit_code
@@ -237,6 +270,7 @@ def _print_self_test_report(report: SelfTestReport) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_console_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
     _configure_logging(args)
@@ -308,6 +342,24 @@ def _non_negative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("wartość musi być >= 0")
     return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("wartość musi być > 0")
+    return parsed
+
+
+def _configure_console_utf8() -> None:
+    """Ujednolica polskie znaki w PowerShell/PyCharm i plikach logu."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
 
 
 if __name__ == "__main__":

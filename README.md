@@ -7,7 +7,13 @@ katalog wyjściowy z **identyczną strukturą plików DBF**, ale z zaanonimizowa
 Wszystkie pola tekstowe `C` we wszystkich tabelach korzystają z jednego globalnego
 słownika SQLite (`dictionary.sqlite3`). Ten sam tekst otrzymuje dokładnie ten sam
 pseudonim niezależnie od nazwy tabeli, pola i katalogu, dlatego tekstowe klucze
-główne/obce zachowują spójność relacyjną. Kosztowne etapy są wykonywane równolegle.
+główne/obce zachowują spójność relacyjną. Wynik jest budowany w stagingu i
+publikowany razem ze słownikiem dopiero po sukcesie wszystkich tabel. JSONL jest
+przetwarzany strumieniowo partiami, a kosztowne etapy działają równolegle.
+
+Jeżeli tabela ma strukturalny CDX, narzędzie kopiuje go jako nośnik definicji
+tagów, po czym **obowiązkowo wykonuje `REINDEX` w pełnym Visual FoxPro**. Błąd
+VFP/CDX blokuje publikację całego katalogu.
 
 ## Zasady anonimizacji
 
@@ -40,9 +46,11 @@ DBF zaanonimizowany
   → reconstruct_dbf → DBF zrekonstruowany
 ```
 
-**Kluczowe:** `__dbfbridge_raw_record__` (base64 surowych bajtów DBF) jest usuwane
-z rekordów, by `reconstruct_dbf` zbudował DBF z zaanonimizowanych wartości pól.
-Bez tego reconstruct odtworzyłby oryginalne bajty byte-identically.
+**Kluczowe:** pełne `__dbfbridge_raw_record__` nie jest przekazywane do
+rekonstrukcji, bo cofnęłoby anonimizację pól C. Po rekonstrukcji pipeline
+przywraca z niego wyłącznie surowe bajty nietransformowanych pól `N/F/L`. Dzięki
+temu zachowuje historyczne formy FoxPro, np. `-32` w `N(4,1)`, których ogólny
+writer nie potrafi znormalizować do `-32.0`.
 
 ## Instalacja
 
@@ -58,19 +66,25 @@ pip install -e ".[dev]"
 Wymaga Python ≥ 3.10. Zależności: `dbfbridge` (z [dbfbridge repo](https://github.com/PeterPirog/dbfbridge)),
 `dbf>=0.99.11` (tylko do testów/reconstruct).
 
+Dla źródeł z CDX wymagany jest Windows i zarejestrowany serwer COM pełnego
+Visual FoxPro (`VisualFoxPro.Application`).
+
 ## CLI
 
 ```bash
 # Anonimizuj katalog → <dir>_anonymized + <dir>_dict
 dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT] \
     [--memo mask|keep] [--date-offset N] [--salt S] [--workers N] \
+    [--batch-size N] [--fresh-dictionary] [--vfp-progid PROGID] \
     [--log-level LEVEL] [--log-file FILE]
 
 # Odtwórz oryginał z zaanonimizowanego + słowników → <anon>_recovered
-dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] [--workers N]
+dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] \
+    [--workers N] [--batch-size N] [--vfp-progid PROGID]
 
 # Self-test: round-trip source → anonymized → recovered, porównanie kanoniczne
-dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
+dbf-anonymizer self-test <dir> [--memo mask|keep] [--date-offset N] \
+    [--salt S] [--workers N] [--batch-size N] [--vfp-progid PROGID]
 ```
 
 Można też uruchomić przez `python -m dbf_anonymizer <command>`.
@@ -79,13 +93,13 @@ Można też uruchomić przez `python -m dbf_anonymizer <command>`.
 
 ```bash
 # Anonimizacja z maskowaniem memo i przesunięciem dat o 30 dni
-dbf-anonymizer anonymize E:\data\bok --memo mask --date-offset 30 --salt "proj-2024" --workers 4
+dbf-anonymizer anonymize D:\data\bok --memo mask --date-offset 30 --salt "proj-2024" --workers 4
 
 # Recovery (wymaga katalogu zaanonimizowanego i słowników)
-dbf-anonymizer recover E:\data\bok_anonymized E:\data\bok_dict
+dbf-anonymizer recover D:\data\bok_anonymized D:\data\bok_dict
 
 # Self-test — weryfikacja round-trip
-dbf-anonymizer self-test E:\data\bok
+dbf-anonymizer self-test D:\data\bok
 ```
 
 `--workers 0` (wartość domyślna) automatycznie dobiera liczbę procesów,
@@ -106,6 +120,11 @@ SQLite jest celowym wyborem zamiast dużego JSON lub Redis:
 - procesy robocze wykonują tylko wsadowe odczyty read-only;
 - słownik jest jednym przenośnym, atomowo zapisanym plikiem — bez osobnego serwera;
 - Redis nie jest potrzebny i utrudniałby trwały, odwracalny zapis końcowy.
+
+Przy kolejnej anonimizacji do tego samego `--dict-dir` istniejące mapowania C są
+domyślnie zachowywane, a metadane bieżących plików i pozycyjne memo odświeżane.
+Sól, opcje i strony kodowe muszą być zgodne. `--fresh-dictionary` celowo tworzy
+nową bijekcję.
 
 Mapowanie zachowuje długość bajtową wartości. Jeżeli dla bardzo krótkiej długości
 nie istnieje wystarczająco dużo różnych pseudonimów, konwersja kończy się błędem
@@ -137,11 +156,11 @@ Kody błędów, np. `TEXT_ENCODING_ERROR`, `INCONSISTENT_TEXT_BYTE_LENGTH` i
 pełnych wartości danych osobowych. Nieoczekiwane wyjątki zapisują traceback.
 
 Każdy proces rekonstruuje DBF/FPT w osobnym katalogu zadania. Do katalogu
-wynikowego trafiają atomowo wyłącznie artefakty danej tabeli; roboczy
+stagingowego trafiają wyłącznie artefakty danej tabeli; roboczy
 `reconstruction_report.jsonl` nie jest współdzielony przez procesy. Zapobiega
 to błędowi Windows `WinError 32` podczas równoległego przetwarzania wielu tabel
-w tym samym katalogu. Błąd zapisu pola N/F zawiera ścieżkę tabeli, numer rekordu,
-nazwę pola, deklarację szerokości oraz reprezentację, która się nie mieści.
+w tym samym katalogu. Cały staging i słownik są publikowane dopiero po
+rekonstrukcji wszystkich tabel oraz REINDEX każdego CDX.
 
 ## Python API
 
@@ -193,9 +212,11 @@ Self-test wykonuje pełny round-trip i weryfikuje kanoniczną identyczność
 - Kolejność rekordów
 - Wartości wszystkich pól danych
 - Flagi `__deleted__`
+- Otwarcie źródła, anonimu i recovery w VFP (dla tabel z CDX)
+- Liczbę/nazwy tagów CDX oraz możliwość użycia każdego porządku
 
 ```bash
-dbf-anonymizer self-test E:\data\bok
+dbf-anonymizer self-test D:\data\bok
 # WYNIK: PASS — wszystkie tabele round-trip kanonicznie identyczne.
 ```
 
@@ -212,6 +233,17 @@ Testy obejmują:
 - `test_pipeline.py` — round-trip, duplikaty nazw, multiprocessing oraz spójność
   klucza tekstowego między różnymi tabelami i polami
 - `test_global_store.py` — bijekcja, determinizm i granice pojemności SQLite
+- `test_atomicfs.py`, `test_rawpatch.py`, `test_vfp.py` — publikacja katalogów,
+  regresja `N(4,1)` oraz kopiowanie definicji/REINDEX CDX
+
+Pełny `pytest` uruchamia się w GitHub Actions na Windows. Realny test COM VFP
+może działać na runnerze self-hosted z etykietami `Windows` i `vfp9` po ustawieniu
+zmiennych repozytorium `VFP_SELF_HOSTED=true` i `VFP_FIXTURE_PATH` wskazującej
+lokalny katalog testowy DBF/FPT/CDX na runnerze.
+
+Dokumentacja: [operacje](docs/OPERATIONS.md),
+[bezpieczeństwo słownika](docs/SECURITY.md),
+[benchmarki](docs/BENCHMARKS.md).
 
 Fixture DBF generowane przez bibliotekę `dbf` (VfpTable, cp1250, memo, polskie znaki,
 deleted records, kolumny unikalne i nieunikalne).
@@ -224,6 +256,12 @@ src/dbf_anonymizer/
   __main__.py     — python -m entry point
   cli.py          — argparse CLI (anonymize/recover/self-test)
   pipeline.py     — multiprocessing, anonymize_directory, make_dbf_recovery, self_test
+  atomicfs.py     — staging i transakcyjna publikacja całych katalogów
+  tableio.py      — strumieniowe partie JSONL i wsadowe lookupy SQLite
+  rawpatch.py     — dokładne bajty nietransformowanych N/F/L
+  vfp.py          — definicje CDX, COM VFP i obowiązkowy REINDEX
+  verification.py— strumieniowy round-trip i test VFP/CDX
+  manifest.py     — SHA-256 opublikowanych DBF/FPT/CDX
   anonymizer.py   — transformacje rekordów, anonymize_records/recover_records
   global_store.py — globalny dictionary.sqlite3, bijekcja i wsadowe lookupy
   schema.py       — ładowanie _schema.json z dbfbridge

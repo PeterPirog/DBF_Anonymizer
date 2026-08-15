@@ -23,7 +23,14 @@ from .dictionary import (
     normalize_relative_path,
     reverse_field_dict_values,
 )
-from .schema import DELETED_KEY, FieldInfo, TableSchema
+from .schema import (
+    BINARY_MEMO_FIELDS_KEY,
+    DELETED_KEY,
+    RAW_RECORD_KEY,
+    RAW_TEXT_FIELDS_KEY,
+    FieldInfo,
+    TableSchema,
+)
 from .transforms import (
     identity,
     mask_memo,
@@ -110,7 +117,15 @@ def anonymize_records(
                 anon_rec[key] = value
                 continue
             if key.startswith("__dbfbridge_"):
-                continue  # usuń raw_record, raw_text_fields, binary_memo_fields
+                preserved = _preserved_dbfbridge_metadata(
+                    key,
+                    value,
+                    schema,
+                    memo_mode=effective_options.memo_mode,
+                )
+                if preserved is not None:
+                    anon_rec[key] = preserved
+                continue
             # Pole danych — transformuj wg typu
             finfo = schema.field_by_name(key)
             if finfo is None:
@@ -312,6 +327,7 @@ def recover_records(
     *,
     relative_path: str | None = None,
     global_reverse_mapping: Mapping[str, str] | None = None,
+    memo_originals: Mapping[str, list[Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Odwraca anonimizację — przywraca pierwotne wartości z zaanonimizowanych.
 
@@ -344,7 +360,9 @@ def recover_records(
             and fd.dbf_type in ("M", "G")
             and fd.memo_mode == "mask"
         ):
-            if fd.memo_originals_by_path:
+            if memo_originals is not None and fname in memo_originals:
+                memo_pos[fname] = list(memo_originals[fname])
+            elif fd.memo_originals_by_path:
                 if rel_key not in fd.memo_originals_by_path:
                     raise ValueError(
                         f"Brak danych memo dla {rel_key} w słowniku {table_dict.table}"
@@ -370,7 +388,15 @@ def recover_records(
                 rec_out[key] = value
                 continue
             if key.startswith("__dbfbridge_"):
-                continue  # usuń raw_record, raw_text_fields, binary_memo_fields
+                preserved = _preserved_dbfbridge_metadata(
+                    key,
+                    value,
+                    schema,
+                    memo_mode=str(table_dict.options.get("memo_mode", "mask")),
+                )
+                if preserved is not None:
+                    rec_out[key] = preserved
+                continue
             finfo = schema.field_by_name(key)
             if finfo is None:
                 rec_out[key] = value
@@ -388,6 +414,34 @@ def recover_records(
             rec_out[key] = _recover_field(finfo, value, table_dict, c_backward)
         recovered.append(rec_out)
     return recovered
+
+
+def _preserved_dbfbridge_metadata(
+    key: str,
+    value: Any,
+    schema: TableSchema,
+    *,
+    memo_mode: str,
+) -> Any | None:
+    """Zachowuje surową reprezentację wyłącznie pól nietransformowanych.
+
+    Usunięcie całego ``raw_text_fields`` powodowało m.in. utratę nietypowej,
+    lecz poprawnej w źródle reprezentacji ``-32`` w polu ``N(4,1)``. Pełny
+    ``raw_record`` nadal musi zostać usunięty, bo nadpisałby anonimizowane pola.
+    """
+
+    if key == RAW_RECORD_KEY:
+        return None
+    if key == RAW_TEXT_FIELDS_KEY and isinstance(value, Mapping):
+        safe: dict[str, Any] = {}
+        for field_name, raw_value in value.items():
+            field = schema.field_by_name(str(field_name))
+            if field is None or field.is_numeric or field.is_logical:
+                safe[str(field_name)] = raw_value
+        return safe or None
+    if key == BINARY_MEMO_FIELDS_KEY and memo_mode == "keep":
+        return value
+    return None
 
 
 def _recover_field(
