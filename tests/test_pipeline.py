@@ -18,6 +18,11 @@ from dbf_anonymizer import (
     self_test,
 )
 from dbf_anonymizer.global_store import GlobalDictionaryStore, global_dictionary_path
+from dbf_anonymizer.pipeline import (
+    _numeric_width_context,
+    _publish_reconstructed_table,
+)
+from dbf_anonymizer.schema import FieldInfo, TableSchema
 
 
 class TestSelfTestSingleTable:
@@ -256,6 +261,52 @@ class TestAnonymizeDirectory:
         )
         assert any("alphabet_size=" in message for message in messages)
         assert any("phase=anonymize event=done" in message for message in messages)
+
+
+class TestParallelReconstructionIsolation:
+    """Regresje wykryte podczas konwersji 94 tabel na Windows."""
+
+    def test_publishes_only_table_artifacts_not_shared_report(
+        self,
+        tmp_path: Path,
+    ):
+        staging = tmp_path / "job" / "reconstructed"
+        output = tmp_path / "output" / "DANE"
+        staging.mkdir(parents=True)
+        (staging / "sample.dbf").write_bytes(b"dbf")
+        (staging / "sample.fpt").write_bytes(b"fpt")
+        (staging / "reconstruction_report.jsonl").write_text(
+            "report\n", encoding="utf-8"
+        )
+
+        _publish_reconstructed_table(
+            staging,
+            output,
+            "sample",
+            overwrite=True,
+        )
+
+        assert (output / "sample.dbf").read_bytes() == b"dbf"
+        assert (output / "sample.fpt").read_bytes() == b"fpt"
+        assert not (output / "reconstruction_report.jsonl").exists()
+        assert not list(output.glob("*.partial"))
+
+    def test_numeric_width_error_identifies_record_and_field(self):
+        schema = TableSchema(
+            table_name="pers_nob_arch.DBF",
+            relative_path="DANE/pers_nob_arch.DBF",
+            encoding="cp1250",
+            has_memo=False,
+            fields=(FieldInfo("VALUE", "N", 4, 1),),
+        )
+
+        context = _numeric_width_context(schema, [{"VALUE": -32}])
+
+        assert context is not None
+        assert "record=1" in context
+        assert "field=VALUE" in context
+        assert "dbf_type=N(4,1)" in context
+        assert "rendered='-32.0'" in context
 
 
 class TestMakeRecovery:
