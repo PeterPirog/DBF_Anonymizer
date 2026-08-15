@@ -135,6 +135,11 @@ def _default_output_dir(source: Path, suffix: str) -> Path:
     return source.parent / f"{source.name}{suffix}"
 
 
+def _default_dictionary_dir(source: Path, output: Path) -> Path:
+    """Zwraca katalog słownika obok faktycznego katalogu wynikowego."""
+    return output.parent / f"{source.name}_dict"
+
+
 def _job_key(relative_path: str) -> str:
     digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:20]
     return f"job_{digest}"
@@ -568,7 +573,7 @@ def anonymize_directory(
     salt: str = "",
     overwrite: bool = True,
     keep_temp: bool = False,
-    workers: int | None = None,
+    workers: int | None = 0,
     batch_size: int = 5000,
     reuse_dictionary: bool = True,
     vfp_progid: str = "VisualFoxPro.Application",
@@ -585,7 +590,7 @@ def anonymize_directory(
     )
     dict_dir = (
         Path(dictionary_dir).resolve()
-        if dictionary_dir else _default_output_dir(source, "_dict")
+        if dictionary_dir else _default_dictionary_dir(source, output)
     )
     _validate_generated_path(source, output, "Katalog wyjściowy")
     _validate_generated_path(source, dict_dir, "Katalog słowników")
@@ -712,7 +717,7 @@ def make_dbf_recovery(
     output_dir: str | Path | None = None,
     overwrite: bool = True,
     keep_temp: bool = False,
-    workers: int | None = None,
+    workers: int | None = 0,
     batch_size: int = 5000,
     vfp_progid: str = "VisualFoxPro.Application",
 ) -> RecoveryResult:
@@ -800,7 +805,7 @@ def self_test(
     date_offset_days: int = 0,
     salt: str = "",
     keep_temp: bool = False,
-    workers: int | None = None,
+    workers: int | None = 0,
     batch_size: int = 5000,
     vfp_progid: str = "VisualFoxPro.Application",
 ) -> SelfTestReport:
