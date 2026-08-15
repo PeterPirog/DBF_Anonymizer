@@ -4,20 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbf_anonymizer"
-version = "0.2.2"
+version = "0.3.0"
 description = "Framework do anonimizacji plików DBF (Visual FoxPro) z odwracalnym słownikiem"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "PeterPirog" }]
 dependencies = [
-    "dbfbridge",
+    "dbfbridge @ git+https://github.com/PeterPirog/dbfbridge.git@addbadb9281914661bf742924f45039e46a895cd",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
-    "pytest-asyncio",
     "dbf==0.99.11",
 ]
 
@@ -29,4 +28,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
+markers = [
+    "vfp: wymaga Windows i pełnego Visual FoxPro z serwerem COM",
+]

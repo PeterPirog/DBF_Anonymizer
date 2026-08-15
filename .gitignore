@@ -223,6 +223,9 @@ dictionary_*.jsonl
 *_dictionary.json
 dictionary.sqlite3
 dictionary.sqlite3-*
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 dictionaries/
 

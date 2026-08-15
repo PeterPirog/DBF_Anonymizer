@@ -118,6 +118,8 @@ def is_data_record(record: dict[str, Any]) -> bool:
 
 
 RAW_RECORD_KEY = "__dbfbridge_raw_record__"
+RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
+BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
 DELETED_KEY = "__deleted__"
 
 

@@ -30,7 +30,12 @@ class TestSelfTestSingleTable:
 
     def test_roundtrip_mask_mode(self, sample_dbf_dir: Path):
         """Round-trip z memo_mode=mask — zrekonstruowany == źródłowy."""
-        report = self_test(sample_dbf_dir, memo_mode="mask", date_offset_days=0)
+        report = self_test(
+            sample_dbf_dir,
+            memo_mode="mask",
+            date_offset_days=0,
+            batch_size=2,
+        )
         assert report.canonical_mismatches == 0, (
             f"Nie dopasowano {report.canonical_mismatches} tabel; "
             f"błędy: {[t.errors for t in report.tables if t.errors]}"
@@ -261,6 +266,43 @@ class TestAnonymizeDirectory:
         )
         assert any("alphabet_size=" in message for message in messages)
         assert any("phase=anonymize event=done" in message for message in messages)
+
+    def test_cdx_failure_does_not_publish_partial_generation(
+        self,
+        sample_dbf_dir: Path,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        output = tmp_path / "published-output"
+        dictionary = tmp_path / "published-dictionary"
+        output.mkdir()
+        dictionary.mkdir()
+        (output / "generation.txt").write_text("old-output", encoding="utf-8")
+        (dictionary / "generation.txt").write_text("old-dictionary", encoding="utf-8")
+        (sample_dbf_dir / "klienci.cdx").write_bytes(b"definitions")
+
+        def fail_reindex(*args, **kwargs):
+            raise RuntimeError("synthetic VFP failure")
+
+        monkeypatch.setattr(
+            "dbf_anonymizer.pipeline.rebuild_companion_cdx",
+            fail_reindex,
+        )
+
+        result = anonymize_directory(
+            sample_dbf_dir,
+            output_dir=output,
+            dictionary_dir=dictionary,
+            workers=1,
+        )
+
+        assert result.failed == 1
+        assert result.exit_code == 1
+        assert (output / "generation.txt").read_text(encoding="utf-8") == "old-output"
+        assert (
+            dictionary / "generation.txt"
+        ).read_text(encoding="utf-8") == "old-dictionary"
+        assert not (output / "klienci.dbf").exists()
 
 
 class TestParallelReconstructionIsolation:

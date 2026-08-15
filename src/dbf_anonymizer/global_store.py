@@ -27,7 +27,8 @@ _ALPHABET_PRIORITY = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     + "".join(chr(codepoint) for codepoint in range(33, 127))
 )
-_QUERY_BATCH_SIZE = 800
+_QUERY_BATCH_SIZE = 900
+_WRITE_BATCH_SIZE = 10_000
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +68,9 @@ class GlobalDictionaryStore:
             self.connection = sqlite3.connect(self.path, timeout=60)
             self.connection.execute("PRAGMA journal_mode = DELETE")
             self.connection.execute("PRAGMA synchronous = NORMAL")
+            self.connection.execute("PRAGMA temp_store = MEMORY")
+            self.connection.execute("PRAGMA cache_size = -131072")
+            self.connection.execute("PRAGMA mmap_size = 268435456")
         self.connection.row_factory = sqlite3.Row
 
     def __enter__(self) -> "GlobalDictionaryStore":
@@ -161,6 +165,44 @@ class GlobalDictionaryStore:
                 for key, value in metadata.items()
             ],
         )
+        self.connection.commit()
+
+    def prepare_incremental(
+        self,
+        *,
+        options: dict[str, Any],
+        salt: str,
+        text_encodings: Iterable[str],
+    ) -> None:
+        """Zachowuje mapę C i rozpoczyna nową, zgodną generację konwersji.
+
+        Informacje zależne od konkretnego zestawu plików i pozycyjne memo są
+        czyszczone. Istniejące pary ``original↔anonymized`` pozostają, dzięki
+        czemu kolejne konwersje z tą samą konfiguracją są stabilne.
+        """
+
+        current = self.options()
+        expected = {
+            "memo_mode": options.get("memo_mode", "mask"),
+            "date_offset_days": int(options.get("date_offset_days", 0)),
+            "text_mode": options.get("text_mode", "same_length"),
+            "salt_sha256": hashlib.sha256(salt.encode("utf-8")).hexdigest(),
+            "text_encodings": normalize_encodings(text_encodings),
+        }
+        mismatches = {
+            key: {"stored": current.get(key), "requested": value}
+            for key, value in expected.items()
+            if current.get(key) != value
+        }
+        if mismatches:
+            raise GlobalDictionaryError(
+                "Nie można rozszerzyć słownika z inną konfiguracją",
+                code="INCREMENTAL_DICTIONARY_CONFIG_MISMATCH",
+                details={"keys": ",".join(sorted(mismatches))},
+            )
+        self.connection.execute("DELETE FROM files")
+        self.connection.execute("DELETE FROM text_sources")
+        self.connection.execute("DELETE FROM memo_values")
         self.connection.commit()
 
     def options(self) -> dict[str, Any]:
@@ -294,6 +336,8 @@ class GlobalDictionaryStore:
         relative_path: str,
         field_name: str,
         values: Iterable[Any],
+        *,
+        start_index: int = 0,
     ) -> None:
         path = normalize_relative_path(relative_path)
         self.connection.executemany(
@@ -309,7 +353,7 @@ class GlobalDictionaryStore:
                     index,
                     json.dumps(value, ensure_ascii=False, separators=(",", ":")),
                 )
-                for index, value in enumerate(values)
+                for index, value in enumerate(values, start=start_index)
             ),
         )
 
@@ -356,8 +400,9 @@ class GlobalDictionaryStore:
                 FROM text_map
                 WHERE anonymized IS NULL
                 ORDER BY byte_length, original COLLATE BINARY
-                LIMIT 1000
+                LIMIT ?
                 """
+                , (_WRITE_BATCH_SIZE,)
             ).fetchall()
             if not pending:
                 break
@@ -537,9 +582,14 @@ class GlobalDictionaryStore:
             )
         missing = set(values) - set(result)
         if missing:
-            sample = ", ".join(repr(value) for value in sorted(missing)[:3])
+            fingerprints = ",".join(
+                hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+                for value in sorted(missing)[:3]
+            )
             raise GlobalDictionaryError(
-                f"Brak {len(missing)} wartości w globalnym słowniku, np. {sample}"
+                "Brak wartości w globalnym słowniku",
+                code="GLOBAL_MAPPING_MISSING",
+                details={"count": len(missing), "value_sha256": fingerprints},
             )
         return result
 
@@ -555,7 +605,56 @@ class GlobalDictionaryStore:
         ).fetchall()
         return [json.loads(row["value_json"]) for row in rows]
 
-    def table_dictionary(self, schema: TableSchema, relative_path: str) -> TableDict:
+    def memo_values_range(
+        self,
+        relative_path: str,
+        field_name: str,
+        *,
+        start: int,
+        count: int,
+    ) -> list[Any]:
+        """Czyta dokładnie jedną partię pozycyjnych wartości memo."""
+
+        if start < 0 or count < 0:
+            raise ValueError("start i count muszą być nieujemne")
+        rows = self.connection.execute(
+            """
+            SELECT record_index, value_json
+            FROM memo_values
+            WHERE relative_path = ? AND field_name = ?
+              AND record_index >= ? AND record_index < ?
+            ORDER BY record_index
+            """,
+            (
+                normalize_relative_path(relative_path),
+                field_name,
+                start,
+                start + count,
+            ),
+        ).fetchall()
+        expected_indexes = list(range(start, start + count))
+        actual_indexes = [int(row["record_index"]) for row in rows]
+        if actual_indexes != expected_indexes:
+            raise GlobalDictionaryError(
+                "Brak ciągłej partii wartości memo",
+                code="MEMO_RANGE_MISSING",
+                details={
+                    "path": normalize_relative_path(relative_path),
+                    "field": field_name,
+                    "start": start,
+                    "count": count,
+                    "found": len(rows),
+                },
+            )
+        return [json.loads(row["value_json"]) for row in rows]
+
+    def table_dictionary(
+        self,
+        schema: TableSchema,
+        relative_path: str,
+        *,
+        include_memo_values: bool = True,
+    ) -> TableDict:
         """Buduje małe metadane recovery; globalna mapa C pozostaje w SQLite."""
         options = self.options()
         path = normalize_relative_path(relative_path)
@@ -569,7 +668,7 @@ class GlobalDictionaryStore:
             field_dict = FieldDict(name=field.name, dbf_type=field.dbf_type)
             if field.is_memo:
                 field_dict.memo_mode = str(options.get("memo_mode", "mask"))
-                if field_dict.memo_mode == "mask":
+                if field_dict.memo_mode == "mask" and include_memo_values:
                     field_dict.memo_originals_by_path[path] = self.memo_values(
                         path, field.name
                     )

@@ -1,44 +1,41 @@
-"""Wysokopoziomowy, równoległy pipeline anonimizacji katalogów DBF.
+"""Transakcyjny, równoległy pipeline katalogów DBF.
 
-Wszystkie tabele i pola C korzystają z jednego globalnego słownika SQLite,
-niezależnie od nazwy pliku, katalogu oraz nazwy pola. Kosztowne etapy DBF I/O
-i rekonstrukcji są wykonywane w osobnych procesach.
+Koordynacja procesów i publikacji jest oddzielona od strumieniowego JSONL,
+SQLite, kontroli odwracalności oraz automatyzacji Visual FoxPro.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import shutil
-from decimal import Decimal, InvalidOperation
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dbfbridge import export_dbf, reconstruct_dbf
-
-from .anonymizer import (
-    AnonymizeOptions,
-    anonymize_records,
-    recover_records,
-)
-from .dictionary import dictionary_filename, load_dictionary
-from .global_store import (
-    GlobalDictionaryError,
-    GlobalDictionaryStore,
-    global_dictionary_path,
-)
+from .anonymizer import AnonymizeOptions
+from .atomicfs import DirectoryTransaction
+from .global_store import GlobalDictionaryStore, global_dictionary_path
+from .manifest import sha256_file, write_manifest
 from .schema import load_schema
+from .tableio import scan_table_into_store
+from .verification import compare_dbf_canonical, verify_vfp_roundtrip
+from .vfp import companion_cdx, rebuild_companion_cdx
+from .worker_tasks import (
+    PreparedTable as _PreparedTable,
+    anonymize_prepared_worker as _anonymize_prepared_worker,
+    numeric_width_context as _numeric_width_context,
+    prepare_export_worker as _prepare_export_worker,
+    publish_reconstructed_table as _publish_reconstructed_table,
+    recover_one_table_worker as _recover_one_table_worker,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TableOutcome:
-    """Wynik operacji dla jednej tabeli."""
-
     table: str
     relative_path: str
     status: str = "OK"
@@ -49,8 +46,6 @@ class TableOutcome:
 
 @dataclass
 class AnonymizeResult:
-    """Wynik anonymize_directory."""
-
     source: Path
     output: Path
     dictionary_dir: Path
@@ -61,11 +56,11 @@ class AnonymizeResult:
 
     @property
     def ok(self) -> int:
-        return sum(1 for table in self.tables if table.status == "OK")
+        return sum(table.status == "OK" for table in self.tables)
 
     @property
     def failed(self) -> int:
-        return sum(1 for table in self.tables if table.status == "FAILED")
+        return sum(table.status == "FAILED" for table in self.tables)
 
     def raise_for_errors(self) -> None:
         if self.failed:
@@ -74,8 +69,6 @@ class AnonymizeResult:
 
 @dataclass
 class RecoveryResult:
-    """Wynik make_dbf_recovery."""
-
     source: Path
     output: Path
     dictionary_dir: Path
@@ -84,11 +77,11 @@ class RecoveryResult:
 
     @property
     def ok(self) -> int:
-        return sum(1 for table in self.tables if table.status == "OK")
+        return sum(table.status == "OK" for table in self.tables)
 
     @property
     def failed(self) -> int:
-        return sum(1 for table in self.tables if table.status == "FAILED")
+        return sum(table.status == "FAILED" for table in self.tables)
 
     def raise_for_errors(self) -> None:
         if self.failed:
@@ -97,8 +90,6 @@ class RecoveryResult:
 
 @dataclass
 class SelfTestReport:
-    """Wynik self_test — porównanie źródłowego i odtworzonego DBF."""
-
     source: Path
     anonymized: Path
     recovered: Path
@@ -113,32 +104,24 @@ class SelfTestReport:
         return self.exit_code == 0
 
 
-@dataclass(frozen=True)
-class _PreparedTable:
-    """Metadane eksportu źródłowego przygotowanego w procesie roboczym."""
-
-    source: str
-    relative_path: str
-    job_root: str
-    jsonl_path: str
-    schema_path: str
-    records: int
+_VFP_PROJECT_SUFFIXES = {
+    ".scx", ".sct", ".frx", ".frt", ".lbx", ".lbt", ".mnx", ".mnt",
+    ".pjx", ".pjt", ".vcx", ".vct", ".dbc", ".dct", ".dcx", ".prg",
+}
 
 
 def _iter_dbf_files(root: Path) -> list[Path]:
-    """Rekurencyjnie znajduje pliki .dbf z danymi (pomija formularze VFP)."""
-
-    skip_suffixes = {
-        ".scx", ".sct", ".frx", ".frt", ".lbx", ".lbt",
-        ".mnx", ".mnt", ".pjx", ".pjt", ".vcx", ".vct",
-        ".dbc", ".dct", ".dcx", ".prg",
-    }
     found: list[Path] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
-        if not path.is_file() or path.suffix.lower() != ".dbf":
+        if not path.is_file() or path.suffix.casefold() != ".dbf":
             continue
-        stem = path.stem.lower()
-        if any((path.parent / f"{stem}{suffix}").exists() for suffix in skip_suffixes):
+        stem = path.stem.casefold()
+        if any(
+            candidate.is_file()
+            for candidate in path.parent.iterdir()
+            if candidate.stem.casefold() == stem
+            and candidate.suffix.casefold() in _VFP_PROJECT_SUFFIXES
+        ):
             continue
         found.append(path)
     return found
@@ -146,32 +129,6 @@ def _iter_dbf_files(root: Path) -> list[Path]:
 
 def _relative_to(path: Path, root: Path) -> Path:
     return path.resolve().relative_to(root.resolve())
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig", newline="") as infile:
-        for line in infile:
-            stripped = line.strip()
-            if stripped:
-                records.append(json.loads(stripped))
-    return records
-
-
-def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as outfile:
-        for record in records:
-            outfile.write(
-                json.dumps(record, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-            )
-            outfile.write("\n")
-    temporary.replace(path)
-
-
-def _schema_path_for_jsonl(jsonl_path: Path) -> Path:
-    return jsonl_path.with_name(f"{jsonl_path.stem}_schema.json")
 
 
 def _default_output_dir(source: Path, suffix: str) -> Path:
@@ -184,45 +141,45 @@ def _job_key(relative_path: str) -> str:
 
 
 def _resolve_workers(workers: int | None, task_count: int) -> int:
-    """Zwraca liczbę procesów; None/0 oznacza dobór automatyczny."""
-
     if workers is not None and workers < 0:
         raise ValueError("workers musi być >= 0 (0/None = automatycznie)")
     requested = workers or (os.cpu_count() or 1)
     return max(1, min(requested, max(1, task_count)))
 
 
+def _validate_batch_size(batch_size: int) -> int:
+    if batch_size <= 0:
+        raise ValueError("batch_size musi być dodatni")
+    return batch_size
+
+
 def _validate_generated_path(source: Path, generated: Path, label: str) -> None:
-    """Chroni katalog źródłowy przed przypadkowym usunięciem jako wynik."""
-
     if generated == source or generated in source.parents:
-        raise ValueError(f"{label} nie może być katalogiem źródłowym ani jego nadrzędnym: {generated}")
+        raise ValueError(
+            f"{label} nie może być katalogiem źródłowym ani jego nadrzędnym: {generated}"
+        )
 
 
-def _prepare_directory(path: Path, overwrite: bool) -> None:
-    if path.exists() and overwrite:
-        shutil.rmtree(path)
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def _failed_outcome(source: str | Path, relative_path: str, exc: BaseException) -> TableOutcome:
+def _failed_outcome(
+    source: str | Path,
+    relative_path: str,
+    exc: BaseException,
+) -> TableOutcome:
     return TableOutcome(
         table=Path(source).name,
         relative_path=relative_path,
         status="FAILED",
-        errors=[f"{Path(source).name}: {exc}"],
+        errors=[
+            f"[{getattr(exc, 'code', type(exc).__name__)}] "
+            f"path={relative_path} error_type={type(exc).__name__} error={exc}"
+        ],
     )
 
 
 def _blocked_outcome(prepared: _PreparedTable, exc: BaseException) -> TableOutcome:
-    """Tabela wyeksportowana poprawnie, ale zablokowana przez błąd globalny."""
-    return TableOutcome(
-        table=Path(prepared.source).name,
-        relative_path=prepared.relative_path,
-        status="FAILED",
-        records=prepared.records,
-        errors=[f"{Path(prepared.source).name}: {exc}"],
-    )
+    outcome = _failed_outcome(prepared.source, prepared.relative_path, exc)
+    outcome.records = prepared.records
+    return outcome
 
 
 def _set_exit_code(outcomes: list[TableOutcome]) -> int:
@@ -233,327 +190,49 @@ def _set_exit_code(outcomes: list[TableOutcome]) -> int:
     return 0
 
 
-def _apply_reconstruct_result(outcome: TableOutcome, reconstruct_result: Any) -> None:
-    for item in reconstruct_result.results:
+def apply_reconstruct_result(outcome: TableOutcome, result: Any) -> None:
+    for item in result.results:
         if item.status == "FAILED":
             outcome.status = "FAILED"
-            outcome.errors.extend(item.errors or [f"reconstruct FAILED: {item.source}"])
+            outcome.errors.extend(
+                f"[DBFBRIDGE_RECONSTRUCTION_FAILED] source={item.source} error={error}"
+                for error in (item.errors or ["unknown reconstruction failure"])
+            )
+            for difference in (getattr(item, "differences", None) or [])[:20]:
+                outcome.errors.append(_safe_difference(difference))
         if item.warnings:
-            outcome.warnings.extend(item.warnings)
+            outcome.warnings.extend(
+                warning
+                for warning in item.warnings
+                if not warning.startswith("Raw DBF SHA-256 differs")
+                and not warning.startswith("Raw FPT SHA-256 differs")
+            )
     if outcome.status != "FAILED" and outcome.warnings:
         outcome.status = "WARNING"
 
 
-def _numeric_width_context(
-    schema: Any,
-    records: list[dict[str, Any]],
-) -> str | None:
-    """Znajduje pierwszą wartość N/F, która nie mieści się w deklaracji pola.
+def _safe_difference(difference: dict[str, Any]) -> str:
+    """Renderuje diagnostykę dbfbridge bez pola ``preview`` z danymi."""
 
-    dbfbridge zgłasza taki błąd dopiero podczas zapisu i bez nazwy pola ani
-    numeru rekordu. Kontekst jest obliczany wyłącznie po nieudanej rekonstrukcji,
-    więc nie dodaje kosztu do poprawnych tabel.
-    """
-
-    data_records = [
-        record for record in records
-        if record.get("type") not in ("summary", "table")
+    parts = [
+        "[DBFBRIDGE_CANONICAL_DIFFERENCE]",
+        f"scope={difference.get('scope', 'unknown')}",
+        f"record={difference.get('record', 'unknown')}",
     ]
-    for record_index, record in enumerate(data_records, start=1):
-        for field in schema.fields:
-            if not field.is_numeric:
-                continue
-            value = record.get(field.name)
-            if value in (None, ""):
-                continue
-            decimals = int(field.decimal or 0)
-            try:
-                number = Decimal(str(value))
-            except (InvalidOperation, ValueError):
-                continue
-            rendered = format(number, f".{decimals}f")
-            if len(rendered) > field.length:
-                return (
-                    f"record={record_index} field={field.name} "
-                    f"dbf_type={field.dbf_type}({field.length},{decimals}) "
-                    f"rendered={rendered!r} rendered_width={len(rendered)}"
-                )
-    return None
-
-
-def _publish_reconstructed_table(
-    staging_output: Path,
-    output_parent: Path,
-    table_stem: str,
-    *,
-    overwrite: bool,
-) -> None:
-    """Publikuje atomowo wyłącznie artefakty jednej tabeli DBF.
-
-    Raporty dbfbridge pozostają w izolowanym katalogu zadania. Dzięki temu
-    procesy rekonstruujące różne tabele w tym samym katalogu nie współdzielą
-    ``reconstruction_report.jsonl`` ani jego pliku ``.partial``.
-    """
-
-    artifacts = sorted(
-        (
-            path for path in staging_output.iterdir()
-            if path.is_file() and path.stem.casefold() == table_stem.casefold()
-        ),
-        key=lambda path: path.name.casefold(),
-    )
-    if not any(path.suffix.casefold() == ".dbf" for path in artifacts):
-        raise FileNotFoundError(
-            "[RECONSTRUCTED_DBF_MISSING] Rekonstrukcja nie utworzyła DBF "
-            f"dla tabeli {table_stem!r} w {staging_output}"
-        )
-
-    output_parent.mkdir(parents=True, exist_ok=True)
-    for source in artifacts:
-        destination = output_parent / source.name
-        if destination.exists() and not overwrite:
-            raise FileExistsError(f"Plik wynikowy już istnieje: {destination}")
-        temporary = destination.with_name(
-            f".{destination.name}.{os.getpid()}.partial"
-        )
-        temporary.unlink(missing_ok=True)
-        try:
-            shutil.copy2(source, temporary)
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
-def _reconstruct_isolated(
-    *,
-    source_dir: Path,
-    staging_output: Path,
-    output_parent: Path,
-    table_stem: str,
-    relative_path: str,
-    schema: Any,
-    records: list[dict[str, Any]],
-    overwrite: bool,
-) -> Any:
-    """Rekonstruuje tabelę bez współdzielenia plików roboczych między workerami."""
-
-    staging_output.mkdir(parents=True, exist_ok=True)
-    try:
-        reconstruction = reconstruct_dbf(
-            source=source_dir,
-            output=staging_output,
-            input_format="jsonl",
-            memo="inline",
-            overwrite=True,
-        )
-    except Exception as exc:
-        numeric_context = _numeric_width_context(schema, records)
-        context = f" path={relative_path}"
-        if numeric_context:
-            context += f" {numeric_context}"
-        raise RuntimeError(
-            f"[RECONSTRUCTION_FAILED]{context} "
-            f"error_type={type(exc).__name__} error={exc}"
-        ) from exc
-
-    if not any(item.status == "FAILED" for item in reconstruction.results):
-        _publish_reconstructed_table(
-            staging_output,
-            output_parent,
-            table_stem,
-            overwrite=overwrite,
-        )
-    return reconstruction
-
-
-def _prepare_export_worker(
-    source_path: str,
-    relative_path: str,
-    temp_root: str,
-) -> _PreparedTable:
-    """Eksportuje pojedynczy DBF do izolowanego katalogu zadania."""
-
-    job_root = Path(temp_root) / _job_key(relative_path)
-    export_dir = job_root / "source"
-    export_dir.mkdir(parents=True, exist_ok=True)
-    source = Path(source_path)
-    export_dbf(
-        source=source,
-        output=export_dir,
-        formats=("jsonl",),
-        memo="inline",
-        deleted="include",
-        overwrite=True,
-        validate=False,
-    )
-    jsonl_path = export_dir / f"{source.stem}.jsonl"
-    schema_path = _schema_path_for_jsonl(jsonl_path)
-    if not jsonl_path.is_file() or not schema_path.is_file():
-        raise FileNotFoundError(f"Eksport nie wygenerował JSONL lub schematu dla {relative_path}")
-    records = sum(
-        1
-        for record in _read_jsonl(jsonl_path)
-        if record.get("type") not in ("summary", "table")
-    )
-    return _PreparedTable(
-        source=str(source),
-        relative_path=relative_path,
-        job_root=str(job_root),
-        jsonl_path=str(jsonl_path),
-        schema_path=str(schema_path),
-        records=records,
-    )
-
-
-def _anonymize_prepared_worker(
-    prepared: _PreparedTable,
-    output_root: str,
-    dictionary_dir: str,
-    options: AnonymizeOptions,
-    overwrite: bool,
-) -> TableOutcome:
-    """Koduje przygotowany eksport wspólnym słownikiem i rekonstruuje DBF."""
-
-    outcome = TableOutcome(
-        table=Path(prepared.source).name,
-        relative_path=prepared.relative_path,
-        records=prepared.records,
-    )
-    schema = load_schema(Path(prepared.schema_path))
-    records = _read_jsonl(Path(prepared.jsonl_path))
-    data_records = [
-        record for record in records if record.get("type") not in ("summary", "table")
-    ]
-    text_values = {
-        record.get(field.name)
-        for record in data_records
-        for field in schema.fields
-        if field.is_text and record.get(field.name) not in (None, "")
-    }
-    with GlobalDictionaryStore(
-        global_dictionary_path(dictionary_dir), read_only=True
-    ) as store:
-        global_mapping = store.forward_many(text_values)
-
-    anonymized, _ = anonymize_records(
-        schema,
-        records,
-        options,
-        global_text_mapping=global_mapping,
-    )
-    anonymous_dir = Path(prepared.job_root) / "anonymized"
-    anonymous_jsonl = anonymous_dir / Path(prepared.jsonl_path).name
-    anonymous_schema = _schema_path_for_jsonl(anonymous_jsonl)
-    _write_jsonl(anonymous_jsonl, anonymized)
-    shutil.copyfile(prepared.schema_path, anonymous_schema)
-
-    output_parent = (Path(output_root) / Path(prepared.relative_path)).parent
-    output_parent.mkdir(parents=True, exist_ok=True)
-    reconstruction = _reconstruct_isolated(
-        source_dir=anonymous_dir,
-        staging_output=Path(prepared.job_root) / "reconstructed",
-        output_parent=output_parent,
-        table_stem=Path(prepared.source).stem,
-        relative_path=prepared.relative_path,
-        schema=schema,
-        records=anonymized,
-        overwrite=overwrite,
-    )
-    _apply_reconstruct_result(outcome, reconstruction)
-    return outcome
-
-
-def _recover_one_table_worker(
-    source_path: str,
-    relative_path: str,
-    temp_root: str,
-    output_root: str,
-    dictionary_dir: str,
-    overwrite: bool,
-) -> TableOutcome:
-    """Dekoduje pojedynczy DBF wspólnym słownikiem w izolowanym procesie."""
-
-    source = Path(source_path)
-    outcome = TableOutcome(table=source.name, relative_path=relative_path)
-    job_root = Path(temp_root) / _job_key(relative_path)
-    exported_dir = job_root / "exported"
-    exported_dir.mkdir(parents=True, exist_ok=True)
-    export_dbf(
-        source=source,
-        output=exported_dir,
-        formats=("jsonl",),
-        memo="inline",
-        deleted="include",
-        overwrite=True,
-        validate=False,
-    )
-    jsonl_path = exported_dir / f"{source.stem}.jsonl"
-    schema_path = _schema_path_for_jsonl(jsonl_path)
-    if not jsonl_path.is_file() or not schema_path.is_file():
-        raise FileNotFoundError(f"Eksport nie wygenerował JSONL lub schematu dla {relative_path}")
-
-    schema = load_schema(schema_path)
-    records = _read_jsonl(jsonl_path)
-    outcome.records = sum(
-        1 for record in records if record.get("type") not in ("summary", "table")
-    )
-    global_path = global_dictionary_path(dictionary_dir)
-    if global_path.is_file():
-        data_records = [
-            record
-            for record in records
-            if record.get("type") not in ("summary", "table")
-        ]
-        anonymous_values = {
-            record.get(field.name)
-            for record in data_records
-            for field in schema.fields
-            if field.is_text and record.get(field.name) not in (None, "")
-        }
-        with GlobalDictionaryStore(global_path, read_only=True) as store:
-            reverse_mapping = store.reverse_many(anonymous_values)
-            table_dict = store.table_dictionary(schema, relative_path)
-        recovered = recover_records(
-            schema,
-            records,
-            table_dict,
-            relative_path=relative_path,
-            global_reverse_mapping=reverse_mapping,
-        )
-    else:
-        # Kompatybilność ze słownikami JSON wersji 1/2.
-        table_dict = load_dictionary(source.name, Path(dictionary_dir))
-        if table_dict is None:
-            raise FileNotFoundError(
-                f"Brak słownika dla {source.name}: {dictionary_filename(source.name)}"
+    if difference.get("field") is not None:
+        parts.append(f"field={difference['field']}")
+    for side in ("expected", "actual"):
+        value = difference.get(side)
+        if isinstance(value, dict):
+            parts.extend(
+                f"{side}_{key}={value.get(key)!r}"
+                for key in ("type", "length", "sha256")
+                if key in value
             )
-        recovered = recover_records(
-            schema,
-            records,
-            table_dict,
-            relative_path=relative_path,
-        )
-
-    recovered_dir = job_root / "recovered"
-    recovered_jsonl = recovered_dir / jsonl_path.name
-    recovered_schema = _schema_path_for_jsonl(recovered_jsonl)
-    _write_jsonl(recovered_jsonl, recovered)
-    shutil.copyfile(schema_path, recovered_schema)
-
-    output_parent = (Path(output_root) / Path(relative_path)).parent
-    output_parent.mkdir(parents=True, exist_ok=True)
-    reconstruction = _reconstruct_isolated(
-        source_dir=recovered_dir,
-        staging_output=job_root / "reconstructed",
-        output_parent=output_parent,
-        table_stem=source.stem,
-        relative_path=relative_path,
-        schema=schema,
-        records=recovered,
-        overwrite=overwrite,
-    )
-    _apply_reconstruct_result(outcome, reconstruction)
-    return outcome
+        elif value is not None:
+            # Statusy/boolean nie są danymi pól; wartości pól z dbfbridge są dict.
+            parts.append(f"{side}={value!r}")
+    return " ".join(parts)
 
 
 def _prepare_exports(
@@ -567,100 +246,67 @@ def _prepare_exports(
         for path in dbf_files
     ]
     max_workers = _resolve_workers(workers, len(jobs))
-    logger.info(
-        "phase=export event=start files=%d workers=%d",
-        len(jobs),
-        max_workers,
-    )
+    logger.info("phase=export event=start files=%d workers=%d", len(jobs), max_workers)
     prepared: list[_PreparedTable] = []
     failed: list[TableOutcome] = []
-
     if max_workers == 1:
         for job in jobs:
             try:
                 prepared.append(_prepare_export_worker(*job))
-                logger.info(
-                    "phase=export event=file_done path=%s records=%d",
-                    prepared[-1].relative_path,
-                    prepared[-1].records,
-                )
             except Exception as exc:
                 logger.exception(
                     "phase=export event=file_failed path=%s error_type=%s error=%s",
-                    job[1],
-                    type(exc).__name__,
-                    exc,
+                    job[1], type(exc).__name__, exc,
                 )
                 failed.append(_failed_outcome(job[0], job[1], exc))
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_prepare_export_worker, *job): job
-                for job in jobs
-            }
+            futures = {executor.submit(_prepare_export_worker, *job): job for job in jobs}
             for future in as_completed(futures):
                 job = futures[future]
                 try:
-                    item = future.result()
-                    prepared.append(item)
-                    logger.info(
-                        "phase=export event=file_done path=%s records=%d",
-                        item.relative_path,
-                        item.records,
-                    )
+                    prepared.append(future.result())
                 except Exception as exc:
                     logger.exception(
                         "phase=export event=file_failed path=%s error_type=%s error=%s",
-                        job[1],
-                        type(exc).__name__,
-                        exc,
+                        job[1], type(exc).__name__, exc,
                     )
                     failed.append(_failed_outcome(job[0], job[1], exc))
-
     prepared.sort(key=lambda item: item.relative_path.casefold())
     logger.info(
         "phase=export event=done successful=%d failed=%d",
-        len(prepared),
-        len(failed),
+        len(prepared), len(failed),
     )
     return prepared, failed
 
 
-def _run_prepared_anonymization(
+def _parallel_prepared(
     prepared: list[_PreparedTable],
+    *,
     output: Path,
     dictionary_dir: Path,
     options: AnonymizeOptions,
-    overwrite: bool,
+    batch_size: int,
     workers: int | None,
 ) -> list[TableOutcome]:
     max_workers = _resolve_workers(workers, len(prepared))
     logger.info(
-        "phase=anonymize event=start files=%d workers=%d",
-        len(prepared),
-        max_workers,
+        "phase=anonymize event=start files=%d workers=%d batch_size=%d",
+        len(prepared), max_workers, batch_size,
     )
     outcomes: list[TableOutcome] = []
-
     if max_workers == 1:
         for item in prepared:
             try:
-                outcome = _anonymize_prepared_worker(
-                    item, str(output), str(dictionary_dir), options, overwrite
-                )
-                outcomes.append(outcome)
-                logger.info(
-                    "phase=anonymize event=file_done path=%s status=%s records=%d",
-                    outcome.relative_path,
-                    outcome.status,
-                    outcome.records,
+                outcomes.append(
+                    _anonymize_prepared_worker(
+                        item, str(output), str(dictionary_dir), options, batch_size
+                    )
                 )
             except Exception as exc:
                 logger.exception(
                     "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
-                    item.relative_path,
-                    type(exc).__name__,
-                    exc,
+                    item.relative_path, type(exc).__name__, exc,
                 )
                 outcomes.append(_failed_outcome(item.source, item.relative_path, exc))
     else:
@@ -672,30 +318,20 @@ def _run_prepared_anonymization(
                     str(output),
                     str(dictionary_dir),
                     options,
-                    overwrite,
+                    batch_size,
                 ): item
                 for item in prepared
             }
             for future in as_completed(futures):
                 item = futures[future]
                 try:
-                    outcome = future.result()
-                    outcomes.append(outcome)
-                    logger.info(
-                        "phase=anonymize event=file_done path=%s status=%s records=%d",
-                        outcome.relative_path,
-                        outcome.status,
-                        outcome.records,
-                    )
+                    outcomes.append(future.result())
                 except Exception as exc:
                     logger.exception(
                         "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
-                        item.relative_path,
-                        type(exc).__name__,
-                        exc,
+                        item.relative_path, type(exc).__name__, exc,
                     )
                     outcomes.append(_failed_outcome(item.source, item.relative_path, exc))
-
     logger.info(
         "phase=anonymize event=done successful=%d failed=%d",
         sum(item.status != "FAILED" for item in outcomes),
@@ -704,13 +340,14 @@ def _run_prepared_anonymization(
     return outcomes
 
 
-def _run_recovery(
+def _parallel_recovery(
     dbf_files: list[Path],
+    *,
     source: Path,
     temp_root: Path,
     output: Path,
     dictionary_dir: Path,
-    overwrite: bool,
+    batch_size: int,
     workers: int | None,
 ) -> list[TableOutcome]:
     jobs = [
@@ -720,63 +357,39 @@ def _run_recovery(
             str(temp_root),
             str(output),
             str(dictionary_dir),
-            overwrite,
+            batch_size,
         )
         for path in dbf_files
     ]
     max_workers = _resolve_workers(workers, len(jobs))
     logger.info(
-        "phase=recovery event=start files=%d workers=%d",
-        len(jobs),
-        max_workers,
+        "phase=recovery event=start files=%d workers=%d batch_size=%d",
+        len(jobs), max_workers, batch_size,
     )
     outcomes: list[TableOutcome] = []
-
     if max_workers == 1:
         for job in jobs:
             try:
-                outcome = _recover_one_table_worker(*job)
-                outcomes.append(outcome)
-                logger.info(
-                    "phase=recovery event=file_done path=%s status=%s records=%d",
-                    outcome.relative_path,
-                    outcome.status,
-                    outcome.records,
-                )
+                outcomes.append(_recover_one_table_worker(*job))
             except Exception as exc:
                 logger.exception(
                     "phase=recovery event=file_failed path=%s error_type=%s error=%s",
-                    job[1],
-                    type(exc).__name__,
-                    exc,
+                    job[1], type(exc).__name__, exc,
                 )
                 outcomes.append(_failed_outcome(job[0], job[1], exc))
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_recover_one_table_worker, *job): job
-                for job in jobs
-            }
+            futures = {executor.submit(_recover_one_table_worker, *job): job for job in jobs}
             for future in as_completed(futures):
                 job = futures[future]
                 try:
-                    outcome = future.result()
-                    outcomes.append(outcome)
-                    logger.info(
-                        "phase=recovery event=file_done path=%s status=%s records=%d",
-                        outcome.relative_path,
-                        outcome.status,
-                        outcome.records,
-                    )
+                    outcomes.append(future.result())
                 except Exception as exc:
                     logger.exception(
                         "phase=recovery event=file_failed path=%s error_type=%s error=%s",
-                        job[1],
-                        type(exc).__name__,
-                        exc,
+                        job[1], type(exc).__name__, exc,
                     )
                     outcomes.append(_failed_outcome(job[0], job[1], exc))
-
     logger.info(
         "phase=recovery event=done successful=%d failed=%d",
         sum(item.status != "FAILED" for item in outcomes),
@@ -790,51 +403,46 @@ def _build_global_dictionary(
     dictionary_dir: Path,
     options: AnonymizeOptions,
     *,
-    overwrite: bool,
+    previous_dictionary: Path | None,
+    reuse_dictionary: bool,
+    batch_size: int,
 ) -> Path:
-    """Buduje atomowo jeden słownik SQLite dla wszystkich przygotowanych DBF."""
+    """Buduje słownik w stagingu, zachowując poprzednie mapowania na żądanie."""
     final_path = global_dictionary_path(dictionary_dir)
-    if final_path.exists() and not overwrite:
-        raise FileExistsError(f"Globalny słownik już istnieje: {final_path}")
-
-    temporary = final_path.with_name(
-        f".{final_path.name}.build-{os.getpid()}.tmp"
-    )
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = final_path.with_name(f".{final_path.name}.build-{os.getpid()}.tmp")
     temporary.unlink(missing_ok=True)
+    ordered = sorted(prepared, key=lambda table: table.relative_path.casefold())
+    schemas = {item.relative_path: load_schema(Path(item.schema_path)) for item in ordered}
+    encodings = sorted({schema.encoding for schema in schemas.values()})
     try:
-        ordered = sorted(prepared, key=lambda table: table.relative_path.casefold())
-        schemas = {
-            item.relative_path: load_schema(Path(item.schema_path))
-            for item in ordered
-        }
-        encodings = sorted({schema.encoding for schema in schemas.values()})
-        encoding_paths: dict[str, list[str]] = {}
-        for relative_path, schema in schemas.items():
-            encoding_paths.setdefault(schema.encoding, []).append(relative_path)
-        logger.info(
-            "phase=dictionary event=start files=%d encodings=%s path=%s",
-            len(ordered),
-            ",".join(encodings),
-            final_path,
+        has_previous = bool(
+            reuse_dictionary and previous_dictionary and previous_dictionary.is_file()
         )
-        for encoding, paths in sorted(encoding_paths.items()):
-            logger.info(
-                "phase=dictionary event=encoding_detected encoding=%s files=%d "
-                "sample_paths=%s",
-                encoding,
-                len(paths),
-                ";".join(sorted(paths, key=str.casefold)[:8]),
-            )
+        if has_previous:
+            shutil.copy2(previous_dictionary, temporary)
         with GlobalDictionaryStore(temporary) as store:
-            store.initialize(
-                options={
-                    "memo_mode": options.memo_mode,
-                    "date_offset_days": options.date_offset_days,
-                    "text_mode": options.text_mode,
-                },
-                salt=options.salt,
-                text_encodings=encodings,
-            )
+            settings = {
+                "memo_mode": options.memo_mode,
+                "date_offset_days": options.date_offset_days,
+                "text_mode": options.text_mode,
+            }
+            if has_previous:
+                store.prepare_incremental(
+                    options=settings,
+                    salt=options.salt,
+                    text_encodings=encodings,
+                )
+                logger.info(
+                    "phase=dictionary event=incremental_map_reused source=%s",
+                    previous_dictionary,
+                )
+            else:
+                store.initialize(
+                    options=settings,
+                    salt=options.salt,
+                    text_encodings=encodings,
+                )
             domain = store.options()
             logger.info(
                 "phase=dictionary event=text_domain_ready normalized_encodings=%s "
@@ -844,72 +452,110 @@ def _build_global_dictionary(
             )
             for index, item in enumerate(ordered, start=1):
                 schema = schemas[item.relative_path]
-                records = [
-                    record
-                    for record in _read_jsonl(Path(item.jsonl_path))
-                    if record.get("type") not in ("summary", "table")
-                ]
                 store.register_file(item.relative_path, Path(item.source).name)
-                distinct_in_table = 0
-                for field in schema.fields:
-                    if field.is_text:
-                        distinct_in_table += store.add_text_values(
-                            (record.get(field.name) for record in records),
-                            encoding=schema.encoding,
-                            relative_path=item.relative_path,
-                            field_name=field.name,
-                        )
-                if options.memo_mode == "mask":
-                    for field in schema.fields:
-                        if field.is_memo:
-                            store.add_memo_values(
-                                item.relative_path,
-                                field.name,
-                                (record.get(field.name) for record in records),
-                            )
-                # Ogranicza rozmiar transakcji przy dużej liczbie tabel.
+                record_count, value_count = scan_table_into_store(
+                    store,
+                    jsonl_path=item.jsonl_path,
+                    schema=schema,
+                    relative_path=item.relative_path,
+                    memo_mode=options.memo_mode,
+                    batch_size=batch_size,
+                )
+                if record_count != item.records:
+                    raise RuntimeError(
+                        f"[DICTIONARY_RECORD_COUNT_MISMATCH] path={item.relative_path} "
+                        f"expected={item.records} actual={record_count}"
+                    )
                 store.commit()
                 logger.info(
                     "phase=dictionary event=table_scanned current=%d total=%d "
-                    "path=%s records=%d distinct_field_values=%d encoding=%s",
-                    index,
-                    len(ordered),
-                    item.relative_path,
-                    len(records),
-                    distinct_in_table,
-                    schema.encoding,
+                    "path=%s records=%d batched_field_values=%d encoding=%s",
+                    index, len(ordered), item.relative_path, record_count,
+                    value_count, schema.encoding,
                 )
             store.assign_anonymous_values(salt=options.salt)
-
-        # ``Path.replace`` korzysta z os.replace: stary słownik pozostaje na
-        # miejscu aż do gotowości kompletnego pliku tymczasowego.
-        temporary.replace(final_path)
-        logger.info(
-            "phase=dictionary event=done files=%d path=%s",
-            len(ordered),
-            final_path,
-        )
+        os.replace(temporary, final_path)
         return final_path
     except Exception as exc:
-        error_code = (
-            exc.code if isinstance(exc, GlobalDictionaryError)
-            else type(exc).__name__
+        logger.exception(
+            "phase=dictionary event=failed error_code=%s error=%s",
+            getattr(exc, "code", type(exc).__name__), exc,
         )
-        if isinstance(exc, GlobalDictionaryError):
-            logger.error(
-                "phase=dictionary event=failed error_code=%s error=%s",
-                error_code,
-                exc,
-            )
-        else:
-            logger.exception(
-                "phase=dictionary event=failed error_code=%s error=%s",
-                error_code,
-                exc,
-            )
         temporary.unlink(missing_ok=True)
         Path(f"{temporary}-journal").unlink(missing_ok=True)
         raise
+
+
+def _rebuild_cdx(
+    *,
+    source_root: Path,
+    output_root: Path,
+    outcomes: list[TableOutcome],
+    vfp_progid: str,
+) -> None:
+    """Kopiuje definicje CDX i obowiązkowo wykonuje REINDEX w VFP."""
+    by_path = {outcome.relative_path: outcome for outcome in outcomes}
+    for source_dbf in _iter_dbf_files(source_root):
+        relative_path = _relative_to(source_dbf, source_root).as_posix()
+        outcome = by_path.get(relative_path)
+        if outcome is None or outcome.status == "FAILED":
+            continue
+        source_cdx = companion_cdx(source_dbf)
+        if source_cdx is None:
+            if any("structural CDX index" in warning for warning in outcome.warnings):
+                outcome.status = "FAILED"
+                outcome.errors.append(
+                    f"[SOURCE_CDX_MISSING] path={relative_path} "
+                    "DBF ma flagę indeksu strukturalnego, ale brak pliku o tym samym rdzeniu"
+                )
+                logger.error(
+                    "phase=cdx event=source_missing path=%s error_code=SOURCE_CDX_MISSING",
+                    relative_path,
+                )
+            continue
+        target_dbf = output_root / Path(relative_path)
+        logger.info(
+            "phase=cdx event=reindex_start path=%s source_cdx=%s progid=%s",
+            relative_path, source_cdx, vfp_progid,
+        )
+        try:
+            verification = rebuild_companion_cdx(
+                source_dbf,
+                target_dbf,
+                progid=vfp_progid,
+            )
+            assert verification is not None
+            logger.info(
+                "phase=cdx event=reindex_done path=%s records=%d tags=%d tag_names=%s",
+                relative_path, verification.records, verification.tag_count,
+                ",".join(verification.tags),
+            )
+            outcome.warnings = [
+                warning
+                for warning in outcome.warnings
+                if "structural CDX index" not in warning
+                and "companion CDX file" not in warning
+            ]
+            if outcome.status == "WARNING" and not outcome.warnings:
+                outcome.status = "OK"
+        except Exception as exc:
+            outcome.status = "FAILED"
+            outcome.errors.append(
+                f"[CDX_REINDEX_FAILED] path={relative_path} "
+                f"source_cdx={source_cdx} error_type={type(exc).__name__} error={exc}"
+            )
+            logger.exception(
+                "phase=cdx event=reindex_failed path=%s source_cdx=%s "
+                "error_type=%s error=%s",
+                relative_path, source_cdx, type(exc).__name__, exc,
+            )
+
+
+def _manifest_tables(outcomes: list[TableOutcome]) -> list[dict[str, Any]]:
+    return [
+        {"path": item.relative_path, "records": item.records, "status": item.status}
+        for item in sorted(outcomes, key=lambda value: value.relative_path.casefold())
+    ]
 
 
 def anonymize_directory(
@@ -923,64 +569,55 @@ def anonymize_directory(
     overwrite: bool = True,
     keep_temp: bool = False,
     workers: int | None = None,
+    batch_size: int = 5000,
+    reuse_dictionary: bool = True,
+    vfp_progid: str = "VisualFoxPro.Application",
 ) -> AnonymizeResult:
-    """Anonimizuje katalog jednym słownikiem tekstowym dla całej bazy.
-
-    workers=None lub workers=0 dobiera liczbę procesów automatycznie.
-    workers=1 wymusza przetwarzanie sekwencyjne.
-    """
-
+    """Anonimizuje bazę i publikuje wynik oraz słownik po pełnym sukcesie."""
     source = Path(source_dir).resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"Katalog źródłowy nie istnieje: {source}")
     _resolve_workers(workers, 1)
-
+    _validate_batch_size(batch_size)
     output = (
         Path(output_dir).resolve()
-        if output_dir
-        else _default_output_dir(source, "_anonymized")
+        if output_dir else _default_output_dir(source, "_anonymized")
     )
     dict_dir = (
         Path(dictionary_dir).resolve()
-        if dictionary_dir
-        else _default_output_dir(source, "_dict")
+        if dictionary_dir else _default_output_dir(source, "_dict")
     )
     _validate_generated_path(source, output, "Katalog wyjściowy")
     _validate_generated_path(source, dict_dir, "Katalog słowników")
     if output == dict_dir:
         raise ValueError("Katalog wyjściowy i katalog słowników muszą być różne")
+    if not overwrite and (output.exists() or dict_dir.exists()):
+        raise FileExistsError("Katalog wyniku lub słownika już istnieje")
 
     temp_root = source.parent / "var" / f"{source.name}_anon_temp_{os.getpid()}"
-    if temp_root.exists():
-        shutil.rmtree(temp_root)
-    # Nie usuwaj poprzedniego wyniku ani słownika przed udanym eksportem i
-    # zbudowaniem nowej mapy. SQLite jest podmieniany dopiero po ukończeniu build.
-    output.parent.mkdir(parents=True, exist_ok=True)
-    dict_dir.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(temp_root, ignore_errors=True)
     temp_root.mkdir(parents=True, exist_ok=True)
-
+    transaction = DirectoryTransaction(output, dict_dir)
+    transaction.prepare()
+    output_stage = transaction.stage_for(output)
+    dict_stage = transaction.stage_for(dict_dir)
+    previous_dictionary = global_dictionary_path(dict_dir)
     result = AnonymizeResult(source=source, output=output, dictionary_dir=dict_dir)
+    committed = False
     try:
         dbf_files = _iter_dbf_files(source)
         logger.info(
             "phase=pipeline event=start operation=anonymize source=%s output=%s "
-            "dictionary_dir=%s dbf_files=%d requested_workers=%s overwrite=%s",
-            source,
-            output,
-            dict_dir,
-            len(dbf_files),
-            workers if workers is not None else "auto",
-            overwrite,
+            "dictionary_dir=%s dbf_files=%d requested_workers=%s batch_size=%d "
+            "reuse_dictionary=%s",
+            source, output, dict_dir, len(dbf_files), workers or "auto",
+            batch_size, reuse_dictionary,
         )
         if not dbf_files:
-            result.tables.append(
-                TableOutcome(
-                    table="-",
-                    relative_path="-",
-                    status="WARNING",
-                    warnings=["Brak plików DBF z danymi w katalogu źródłowym."],
-                )
-            )
+            result.tables = [TableOutcome(
+                table="-", relative_path="-", status="WARNING",
+                warnings=["Brak plików DBF z danymi w katalogu źródłowym."],
+            )]
             result.exit_code = 2
             return result
 
@@ -989,83 +626,81 @@ def anonymize_directory(
             date_offset_days=date_offset_days,
             salt=salt,
         )
-        prepared, export_failures = _prepare_exports(
-            dbf_files,
-            source,
-            temp_root,
-            workers,
-        )
-
-        dictionary_failures: list[TableOutcome] = []
-        valid: list[_PreparedTable] = []
+        prepared, export_failures = _prepare_exports(dbf_files, source, temp_root, workers)
         if export_failures:
-            # Nie wolno budować mapy na niepełnym zbiorze tabel: brakujący klucz
-            # mógłby zerwać relację z jedną z tabel, których eksport się udał.
-            exc = RuntimeError(
-                "Przerwano anonimizację: nie udało się wyeksportować wszystkich "
-                "tabel wymaganych przez globalny słownik"
+            blocked = RuntimeError(
+                "[INCOMPLETE_EXPORT] Nie udało się wyeksportować wszystkich tabel"
             )
             result.global_error_code = "INCOMPLETE_EXPORT"
-            result.global_error = str(exc)
-            logger.error(
-                "phase=pipeline event=blocked error_code=%s error=%s failed_exports=%d",
-                result.global_error_code,
-                result.global_error,
-                len(export_failures),
+            result.global_error = str(blocked)
+            result.tables = sorted(
+                [*export_failures, *(_blocked_outcome(item, blocked) for item in prepared)],
+                key=lambda item: item.relative_path.casefold(),
             )
-            dictionary_failures = [
-                _blocked_outcome(item, exc)
-                for item in prepared
-            ]
-        else:
-            try:
-                _build_global_dictionary(
-                    prepared,
-                    dict_dir,
-                    options,
-                    overwrite=overwrite,
-                )
-                valid = prepared
-            except Exception as exc:
-                # Bez kompletnej mapy globalnej żadnej tabeli nie wolno kodować,
-                # bo relacje między tabelami przestałyby być jednoznaczne.
-                dictionary_failures = [
-                    _blocked_outcome(item, exc)
-                    for item in prepared
-                ]
+            result.exit_code = 1
+            return result
 
-                result.global_error_code = (
-                    exc.code if isinstance(exc, GlobalDictionaryError)
-                    else type(exc).__name__
-                )
-                result.global_error = str(exc)
+        try:
+            dictionary_path = _build_global_dictionary(
+                prepared,
+                dict_stage,
+                options,
+                previous_dictionary=(
+                    previous_dictionary if previous_dictionary.is_file() else None
+                ),
+                reuse_dictionary=reuse_dictionary,
+                batch_size=batch_size,
+            )
+        except Exception as exc:
+            result.global_error_code = getattr(exc, "code", type(exc).__name__)
+            result.global_error = str(exc)
+            result.tables = [_blocked_outcome(item, exc) for item in prepared]
+            result.exit_code = 1
+            return result
 
-        if valid:
-            _prepare_directory(output, overwrite)
-
-        processed = _run_prepared_anonymization(
-            valid,
-            output,
-            dict_dir,
-            options,
-            overwrite,
-            workers,
-        )
         result.tables = sorted(
-            [*export_failures, *dictionary_failures, *processed],
+            _parallel_prepared(
+                prepared,
+                output=output_stage,
+                dictionary_dir=dict_stage,
+                options=options,
+                batch_size=batch_size,
+                workers=workers,
+            ),
             key=lambda item: item.relative_path.casefold(),
         )
+        if not any(item.status == "FAILED" for item in result.tables):
+            _rebuild_cdx(
+                source_root=source,
+                output_root=output_stage,
+                outcomes=result.tables,
+                vfp_progid=vfp_progid,
+            )
         result.exit_code = _set_exit_code(result.tables)
+        if result.exit_code == 1:
+            return result
+
+        write_manifest(
+            output_stage,
+            operation="anonymize",
+            source=source,
+            tables=_manifest_tables(result.tables),
+            dictionary_sha256=sha256_file(dictionary_path),
+        )
+        try:
+            dictionary_path.chmod(0o600)
+        except OSError:
+            logger.warning("phase=dictionary event=chmod_failed path=%s", dictionary_path)
+        transaction.commit(overwrite=overwrite)
+        committed = True
         logger.info(
-            "phase=pipeline event=done operation=anonymize ok=%d failed=%d "
-            "exit_code=%d global_error_code=%s",
-            result.ok,
-            result.failed,
-            result.exit_code,
-            result.global_error_code or "none",
+            "phase=pipeline event=published operation=anonymize output=%s dictionary=%s",
+            output, dict_dir,
         )
         return result
     finally:
+        if not committed:
+            transaction.abort()
         if not keep_temp:
             shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -1078,65 +713,82 @@ def make_dbf_recovery(
     overwrite: bool = True,
     keep_temp: bool = False,
     workers: int | None = None,
+    batch_size: int = 5000,
+    vfp_progid: str = "VisualFoxPro.Application",
 ) -> RecoveryResult:
-    """Odtwarza wszystkie DBF równolegle ze współdzielonych słowników."""
-
+    """Odtwarza wszystkie DBF i publikuje katalog po pełnym sukcesie."""
     source = Path(anonymized_dir).resolve()
+    dict_dir = Path(dictionary_dir).resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"Katalog zaanonimizowany nie istnieje: {source}")
-    _resolve_workers(workers, 1)
-    dict_dir = Path(dictionary_dir).resolve()
     if not dict_dir.is_dir():
         raise FileNotFoundError(f"Katalog słowników nie istnieje: {dict_dir}")
-
+    _resolve_workers(workers, 1)
+    _validate_batch_size(batch_size)
     output = (
         Path(output_dir).resolve()
-        if output_dir
-        else _default_output_dir(source, "_recovered")
+        if output_dir else _default_output_dir(source, "_recovered")
     )
     _validate_generated_path(source, output, "Katalog wyjściowy")
-    temp_root = source.parent / "var" / f"{source.name}_recover_temp_{os.getpid()}"
-    if temp_root.exists():
-        shutil.rmtree(temp_root)
-    _prepare_directory(output, overwrite)
-    temp_root.mkdir(parents=True, exist_ok=True)
+    if not overwrite and output.exists():
+        raise FileExistsError(f"Katalog wynikowy już istnieje: {output}")
 
+    temp_root = source.parent / "var" / f"{source.name}_recover_temp_{os.getpid()}"
+    shutil.rmtree(temp_root, ignore_errors=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+    transaction = DirectoryTransaction(output)
+    transaction.prepare()
+    output_stage = transaction.stage_for(output)
     result = RecoveryResult(source=source, output=output, dictionary_dir=dict_dir)
+    committed = False
     try:
         dbf_files = _iter_dbf_files(source)
         logger.info(
             "phase=pipeline event=start operation=recovery source=%s output=%s "
-            "dictionary_dir=%s dbf_files=%d requested_workers=%s overwrite=%s",
-            source,
-            output,
-            dict_dir,
-            len(dbf_files),
-            workers if workers is not None else "auto",
-            overwrite,
+            "dictionary_dir=%s dbf_files=%d requested_workers=%s batch_size=%d",
+            source, output, dict_dir, len(dbf_files), workers or "auto", batch_size,
         )
         if not dbf_files:
             return result
         result.tables = sorted(
-            _run_recovery(
+            _parallel_recovery(
                 dbf_files,
-                source,
-                temp_root,
-                output,
-                dict_dir,
-                overwrite,
-                workers,
+                source=source,
+                temp_root=temp_root,
+                output=output_stage,
+                dictionary_dir=dict_dir,
+                batch_size=batch_size,
+                workers=workers,
             ),
             key=lambda item: item.relative_path.casefold(),
         )
+        if not any(item.status == "FAILED" for item in result.tables):
+            _rebuild_cdx(
+                source_root=source,
+                output_root=output_stage,
+                outcomes=result.tables,
+                vfp_progid=vfp_progid,
+            )
         result.exit_code = _set_exit_code(result.tables)
-        logger.info(
-            "phase=pipeline event=done operation=recovery ok=%d failed=%d exit_code=%d",
-            result.ok,
-            result.failed,
-            result.exit_code,
+        if result.exit_code == 1:
+            return result
+        dictionary_file = global_dictionary_path(dict_dir)
+        write_manifest(
+            output_stage,
+            operation="recover",
+            source=source,
+            tables=_manifest_tables(result.tables),
+            dictionary_sha256=(
+                sha256_file(dictionary_file) if dictionary_file.is_file() else None
+            ),
         )
+        transaction.commit(overwrite=overwrite)
+        committed = True
+        logger.info("phase=pipeline event=published operation=recovery output=%s", output)
         return result
     finally:
+        if not committed:
+            transaction.abort()
         if not keep_temp:
             shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -1149,28 +801,21 @@ def self_test(
     salt: str = "",
     keep_temp: bool = False,
     workers: int | None = None,
+    batch_size: int = 5000,
+    vfp_progid: str = "VisualFoxPro.Application",
 ) -> SelfTestReport:
-    """Wykonuje round-trip i porównuje tabele po ścieżkach względnych."""
-
+    """Wykonuje round-trip, porównanie kanoniczne i test VFP/CDX."""
     source = Path(source_dir).resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"Katalog źródłowy nie istnieje: {source}")
     _resolve_workers(workers, 1)
-
+    _validate_batch_size(batch_size)
     work_root = source.parent / "var" / f"{source.name}_selftest_{os.getpid()}"
-    if work_root.exists():
-        shutil.rmtree(work_root)
+    shutil.rmtree(work_root, ignore_errors=True)
     work_root.mkdir(parents=True, exist_ok=True)
     anonymous_dir = work_root / f"{source.name}_anonymized"
     dict_dir = work_root / f"{source.name}_dict"
     recovered_dir = work_root / f"{source.name}_recovered"
-
-    logger.info(
-        "phase=pipeline event=start operation=self_test source=%s "
-        "requested_workers=%s",
-        source,
-        workers if workers is not None else "auto",
-    )
 
     anonymous_result = anonymize_directory(
         source,
@@ -1182,6 +827,9 @@ def self_test(
         overwrite=True,
         keep_temp=keep_temp,
         workers=workers,
+        batch_size=batch_size,
+        reuse_dictionary=False,
+        vfp_progid=vfp_progid,
     )
     anonymous_result.raise_for_errors()
     recovery_result = make_dbf_recovery(
@@ -1191,6 +839,8 @@ def self_test(
         overwrite=True,
         keep_temp=keep_temp,
         workers=workers,
+        batch_size=batch_size,
+        vfp_progid=vfp_progid,
     )
     recovery_result.raise_for_errors()
 
@@ -1202,72 +852,75 @@ def self_test(
     )
     try:
         source_dbfs = {
-            _relative_to(path, source).as_posix(): path
-            for path in _iter_dbf_files(source)
+            _relative_to(path, source).as_posix(): path for path in _iter_dbf_files(source)
         }
         recovered_dbfs = {
             _relative_to(path, recovered_dir).as_posix(): path
             for path in _iter_dbf_files(recovered_dir)
         }
-
         for relative_path, source_dbf in source_dbfs.items():
             outcome = TableOutcome(table=source_dbf.name, relative_path=relative_path)
             recovered_dbf = recovered_dbfs.get(relative_path)
+            anonymous_dbf = anonymous_dir / Path(relative_path)
             if recovered_dbf is None:
                 outcome.status = "FAILED"
-                outcome.errors.append(f"Brak odtworzonego pliku DBF: {relative_path}")
-                report.canonical_mismatches += 1
-                report.tables.append(outcome)
-                continue
-
-            try:
-                matches, difference = _compare_dbf_canonical(
-                    source_dbf,
-                    recovered_dbf,
-                    work_root,
-                    relative_path,
-                )
-                outcome.records = difference["record_count"]
-                if matches:
-                    report.canonical_matches += 1
-                else:
-                    outcome.status = "FAILED"
-                    outcome.errors.append(f"Różnice kanoniczne: {difference['summary']}")
-                    for item in difference.get("differences", [])[:10]:
-                        field_name = item.get("field", item.get("scope", "?"))
+                outcome.errors.append(f"[RECOVERED_DBF_MISSING] path={relative_path}")
+            else:
+                try:
+                    matches, difference = compare_dbf_canonical(
+                        source_dbf,
+                        recovered_dbf,
+                        work_root,
+                        _job_key(relative_path),
+                    )
+                    outcome.records = difference["record_count"]
+                    if not matches:
+                        outcome.status = "FAILED"
                         outcome.errors.append(
-                            f"rekord {item['record']} pole {field_name}: "
-                            f"expected={item['expected']!r} actual={item['actual']!r}"
+                            f"[CANONICAL_MISMATCH] {difference['summary']}"
                         )
-                    report.canonical_mismatches += 1
-            except Exception as exc:
-                outcome.status = "FAILED"
-                outcome.errors.append(f"Błąd porównania: {exc}")
+                        for item in difference.get("differences", [])[:10]:
+                            outcome.errors.append(
+                                f"record={item['record']} "
+                                f"field={item.get('field', item.get('scope', '?'))} "
+                                f"expected={item['expected']!r} actual={item['actual']!r}"
+                            )
+                    if outcome.status != "FAILED" and companion_cdx(source_dbf):
+                        vfp_errors = verify_vfp_roundtrip(
+                            source_dbf,
+                            anonymous_dbf,
+                            recovered_dbf,
+                            progid=vfp_progid,
+                        )
+                        if vfp_errors:
+                            outcome.status = "FAILED"
+                            outcome.errors.extend(vfp_errors)
+                except Exception as exc:
+                    outcome.status = "FAILED"
+                    outcome.errors.append(
+                        f"[SELF_TEST_TABLE_FAILED] path={relative_path} "
+                        f"error_type={type(exc).__name__} error={exc}"
+                    )
+            if outcome.status == "FAILED":
                 report.canonical_mismatches += 1
+            else:
+                report.canonical_matches += 1
             report.tables.append(outcome)
 
         for relative_path, recovered_dbf in recovered_dbfs.items():
             if relative_path not in source_dbfs:
-                report.tables.append(
-                    TableOutcome(
-                        table=recovered_dbf.name,
-                        relative_path=relative_path,
-                        status="WARNING",
-                        warnings=["Dodatkowy plik DBF w recovered bez źródła"],
-                    )
-                )
-
+                report.tables.append(TableOutcome(
+                    table=recovered_dbf.name,
+                    relative_path=relative_path,
+                    status="WARNING",
+                    warnings=["Dodatkowy DBF w recovered bez źródła"],
+                ))
         report.tables.sort(key=lambda item: item.relative_path.casefold())
-        if report.canonical_mismatches:
-            report.exit_code = 1
-        elif any(item.status == "WARNING" for item in report.tables):
-            report.exit_code = 2
+        report.exit_code = _set_exit_code(report.tables)
         logger.info(
             "phase=pipeline event=done operation=self_test matches=%d "
             "mismatches=%d exit_code=%d",
-            report.canonical_matches,
-            report.canonical_mismatches,
-            report.exit_code,
+            report.canonical_matches, report.canonical_mismatches, report.exit_code,
         )
         return report
     finally:
@@ -1281,108 +934,10 @@ def _compare_dbf_canonical(
     work_root: Path,
     relative_path: str,
 ) -> tuple[bool, dict[str, Any]]:
-    comparison_root = work_root / "compare" / _job_key(relative_path)
-    source_out = comparison_root / "source"
-    recovered_out = comparison_root / "recovered"
-    for directory in (source_out, recovered_out):
-        if directory.exists():
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-
-    export_dbf(
+    """Kompatybilny wrapper dla wcześniejszych importów/testów."""
+    return compare_dbf_canonical(
         source_dbf,
-        source_out,
-        formats=("jsonl",),
-        memo="inline",
-        deleted="include",
-        overwrite=True,
-        validate=False,
-    )
-    export_dbf(
         recovered_dbf,
-        recovered_out,
-        formats=("jsonl",),
-        memo="inline",
-        deleted="include",
-        overwrite=True,
-        validate=False,
+        work_root,
+        _job_key(relative_path),
     )
-
-    source_records = [
-        record
-        for record in _read_jsonl(source_out / f"{source_dbf.stem}.jsonl")
-        if record.get("type") not in ("summary", "table")
-    ]
-    recovered_records = [
-        record
-        for record in _read_jsonl(recovered_out / f"{recovered_dbf.stem}.jsonl")
-        if record.get("type") not in ("summary", "table")
-    ]
-
-    data_keys: set[str] = set()
-    for record in source_records + recovered_records:
-        data_keys.update(
-            key
-            for key in record
-            if not key.startswith("__dbfbridge_") and key != "__deleted__"
-        )
-
-    differences: list[dict[str, Any]] = []
-    for index in range(max(len(source_records), len(recovered_records))):
-        if index >= len(source_records):
-            differences.append(
-                {
-                    "record": index + 1,
-                    "scope": "missing_in_source",
-                    "expected": "missing",
-                    "actual": "present",
-                }
-            )
-            continue
-        if index >= len(recovered_records):
-            differences.append(
-                {
-                    "record": index + 1,
-                    "scope": "missing_in_recovered",
-                    "expected": "present",
-                    "actual": "missing",
-                }
-            )
-            continue
-
-        expected = source_records[index]
-        actual = recovered_records[index]
-        if expected.get("__deleted__", False) != actual.get("__deleted__", False):
-            differences.append(
-                {
-                    "record": index + 1,
-                    "field": "__deleted__",
-                    "expected": expected.get("__deleted__"),
-                    "actual": actual.get("__deleted__"),
-                }
-            )
-        for key in sorted(data_keys):
-            if expected.get(key) != actual.get(key):
-                differences.append(
-                    {
-                        "record": index + 1,
-                        "field": key,
-                        "expected": expected.get(key),
-                        "actual": actual.get(key),
-                    }
-                )
-                if len(differences) >= 20:
-                    break
-        if len(differences) >= 20:
-            break
-
-    matches = not differences and len(source_records) == len(recovered_records)
-    return matches, {
-        "record_count": len(source_records),
-        "recovered_count": len(recovered_records),
-        "summary": (
-            f"{len(source_records)} vs {len(recovered_records)} rekordów, "
-            f"{len(differences)} różnic"
-        ),
-        "differences": differences,
-    }
