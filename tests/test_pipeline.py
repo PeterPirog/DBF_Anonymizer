@@ -19,8 +19,10 @@ from dbf_anonymizer import (
     self_test,
 )
 from dbf_anonymizer.global_store import GlobalDictionaryStore, global_dictionary_path
+from dbf_anonymizer.manifest import MANIFEST_FILENAME
 from dbf_anonymizer.pipeline import (
     TableOutcome,
+    _log_final_warnings,
     _numeric_width_context,
     _parallel_prepared,
     _publish_reconstructed_table,
@@ -382,6 +384,105 @@ class TestAnonymizeDirectory:
             and "failed_paths=klienci.dbf" in record.getMessage()
             for record in caplog.records
         )
+
+    def test_missing_structural_cdx_stops_before_export(
+        self,
+        sample_dbf_dir: Path,
+        tmp_path: Path,
+        caplog,
+        monkeypatch,
+    ):
+        source_dbf = sample_dbf_dir / "klienci.dbf"
+        header = bytearray(source_dbf.read_bytes())
+        header[28] = 1
+        source_dbf.write_bytes(header)
+        output = tmp_path / "output"
+        dictionary = tmp_path / "dictionary"
+
+        def export_must_not_start(*args, **kwargs):
+            raise AssertionError("eksport nie może wystartować po błędzie CDX")
+
+        monkeypatch.setattr(
+            "dbf_anonymizer.pipeline._prepare_exports",
+            export_must_not_start,
+        )
+        caplog.set_level(logging.INFO, logger="dbf_anonymizer.pipeline")
+
+        result = anonymize_directory(
+            sample_dbf_dir,
+            output_dir=output,
+            dictionary_dir=dictionary,
+            workers=1,
+        )
+
+        assert result.exit_code == 1
+        assert result.global_error_code == "SOURCE_CDX_MISSING"
+        assert result.tables[0].errors[0].startswith("[SOURCE_CDX_MISSING]")
+        assert not output.exists()
+        assert not dictionary.exists()
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("phase=cdx event=preflight_failed" in item for item in messages)
+        assert not any("phase=export event=start" in item for item in messages)
+
+    def test_foxuser_is_excluded_by_default_and_recorded_in_manifest(
+        self,
+        sample_dbf_dir: Path,
+    ):
+        foxuser = sample_dbf_dir / "FOXUSER.DBF"
+        fake_header = bytearray(29)
+        fake_header[28] = 1
+        foxuser.write_bytes(fake_header)
+
+        result = anonymize_directory(sample_dbf_dir, workers=1)
+
+        assert result.failed == 0
+        assert {item.relative_path for item in result.tables} == {"klienci.dbf"}
+        manifest = json.loads(
+            (result.output / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        assert manifest["excluded_tables"] == [
+            {"path": "FOXUSER.DBF", "pattern": "foxuser.dbf"}
+        ]
+
+    def test_explicit_exclusion_is_auditable(
+        self,
+        sample_dbf_dir: Path,
+    ):
+        pomoc = sample_dbf_dir / "DANE" / "pomoc.dbf"
+        pomoc.parent.mkdir()
+        fake_header = bytearray(29)
+        fake_header[28] = 1
+        pomoc.write_bytes(fake_header)
+
+        result = anonymize_directory(
+            sample_dbf_dir,
+            workers=1,
+            exclude_patterns=["DANE/pomoc.dbf"],
+        )
+
+        assert result.failed == 0
+        manifest = json.loads(
+            (result.output / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        assert {item["path"] for item in manifest["excluded_tables"]} == {
+            "DANE/pomoc.dbf"
+        }
+
+    def test_final_warning_has_stable_structured_log(self, caplog):
+        outcome = TableOutcome(
+            table="problem.dbf",
+            relative_path="DANE/problem.dbf",
+            status="WARNING",
+            warnings=["[CANONICAL_REPAIR_APPLIED] path=DANE/problem.dbf"],
+        )
+        caplog.set_level(logging.WARNING, logger="dbf_anonymizer.pipeline")
+
+        _log_final_warnings("anonymize", [outcome])
+
+        message = caplog.records[-1].getMessage()
+        assert "event=file_warning" in message
+        assert "path=DANE/problem.dbf" in message
+        assert "warning_code=CANONICAL_REPAIR_APPLIED" in message
 
 
 class TestParallelReconstructionIsolation:

@@ -6,6 +6,7 @@ SQLite, kontroli odwracalności oraz automatyzacji Visual FoxPro.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import logging
 import os
 import shutil
@@ -21,7 +22,12 @@ from .manifest import sha256_file, write_manifest
 from .schema import load_schema
 from .tableio import scan_table_into_store
 from .verification import compare_dbf_canonical, verify_vfp_roundtrip
-from .vfp import companion_cdx, rebuild_companion_cdx
+from .vfp import (
+    companion_cdx,
+    dbf_has_structural_index,
+    rebuild_companion_cdx,
+    validate_vfp_executable,
+)
 from .worker_tasks import (
     PreparedTable as _PreparedTable,
     anonymize_prepared_worker as _anonymize_prepared_worker,
@@ -109,6 +115,8 @@ _VFP_PROJECT_SUFFIXES = {
     ".pjx", ".pjt", ".vcx", ".vct", ".dbc", ".dct", ".dcx", ".prg",
 }
 
+DEFAULT_EXCLUDED_DBF_PATTERNS = ("foxuser.dbf", "**/foxuser.dbf")
+
 
 def _iter_dbf_files(root: Path) -> list[Path]:
     found: list[Path] = []
@@ -125,6 +133,55 @@ def _iter_dbf_files(root: Path) -> list[Path]:
             continue
         found.append(path)
     return found
+
+
+def _matches_exclusion(relative_path: str, pattern: str) -> bool:
+    relative = relative_path.replace("\\", "/").casefold()
+    normalized = pattern.strip().replace("\\", "/").casefold()
+    if not normalized:
+        return False
+    candidates = {normalized}
+    if normalized.startswith("**/"):
+        candidates.add(normalized[3:])
+    return any(
+        fnmatch.fnmatchcase(relative, candidate)
+        or fnmatch.fnmatchcase(Path(relative).name, candidate)
+        for candidate in candidates
+    )
+
+
+def _resolve_exclusion_patterns(
+    exclude_patterns: tuple[str, ...] | list[str] | None,
+    *,
+    include_system_files: bool,
+) -> tuple[str, ...]:
+    patterns = [] if include_system_files else list(DEFAULT_EXCLUDED_DBF_PATTERNS)
+    patterns.extend(exclude_patterns or ())
+    return tuple(dict.fromkeys(pattern.strip() for pattern in patterns if pattern.strip()))
+
+
+def _discover_dbf_files(
+    root: Path,
+    exclude_patterns: tuple[str, ...],
+) -> tuple[list[Path], list[tuple[Path, str]]]:
+    included: list[Path] = []
+    excluded: list[tuple[Path, str]] = []
+    for path in _iter_dbf_files(root):
+        relative = _relative_to(path, root).as_posix()
+        matched = next(
+            (pattern for pattern in exclude_patterns if _matches_exclusion(relative, pattern)),
+            None,
+        )
+        if matched is None:
+            included.append(path)
+        else:
+            excluded.append((path, matched))
+            logger.warning(
+                "phase=discovery event=file_excluded path=%s pattern=%s",
+                relative,
+                matched,
+            )
+    return included, excluded
 
 
 def _relative_to(path: Path, root: Path) -> Path:
@@ -227,6 +284,25 @@ def _log_returned_failure(phase: str, outcome: TableOutcome) -> None:
         )
 
 
+def _log_final_warnings(phase: str, outcomes: list[TableOutcome]) -> None:
+    """Loguje wyłącznie ostrzeżenia, które pozostały po całej fazie/CDX."""
+
+    for outcome in outcomes:
+        warning_count = len(outcome.warnings)
+        for warning_index, warning in enumerate(outcome.warnings, start=1):
+            logger.warning(
+                "phase=%s event=file_warning path=%s table=%s warning_index=%d "
+                "warning_count=%d warning_code=%s warning=%r",
+                phase,
+                outcome.relative_path,
+                outcome.table,
+                warning_index,
+                warning_count,
+                _diagnostic_code(warning, "WORKER_RETURNED_WARNING"),
+                warning,
+            )
+
+
 def _log_publication_blocked(
     operation: str,
     outcomes: list[TableOutcome],
@@ -256,6 +332,54 @@ def _set_exit_code(outcomes: list[TableOutcome]) -> int:
     if any(item.status == "WARNING" for item in outcomes):
         return 2
     return 0
+
+
+def _preflight_source_cdx(
+    dbf_files: list[Path],
+    source_root: Path,
+    *,
+    vfp_executable: str | Path | None,
+) -> list[TableOutcome]:
+    """Wykrywa brak strukturalnego CDX przed kosztownymi etapami pipeline."""
+
+    cdx_tables = [path for path in dbf_files if companion_cdx(path) is not None]
+    if cdx_tables and vfp_executable is not None:
+        executable = validate_vfp_executable(vfp_executable)
+        logger.info(
+            "phase=cdx event=vfp_executable_validated path=%s tables_with_cdx=%d",
+            executable,
+            len(cdx_tables),
+        )
+
+    missing: list[TableOutcome] = []
+    for source_dbf in dbf_files:
+        if not dbf_has_structural_index(source_dbf) or companion_cdx(source_dbf):
+            continue
+        relative_path = _relative_to(source_dbf, source_root).as_posix()
+        error = (
+            f"[SOURCE_CDX_MISSING] path={relative_path} DBF ma flagę indeksu "
+            "strukturalnego, ale brak pliku CDX o tym samym rdzeniu"
+        )
+        outcome = TableOutcome(
+            table=source_dbf.name,
+            relative_path=relative_path,
+            status="FAILED",
+            errors=[error],
+        )
+        missing.append(outcome)
+        logger.error(
+            "phase=cdx event=preflight_failed path=%s "
+            "error_code=SOURCE_CDX_MISSING error=%r",
+            relative_path,
+            error,
+        )
+    logger.info(
+        "phase=cdx event=preflight_done checked=%d with_cdx=%d missing=%d",
+        len(dbf_files),
+        len(cdx_tables),
+        len(missing),
+    )
+    return missing
 
 
 def apply_reconstruct_result(outcome: TableOutcome, result: Any) -> None:
@@ -563,13 +687,14 @@ def _build_global_dictionary(
 def _rebuild_cdx(
     *,
     source_root: Path,
+    source_dbf_files: list[Path],
     output_root: Path,
     outcomes: list[TableOutcome],
     vfp_progid: str,
 ) -> None:
     """Kopiuje definicje CDX i obowiązkowo wykonuje REINDEX w VFP."""
     by_path = {outcome.relative_path: outcome for outcome in outcomes}
-    for source_dbf in _iter_dbf_files(source_root):
+    for source_dbf in source_dbf_files:
         relative_path = _relative_to(source_dbf, source_root).as_posix()
         outcome = by_path.get(relative_path)
         if outcome is None or outcome.status == "FAILED":
@@ -646,6 +771,9 @@ def anonymize_directory(
     batch_size: int = 5000,
     reuse_dictionary: bool = True,
     vfp_progid: str = "VisualFoxPro.Application",
+    vfp_executable: str | Path | None = None,
+    exclude_patterns: tuple[str, ...] | list[str] | None = None,
+    include_system_files: bool = False,
 ) -> AnonymizeResult:
     """Anonimizuje bazę i publikuje wynik oraz słownik po pełnym sukcesie."""
     source = Path(source_dir).resolve()
@@ -679,13 +807,17 @@ def anonymize_directory(
     result = AnonymizeResult(source=source, output=output, dictionary_dir=dict_dir)
     committed = False
     try:
-        dbf_files = _iter_dbf_files(source)
+        resolved_exclusions = _resolve_exclusion_patterns(
+            exclude_patterns,
+            include_system_files=include_system_files,
+        )
+        dbf_files, excluded_files = _discover_dbf_files(source, resolved_exclusions)
         logger.info(
             "phase=pipeline event=start operation=anonymize source=%s output=%s "
             "dictionary_dir=%s dbf_files=%d requested_workers=%s batch_size=%d "
-            "reuse_dictionary=%s",
+            "reuse_dictionary=%s excluded_files=%d",
             source, output, dict_dir, len(dbf_files), workers or "auto",
-            batch_size, reuse_dictionary,
+            batch_size, reuse_dictionary, len(excluded_files),
         )
         if not dbf_files:
             result.tables = [TableOutcome(
@@ -693,6 +825,40 @@ def anonymize_directory(
                 warnings=["Brak plików DBF z danymi w katalogu źródłowym."],
             )]
             result.exit_code = 2
+            return result
+
+        try:
+            cdx_failures = _preflight_source_cdx(
+                dbf_files,
+                source,
+                vfp_executable=vfp_executable,
+            )
+        except Exception as exc:
+            cdx_failures = [
+                _failed_outcome(path, _relative_to(path, source).as_posix(), exc)
+                for path in dbf_files
+                if companion_cdx(path) is not None
+            ]
+            result.global_error_code = getattr(exc, "code", type(exc).__name__)
+            result.global_error = str(exc)
+        if cdx_failures:
+            if result.global_error is None:
+                result.global_error_code = "SOURCE_CDX_MISSING"
+                result.global_error = (
+                    "[SOURCE_CDX_MISSING] Wymagane pliki CDX nie istnieją; "
+                    "anonimizacja została przerwana przed eksportem"
+                )
+            result.tables = sorted(
+                cdx_failures,
+                key=lambda item: item.relative_path.casefold(),
+            )
+            result.exit_code = 1
+            _log_publication_blocked(
+                "anonymize",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
 
         options = AnonymizeOptions(
@@ -758,10 +924,12 @@ def anonymize_directory(
         if not any(item.status == "FAILED" for item in result.tables):
             _rebuild_cdx(
                 source_root=source,
+                source_dbf_files=dbf_files,
                 output_root=output_stage,
                 outcomes=result.tables,
                 vfp_progid=vfp_progid,
             )
+        _log_final_warnings("anonymize", result.tables)
         result.exit_code = _set_exit_code(result.tables)
         if result.exit_code == 1:
             _log_publication_blocked(
@@ -778,6 +946,13 @@ def anonymize_directory(
             source=source,
             tables=_manifest_tables(result.tables),
             dictionary_sha256=sha256_file(dictionary_path),
+            excluded_tables=[
+                {
+                    "path": _relative_to(path, source).as_posix(),
+                    "pattern": pattern,
+                }
+                for path, pattern in excluded_files
+            ],
         )
         try:
             dictionary_path.chmod(0o600)
@@ -807,6 +982,9 @@ def make_dbf_recovery(
     workers: int | None = 0,
     batch_size: int = 5000,
     vfp_progid: str = "VisualFoxPro.Application",
+    vfp_executable: str | Path | None = None,
+    exclude_patterns: tuple[str, ...] | list[str] | None = None,
+    include_system_files: bool = False,
 ) -> RecoveryResult:
     """Odtwarza wszystkie DBF i publikuje katalog po pełnym sukcesie."""
     source = Path(anonymized_dir).resolve()
@@ -834,13 +1012,44 @@ def make_dbf_recovery(
     result = RecoveryResult(source=source, output=output, dictionary_dir=dict_dir)
     committed = False
     try:
-        dbf_files = _iter_dbf_files(source)
+        resolved_exclusions = _resolve_exclusion_patterns(
+            exclude_patterns,
+            include_system_files=include_system_files,
+        )
+        dbf_files, excluded_files = _discover_dbf_files(source, resolved_exclusions)
         logger.info(
             "phase=pipeline event=start operation=recovery source=%s output=%s "
-            "dictionary_dir=%s dbf_files=%d requested_workers=%s batch_size=%d",
+            "dictionary_dir=%s dbf_files=%d requested_workers=%s batch_size=%d "
+            "excluded_files=%d",
             source, output, dict_dir, len(dbf_files), workers or "auto", batch_size,
+            len(excluded_files),
         )
         if not dbf_files:
+            return result
+        try:
+            cdx_failures = _preflight_source_cdx(
+                dbf_files,
+                source,
+                vfp_executable=vfp_executable,
+            )
+        except Exception as exc:
+            cdx_failures = [
+                _failed_outcome(path, _relative_to(path, source).as_posix(), exc)
+                for path in dbf_files
+                if companion_cdx(path) is not None
+            ]
+        if cdx_failures:
+            result.tables = sorted(
+                cdx_failures,
+                key=lambda item: item.relative_path.casefold(),
+            )
+            result.exit_code = 1
+            _log_publication_blocked(
+                "recovery",
+                result.tables,
+                output=output,
+                dictionary_dir=dict_dir,
+            )
             return result
         result.tables = sorted(
             _parallel_recovery(
@@ -857,10 +1066,12 @@ def make_dbf_recovery(
         if not any(item.status == "FAILED" for item in result.tables):
             _rebuild_cdx(
                 source_root=source,
+                source_dbf_files=dbf_files,
                 output_root=output_stage,
                 outcomes=result.tables,
                 vfp_progid=vfp_progid,
             )
+        _log_final_warnings("recovery", result.tables)
         result.exit_code = _set_exit_code(result.tables)
         if result.exit_code == 1:
             _log_publication_blocked(
@@ -879,6 +1090,13 @@ def make_dbf_recovery(
             dictionary_sha256=(
                 sha256_file(dictionary_file) if dictionary_file.is_file() else None
             ),
+            excluded_tables=[
+                {
+                    "path": _relative_to(path, source).as_posix(),
+                    "pattern": pattern,
+                }
+                for path, pattern in excluded_files
+            ],
         )
         transaction.commit(overwrite=overwrite)
         committed = True
@@ -901,6 +1119,9 @@ def self_test(
     workers: int | None = 0,
     batch_size: int = 5000,
     vfp_progid: str = "VisualFoxPro.Application",
+    vfp_executable: str | Path | None = None,
+    exclude_patterns: tuple[str, ...] | list[str] | None = None,
+    include_system_files: bool = False,
 ) -> SelfTestReport:
     """Wykonuje round-trip, porównanie kanoniczne i test VFP/CDX."""
     source = Path(source_dir).resolve()
@@ -928,6 +1149,9 @@ def self_test(
         batch_size=batch_size,
         reuse_dictionary=False,
         vfp_progid=vfp_progid,
+        vfp_executable=vfp_executable,
+        exclude_patterns=exclude_patterns,
+        include_system_files=include_system_files,
     )
     anonymous_result.raise_for_errors()
     recovery_result = make_dbf_recovery(
@@ -939,6 +1163,9 @@ def self_test(
         workers=workers,
         batch_size=batch_size,
         vfp_progid=vfp_progid,
+        vfp_executable=vfp_executable,
+        exclude_patterns=exclude_patterns,
+        include_system_files=include_system_files,
     )
     recovery_result.raise_for_errors()
 
@@ -949,8 +1176,13 @@ def self_test(
         dictionary_dir=dict_dir,
     )
     try:
+        resolved_exclusions = _resolve_exclusion_patterns(
+            exclude_patterns,
+            include_system_files=include_system_files,
+        )
+        source_files, _ = _discover_dbf_files(source, resolved_exclusions)
         source_dbfs = {
-            _relative_to(path, source).as_posix(): path for path in _iter_dbf_files(source)
+            _relative_to(path, source).as_posix(): path for path in source_files
         }
         recovered_dbfs = {
             _relative_to(path, recovered_dir).as_posix(): path

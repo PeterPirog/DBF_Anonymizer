@@ -41,6 +41,27 @@ def companion_cdx(dbf_path: str | Path) -> Path | None:
     return None
 
 
+def dbf_has_structural_index(dbf_path: str | Path) -> bool:
+    """Czy bajt flag tabeli VFP wskazuje na strukturalny indeks CDX."""
+
+    with Path(dbf_path).open("rb") as infile:
+        header = infile.read(29)
+    return len(header) >= 29 and bool(header[28])
+
+
+def validate_vfp_executable(executable: str | Path | None) -> Path | None:
+    """Waliduje opcjonalną ścieżkę instalacji VFP podaną w konfiguracji."""
+
+    if executable is None:
+        return None
+    path = Path(executable).expanduser().resolve()
+    if not path.is_file():
+        raise VfpError(
+            f"[VFP_EXECUTABLE_MISSING] Nie istnieje skonfigurowany vfp9.exe: {path}"
+        )
+    return path
+
+
 def rebuild_companion_cdx(
     source_dbf: str | Path,
     target_dbf: str | Path,

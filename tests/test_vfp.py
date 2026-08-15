@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from dbf_anonymizer import self_test
-from dbf_anonymizer.vfp import VfpVerification, companion_cdx, rebuild_companion_cdx
+from dbf_anonymizer.vfp import (
+    VfpError,
+    VfpVerification,
+    companion_cdx,
+    dbf_has_structural_index,
+    rebuild_companion_cdx,
+    validate_vfp_executable,
+)
 
 
 def test_companion_cdx_is_case_insensitive(tmp_path: Path):
@@ -39,6 +46,26 @@ def test_rebuild_copies_definitions_before_reindex(tmp_path: Path, monkeypatch):
     assert result is not None
     assert result.tag_count == 2
     assert (target / "table.cdx").read_bytes() == b"definitions"
+
+
+def test_structural_index_flag_is_read_from_dbf_header(tmp_path: Path):
+    dbf = tmp_path / "table.dbf"
+    header = bytearray(29)
+    dbf.write_bytes(header)
+    assert not dbf_has_structural_index(dbf)
+
+    header[28] = 1
+    dbf.write_bytes(header)
+    assert dbf_has_structural_index(dbf)
+
+
+def test_vfp_executable_path_is_validated(tmp_path: Path):
+    executable = tmp_path / "vfp9.exe"
+    executable.write_bytes(b"fixture")
+
+    assert validate_vfp_executable(executable) == executable.resolve()
+    with pytest.raises(VfpError, match="VFP_EXECUTABLE_MISSING"):
+        validate_vfp_executable(tmp_path / "missing.exe")
 
 
 @pytest.mark.vfp

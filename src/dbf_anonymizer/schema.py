@@ -62,6 +62,7 @@ class TableSchema:
     encoding: str            # kodowanie (cp1250 / mazovia / auto)
     has_memo: bool           # czy tabela ma pola memo (.fpt)
     fields: tuple[FieldInfo, ...]
+    structural_index_flag: int = 0
 
     def field_by_name(self, name: str) -> FieldInfo | None:
         """Zwraca FieldInfo po nazwie (case-insensitive)."""
@@ -117,6 +118,7 @@ def load_schema(schema_path: Path) -> TableSchema:
         encoding=str(encoding),
         has_memo=has_memo,
         fields=tuple(fields_list),
+        structural_index_flag=int(dbf_meta.get("structural_index_flag") or 0),
     )
 
 

@@ -143,7 +143,9 @@ activemq-data/
 *.sage.py
 
 # Environments
+# Lokalna konfiguracja może zawierać ścieżki i tajną sól.
 .env
+!.env.example
 .envrc
 .venv
 env/

@@ -14,6 +14,11 @@ wrażliwym, a nie częścią bezpiecznego wyniku anonimowego.
   zastępuje ochrony słownika.
 - Logi nie zawierają pełnych brakujących wartości tekstowych. Traktuj jednak
   ścieżki, nazwy tabel i traceback jako informacje wewnętrzne.
+- `.env` może zawierać sól i prywatne ścieżki. Jest ignorowany przez Git;
+  commitowany ma być wyłącznie pozbawiony sekretów `.env.example`.
+- `DBF_ANON_EXCLUDE` usuwa wskazane tabele z wyniku. Każde wykluczenie należy
+  uzasadnić operacyjnie i sprawdzić w `excluded_tables` manifestu; nie może ono
+  zastępować naprawy brakującego CDX czynnej tabeli aplikacyjnej.
 
 Przed usunięciem słownika wykonaj i zachowaj wynik `self-test`; bez słownika
 recovery pól C i zamaskowanych memo jest niemożliwe.
