@@ -82,15 +82,17 @@ Gdy źródłowy DBF ma odpowiadający mu CDX, brak Windows, COM VFP, tagów albo
 błąd `REINDEX` kończy całą operację. Nowy wynik i słownik nie są publikowane;
 poprzednia wersja pozostaje nienaruszona.
 
-Kontrola brakujących indeksów odbywa się przed eksportem. `SOURCE_CDX_MISSING`
-oznacza, że nagłówek DBF wymaga strukturalnego CDX, ale obok nie ma pliku o tym
-samym rdzeniu. Dla tabel aplikacyjnych należy przywrócić właściwy CDX z kopii
-źródłowej. `FOXUSER.DBF` jest domyślnie pomijany jako zasób ustawień VFP.
+Kontrola brakujących indeksów odbywa się przed eksportem. Bajt 28 nagłówka
+jest maską: `0x01` = strukturalny CDX, `0x02` = FPT, `0x04` = DBC.
+`SOURCE_CDX_MISSING` oznacza, że ustawiony jest bit `0x01`, ale obok nie ma
+CDX o tym samym rdzeniu. Sam bit `0x02` oraz para DBF+FPT bez CDX są prawidłowe.
+Dla tabeli rzeczywiście oznaczonej `0x01` należy przywrócić właściwy CDX z
+kopii źródłowej. `FOXUSER.DBF` jest domyślnie pomijany jako zasób ustawień VFP.
 
 Świadome pominięcie dodatkowej tabeli jest możliwe przez `.env`:
 
 ```dotenv
-DBF_ANON_EXCLUDE=DANE/pomoc.dbf;ARCHIWUM/stara_tabela.dbf
+DBF_ANON_EXCLUDE=ARCHIWUM/stara_tabela.dbf
 ```
 
 Usuwa to te tabele z anonimizowanego wyniku i recovery. Każde wykluczenie trafia
@@ -137,7 +139,8 @@ kod wyjścia polecenia. Dzięki temu do analizy wystarcza sam pełny plik logu.
 | Kod | Znaczenie |
 |---|---|
 | `CDX_REINDEX_FAILED` | kopiowanie definicji, otwarcie VFP lub REINDEX nie powiodły się |
-| `SOURCE_CDX_MISSING` | DBF wymaga strukturalnego CDX, ale pliku brak; błąd wykryty przed eksportem |
+| `SOURCE_CDX_MISSING` | bit `0x01` maski tabeli wymaga strukturalnego CDX, ale pliku brak; samo `0x02`/FPT nie jest błędem |
+| `DBF_HEADER_TRUNCATED` | nie można bezpiecznie odczytać pełnego bajtu flag; eksport jest blokowany |
 | `VFP_EXECUTABLE_MISSING` | ścieżka `DBF_ANON_VFP_EXE` nie wskazuje istniejącego pliku |
 | `VFP_AUTOMATION_FAILED` | COM VFP zwrócił błąd; szczegóły są w `error=` |
 | `RAW_PATCH_*` | nie można bezpiecznie przywrócić surowych N/F/L |

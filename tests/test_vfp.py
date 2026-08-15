@@ -9,6 +9,7 @@ from dbf_anonymizer.vfp import (
     VfpVerification,
     companion_cdx,
     dbf_has_structural_index,
+    dbf_table_flags,
     rebuild_companion_cdx,
     validate_vfp_executable,
 )
@@ -48,15 +49,38 @@ def test_rebuild_copies_definitions_before_reindex(tmp_path: Path, monkeypatch):
     assert (target / "table.cdx").read_bytes() == b"definitions"
 
 
-def test_structural_index_flag_is_read_from_dbf_header(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("table_flags", "has_structural_cdx"),
+    [
+        (0x00, False),
+        (0x01, True),
+        (0x02, False),
+        (0x03, True),
+        (0x04, False),
+        (0x06, False),
+        (0x07, True),
+    ],
+)
+def test_structural_index_bit_is_masked_from_table_flags(
+    tmp_path: Path,
+    table_flags: int,
+    has_structural_cdx: bool,
+):
     dbf = tmp_path / "table.dbf"
     header = bytearray(29)
+    header[28] = table_flags
     dbf.write_bytes(header)
-    assert not dbf_has_structural_index(dbf)
 
-    header[28] = 1
-    dbf.write_bytes(header)
-    assert dbf_has_structural_index(dbf)
+    assert dbf_table_flags(dbf) == table_flags
+    assert dbf_has_structural_index(dbf) is has_structural_cdx
+
+
+def test_truncated_dbf_header_has_stable_diagnostic(tmp_path: Path):
+    dbf = tmp_path / "broken.dbf"
+    dbf.write_bytes(b"too short")
+
+    with pytest.raises(VfpError, match="DBF_HEADER_TRUNCATED"):
+        dbf_table_flags(dbf)
 
 
 def test_vfp_executable_path_is_validated(tmp_path: Path):

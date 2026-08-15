@@ -23,8 +23,10 @@ from .schema import load_schema
 from .tableio import scan_table_into_store
 from .verification import compare_dbf_canonical, verify_vfp_roundtrip
 from .vfp import (
+    STRUCTURAL_CDX_FLAG,
     companion_cdx,
     dbf_has_structural_index,
+    dbf_table_flags,
     rebuild_companion_cdx,
     validate_vfp_executable,
 )
@@ -232,7 +234,7 @@ def _failed_outcome(
         relative_path=relative_path,
         status="FAILED",
         errors=[
-            f"[{getattr(exc, 'code', type(exc).__name__)}] "
+            f"[{_exception_code(exc)}] "
             f"path={relative_path} error_type={type(exc).__name__} error={exc}"
         ],
     )
@@ -254,6 +256,15 @@ def _diagnostic_code(message: str, fallback: str) -> str:
         ):
             return candidate
     return fallback
+
+
+def _exception_code(exc: BaseException) -> str:
+    """Zwraca stabilny kod klasy albo prefiks ``[CODE]`` z komunikatu."""
+
+    explicit = getattr(exc, "code", None)
+    if explicit:
+        return str(explicit)
+    return _diagnostic_code(str(exc), type(exc).__name__)
 
 
 def _log_returned_failure(phase: str, outcome: TableOutcome) -> None:
@@ -351,11 +362,32 @@ def _preflight_source_cdx(
             len(cdx_tables),
         )
 
-    missing: list[TableOutcome] = []
+    failures: list[TableOutcome] = []
     for source_dbf in dbf_files:
-        if not dbf_has_structural_index(source_dbf) or companion_cdx(source_dbf):
-            continue
         relative_path = _relative_to(source_dbf, source_root).as_posix()
+        try:
+            has_structural_cdx = dbf_has_structural_index(source_dbf)
+        except Exception as exc:
+            code = _diagnostic_code(str(exc), "CDX_PREFLIGHT_READ_FAILED")
+            error = (
+                f"[{code}] path={relative_path} phase=cdx_preflight "
+                f"error_type={type(exc).__name__} detail={exc}"
+            )
+            failures.append(TableOutcome(
+                table=source_dbf.name,
+                relative_path=relative_path,
+                status="FAILED",
+                errors=[error],
+            ))
+            logger.exception(
+                "phase=cdx event=preflight_failed path=%s error_code=%s error=%r",
+                relative_path,
+                code,
+                error,
+            )
+            continue
+        if not has_structural_cdx or companion_cdx(source_dbf):
+            continue
         error = (
             f"[SOURCE_CDX_MISSING] path={relative_path} DBF ma flagę indeksu "
             "strukturalnego, ale brak pliku CDX o tym samym rdzeniu"
@@ -366,7 +398,7 @@ def _preflight_source_cdx(
             status="FAILED",
             errors=[error],
         )
-        missing.append(outcome)
+        failures.append(outcome)
         logger.error(
             "phase=cdx event=preflight_failed path=%s "
             "error_code=SOURCE_CDX_MISSING error=%r",
@@ -377,12 +409,21 @@ def _preflight_source_cdx(
         "phase=cdx event=preflight_done checked=%d with_cdx=%d missing=%d",
         len(dbf_files),
         len(cdx_tables),
-        len(missing),
+        sum(
+            _diagnostic_code(item.errors[0], "") == "SOURCE_CDX_MISSING"
+            for item in failures
+        ),
     )
-    return missing
+    return failures
 
 
-def apply_reconstruct_result(outcome: TableOutcome, result: Any) -> None:
+def apply_reconstruct_result(
+    outcome: TableOutcome,
+    result: Any,
+    *,
+    source_has_structural_cdx: bool | None = None,
+) -> None:
+    ignored_false_cdx_warning = False
     for item in result.results:
         if item.status == "FAILED":
             outcome.status = "FAILED"
@@ -392,15 +433,34 @@ def apply_reconstruct_result(outcome: TableOutcome, result: Any) -> None:
             )
             for difference in (getattr(item, "differences", None) or [])[:20]:
                 outcome.errors.append(_safe_difference(difference))
-        if item.warnings:
-            outcome.warnings.extend(
-                warning
-                for warning in item.warnings
-                if not warning.startswith("Raw DBF SHA-256 differs")
-                and not warning.startswith("Raw FPT SHA-256 differs")
-            )
+        for warning in item.warnings or []:
+            if warning.startswith((
+                "Raw DBF SHA-256 differs",
+                "Raw FPT SHA-256 differs",
+            )):
+                continue
+            if (
+                source_has_structural_cdx is False
+                and _is_dbfbridge_cdx_warning(warning)
+            ):
+                ignored_false_cdx_warning = True
+                continue
+            outcome.warnings.append(warning)
+    if ignored_false_cdx_warning:
+        logger.info(
+            "phase=reconstruct event=false_cdx_warning_ignored path=%s "
+            "reason=table_flags_without_0x01",
+            outcome.relative_path,
+        )
     if outcome.status != "FAILED" and outcome.warnings:
         outcome.status = "WARNING"
+
+
+def _is_dbfbridge_cdx_warning(warning: str) -> bool:
+    return (
+        "structural CDX index" in warning
+        or "companion CDX file" in warning
+    )
 
 
 def _safe_difference(difference: dict[str, Any]) -> str:
@@ -677,7 +737,7 @@ def _build_global_dictionary(
     except Exception as exc:
         logger.exception(
             "phase=dictionary event=failed error_code=%s error=%s",
-            getattr(exc, "code", type(exc).__name__), exc,
+            _exception_code(exc), exc,
         )
         temporary.unlink(missing_ok=True)
         Path(f"{temporary}-journal").unlink(missing_ok=True)
@@ -701,7 +761,22 @@ def _rebuild_cdx(
             continue
         source_cdx = companion_cdx(source_dbf)
         if source_cdx is None:
-            if any("structural CDX index" in warning for warning in outcome.warnings):
+            try:
+                flags = dbf_table_flags(source_dbf)
+            except Exception as exc:
+                code = _diagnostic_code(str(exc), "CDX_SOURCE_HEADER_READ_FAILED")
+                outcome.status = "FAILED"
+                outcome.errors.append(
+                    f"[{code}] path={relative_path} phase=cdx_rebuild "
+                    f"error_type={type(exc).__name__} detail={exc}"
+                )
+                logger.exception(
+                    "phase=cdx event=source_header_read_failed path=%s "
+                    "error_code=%s error_type=%s error=%s",
+                    relative_path, code, type(exc).__name__, exc,
+                )
+                continue
+            if flags & STRUCTURAL_CDX_FLAG:
                 outcome.status = "FAILED"
                 outcome.errors.append(
                     f"[SOURCE_CDX_MISSING] path={relative_path} "
@@ -711,6 +786,14 @@ def _rebuild_cdx(
                     "phase=cdx event=source_missing path=%s error_code=SOURCE_CDX_MISSING",
                     relative_path,
                 )
+            else:
+                outcome.warnings = [
+                    warning
+                    for warning in outcome.warnings
+                    if not _is_dbfbridge_cdx_warning(warning)
+                ]
+                if outcome.status == "WARNING" and not outcome.warnings:
+                    outcome.status = "OK"
             continue
         target_dbf = output_root / Path(relative_path)
         logger.info(
@@ -839,15 +922,28 @@ def anonymize_directory(
                 for path in dbf_files
                 if companion_cdx(path) is not None
             ]
-            result.global_error_code = getattr(exc, "code", type(exc).__name__)
+            result.global_error_code = _exception_code(exc)
             result.global_error = str(exc)
         if cdx_failures:
             if result.global_error is None:
-                result.global_error_code = "SOURCE_CDX_MISSING"
-                result.global_error = (
-                    "[SOURCE_CDX_MISSING] Wymagane pliki CDX nie istnieją; "
-                    "anonimizacja została przerwana przed eksportem"
-                )
+                failure_codes = {
+                    _diagnostic_code(error, "CDX_PREFLIGHT_FAILED")
+                    for item in cdx_failures
+                    for error in item.errors
+                }
+                if failure_codes == {"SOURCE_CDX_MISSING"}:
+                    result.global_error_code = "SOURCE_CDX_MISSING"
+                    result.global_error = (
+                        "[SOURCE_CDX_MISSING] Wymagane pliki CDX nie istnieją; "
+                        "anonimizacja została przerwana przed eksportem"
+                    )
+                else:
+                    result.global_error_code = "CDX_PREFLIGHT_FAILED"
+                    result.global_error = (
+                        "[CDX_PREFLIGHT_FAILED] Nie udało się bezpiecznie "
+                        "sprawdzić flag/CDX wszystkich tabel; codes="
+                        + ",".join(sorted(failure_codes))
+                    )
             result.tables = sorted(
                 cdx_failures,
                 key=lambda item: item.relative_path.casefold(),
@@ -898,7 +994,7 @@ def anonymize_directory(
                 batch_size=batch_size,
             )
         except Exception as exc:
-            result.global_error_code = getattr(exc, "code", type(exc).__name__)
+            result.global_error_code = _exception_code(exc)
             result.global_error = str(exc)
             result.tables = [_blocked_outcome(item, exc) for item in prepared]
             result.exit_code = 1

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .vfp import MEMO_FILE_FLAG, STRUCTURAL_CDX_FLAG
+
 # Typy DBF: C=Character, N=Numeric, F=Float, D=Date, T=DateTime, L=Logical,
 # M=Memo, G=General (Binary). Wszystkie inne traktujemy jako identity.
 TEXT_TYPES = {"C"}
@@ -62,6 +64,8 @@ class TableSchema:
     encoding: str            # kodowanie (cp1250 / mazovia / auto)
     has_memo: bool           # czy tabela ma pola memo (.fpt)
     fields: tuple[FieldInfo, ...]
+    # dbfbridge zachowuje pod tą historyczną nazwą cały bajt flag tabeli:
+    # 0x01=CDX, 0x02=FPT, 0x04=DBC. Pole pozostaje dla zgodności schematu.
     structural_index_flag: int = 0
 
     def field_by_name(self, name: str) -> FieldInfo | None:
@@ -76,6 +80,20 @@ class TableSchema:
     def data_field_names(self) -> tuple[str, ...]:
         """Nazwy pól danych (pomijaj __dbfbridge_*, __deleted__)."""
         return tuple(f.name for f in self.fields)
+
+    @property
+    def table_flags(self) -> int:
+        """Pełna maska flag tabeli VFP z bajtu 28 nagłówka."""
+
+        return self.structural_index_flag
+
+    @property
+    def has_structural_cdx(self) -> bool:
+        return bool(self.table_flags & STRUCTURAL_CDX_FLAG)
+
+    @property
+    def has_memo_file_flag(self) -> bool:
+        return bool(self.table_flags & MEMO_FILE_FLAG)
 
 
 def load_schema(schema_path: Path) -> TableSchema:

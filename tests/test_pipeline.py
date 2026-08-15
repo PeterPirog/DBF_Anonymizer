@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,11 +23,14 @@ from dbf_anonymizer.global_store import GlobalDictionaryStore, global_dictionary
 from dbf_anonymizer.manifest import MANIFEST_FILENAME
 from dbf_anonymizer.pipeline import (
     TableOutcome,
+    _rebuild_cdx,
     _log_final_warnings,
     _numeric_width_context,
     _parallel_prepared,
     _publish_reconstructed_table,
+    apply_reconstruct_result,
 )
+from dbf_anonymizer.vfp import dbf_table_flags
 from dbf_anonymizer.schema import FieldInfo, TableSchema
 from dbf_anonymizer.worker_tasks import PreparedTable
 
@@ -72,6 +76,62 @@ class TestSelfTestSingleTable:
             f"błędy: {[t.errors for t in report.tables if t.errors]}"
         )
         assert report.successful
+
+    def test_memo_only_table_flag_does_not_require_cdx(
+        self,
+        sample_dbf_dir: Path,
+    ):
+        source_dbf = sample_dbf_dir / "klienci.dbf"
+        header = bytearray(source_dbf.read_bytes())
+        header[28] = 0x02
+        source_dbf.write_bytes(header)
+
+        report = self_test(sample_dbf_dir, workers=1, batch_size=2)
+
+        assert report.successful, [item.errors for item in report.tables]
+        assert report.canonical_matches == 1
+        assert (sample_dbf_dir / "klienci.fpt").is_file()
+        assert not (sample_dbf_dir / "klienci.cdx").exists()
+        assert dbf_table_flags(source_dbf) & 0x02
+
+
+def test_false_dbfbridge_cdx_warning_is_ignored_only_for_memo_flag(caplog):
+    cdx_warning = (
+        "Source DBF references a structural CDX index, but index definitions "
+        "are not present in the schema. The companion CDX file is not reconstructed."
+    )
+    result = SimpleNamespace(results=[SimpleNamespace(
+        status="WARNING",
+        source="pomoc",
+        errors=[],
+        warnings=[cdx_warning],
+        differences=[],
+    )])
+    caplog.set_level(logging.INFO, logger="dbf_anonymizer.pipeline")
+
+    memo_only = TableOutcome(table="pomoc.dbf", relative_path="DANE/pomoc.dbf")
+    apply_reconstruct_result(
+        memo_only,
+        result,
+        source_has_structural_cdx=False,
+    )
+
+    assert memo_only.status == "OK"
+    assert memo_only.warnings == []
+    assert any(
+        "event=false_cdx_warning_ignored path=DANE/pomoc.dbf" in
+        record.getMessage()
+        for record in caplog.records
+    )
+
+    indexed = TableOutcome(table="pomoc.dbf", relative_path="DANE/pomoc.dbf")
+    apply_reconstruct_result(
+        indexed,
+        result,
+        source_has_structural_cdx=True,
+    )
+    assert indexed.status == "WARNING"
+    assert indexed.warnings == [cdx_warning]
 
 
 class TestSelfTestMultiTable:
@@ -394,7 +454,8 @@ class TestAnonymizeDirectory:
     ):
         source_dbf = sample_dbf_dir / "klienci.dbf"
         header = bytearray(source_dbf.read_bytes())
-        header[28] = 1
+        # Połączenie bitów FPT (0x02) i strukturalnego CDX (0x01).
+        header[28] = 0x03
         source_dbf.write_bytes(header)
         output = tmp_path / "output"
         dictionary = tmp_path / "dictionary"
@@ -423,6 +484,70 @@ class TestAnonymizeDirectory:
         messages = [record.getMessage() for record in caplog.records]
         assert any("phase=cdx event=preflight_failed" in item for item in messages)
         assert not any("phase=export event=start" in item for item in messages)
+
+    def test_truncated_header_stops_before_export_with_diagnostic(
+        self,
+        sample_dbf_dir: Path,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        source_dbf = sample_dbf_dir / "klienci.dbf"
+        source_dbf.write_bytes(b"truncated")
+
+        def export_must_not_start(*args, **kwargs):
+            raise AssertionError("eksport nie może wystartować po błędzie nagłówka")
+
+        monkeypatch.setattr(
+            "dbf_anonymizer.pipeline._prepare_exports",
+            export_must_not_start,
+        )
+
+        result = anonymize_directory(
+            sample_dbf_dir,
+            output_dir=tmp_path / "output",
+            dictionary_dir=tmp_path / "dictionary",
+            workers=1,
+        )
+
+        assert result.exit_code == 1
+        assert result.global_error_code == "CDX_PREFLIGHT_FAILED"
+        assert "DBF_HEADER_TRUNCATED" in result.global_error
+        assert result.tables[0].errors[0].startswith("[DBF_HEADER_TRUNCATED]")
+
+    def test_late_cdx_check_accepts_memo_only_flag(
+        self,
+        tmp_path: Path,
+    ):
+        source = tmp_path / "source"
+        output = tmp_path / "output"
+        source.mkdir()
+        output.mkdir()
+        source_dbf = source / "pomoc.dbf"
+        header = bytearray(29)
+        header[28] = 0x02
+        source_dbf.write_bytes(header)
+        false_warning = (
+            "Source DBF references a structural CDX index, but the companion "
+            "CDX file is not reconstructed."
+        )
+        outcome = TableOutcome(
+            table="pomoc.dbf",
+            relative_path="pomoc.dbf",
+            status="WARNING",
+            warnings=[false_warning],
+        )
+
+        _rebuild_cdx(
+            source_root=source,
+            source_dbf_files=[source_dbf],
+            output_root=output,
+            outcomes=[outcome],
+            vfp_progid="VisualFoxPro.Application",
+        )
+
+        assert outcome.status == "OK"
+        assert outcome.errors == []
+        assert outcome.warnings == []
 
     def test_foxuser_is_excluded_by_default_and_recorded_in_manifest(
         self,

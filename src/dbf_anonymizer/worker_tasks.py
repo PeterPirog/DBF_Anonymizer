@@ -177,7 +177,11 @@ def anonymize_prepared_worker(
         raw_records_path=Path(prepared.jsonl_path),
         schema_path=Path(prepared.schema_path),
     )
-    _apply_reconstruct_result(outcome, reconstruction)
+    _apply_reconstruct_result(
+        outcome,
+        reconstruction,
+        source_has_structural_cdx=schema.has_structural_cdx,
+    )
     return outcome
 
 
@@ -259,7 +263,11 @@ def recover_one_table_worker(
         raw_records_path=jsonl_path,
         schema_path=schema_path,
     )
-    _apply_reconstruct_result(outcome, reconstruction)
+    _apply_reconstruct_result(
+        outcome,
+        reconstruction,
+        source_has_structural_cdx=schema.has_structural_cdx,
+    )
     return outcome
 
 
@@ -388,10 +396,19 @@ def _mark_canonical_repair(
         item.status = "WARNING"
 
 
-def _apply_reconstruct_result(outcome: Any, result: Any) -> None:
+def _apply_reconstruct_result(
+    outcome: Any,
+    result: Any,
+    *,
+    source_has_structural_cdx: bool | None = None,
+) -> None:
     from .pipeline import apply_reconstruct_result
 
-    apply_reconstruct_result(outcome, result)
+    apply_reconstruct_result(
+        outcome,
+        result,
+        source_has_structural_cdx=source_has_structural_cdx,
+    )
 
 
 def _schema_path_for_jsonl(jsonl_path: Path) -> Path:
