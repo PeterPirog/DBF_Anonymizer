@@ -13,6 +13,7 @@ Można też uruchomić: ``python -m dbf_anonymizer``.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Zachowaj pośrednie JSONL w var/ (debug).")
     p_anon.add_argument("--workers", type=_non_negative_int, default=0,
                         help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    _add_logging_arguments(p_anon)
     p_anon.set_defaults(func=_cmd_anonymize)
 
     # recover
@@ -90,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Zachowaj pośrednie JSONL (debug).")
     p_rec.add_argument("--workers", type=_non_negative_int, default=0,
                        help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    _add_logging_arguments(p_rec)
     p_rec.set_defaults(func=_cmd_recover)
 
     # self-test
@@ -112,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Zachowaj katalogi pośrednie w var/ (debug).")
     p_st.add_argument("--workers", type=_non_negative_int, default=0,
                       help="Liczba procesów (0 = automatycznie, 1 = sekwencyjnie).")
+    _add_logging_arguments(p_st)
     p_st.set_defaults(func=_cmd_self_test)
 
     return parser
@@ -168,10 +172,18 @@ def _print_anonymize_result(result: AnonymizeResult) -> None:
     warn = sum(1 for t in result.tables if t.status == "WARNING")
     fail = sum(1 for t in result.tables if t.status == "FAILED")
     print(f"Podsumowanie: OK={ok}  Ostrzeżenia={warn}  Błędy={fail}")
+    if result.global_error:
+        print(
+            f"BŁĄD GLOBALNY [{result.global_error_code or 'UNKNOWN'}]: "
+            f"{result.global_error}"
+        )
+        print(f"Zablokowane tabele: {fail}")
     for t in result.tables:
         flag = {"OK": "✓", "WARNING": "!", "FAILED": "✗"}.get(t.status, "?")
         print(f"  {flag} {t.table} [{t.status}] {t.records} rekordów")
         for err in t.errors:
+            if result.global_error and result.global_error in err:
+                continue
             print(f"      BŁĄD: {err}")
         for w in t.warnings:
             print(f"      ostrzeż.: {w}")
@@ -227,14 +239,68 @@ def _print_self_test_report(report: SelfTestReport) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_logging(args)
+    cli_logger = logging.getLogger(__name__)
+    cli_logger.info(
+        "phase=cli event=start command=%s version=%s python=%s",
+        args.command,
+        __version__,
+        sys.executable,
+    )
     try:
         return args.func(args)
     except FileNotFoundError as exc:
+        cli_logger.error(
+            "phase=cli event=failed error_code=FILE_NOT_FOUND error=%s",
+            exc,
+        )
         print(f"Błąd: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        cli_logger.warning("phase=cli event=interrupted")
         print("\nPrzerwano.", file=sys.stderr)
         return 130
+    except Exception as exc:
+        cli_logger.exception(
+            "phase=cli event=failed error_code=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        print(f"Błąd krytyczny: {exc}", file=sys.stderr)
+        return 1
+
+
+def _add_logging_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Szczegółowość logów diagnostycznych (domyślnie INFO).",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Opcjonalny plik UTF-8 z logiem nadającym się do analizy błędów.",
+    )
+
+
+def _configure_logging(args: argparse.Namespace) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    log_file = getattr(args, "log_file", None)
+    if log_file is not None:
+        log_path = Path(log_file).resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+    logging.basicConfig(
+        level=getattr(logging, getattr(args, "log_level", "INFO")),
+        format=(
+            "%(asctime)s level=%(levelname)s pid=%(process)d "
+            "logger=%(name)s %(message)s"
+        ),
+        handlers=handlers,
+        force=True,
+    )
 
 
 def _non_negative_int(value: str) -> int:

@@ -13,7 +13,7 @@ główne/obce zachowują spójność relacyjną. Kosztowne etapy są wykonywane 
 
 | Typ pola DBF | Zachowanie |
 |---|---|
-| **C** (Character) | Zastąpione ciągiem o **identycznej długości bajtowej** (cp1250), deterministycznie (sha256+salt). Kolumny unikalne pozostają unikalne (bijekcja). |
+| **C** (Character) | Zastąpione ciągiem o **identycznej długości bajtowej** w stronie kodowej tabeli, deterministycznie (sha256+salt). Kolumny unikalne pozostają unikalne (bijekcja). |
 | **M / G** (Memo/General) | `mask` → `'MEMO'` (domyślnie), `keep` → bez zmian. Recovery przywraca oryginał pozycyjnie ze słownika. |
 | **D** (Date) | Przesunięcie o stałą liczbę dni (`--date-offset N`, `0` = bez zmian). |
 | **T** (DateTime) | Przesunięcie daty o N dni, czas bez zmian. |
@@ -63,7 +63,8 @@ Wymaga Python ≥ 3.10. Zależności: `dbfbridge` (z [dbfbridge repo](https://gi
 ```bash
 # Anonimizuj katalog → <dir>_anonymized + <dir>_dict
 dbf-anonymizer anonymize <dir> [--out OUT] [--dict-dir DICT] \
-    [--memo mask|keep] [--date-offset N] [--salt S] [--workers N]
+    [--memo mask|keep] [--date-offset N] [--salt S] [--workers N] \
+    [--log-level LEVEL] [--log-file FILE]
 
 # Odtwórz oryginał z zaanonimizowanego + słowników → <anon>_recovered
 dbf-anonymizer recover <anonymized_dir> <dictionary_dir> [--out OUT] [--workers N]
@@ -107,11 +108,33 @@ SQLite jest celowym wyborem zamiast dużego JSON lub Redis:
 - Redis nie jest potrzebny i utrudniałby trwały, odwracalny zapis końcowy.
 
 Mapowanie zachowuje długość bajtową wartości. Jeżeli dla bardzo krótkiej długości
-nie istnieje wystarczająco dużo różnych pseudonimów (np. ponad 36 wartości C(1)),
-konwersja kończy się błędem zamiast utworzyć nieodwracalną kolizję.
+nie istnieje wystarczająco dużo różnych pseudonimów, konwersja kończy się błędem
+`TEXT_DOMAIN_CAPACITY` zamiast utworzyć nieodwracalną kolizję. Alfabet nie jest
+ograniczony do 36 liter/cyfr: powstaje z drukowalnych znaków jednobajtowych
+wspólnych dla stron kodowych wykrytych w schematach DBF. Pomijane są białe znaki,
+znaki kontrolne oraz oczywiste pary różniące się tylko wielkością liter.
 Pseudonim nie może być identyczny z oryginałem. Jeżeli eksport choć jednej tabeli
 się nie powiedzie, kodowanie pozostałych tabel nie rozpocznie się — globalny
 słownik nigdy nie jest budowany na niepełnym obrazie bazy.
+
+### Logi diagnostyczne
+
+Domyślny poziom `INFO` pokazuje na bieżąco fazę, PID, liczbę plików i workerów,
+postęp tabel, wykryte kodowania, rozmiar alfabetu oraz kontrolę pojemności. Pełny
+log UTF-8 można zapisać opcją:
+
+```powershell
+python -m dbf_anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
+  --out "D:\Warp_directory\CWOM-B_anonymized" `
+  --dict-dir "D:\Warp_directory\CWOM-B_dictionary" `
+  --salt "TAJNA-STALA-SOL" --workers 0 `
+  --log-level INFO `
+  --log-file "D:\Warp_directory\CWOM-B_conversion.log"
+```
+
+Kody błędów, np. `TEXT_ENCODING_ERROR`, `INCONSISTENT_TEXT_BYTE_LENGTH` i
+`TEXT_DOMAIN_CAPACITY`, zawierają kontekst tabeli/pola/kodowania bez wypisywania
+pełnych wartości danych osobowych. Nieoczekiwane wyjątki zapisują traceback.
 
 ## Python API
 
@@ -145,13 +168,14 @@ Najważniejsze tabele wewnętrzne:
 
 ```text
 text_map(original PRIMARY KEY, anonymized UNIQUE, byte_length)
+text_sources(original, relative_path, field_name, encoding, byte_length)
 memo_values(relative_path, field_name, record_index, value_json)
 files(relative_path PRIMARY KEY, table_name)
 metadata(key PRIMARY KEY, value_json)
 ```
 
-Recovery nadal odczytuje starsze słowniki JSON v1/v2, ale nowe anonimizacje
-zawsze tworzą globalny format SQLite v3.
+Recovery nadal odczytuje starsze słowniki JSON v1/v2 i SQLite v3, ale nowe
+anonimizacje tworzą format SQLite v4 z metadanymi kodowań i diagnostyką źródeł.
 
 ## Self-test
 

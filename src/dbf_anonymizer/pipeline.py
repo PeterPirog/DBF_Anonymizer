@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -24,10 +25,13 @@ from .anonymizer import (
 )
 from .dictionary import dictionary_filename, load_dictionary
 from .global_store import (
+    GlobalDictionaryError,
     GlobalDictionaryStore,
     global_dictionary_path,
 )
 from .schema import load_schema
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,6 +54,8 @@ class AnonymizeResult:
     output: Path
     dictionary_dir: Path
     tables: list[TableOutcome] = field(default_factory=list)
+    global_error_code: str | None = None
+    global_error: str | None = None
     exit_code: int = 0
 
     @property
@@ -204,6 +210,17 @@ def _failed_outcome(source: str | Path, relative_path: str, exc: BaseException) 
         relative_path=relative_path,
         status="FAILED",
         errors=[f"{Path(source).name}: {exc}"],
+    )
+
+
+def _blocked_outcome(prepared: _PreparedTable, exc: BaseException) -> TableOutcome:
+    """Tabela wyeksportowana poprawnie, ale zablokowana przez błąd globalny."""
+    return TableOutcome(
+        table=Path(prepared.source).name,
+        relative_path=prepared.relative_path,
+        status="FAILED",
+        records=prepared.records,
+        errors=[f"{Path(prepared.source).name}: {exc}"],
     )
 
 
@@ -421,6 +438,11 @@ def _prepare_exports(
         for path in dbf_files
     ]
     max_workers = _resolve_workers(workers, len(jobs))
+    logger.info(
+        "phase=export event=start files=%d workers=%d",
+        len(jobs),
+        max_workers,
+    )
     prepared: list[_PreparedTable] = []
     failed: list[TableOutcome] = []
 
@@ -428,7 +450,18 @@ def _prepare_exports(
         for job in jobs:
             try:
                 prepared.append(_prepare_export_worker(*job))
+                logger.info(
+                    "phase=export event=file_done path=%s records=%d",
+                    prepared[-1].relative_path,
+                    prepared[-1].records,
+                )
             except Exception as exc:
+                logger.exception(
+                    "phase=export event=file_failed path=%s error_type=%s error=%s",
+                    job[1],
+                    type(exc).__name__,
+                    exc,
+                )
                 failed.append(_failed_outcome(job[0], job[1], exc))
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -439,11 +472,28 @@ def _prepare_exports(
             for future in as_completed(futures):
                 job = futures[future]
                 try:
-                    prepared.append(future.result())
+                    item = future.result()
+                    prepared.append(item)
+                    logger.info(
+                        "phase=export event=file_done path=%s records=%d",
+                        item.relative_path,
+                        item.records,
+                    )
                 except Exception as exc:
+                    logger.exception(
+                        "phase=export event=file_failed path=%s error_type=%s error=%s",
+                        job[1],
+                        type(exc).__name__,
+                        exc,
+                    )
                     failed.append(_failed_outcome(job[0], job[1], exc))
 
     prepared.sort(key=lambda item: item.relative_path.casefold())
+    logger.info(
+        "phase=export event=done successful=%d failed=%d",
+        len(prepared),
+        len(failed),
+    )
     return prepared, failed
 
 
@@ -456,17 +506,33 @@ def _run_prepared_anonymization(
     workers: int | None,
 ) -> list[TableOutcome]:
     max_workers = _resolve_workers(workers, len(prepared))
+    logger.info(
+        "phase=anonymize event=start files=%d workers=%d",
+        len(prepared),
+        max_workers,
+    )
     outcomes: list[TableOutcome] = []
 
     if max_workers == 1:
         for item in prepared:
             try:
-                outcomes.append(
-                    _anonymize_prepared_worker(
-                        item, str(output), str(dictionary_dir), options, overwrite
-                    )
+                outcome = _anonymize_prepared_worker(
+                    item, str(output), str(dictionary_dir), options, overwrite
+                )
+                outcomes.append(outcome)
+                logger.info(
+                    "phase=anonymize event=file_done path=%s status=%s records=%d",
+                    outcome.relative_path,
+                    outcome.status,
+                    outcome.records,
                 )
             except Exception as exc:
+                logger.exception(
+                    "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
+                    item.relative_path,
+                    type(exc).__name__,
+                    exc,
+                )
                 outcomes.append(_failed_outcome(item.source, item.relative_path, exc))
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -484,10 +550,28 @@ def _run_prepared_anonymization(
             for future in as_completed(futures):
                 item = futures[future]
                 try:
-                    outcomes.append(future.result())
+                    outcome = future.result()
+                    outcomes.append(outcome)
+                    logger.info(
+                        "phase=anonymize event=file_done path=%s status=%s records=%d",
+                        outcome.relative_path,
+                        outcome.status,
+                        outcome.records,
+                    )
                 except Exception as exc:
+                    logger.exception(
+                        "phase=anonymize event=file_failed path=%s error_type=%s error=%s",
+                        item.relative_path,
+                        type(exc).__name__,
+                        exc,
+                    )
                     outcomes.append(_failed_outcome(item.source, item.relative_path, exc))
 
+    logger.info(
+        "phase=anonymize event=done successful=%d failed=%d",
+        sum(item.status != "FAILED" for item in outcomes),
+        sum(item.status == "FAILED" for item in outcomes),
+    )
     return outcomes
 
 
@@ -512,13 +596,31 @@ def _run_recovery(
         for path in dbf_files
     ]
     max_workers = _resolve_workers(workers, len(jobs))
+    logger.info(
+        "phase=recovery event=start files=%d workers=%d",
+        len(jobs),
+        max_workers,
+    )
     outcomes: list[TableOutcome] = []
 
     if max_workers == 1:
         for job in jobs:
             try:
-                outcomes.append(_recover_one_table_worker(*job))
+                outcome = _recover_one_table_worker(*job)
+                outcomes.append(outcome)
+                logger.info(
+                    "phase=recovery event=file_done path=%s status=%s records=%d",
+                    outcome.relative_path,
+                    outcome.status,
+                    outcome.records,
+                )
             except Exception as exc:
+                logger.exception(
+                    "phase=recovery event=file_failed path=%s error_type=%s error=%s",
+                    job[1],
+                    type(exc).__name__,
+                    exc,
+                )
                 outcomes.append(_failed_outcome(job[0], job[1], exc))
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -529,10 +631,28 @@ def _run_recovery(
             for future in as_completed(futures):
                 job = futures[future]
                 try:
-                    outcomes.append(future.result())
+                    outcome = future.result()
+                    outcomes.append(outcome)
+                    logger.info(
+                        "phase=recovery event=file_done path=%s status=%s records=%d",
+                        outcome.relative_path,
+                        outcome.status,
+                        outcome.records,
+                    )
                 except Exception as exc:
+                    logger.exception(
+                        "phase=recovery event=file_failed path=%s error_type=%s error=%s",
+                        job[1],
+                        type(exc).__name__,
+                        exc,
+                    )
                     outcomes.append(_failed_outcome(job[0], job[1], exc))
 
+    logger.info(
+        "phase=recovery event=done successful=%d failed=%d",
+        sum(item.status != "FAILED" for item in outcomes),
+        sum(item.status == "FAILED" for item in outcomes),
+    )
     return outcomes
 
 
@@ -553,6 +673,29 @@ def _build_global_dictionary(
     )
     temporary.unlink(missing_ok=True)
     try:
+        ordered = sorted(prepared, key=lambda table: table.relative_path.casefold())
+        schemas = {
+            item.relative_path: load_schema(Path(item.schema_path))
+            for item in ordered
+        }
+        encodings = sorted({schema.encoding for schema in schemas.values()})
+        encoding_paths: dict[str, list[str]] = {}
+        for relative_path, schema in schemas.items():
+            encoding_paths.setdefault(schema.encoding, []).append(relative_path)
+        logger.info(
+            "phase=dictionary event=start files=%d encodings=%s path=%s",
+            len(ordered),
+            ",".join(encodings),
+            final_path,
+        )
+        for encoding, paths in sorted(encoding_paths.items()):
+            logger.info(
+                "phase=dictionary event=encoding_detected encoding=%s files=%d "
+                "sample_paths=%s",
+                encoding,
+                len(paths),
+                ";".join(sorted(paths, key=str.casefold)[:8]),
+            )
         with GlobalDictionaryStore(temporary) as store:
             store.initialize(
                 options={
@@ -561,23 +704,32 @@ def _build_global_dictionary(
                     "text_mode": options.text_mode,
                 },
                 salt=options.salt,
+                text_encodings=encodings,
             )
-            for item in sorted(
-                prepared, key=lambda table: table.relative_path.casefold()
-            ):
-                schema = load_schema(Path(item.schema_path))
+            domain = store.options()
+            logger.info(
+                "phase=dictionary event=text_domain_ready normalized_encodings=%s "
+                "alphabet_size=%s",
+                ",".join(domain.get("text_encodings", [])),
+                domain.get("text_alphabet_size"),
+            )
+            for index, item in enumerate(ordered, start=1):
+                schema = schemas[item.relative_path]
                 records = [
                     record
                     for record in _read_jsonl(Path(item.jsonl_path))
                     if record.get("type") not in ("summary", "table")
                 ]
                 store.register_file(item.relative_path, Path(item.source).name)
-                store.add_text_values(
-                    record.get(field.name)
-                    for record in records
-                    for field in schema.fields
-                    if field.is_text
-                )
+                distinct_in_table = 0
+                for field in schema.fields:
+                    if field.is_text:
+                        distinct_in_table += store.add_text_values(
+                            (record.get(field.name) for record in records),
+                            encoding=schema.encoding,
+                            relative_path=item.relative_path,
+                            field_name=field.name,
+                        )
                 if options.memo_mode == "mask":
                     for field in schema.fields:
                         if field.is_memo:
@@ -588,13 +740,44 @@ def _build_global_dictionary(
                             )
                 # Ogranicza rozmiar transakcji przy dużej liczbie tabel.
                 store.commit()
+                logger.info(
+                    "phase=dictionary event=table_scanned current=%d total=%d "
+                    "path=%s records=%d distinct_field_values=%d encoding=%s",
+                    index,
+                    len(ordered),
+                    item.relative_path,
+                    len(records),
+                    distinct_in_table,
+                    schema.encoding,
+                )
             store.assign_anonymous_values(salt=options.salt)
 
-        if final_path.exists():
-            final_path.unlink()
+        # ``Path.replace`` korzysta z os.replace: stary słownik pozostaje na
+        # miejscu aż do gotowości kompletnego pliku tymczasowego.
         temporary.replace(final_path)
+        logger.info(
+            "phase=dictionary event=done files=%d path=%s",
+            len(ordered),
+            final_path,
+        )
         return final_path
-    except Exception:
+    except Exception as exc:
+        error_code = (
+            exc.code if isinstance(exc, GlobalDictionaryError)
+            else type(exc).__name__
+        )
+        if isinstance(exc, GlobalDictionaryError):
+            logger.error(
+                "phase=dictionary event=failed error_code=%s error=%s",
+                error_code,
+                exc,
+            )
+        else:
+            logger.exception(
+                "phase=dictionary event=failed error_code=%s error=%s",
+                error_code,
+                exc,
+            )
         temporary.unlink(missing_ok=True)
         Path(f"{temporary}-journal").unlink(missing_ok=True)
         raise
@@ -641,13 +824,25 @@ def anonymize_directory(
     temp_root = source.parent / "var" / f"{source.name}_anon_temp_{os.getpid()}"
     if temp_root.exists():
         shutil.rmtree(temp_root)
-    _prepare_directory(output, overwrite)
-    _prepare_directory(dict_dir, overwrite)
+    # Nie usuwaj poprzedniego wyniku ani słownika przed udanym eksportem i
+    # zbudowaniem nowej mapy. SQLite jest podmieniany dopiero po ukończeniu build.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    dict_dir.mkdir(parents=True, exist_ok=True)
     temp_root.mkdir(parents=True, exist_ok=True)
 
     result = AnonymizeResult(source=source, output=output, dictionary_dir=dict_dir)
     try:
         dbf_files = _iter_dbf_files(source)
+        logger.info(
+            "phase=pipeline event=start operation=anonymize source=%s output=%s "
+            "dictionary_dir=%s dbf_files=%d requested_workers=%s overwrite=%s",
+            source,
+            output,
+            dict_dir,
+            len(dbf_files),
+            workers if workers is not None else "auto",
+            overwrite,
+        )
         if not dbf_files:
             result.tables.append(
                 TableOutcome(
@@ -681,8 +876,16 @@ def anonymize_directory(
                 "Przerwano anonimizację: nie udało się wyeksportować wszystkich "
                 "tabel wymaganych przez globalny słownik"
             )
+            result.global_error_code = "INCOMPLETE_EXPORT"
+            result.global_error = str(exc)
+            logger.error(
+                "phase=pipeline event=blocked error_code=%s error=%s failed_exports=%d",
+                result.global_error_code,
+                result.global_error,
+                len(export_failures),
+            )
             dictionary_failures = [
-                _failed_outcome(item.source, item.relative_path, exc)
+                _blocked_outcome(item, exc)
                 for item in prepared
             ]
         else:
@@ -698,9 +901,18 @@ def anonymize_directory(
                 # Bez kompletnej mapy globalnej żadnej tabeli nie wolno kodować,
                 # bo relacje między tabelami przestałyby być jednoznaczne.
                 dictionary_failures = [
-                    _failed_outcome(item.source, item.relative_path, exc)
+                    _blocked_outcome(item, exc)
                     for item in prepared
                 ]
+
+                result.global_error_code = (
+                    exc.code if isinstance(exc, GlobalDictionaryError)
+                    else type(exc).__name__
+                )
+                result.global_error = str(exc)
+
+        if valid:
+            _prepare_directory(output, overwrite)
 
         processed = _run_prepared_anonymization(
             valid,
@@ -715,6 +927,14 @@ def anonymize_directory(
             key=lambda item: item.relative_path.casefold(),
         )
         result.exit_code = _set_exit_code(result.tables)
+        logger.info(
+            "phase=pipeline event=done operation=anonymize ok=%d failed=%d "
+            "exit_code=%d global_error_code=%s",
+            result.ok,
+            result.failed,
+            result.exit_code,
+            result.global_error_code or "none",
+        )
         return result
     finally:
         if not keep_temp:
@@ -755,6 +975,16 @@ def make_dbf_recovery(
     result = RecoveryResult(source=source, output=output, dictionary_dir=dict_dir)
     try:
         dbf_files = _iter_dbf_files(source)
+        logger.info(
+            "phase=pipeline event=start operation=recovery source=%s output=%s "
+            "dictionary_dir=%s dbf_files=%d requested_workers=%s overwrite=%s",
+            source,
+            output,
+            dict_dir,
+            len(dbf_files),
+            workers if workers is not None else "auto",
+            overwrite,
+        )
         if not dbf_files:
             return result
         result.tables = sorted(
@@ -770,6 +1000,12 @@ def make_dbf_recovery(
             key=lambda item: item.relative_path.casefold(),
         )
         result.exit_code = _set_exit_code(result.tables)
+        logger.info(
+            "phase=pipeline event=done operation=recovery ok=%d failed=%d exit_code=%d",
+            result.ok,
+            result.failed,
+            result.exit_code,
+        )
         return result
     finally:
         if not keep_temp:
@@ -799,6 +1035,13 @@ def self_test(
     anonymous_dir = work_root / f"{source.name}_anonymized"
     dict_dir = work_root / f"{source.name}_dict"
     recovered_dir = work_root / f"{source.name}_recovered"
+
+    logger.info(
+        "phase=pipeline event=start operation=self_test source=%s "
+        "requested_workers=%s",
+        source,
+        workers if workers is not None else "auto",
+    )
 
     anonymous_result = anonymize_directory(
         source,
@@ -890,6 +1133,13 @@ def self_test(
             report.exit_code = 1
         elif any(item.status == "WARNING" for item in report.tables):
             report.exit_code = 2
+        logger.info(
+            "phase=pipeline event=done operation=self_test matches=%d "
+            "mismatches=%d exit_code=%d",
+            report.canonical_matches,
+            report.canonical_mismatches,
+            report.exit_code,
+        )
         return report
     finally:
         if not keep_temp:
