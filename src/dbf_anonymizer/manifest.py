@@ -41,9 +41,12 @@ def write_manifest(
             }
         )
     payload = {
-        "format": 1,
+        "format": 2,
         "operation": operation,
-        "source": str(Path(source).resolve()),
+        # Manifest może być udostępniany razem z wynikiem. Nie zapisujemy w nim
+        # bezwzględnej ścieżki stanowiska operatora.
+        "source": Path(source).name,
+        "source_path_kind": "basename",
         "dictionary_sha256": dictionary_sha256,
         "tables": tables,
         "excluded_tables": excluded_tables or [],

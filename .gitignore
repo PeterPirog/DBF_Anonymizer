@@ -235,6 +235,10 @@ recovered_output/
 # Intermediate JSONL / schemas / temp work
 var/
 tmp/
+.dbf-anonymizer-*/
+.*.anon-temp-*/
+.*.recover-temp-*/
+.*.selftest-*/
 jsonl_source/
 jsonl_anonymized/
 jsonl_recovered/
@@ -247,3 +251,6 @@ jsonl_recovered/
 # Self-test artifacts
 selftest_report.json
 *_quality_report.jsonl
+
+# Local AI-agent context may contain workstation-specific operational details.
+DBF_Anonymizer_specyfikacja_dla_AI*.md

@@ -1,5 +1,11 @@
 # Bezpieczeństwo słownika
 
+Projekt realizuje odwracalną pseudonimizację. Nie gwarantuje, że wynik spełnia
+prawną definicję danych anonimowych. W szczególności pola `N/F/L`, domyślnie
+nieprzesunięte daty, tryb `memo=keep`, metadane tabel i zachowane relacje mogą
+umożliwiać identyfikację osób. Przed udostępnieniem wyniku wykonaj osobną ocenę
+ryzyka.
+
 `dictionary.sqlite3` zawiera dane pozwalające odwrócić anonimizację: pełne
 oryginały pól C i, w trybie `memo=mask`, wartości M/G. Jest materiałem
 wrażliwym, a nie częścią bezpiecznego wyniku anonimowego.
@@ -14,6 +20,8 @@ wrażliwym, a nie częścią bezpiecznego wyniku anonimowego.
   zastępuje ochrony słownika.
 - Logi nie zawierają pełnych brakujących wartości tekstowych. Traktuj jednak
   ścieżki, nazwy tabel i traceback jako informacje wewnętrzne.
+- Manifest nie zapisuje bezwzględnej ścieżki źródła. Nazwy tabel, pól i katalogu
+  źródłowego nadal mogą być informacją organizacyjną.
 - `.env` może zawierać sól i prywatne ścieżki. Jest ignorowany przez Git;
   commitowany ma być wyłącznie pozbawiony sekretów `.env.example`.
 - `DBF_ANON_EXCLUDE` usuwa wskazane tabele z wyniku. Każde wykluczenie należy
@@ -22,3 +30,7 @@ wrażliwym, a nie częścią bezpiecznego wyniku anonimowego.
 
 Przed usunięciem słownika wykonaj i zachowaj wynik `self-test`; bez słownika
 recovery pól C i zamaskowanych memo jest niemożliwe.
+
+Luki w bezpieczeństwie kodu zgłaszaj prywatnie zgodnie z plikiem
+[`SECURITY.md`](../SECURITY.md). Nie dołączaj danych DBF, słownika ani pełnych
+logów do publicznego zgłoszenia.

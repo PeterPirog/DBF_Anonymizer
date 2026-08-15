@@ -4,15 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbf_anonymizer"
-version = "0.3.0"
+version = "0.3.1"
 description = "Framework do anonimizacji plików DBF (Visual FoxPro) z odwracalnym słownikiem"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "PeterPirog" }]
+license = { file = "LICENSE" }
+authors = [{ name = "Peter Pirog" }]
+keywords = ["dbf", "visual-foxpro", "pseudonymization", "sqlite"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Security",
+]
 dependencies = [
     "dbfbridge @ git+https://github.com/PeterPirog/dbfbridge.git@addbadb9281914661bf742924f45039e46a895cd",
 ]
+
+[project.urls]
+Homepage = "https://github.com/PeterPirog/DBF_Anonymizer"
+Repository = "https://github.com/PeterPirog/DBF_Anonymizer"
+Issues = "https://github.com/PeterPirog/DBF_Anonymizer/issues"
 
 [project.optional-dependencies]
 dev = [

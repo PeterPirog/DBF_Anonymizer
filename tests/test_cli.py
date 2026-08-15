@@ -7,9 +7,9 @@ from dbf_anonymizer.envconfig import load_env_file
 
 
 def test_anonymize_minimal_defaults():
-    args = build_parser().parse_args(["anonymize", "D:/DANE_WOM/CWOM-B"])
+    args = build_parser().parse_args(["anonymize", "C:/Data/LegacyDB"])
 
-    assert args.directory == Path("D:/DANE_WOM/CWOM-B")
+    assert args.directory == Path("C:/Data/LegacyDB")
     assert args.output is None
     assert args.dict_dir is None
     assert args.workers == 0
@@ -18,15 +18,15 @@ def test_anonymize_minimal_defaults():
 def test_anonymize_accepts_only_output_and_dictionary_overrides():
     args = build_parser().parse_args([
         "anonymize",
-        "D:/DANE_WOM/CWOM-B",
+        "C:/Data/LegacyDB",
         "--out",
-        "D:/Warp_directory/CWOM-B_anonymized",
+        "C:/DBF_Work/LegacyDB_anonymized",
         "--dict-dir",
-        "D:/Secure/CWOM-B_dict",
+        "D:/Secure/LegacyDB_dict",
     ])
 
-    assert args.output == Path("D:/Warp_directory/CWOM-B_anonymized")
-    assert args.dict_dir == Path("D:/Secure/CWOM-B_dict")
+    assert args.output == Path("C:/DBF_Work/LegacyDB_anonymized")
+    assert args.dict_dir == Path("D:/Secure/LegacyDB_dict")
     assert args.workers == 0
 
 
@@ -56,11 +56,11 @@ def test_env_file_allows_pathless_short_command(tmp_path: Path, monkeypatch):
     env_file.write_text(
         "\n".join(
             [
-                r"DBF_ANON_SOURCE=D:\DANE_WOM\CWOM-B",
-                r"DBF_ANON_OUTPUT=D:\Warp_directory\CWOM-B_anonymized",
-                r"DBF_ANON_DICTIONARY=D:\Warp_directory\CWOM-B_dict",
+                r"DBF_ANON_SOURCE=C:\Data\LegacyDB",
+                r"DBF_ANON_OUTPUT=C:\DBF_Work\LegacyDB_anonymized",
+                r"DBF_ANON_DICTIONARY=C:\DBF_Work\LegacyDB_dict",
                 "DBF_ANON_WORKERS=0",
-                "DBF_ANON_EXCLUDE=DANE/pomoc.dbf;archiwum/*.dbf",
+                "DBF_ANON_EXCLUDE=DATA/memo_table.dbf;archiwum/*.dbf",
             ]
         ),
         encoding="utf-8",
@@ -77,10 +77,10 @@ def test_env_file_allows_pathless_short_command(tmp_path: Path, monkeypatch):
     load_env_file(env_file)
     args = build_parser().parse_args(["anonymize"])
 
-    assert args.directory == Path(r"D:\DANE_WOM\CWOM-B")
-    assert args.output == Path(r"D:\Warp_directory\CWOM-B_anonymized")
-    assert args.dict_dir == Path(r"D:\Warp_directory\CWOM-B_dict")
-    assert args.exclude == ["DANE/pomoc.dbf", "archiwum/*.dbf"]
+    assert args.directory == Path(r"C:\Data\LegacyDB")
+    assert args.output == Path(r"C:\DBF_Work\LegacyDB_anonymized")
+    assert args.dict_dir == Path(r"C:\DBF_Work\LegacyDB_dict")
+    assert args.exclude == ["DATA/memo_table.dbf", "archiwum/*.dbf"]
 
 
 def test_environment_overrides_env_file(tmp_path: Path, monkeypatch):

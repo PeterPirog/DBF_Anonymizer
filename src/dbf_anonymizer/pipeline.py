@@ -217,11 +217,23 @@ def _validate_batch_size(batch_size: int) -> int:
     return batch_size
 
 
-def _validate_generated_path(source: Path, generated: Path, label: str) -> None:
-    if generated == source or generated in source.parents:
-        raise ValueError(
-            f"{label} nie może być katalogiem źródłowym ani jego nadrzędnym: {generated}"
-        )
+def _paths_overlap(first: Path, second: Path) -> bool:
+    first = first.resolve()
+    second = second.resolve()
+    return first == second or first in second.parents or second in first.parents
+
+
+def _validate_disjoint_paths(*paths: tuple[str, Path]) -> None:
+    """Blokuje równe, nadrzędne i podrzędne katalogi operacji."""
+
+    for index, (first_label, first_path) in enumerate(paths):
+        for second_label, second_path in paths[index + 1:]:
+            if _paths_overlap(first_path, second_path):
+                raise ValueError(
+                    "[PATH_OVERLAP] "
+                    f"{first_label}={first_path.resolve()} "
+                    f"{second_label}={second_path.resolve()}"
+                )
 
 
 def _failed_outcome(
@@ -872,14 +884,15 @@ def anonymize_directory(
         Path(dictionary_dir).resolve()
         if dictionary_dir else _default_dictionary_dir(source, output)
     )
-    _validate_generated_path(source, output, "Katalog wyjściowy")
-    _validate_generated_path(source, dict_dir, "Katalog słowników")
-    if output == dict_dir:
-        raise ValueError("Katalog wyjściowy i katalog słowników muszą być różne")
+    _validate_disjoint_paths(
+        ("source", source),
+        ("output", output),
+        ("dictionary", dict_dir),
+    )
     if not overwrite and (output.exists() or dict_dir.exists()):
         raise FileExistsError("Katalog wyniku lub słownika już istnieje")
 
-    temp_root = source.parent / "var" / f"{source.name}_anon_temp_{os.getpid()}"
+    temp_root = source.parent / f".{source.name}.anon-temp-{os.getpid()}"
     shutil.rmtree(temp_root, ignore_errors=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     transaction = DirectoryTransaction(output, dict_dir)
@@ -1095,11 +1108,15 @@ def make_dbf_recovery(
         Path(output_dir).resolve()
         if output_dir else _default_output_dir(source, "_recovered")
     )
-    _validate_generated_path(source, output, "Katalog wyjściowy")
+    _validate_disjoint_paths(
+        ("source", source),
+        ("dictionary", dict_dir),
+        ("output", output),
+    )
     if not overwrite and output.exists():
         raise FileExistsError(f"Katalog wynikowy już istnieje: {output}")
 
-    temp_root = source.parent / "var" / f"{source.name}_recover_temp_{os.getpid()}"
+    temp_root = source.parent / f".{source.name}.recover-temp-{os.getpid()}"
     shutil.rmtree(temp_root, ignore_errors=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     transaction = DirectoryTransaction(output)
@@ -1225,7 +1242,8 @@ def self_test(
         raise FileNotFoundError(f"Katalog źródłowy nie istnieje: {source}")
     _resolve_workers(workers, 1)
     _validate_batch_size(batch_size)
-    work_root = source.parent / "var" / f"{source.name}_selftest_{os.getpid()}"
+    work_root = source.parent / f".{source.name}.selftest-{os.getpid()}"
+    _validate_disjoint_paths(("source", source), ("self_test_work", work_root))
     shutil.rmtree(work_root, ignore_errors=True)
     work_root.mkdir(parents=True, exist_ok=True)
     anonymous_dir = work_root / f"{source.name}_anonymized"
@@ -1306,11 +1324,7 @@ def self_test(
                             f"[CANONICAL_MISMATCH] {difference['summary']}"
                         )
                         for item in difference.get("differences", [])[:10]:
-                            outcome.errors.append(
-                                f"record={item['record']} "
-                                f"field={item.get('field', item.get('scope', '?'))} "
-                                f"expected={item['expected']!r} actual={item['actual']!r}"
-                            )
+                            outcome.errors.append(_safe_difference(item))
                     if outcome.status != "FAILED" and companion_cdx(source_dbf):
                         vfp_errors = verify_vfp_roundtrip(
                             source_dbf,

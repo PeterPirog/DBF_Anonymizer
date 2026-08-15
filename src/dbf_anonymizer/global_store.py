@@ -322,7 +322,9 @@ class GlobalDictionaryStore:
                 continue
             placeholders = ",".join("?" for _ in batch)
             rows = self.connection.execute(
-                f"SELECT original, byte_length FROM text_map "
+                # Fragment dynamiczny składa się wyłącznie ze znaczników
+                # SQLite ``?``; wszystkie wartości są parametrami.
+                f"SELECT original, byte_length FROM text_map "  # nosec B608
                 f"WHERE original IN ({placeholders})",
                 batch,
             ).fetchall()
@@ -566,14 +568,22 @@ class GlobalDictionaryStore:
         source_column: str,
         target_column: str,
     ) -> dict[str, str]:
-        if source_column not in {"original", "anonymized"}:
-            raise ValueError(source_column)
+        allowed_pairs = {
+            ("original", "anonymized"),
+            ("anonymized", "original"),
+        }
+        if (source_column, target_column) not in allowed_pairs:
+            raise ValueError(
+                f"Nieprawidłowa para kolumn: {source_column!r}, {target_column!r}"
+            )
         result: dict[str, str] = {}
         for offset in range(0, len(values), _QUERY_BATCH_SIZE):
             batch = values[offset:offset + _QUERY_BATCH_SIZE]
             placeholders = ",".join("?" for _ in batch)
             rows = self.connection.execute(
-                f"SELECT {source_column}, {target_column} FROM text_map "
+                # Nazwy kolumn są ograniczone przez allowed_pairs, a lista IN
+                # zawiera wyłącznie parametry ``?``.
+                f"SELECT {source_column}, {target_column} FROM text_map "  # nosec B608
                 f"WHERE {source_column} IN ({placeholders})",
                 batch,
             ).fetchall()

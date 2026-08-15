@@ -145,3 +145,14 @@ def test_missing_mapping_error_does_not_disclose_value(tmp_path: Path):
 
     assert "PESEL-SECRET" not in str(error.value)
     assert "GLOBAL_MAPPING_MISSING" in str(error.value)
+
+
+def test_lookup_rejects_non_whitelisted_sql_columns(tmp_path: Path):
+    with GlobalDictionaryStore(tmp_path / "dictionary.sqlite3") as store:
+        store.initialize(options={}, salt="", text_encodings=["cp1250"])
+        with pytest.raises(ValueError, match="Nieprawidłowa para kolumn"):
+            store._lookup_many(
+                ["value"],
+                source_column="original",
+                target_column="anonymized FROM metadata; --",
+            )

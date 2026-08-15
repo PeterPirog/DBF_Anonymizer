@@ -102,14 +102,14 @@ def test_false_dbfbridge_cdx_warning_is_ignored_only_for_memo_flag(caplog):
     )
     result = SimpleNamespace(results=[SimpleNamespace(
         status="WARNING",
-        source="pomoc",
+        source="memo_table",
         errors=[],
         warnings=[cdx_warning],
         differences=[],
     )])
     caplog.set_level(logging.INFO, logger="dbf_anonymizer.pipeline")
 
-    memo_only = TableOutcome(table="pomoc.dbf", relative_path="DANE/pomoc.dbf")
+    memo_only = TableOutcome(table="memo_table.dbf", relative_path="DATA/memo_table.dbf")
     apply_reconstruct_result(
         memo_only,
         result,
@@ -119,12 +119,12 @@ def test_false_dbfbridge_cdx_warning_is_ignored_only_for_memo_flag(caplog):
     assert memo_only.status == "OK"
     assert memo_only.warnings == []
     assert any(
-        "event=false_cdx_warning_ignored path=DANE/pomoc.dbf" in
+        "event=false_cdx_warning_ignored path=DATA/memo_table.dbf" in
         record.getMessage()
         for record in caplog.records
     )
 
-    indexed = TableOutcome(table="pomoc.dbf", relative_path="DANE/pomoc.dbf")
+    indexed = TableOutcome(table="memo_table.dbf", relative_path="DATA/memo_table.dbf")
     apply_reconstruct_result(
         indexed,
         result,
@@ -357,7 +357,7 @@ class TestAnonymizeDirectory:
     ):
         prepared = PreparedTable(
             source=str(tmp_path / "problem.dbf"),
-            relative_path="DANE/problem.dbf",
+            relative_path="DATA/problem.dbf",
             job_root=str(tmp_path / "job"),
             jsonl_path=str(tmp_path / "problem.jsonl"),
             schema_path=str(tmp_path / "problem_schema.json"),
@@ -367,7 +367,7 @@ class TestAnonymizeDirectory:
         def returned_failure(*args, **kwargs):
             return TableOutcome(
                 table="problem.dbf",
-                relative_path="DANE/problem.dbf",
+                relative_path="DATA/problem.dbf",
                 status="FAILED",
                 records=12,
                 errors=[
@@ -394,7 +394,7 @@ class TestAnonymizeDirectory:
         assert outcomes[0].status == "FAILED"
         messages = [record.getMessage() for record in caplog.records]
         assert any(
-            "phase=anonymize event=file_failed path=DANE/problem.dbf" in message
+            "phase=anonymize event=file_failed path=DATA/problem.dbf" in message
             and "error_code=DBFBRIDGE_RECONSTRUCTION_FAILED" in message
             and "error=synthetic" in message
             for message in messages
@@ -522,7 +522,7 @@ class TestAnonymizeDirectory:
         output = tmp_path / "output"
         source.mkdir()
         output.mkdir()
-        source_dbf = source / "pomoc.dbf"
+        source_dbf = source / "memo_table.dbf"
         header = bytearray(29)
         header[28] = 0x02
         source_dbf.write_bytes(header)
@@ -531,8 +531,8 @@ class TestAnonymizeDirectory:
             "CDX file is not reconstructed."
         )
         outcome = TableOutcome(
-            table="pomoc.dbf",
-            relative_path="pomoc.dbf",
+            table="memo_table.dbf",
+            relative_path="memo_table.dbf",
             status="WARNING",
             warnings=[false_warning],
         )
@@ -573,16 +573,16 @@ class TestAnonymizeDirectory:
         self,
         sample_dbf_dir: Path,
     ):
-        pomoc = sample_dbf_dir / "DANE" / "pomoc.dbf"
-        pomoc.parent.mkdir()
+        memo_table = sample_dbf_dir / "DATA" / "memo_table.dbf"
+        memo_table.parent.mkdir()
         fake_header = bytearray(29)
         fake_header[28] = 1
-        pomoc.write_bytes(fake_header)
+        memo_table.write_bytes(fake_header)
 
         result = anonymize_directory(
             sample_dbf_dir,
             workers=1,
-            exclude_patterns=["DANE/pomoc.dbf"],
+            exclude_patterns=["DATA/memo_table.dbf"],
         )
 
         assert result.failed == 0
@@ -590,15 +590,15 @@ class TestAnonymizeDirectory:
             (result.output / MANIFEST_FILENAME).read_text(encoding="utf-8")
         )
         assert {item["path"] for item in manifest["excluded_tables"]} == {
-            "DANE/pomoc.dbf"
+            "DATA/memo_table.dbf"
         }
 
     def test_final_warning_has_stable_structured_log(self, caplog):
         outcome = TableOutcome(
             table="problem.dbf",
-            relative_path="DANE/problem.dbf",
+            relative_path="DATA/problem.dbf",
             status="WARNING",
-            warnings=["[CANONICAL_REPAIR_APPLIED] path=DANE/problem.dbf"],
+            warnings=["[CANONICAL_REPAIR_APPLIED] path=DATA/problem.dbf"],
         )
         caplog.set_level(logging.WARNING, logger="dbf_anonymizer.pipeline")
 
@@ -606,19 +606,19 @@ class TestAnonymizeDirectory:
 
         message = caplog.records[-1].getMessage()
         assert "event=file_warning" in message
-        assert "path=DANE/problem.dbf" in message
+        assert "path=DATA/problem.dbf" in message
         assert "warning_code=CANONICAL_REPAIR_APPLIED" in message
 
 
 class TestParallelReconstructionIsolation:
-    """Regresje wykryte podczas konwersji 94 tabel na Windows."""
+    """Regresje izolacji rekonstrukcji wielu tabel na Windows."""
 
     def test_publishes_only_table_artifacts_not_shared_report(
         self,
         tmp_path: Path,
     ):
         staging = tmp_path / "job" / "reconstructed"
-        output = tmp_path / "output" / "DANE"
+        output = tmp_path / "output" / "DATA"
         staging.mkdir(parents=True)
         (staging / "sample.dbf").write_bytes(b"dbf")
         (staging / "sample.fpt").write_bytes(b"fpt")
@@ -640,8 +640,8 @@ class TestParallelReconstructionIsolation:
 
     def test_numeric_width_error_identifies_record_and_field(self):
         schema = TableSchema(
-            table_name="pers_nob_arch.DBF",
-            relative_path="DANE/pers_nob_arch.DBF",
+            table_name="legacy_numeric.DBF",
+            relative_path="DATA/legacy_numeric.DBF",
             encoding="cp1250",
             has_memo=False,
             fields=(FieldInfo("VALUE", "N", 4, 1),),

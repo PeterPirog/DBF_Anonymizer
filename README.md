@@ -2,6 +2,12 @@
 
 Framework do anonimizacji plików DBF (Visual FoxPro 9.0) z odwracalnym słownikiem.
 
+> **Ważne:** jest to odwracalna pseudonimizacja, a nie nieodwracalna
+> anonimizacja w znaczeniu prawnym. Słownik umożliwia odzyskanie oryginałów,
+> a pola pozostawione w trybie `identity` lub `memo=keep` nadal mogą zawierać
+> dane wrażliwe. Ocenę ryzyka i podstawę prawną należy ustalić dla konkretnego
+> zbioru danych.
+
 Narzędzie zastępuje dane we wszystkich plikach `.dbf` w katalogu źródłowym, tworząc
 katalog wyjściowy z **identyczną strukturą plików DBF**, ale z zaanonimizowanymi danymi.
 Wszystkie pola tekstowe `C` we wszystkich tabelach korzystają z jednego globalnego
@@ -63,8 +69,9 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-Wymaga Python ≥ 3.10. Zależności: `dbfbridge` (z [dbfbridge repo](https://github.com/PeterPirog/dbfbridge)),
-`dbf>=0.99.11` (tylko do testów/reconstruct).
+Wymaga Python ≥ 3.10. Zależność `dbfbridge` jest przypięta do konkretnego
+commitu z [repozytorium dbfbridge](https://github.com/PeterPirog/dbfbridge).
+Pakiet `dbf==0.99.11` jest zależnością deweloperską używaną przez testy.
 
 Dla źródeł z CDX wymagany jest Windows i zarejestrowany serwer COM pełnego
 Visual FoxPro (`VisualFoxPro.Application`).
@@ -78,8 +85,8 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Przykład zawiera ścieżki `D:\DANE_WOM\CWOM-B`, katalogi wynikowe pod
-`D:\Warp_directory` oraz instalację
+Przykład zawiera ścieżki `C:\Data\LegacyDB`, katalogi wynikowe pod
+`C:\DBF_Work` oraz instalację
 `C:\Program Files (x86)\Microsoft Visual FoxPro 9\vfp9.exe`. Po sprawdzeniu
 wartości anonimizację uruchamia krótkie polecenie:
 
@@ -114,17 +121,17 @@ Można też uruchomić przez `python -m dbf_anonymizer <command>`.
 dbf-anonymizer anonymize
 
 # Wersja minimalna: wynik i słownik powstaną obok katalogu źródłowego
-dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B"
+dbf-anonymizer anonymize "C:\Data\LegacyDB"
 
-# Tylko własny katalog wyniku: słownik powstanie obok niego jako CWOM-B_dict
-dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
-  --out "D:\Warp_directory\CWOM-B_anonymized"
+# Tylko własny katalog wyniku: słownik powstanie obok niego jako LegacyDB_dict
+dbf-anonymizer anonymize "C:\Data\LegacyDB" `
+  --out "C:\DBF_Work\LegacyDB_anonymized"
 
 # Recovery (wymaga katalogu zaanonimizowanego i słowników)
-dbf-anonymizer recover "D:\DANE_WOM\CWOM-B_anonymized" "D:\DANE_WOM\CWOM-B_dict"
+dbf-anonymizer recover "C:\Data\LegacyDB_anonymized" "C:\Data\LegacyDB_dict"
 
 # Self-test — weryfikacja round-trip
-dbf-anonymizer self-test "D:\DANE_WOM\CWOM-B"
+dbf-anonymizer self-test "C:\Data\LegacyDB"
 ```
 
 Bez `--out` wynik trafia do `<katalog_źródłowy>_anonymized`. Bez `--dict-dir`
@@ -172,12 +179,12 @@ postęp tabel, wykryte kodowania, rozmiar alfabetu oraz kontrolę pojemności. P
 log UTF-8 można zapisać opcją:
 
 ```powershell
-python -m dbf_anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
-  --out "D:\Warp_directory\CWOM-B_anonymized" `
-  --dict-dir "D:\Warp_directory\CWOM-B_dictionary" `
+python -m dbf_anonymizer anonymize "C:\Data\LegacyDB" `
+  --out "C:\DBF_Work\LegacyDB_anonymized" `
+  --dict-dir "C:\DBF_Work\LegacyDB_dict" `
   --salt "TAJNA-STALA-SOL" --workers 0 `
   --log-level INFO `
-  --log-file "D:\Warp_directory\CWOM-B_conversion.log"
+  --log-file "C:\DBF_Work\LegacyDB_conversion.log"
 ```
 
 Kody błędów, np. `TEXT_ENCODING_ERROR`, `INCONSISTENT_TEXT_BYTE_LENGTH` i
@@ -209,9 +216,9 @@ FPT; pozostałe ostrzeżenia rekonstrukcji nadal blokują zielony wynik.
 `FOXUSER.DBF` jest domyślnie pomijany jako zasób ustawień środowiska VFP.
 Każde pominięcie jest zapisane w logu jako `event=file_excluded` i w manifeście
 `excluded_tables`. Tabel aplikacyjnych nie należy pomijać tylko po to, aby
-ominąć rzeczywisty błąd CDX. Tabela, np. `pomoc.dbf`, która ma tylko
-`pomoc.fpt` i flagę `0x02`, jest przetwarzana normalnie i nie wymaga
-`pomoc.cdx`. Świadome wykluczenie ma postać
+ominąć rzeczywisty błąd CDX. Tabela, np. `memo_table.dbf`, która ma tylko
+`memo_table.fpt` i flagę `0x02`, jest przetwarzana normalnie i nie wymaga
+`memo_table.cdx`. Świadome wykluczenie ma postać
 `--exclude "ARCHIWUM/stara_tabela.dbf"` albo wpisu o tej samej wartości w
 `DBF_ANON_EXCLUDE`. Opcja `--include-system-files` włącza również `FOXUSER.DBF`.
 
@@ -303,11 +310,17 @@ zmiennych repozytorium `VFP_SELF_HOSTED=true` i `VFP_FIXTURE_PATH` wskazującej
 lokalny katalog testowy DBF/FPT/CDX na runnerze.
 
 Dokumentacja: [operacje](docs/OPERATIONS.md),
+[architektura](docs/ARCHITECTURE.md),
 [bezpieczeństwo słownika](docs/SECURITY.md),
-[benchmarki](docs/BENCHMARKS.md).
+[benchmarki](docs/BENCHMARKS.md) i
+[checklista publikacji](docs/PUBLICATION_CHECKLIST.md).
+Zmiany wersji opisuje [CHANGELOG.md](CHANGELOG.md).
 
 Fixture DBF generowane przez bibliotekę `dbf` (VfpTable, cp1250, memo, polskie znaki,
 deleted records, kolumny unikalne i nieunikalne).
+
+Manifest wyniku nie zapisuje bezwzględnej ścieżki stanowiska operatora. Zawiera
+jedynie nazwę katalogu źródłowego oraz względne ścieżki artefaktów.
 
 ## Architektura
 
@@ -342,9 +355,11 @@ tests/
 Repozytorium ignoruje:
 - `dictionary.sqlite3*`, `dictionary_*.json` — słowniki (SENSITIWNE)
 - `*_anonymized/`, `*_recovered/` — katalogi wyjściowe
-- `var/` — pośrednie JSONL
+- `var/`, `.*.anon-temp-*`, `.*.recover-temp-*`, `.*.selftest-*` — dane
+  pośrednie i katalogi stagingowe
 - `*.dbf`, `*.fpt`, `*.cdx` — pliki DBF (nie wysyłaj danych przez git)
 
 ## Licencja
 
-MIT
+[MIT](LICENSE). Visual FoxPro jest produktem firmy Microsoft i nie jest
+dołączony do tego repozytorium.

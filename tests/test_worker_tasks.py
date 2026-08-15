@@ -40,11 +40,11 @@ def test_reconstruct_repairs_returned_canonical_failure_after_raw_patch(
     staging = tmp_path / "staging"
     output = tmp_path / "output"
     source_dir.mkdir()
-    records = source_dir / "indexy_4.jsonl"
+    records = source_dir / "indexed_table.jsonl"
     records.write_text("{}\n", encoding="utf-8")
     raw_records = source_dir / "raw.jsonl"
     raw_records.write_text("{}\n", encoding="utf-8")
-    schema = source_dir / "indexy_4_schema.json"
+    schema = source_dir / "indexed_table_schema.json"
     schema.write_text("{}", encoding="utf-8")
     item = SimpleNamespace(
         status="FAILED",
@@ -59,7 +59,7 @@ def test_reconstruct_repairs_returned_canonical_failure_after_raw_patch(
 
     def fake_reconstruct(**kwargs):
         staging.mkdir(parents=True, exist_ok=True)
-        (staging / "indexy_4.dbf").write_bytes(b"dbf")
+        (staging / "indexed_table.dbf").write_bytes(b"dbf")
         return reconstruction
 
     published: list[str] = []
@@ -81,15 +81,15 @@ def test_reconstruct_repairs_returned_canonical_failure_after_raw_patch(
     )
     monkeypatch.setattr(
         "dbf_anonymizer.worker_tasks.publish_reconstructed_table",
-        lambda *args, **kwargs: published.append("indexy_4.dbf"),
+        lambda *args, **kwargs: published.append("indexed_table.dbf"),
     )
 
     result = _reconstruct_isolated(
         source_dir=source_dir,
         staging_output=staging,
         output_parent=output,
-        table_stem="indexy_4",
-        relative_path="DANE/indexy_4.DBF",
+        table_stem="indexed_table",
+        relative_path="DATA/indexed_table.DBF",
         schema=SimpleNamespace(fields=()),
         records_path=records,
         raw_records_path=raw_records,
@@ -104,4 +104,4 @@ def test_reconstruct_repairs_returned_canonical_failure_after_raw_patch(
     assert item.input_canonical_sha256 == "repaired"
     assert item.reconstructed_canonical_sha256 == "repaired"
     assert "CANONICAL_MISMATCH_REPAIRED_BY_RAW_IDENTITY_PATCH" in item.warnings[0]
-    assert published == ["indexy_4.dbf"]
+    assert published == ["indexed_table.dbf"]

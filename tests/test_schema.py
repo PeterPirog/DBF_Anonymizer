@@ -8,8 +8,8 @@ def test_loads_dbfbridge_decimal_count_and_declared_encoding(tmp_path: Path):
     schema_path = tmp_path / "table_schema.json"
     schema_path.write_text(
         json.dumps({
-            "table": "pers_nob_arch",
-            "relative_path": "DANE/pers_nob_arch.DBF",
+            "table": "legacy_numeric",
+            "relative_path": "DATA/legacy_numeric.DBF",
             "text_encoding": {
                 "declared_or_detected_encoding": "cp852",
             },
@@ -37,7 +37,7 @@ def test_dbfbridge_structural_index_field_is_treated_as_combined_table_flags(
     schema_path = tmp_path / "memo_schema.json"
     schema_path.write_text(
         json.dumps({
-            "table": "pomoc",
+            "table": "memo_table",
             "dbf": {"structural_index_flag": 0x02},
             "memo": {"has_memo": True},
             "fields": [{"name": "TRESC", "dbf_type": "M", "length": 4}],

@@ -13,8 +13,8 @@ from dbf_anonymizer.schema import load_schema
 
 def test_n_4_1_uses_placeholder_then_restores_raw_bytes(tmp_path: Path):
     schema = TableSchema(
-        table_name="pers_nob_arch.DBF",
-        relative_path="DANE/pers_nob_arch.DBF",
+        table_name="legacy_numeric.DBF",
+        relative_path="DATA/legacy_numeric.DBF",
         encoding="cp1250",
         has_memo=False,
         fields=(FieldInfo("VALUE", "N", 4, 1),),
@@ -59,8 +59,8 @@ def test_dbfbridge_decimal_count_triggers_n_4_1_placeholder(tmp_path: Path):
     schema_path = tmp_path / "table_schema.json"
     schema_path.write_text(
         json.dumps({
-            "table": "pers_nob_arch.DBF",
-            "relative_path": "DANE/pers_nob_arch.DBF",
+            "table": "legacy_numeric.DBF",
+            "relative_path": "DATA/legacy_numeric.DBF",
             "text_encoding": {
                 "declared_or_detected_encoding": "cp1250",
             },

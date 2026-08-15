@@ -1,6 +1,8 @@
 """Strumieniowe testy odwracalności DBF oraz kontrola tabel w VFP."""
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 from itertools import zip_longest
 from pathlib import Path
@@ -11,6 +13,27 @@ from dbfbridge import export_dbf
 from .jsonstream import iter_jsonl
 from .schema import is_data_record
 from .vfp import VfpError, companion_cdx, verify_vfp_open
+
+
+def _safe_value_fingerprint(value: Any) -> dict[str, Any]:
+    """Opisuje wartość bez umieszczania danych źródłowych w logu lub raporcie."""
+
+    try:
+        serialized = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    except (TypeError, ValueError):
+        serialized = f"<{type(value).__module__}.{type(value).__qualname__}>"
+    payload = serialized.encode("utf-8", errors="replace")
+    return {
+        "type": type(value).__name__,
+        "length": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def compare_dbf_canonical(
@@ -87,8 +110,8 @@ def compare_dbf_canonical(
                     {
                         "record": index,
                         "field": key,
-                        "expected": expected.get(key),
-                        "actual": actual.get(key),
+                        "expected": _safe_value_fingerprint(expected.get(key)),
+                        "actual": _safe_value_fingerprint(actual.get(key)),
                     }
                 )
                 if len(differences) >= 20:

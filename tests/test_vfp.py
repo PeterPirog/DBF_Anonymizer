@@ -16,9 +16,9 @@ from dbf_anonymizer.vfp import (
 
 
 def test_companion_cdx_is_case_insensitive(tmp_path: Path):
-    dbf = tmp_path / "INDEXY_4.DBF"
+    dbf = tmp_path / "INDEXED_TABLE.DBF"
     dbf.write_bytes(b"dbf")
-    cdx = tmp_path / "indexy_4.cDx"
+    cdx = tmp_path / "indexed_table.cDx"
     cdx.write_bytes(b"definitions")
 
     assert companion_cdx(dbf) == cdx

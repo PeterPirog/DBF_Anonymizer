@@ -26,8 +26,8 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Szablon jest przygotowany dla źródła `D:\DANE_WOM\CWOM-B`, wyniku i słownika
-w `D:\Warp_directory`, VFP pod
+Szablon jest przygotowany dla źródła `C:\Data\LegacyDB`, wyniku i słownika
+w `C:\DBF_Work`, VFP pod
 `C:\Program Files (x86)\Microsoft Visual FoxPro 9\vfp9.exe` oraz automatycznej
 liczby procesów (`DBF_ANON_WORKERS=0`). Po zapisaniu konfiguracji wystarczy:
 
@@ -40,28 +40,31 @@ brakujące ścieżki z `.env`. Argument podany w poleceniu zastępuje wartość
 domyślną. Zmienna już ustawiona w PowerShell ma pierwszeństwo przed plikiem.
 Nie commituj `.env`; może zawierać tajną sól i prywatne ścieżki.
 
+Przykładowe ścieżki w tym dokumencie są fikcyjne. Nie wpisuj rzeczywistych nazw
+organizacji ani systemów do plików śledzonych przez Git.
+
 ## Anonimizacja
 
 Wersja minimalna — `workers=0` i pozostałe ustawienia domyślne są stosowane
 automatycznie:
 
 ```powershell
-dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B"
+dbf-anonymizer anonymize "C:\Data\LegacyDB"
 ```
 
-Powstaną katalogi `D:\DANE_WOM\CWOM-B_anonymized` oraz
-`D:\DANE_WOM\CWOM-B_dict`.
+Powstaną katalogi `C:\Data\LegacyDB_anonymized` oraz
+`C:\Data\LegacyDB_dict`.
 
 Jeżeli podasz tylko `--out`, słownik nadal zostanie utworzony automatycznie obok
 wyniku:
 
 ```powershell
-dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
-  --out "D:\Warp_directory\CWOM-B_anonymized"
+dbf-anonymizer anonymize "C:\Data\LegacyDB" `
+  --out "C:\DBF_Work\LegacyDB_anonymized"
 ```
 
 W tym przykładzie domyślny słownik trafi do
-`D:\Warp_directory\CWOM-B_dict`. `--dict-dir` jest potrzebne wyłącznie wtedy,
+`C:\DBF_Work\LegacyDB_dict`. `--dict-dir` jest potrzebne wyłącznie wtedy,
 gdy chcesz wskazać inną lokalizację.
 
 Wersja z jawnymi opcjami operacyjnymi:
@@ -69,13 +72,13 @@ Wersja z jawnymi opcjami operacyjnymi:
 ```powershell
 chcp 65001
 $env:PYTHONUTF8 = "1"
-python -m dbf_anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
-  --out "D:\Warp_directory\CWOM-B_anonymized" `
-  --dict-dir "D:\Warp_directory\CWOM-B_dictionary" `
+python -m dbf_anonymizer anonymize "C:\Data\LegacyDB" `
+  --out "C:\DBF_Work\LegacyDB_anonymized" `
+  --dict-dir "C:\DBF_Work\LegacyDB_dict" `
   --salt "STAŁA-TAJNA-SÓL-DLA-TEJ-BAZY" `
   --workers 0 `
   --batch-size 5000 `
-  --log-file "D:\Warp_directory\CWOM-B_anonymize.log"
+  --log-file "C:\DBF_Work\LegacyDB_anonymize.log"
 ```
 
 Gdy źródłowy DBF ma odpowiadający mu CDX, brak Windows, COM VFP, tagów albo
@@ -108,16 +111,16 @@ stron kodowych.
 
 ```powershell
 python -m dbf_anonymizer recover `
-  "D:\Warp_directory\CWOM-B_anonymized" `
-  "D:\Warp_directory\CWOM-B_dictionary" `
-  --out "D:\Warp_directory\CWOM-B_recovered" `
+  "C:\DBF_Work\LegacyDB_anonymized" `
+  "C:\DBF_Work\LegacyDB_dict" `
+  --out "C:\DBF_Work\LegacyDB_recovered" `
   --workers 0 `
-  --log-file "D:\Warp_directory\CWOM-B_recover.log"
+  --log-file "C:\DBF_Work\LegacyDB_recover.log"
 
-python -m dbf_anonymizer self-test "D:\DANE_WOM\CWOM-B" `
+python -m dbf_anonymizer self-test "C:\Data\LegacyDB" `
   --salt "STAŁA-TAJNA-SÓL-DLA-TEJ-BAZY" `
   --workers 0 `
-  --log-file "D:\Warp_directory\CWOM-B_self-test.log"
+  --log-file "C:\DBF_Work\LegacyDB_self-test.log"
 ```
 
 Self-test sprawdza wartości i kolejność rekordów, flagi deleted, liczbę
@@ -152,3 +155,4 @@ kod wyjścia polecenia. Dzięki temu do analizy wystarcza sam pełny plik logu.
 
 Manifest `dbf_anonymizer_manifest.json` zawiera listę opublikowanych artefaktów
 DBF/FPT/CDX, rozmiary, SHA-256 oraz audytowalną listę wykluczonych tabel.
+Pole `source` zawiera tylko nazwę katalogu, nie bezwzględną ścieżkę operatora.
