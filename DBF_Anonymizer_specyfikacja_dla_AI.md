@@ -9,9 +9,10 @@
 
 - Repozytorium: `https://github.com/PeterPirog/DBF_Anonymizer`
 - Gałąź bazowa: `main`
-- Stan odniesienia: commit `0687d5251fe3095b7209bace62b8c51948fb296d`
+- Stan odniesienia: commit `48a5db25d5738c4ee2c51777d6d2a9eb3cd70110`
+- Ostatnia uwzględniona zmiana: PR #9, squash merge do `main`
 - Wersja pakietu w stanie odniesienia: `0.3.0`
-- Data przygotowania dokumentu: 2026-08-15
+- Data aktualizacji dokumentu: 2026-08-15
 - Główna platforma produkcyjna: Windows z Visual FoxPro 9.0
 - Wspierany Python: 3.10 lub nowszy; CI sprawdza 3.10, 3.12 i 3.14
 
@@ -20,6 +21,20 @@ kodu i `git diff`. Jeśli kod na bieżącej gałęzi jest nowszy niż podany com
 model musi porównać dokument z kodem i zachować nowsze, poprawnie przetestowane
 rozwiązania. Nie wolno cofać istniejących zabezpieczeń tylko dlatego, że prostszy
 kod wygląda atrakcyjniej.
+
+Przed rozpoczęciem zadania w Warp model powinien wykonać:
+
+```powershell
+git status --short
+git switch main
+git pull --ff-only origin main
+git rev-parse HEAD
+```
+
+Jeżeli `HEAD` różni się od stanu odniesienia, model MUSI przeczytać nowsze
+commity i dostosować plan; nie wolno resetować ani nadpisywać lokalnych zmian
+użytkownika. Implementację należy prowadzić na osobnej gałęzi. Scalenie do
+`main` wymaga jawnego polecenia operatora.
 
 W tym dokumencie:
 
@@ -564,6 +579,27 @@ Dziwne znaki w konsoli mogą wynikać z kodowania hosta lub fontu i nie muszą
 oznaczać uszkodzenia DBF. Decydujące są schemat kodowania, plik logu UTF-8 i
 self-test.
 
+### 8.6. `pomoc.dbf` z FPT, ale bez CDX
+
+Rzeczywista tabela `DANE/pomoc.dbf` ma plik `pomoc.fpt`, lecz nie ma
+`pomoc.cdx`. Wcześniejszy kod traktował cały bajt 28 jako boolean. Wartość
+`0x02` (memo/FPT) została więc błędnie uznana za żądanie strukturalnego CDX i
+powodowała `SOURCE_CDX_MISSING` przed eksportem.
+
+Regresje obowiązkowe po PR #9:
+
+- maskowanie kombinacji `0x00`, `0x01`, `0x02`, `0x03`, `0x04`, `0x06` i
+  `0x07`;
+- pełny self-test tabeli DBF+FPT z `0x02` i bez CDX;
+- `0x03` bez CDX nadal kończy się `SOURCE_CDX_MISSING` przed eksportem;
+- ucięty nagłówek kończy się stabilnym `DBF_HEADER_TRUNCATED`;
+- późna kontrola przed publikacją nie może ponownie uznać FPT za CDX;
+- wolno odfiltrować wyłącznie fałszywe ostrzeżenie CDX z dbfbridge dla
+  potwierdzonego braku bitu `0x01`.
+
+Nie wolno wykluczać `pomoc.dbf` ani tworzyć sztucznego `pomoc.cdx`. Tabela ma
+zostać normalnie zanonimizowana i odtworzona razem z `pomoc.fpt`.
+
 ---
 
 ## 9. Instalacja i polecenia PowerShell na Windows
@@ -617,6 +653,36 @@ notepad .env
 dbf-anonymizer anonymize
 ```
 
+Domyślna konfiguracja dla obecnego stanowiska operatora powinna wyglądać tak
+(rzeczywistą sól wpisać wyłącznie do lokalnego, ignorowanego `.env`):
+
+```dotenv
+DBF_ANON_SOURCE=D:\DANE_WOM\CWOM-B
+DBF_ANON_OUTPUT=D:\Warp_directory\CWOM-B_anonymized
+DBF_ANON_DICTIONARY=D:\Warp_directory\CWOM-B_dict
+DBF_ANON_RECOVERED=D:\Warp_directory\CWOM-B_recovered
+DBF_ANON_LOG_FILE=D:\Warp_directory\CWOM-B_conversion.log
+DBF_ANON_WORKERS=0
+DBF_ANON_BATCH_SIZE=5000
+DBF_ANON_LOG_LEVEL=INFO
+DBF_ANON_VFP_PROGID=VisualFoxPro.Application
+DBF_ANON_VFP_EXE=C:\Program Files (x86)\Microsoft Visual FoxPro 9\vfp9.exe
+DBF_ANON_SALT=
+DBF_ANON_EXCLUDE=
+```
+
+Po ustawieniu `.env` najkrótsze polecenia to:
+
+```powershell
+dbf-anonymizer anonymize
+dbf-anonymizer self-test
+dbf-anonymizer recover
+```
+
+Po każdym poleceniu trzeba sprawdzić `$LASTEXITCODE`; kod `0` oznacza sukces,
+`1` błąd i brak publikacji, a `2` opublikowany wynik z ostrzeżeniami
+wymagającymi analizy.
+
 `DBF_ANON_VFP_EXE` może wskazywać pełną ścieżkę `vfp9.exe` do wczesnej
 walidacji instalacji. Kontrolowane otwarcie i `REINDEX` nadal MUSZĄ używać COM z
 `DBF_ANON_VFP_PROGID`.
@@ -654,7 +720,7 @@ $env:DBF_ANON_SALT = "TU-WPROWADZ-DLUGA-STALA-TAJNA-SOL"
 
 python -m dbf_anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
   --out "D:\Warp_directory\CWOM-B_anonymized" `
-  --dict-dir "D:\Warp_directory\CWOM-B_dictionary" `
+  --dict-dir "D:\Warp_directory\CWOM-B_dict" `
   --salt $env:DBF_ANON_SALT `
   --workers 0 `
   --batch-size 5000 `
@@ -669,7 +735,7 @@ $LASTEXITCODE
 ```powershell
 python -m dbf_anonymizer recover `
   "D:\Warp_directory\CWOM-B_anonymized" `
-  "D:\Warp_directory\CWOM-B_dictionary" `
+  "D:\Warp_directory\CWOM-B_dict" `
   --out "D:\Warp_directory\CWOM-B_recovered" `
   --workers 0 `
   --batch-size 5000 `
@@ -989,6 +1055,36 @@ Obecna naprawa kanoniczna importuje wewnętrzne elementy
 kontrolowane przy przypiętej wersji dbfbridge, ale stanowi ryzyko przy aktualizacji
 zależności. Test kompatybilności musi wykryć zmianę tych API.
 
+### 14.1. Strategia zależności dbfbridge
+
+Użycie biblioteki dbfbridge nie jest celem samym w sobie. Obecnie pozostaje ona
+przypięta, ponieważ realizuje sprawdzony eksport strumieniowy, schemat metadanych
+oraz rekonstrukcję DBF/FPT. Dla małej, lokalnej niezgodności — takiej jak błędna
+interpretacja maski `structural_index_flag` — preferowana jest wąska warstwa
+zgodności zamiast przepisywania całego importera.
+
+Model MOŻE jednak przenieść potrzebną funkcjonalność do tego repozytorium lub
+napisać ją od nowa, jeżeli zmiana jest uzasadniona testami i upraszcza ryzyko
+utrzymania. W takim przypadku MUSI:
+
+- najpierw spisać faktycznie używane kontrakty `export_dbf`, `reconstruct_dbf`,
+  `_schema.json`, JSONL, memo, deleted records i sum kanonicznych;
+- zachować obsługę cp1250, cp852/Mazovia, surowych nagłówków, FPT,
+  `N/F/L`, backlinku 263 bajtów oraz atomowego zapisu;
+- dodać testy porównawcze starej i nowej implementacji na syntetycznych
+  fixture przed usunięciem zależności;
+- użyć minimalnego zestawu pakietów dostępnych bezpośrednio na PyPI, np.
+  `dbfread>=2.0.7`, `dbf>=0.99.11` i `orjson>=3.10`; `openpyxl`, `polars` oraz
+  `xlsxwriter` dodawać tylko wtedy, gdy projekt rzeczywiście zacznie obsługiwać
+  odpowiadające im formaty;
+- zachować informacje licencyjne i atrybucję dla kodu adaptowanego z projektu
+  dbfbridge;
+- wykonać pełny pytest, Windows CI, self-test oraz realny test VFP/CDX przed
+  usunięciem starej ścieżki.
+
+Nie wolno jednocześnie przepisać eksportera, zmienić formatu słownika i
+zmodyfikować algorytmu anonimizacji w jednym nierozdzielnym PR.
+
 ---
 
 ## 15. Testy deweloperskie
@@ -1000,14 +1096,15 @@ python -m compileall -q src tests
 python -m pytest -ra
 ```
 
-Stan odniesienia po PR #7:
+Stan odniesienia po PR #9, commit
+`48a5db25d5738c4ee2c51777d6d2a9eb3cd70110`:
 
 ```text
-70 passed, 1 skipped
+90 passed, 1 skipped
 ```
 
 Pominięcie dotyczy prawdziwego testu VFP, gdy środowisko nie ma fixture i COM.
-Liczba testów może rosnąć; nie należy wymuszać dokładnie 70, lecz nie wolno
+Liczba testów może rosnąć; nie należy wymuszać dokładnie 90, lecz nie wolno
 tracić istniejących przypadków.
 
 ### 15.2. Zakres testów
@@ -1017,13 +1114,16 @@ tracić istniejących przypadków.
 - `test_global_store.py` — globalna bijekcja, pojemność, nietypowy alfabet,
   stabilność przyrostowa, brak danych w błędach;
 - `test_pipeline.py` — pełny round-trip, wiele tabel, te same nazwy w różnych
-  katalogach, multiprocessing i relacje między tabelami;
+  katalogach, multiprocessing, relacje między tabelami, DBF+FPT bez CDX,
+  preflight i późną kontrolę CDX;
 - `test_atomicfs.py` — pełna publikacja, rollback i `--no-overwrite`;
 - `test_rawpatch.py` — `N(4,1)`, `-32`, surowe bajty;
 - `test_layout.py` — nagłówek 545/808 i 263-bajtowy backlink;
-- `test_schema.py` — `decimal_count` i `declared_or_detected_encoding`;
+- `test_schema.py` — `decimal_count`, `declared_or_detected_encoding` oraz
+  połączoną maskę flag zapisaną przez dbfbridge;
 - `test_worker_tasks.py` — ponowny hash po łatce kanonicznej;
-- `test_vfp.py` — dopasowanie CDX, kopiowanie definicji i prawdziwy fixture VFP;
+- `test_vfp.py` — maski `0x01/0x02/0x04`, ucięty nagłówek, dopasowanie CDX,
+  kopiowanie definicji i prawdziwy fixture VFP;
 - `test_cli.py` — minimalistyczne CLI, domyślne opcje i końcowy kod logu.
 
 ### 15.3. GitHub Actions
@@ -1045,6 +1145,10 @@ VFP_FIXTURE_PATH=<lokalny katalog fixture DBF/FPT/CDX>
 Publiczne zielone CI nie jest wystarczającym dowodem CDX, jeśli job VFP ma
 status `skipped`. Przed wydaniem produkcyjnym dotyczącym CDX MUSI przejść test na
 maszynie z prawdziwym VFP.
+
+PR #9 przeszedł publiczny workflow Windows `tests` dla całej macierzy Pythona.
+Job integracyjny VFP był `skipped`, dlatego nie stanowi to jeszcze dowodu
+otwarcia rzeczywistych tabel CWOM-B w VFP.
 
 ### 15.4. Reguła dla każdej poprawki błędu
 
@@ -1072,7 +1176,7 @@ Pełny pipeline należy mierzyć osobno:
 Measure-Command {
   dbf-anonymizer anonymize "D:\DANE_WOM\CWOM-B" `
     --out "D:\Warp_directory\CWOM-B_anonymized" `
-    --dict-dir "D:\Warp_directory\CWOM-B_dictionary" `
+    --dict-dir "D:\Warp_directory\CWOM-B_dict" `
     --salt $env:DBF_ANON_SALT --workers 0
 }
 ```
@@ -1212,6 +1316,9 @@ pytania brzmią „tak”:
 
 ### VFP/CDX
 
+- [ ] Bajt 28 jest maskowany; tylko bit `0x01` oznacza wymagany CDX.
+- [ ] Tabela DBF+FPT z `0x02` i bez CDX przechodzi anonimizację i recovery.
+- [ ] Kombinacja `0x03` bez CDX kończy się `SOURCE_CDX_MISSING` przed eksportem.
 - [ ] CDX jest znaleziony bez względu na wielkość liter.
 - [ ] Skopiowany CDX służy tylko jako definicja.
 - [ ] VFP wykonał `REINDEX`.
