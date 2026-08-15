@@ -15,6 +15,12 @@ class VfpError(RuntimeError):
     """Błąd otwarcia tabeli albo przebudowy CDX w Visual FoxPro."""
 
 
+TABLE_FLAGS_OFFSET = 28
+STRUCTURAL_CDX_FLAG = 0x01
+MEMO_FILE_FLAG = 0x02
+DATABASE_CONTAINER_FLAG = 0x04
+
+
 @dataclass(frozen=True)
 class VfpVerification:
     dbf: str
@@ -42,11 +48,27 @@ def companion_cdx(dbf_path: str | Path) -> Path | None:
 
 
 def dbf_has_structural_index(dbf_path: str | Path) -> bool:
-    """Czy bajt flag tabeli VFP wskazuje na strukturalny indeks CDX."""
+    """Czy bit ``0x01`` flag tabeli VFP wskazuje na strukturalny CDX.
+
+    Bajt 28 jest maską: ``0x01`` oznacza CDX, ``0x02`` FPT, a ``0x04`` DBC.
+    Nie wolno sprawdzać całego bajtu jako wartości logicznej, bo tabela z samym
+    memo ma wartość ``0x02`` i nie wymaga pliku CDX.
+    """
+
+    return bool(dbf_table_flags(dbf_path) & STRUCTURAL_CDX_FLAG)
+
+
+def dbf_table_flags(dbf_path: str | Path) -> int:
+    """Zwraca pełną maskę flag z bajtu 28 nagłówka DBF."""
 
     with Path(dbf_path).open("rb") as infile:
-        header = infile.read(29)
-    return len(header) >= 29 and bool(header[28])
+        header = infile.read(TABLE_FLAGS_OFFSET + 1)
+    if len(header) <= TABLE_FLAGS_OFFSET:
+        raise VfpError(
+            f"[DBF_HEADER_TRUNCATED] Nagłówek DBF ma mniej niż "
+            f"{TABLE_FLAGS_OFFSET + 1} bajtów: {dbf_path}"
+        )
+    return header[TABLE_FLAGS_OFFSET]
 
 
 def validate_vfp_executable(executable: str | Path | None) -> Path | None:

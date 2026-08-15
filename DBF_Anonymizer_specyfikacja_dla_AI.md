@@ -321,8 +321,9 @@ Kolejność etapów jest częścią kontraktu bezpieczeństwa:
 
 1. Walidacja źródła, opcji, katalogów, liczby workerów i wielkości partii.
 2. Rekurencyjne znalezienie wszystkich DBF danych.
-3. Preflight CDX: odczyt flagi strukturalnego indeksu z nagłówka DBF i
-   natychmiastowy `SOURCE_CDX_MISSING`, jeżeli brak CDX o tym samym rdzeniu.
+3. Preflight CDX: odczyt maski z bajtu 28 nagłówka DBF, sprawdzenie wyłącznie
+   bitu `0x01` i natychmiastowy `SOURCE_CDX_MISSING`, jeżeli brak CDX o tym
+   samym rdzeniu. Bit `0x02` oznacza FPT i sam nie wymaga CDX.
 4. Równoległy eksport każdego DBF przez dbfbridge do izolowanego
    `JSONL + _schema.json`, z memo inline i rekordami deleted.
 5. Jeśli eksport choć jednej tabeli się nie uda — `INCOMPLETE_EXPORT`, brak
@@ -449,9 +450,23 @@ Wymagany algorytm dla każdej tabeli ze strukturalnym CDX:
 8. Ustawić każdy tag jako porządek i wykonać `GO TOP`.
 9. Zamknąć tabelę i zwolnić obiekt COM również po błędzie.
 
-Jeśli źródłowy DBF ma flagę indeksu strukturalnego, ale nie ma odpowiadającego
-CDX, operacja MUSI zakończyć się `SOURCE_CDX_MISSING` przed eksportem i budową
-słownika.
+Bajt 28 nagłówka tabeli VFP jest maską bitową, a nie wartością logiczną:
+
+- `0x01` — strukturalny CDX;
+- `0x02` — plik memo FPT;
+- `0x04` — tabela należy do kontenera DBC.
+
+Tylko bit `flags & 0x01` oznacza wymagany strukturalny CDX. Tabela z FPT i
+wartością `0x02` nie wymaga CDX i MUSI przejść anonimizację, recovery oraz
+self-test. Kombinacje, np. `0x03`, nadal wymagają CDX. Jeśli bit `0x01` jest
+ustawiony, ale nie ma odpowiadającego CDX, operacja MUSI zakończyć się
+`SOURCE_CDX_MISSING` przed eksportem i budową słownika.
+
+dbfbridge zapisuje cały ten bajt pod historyczną nazwą
+`dbf.structural_index_flag` i może wygenerować fałszywe ostrzeżenie CDX dla
+`0x02`. Kod projektu MUSI maskować `0x01` we wszystkich punktach decyzyjnych
+oraz może zignorować tylko to konkretne ostrzeżenie po potwierdzeniu flagi
+źródłowej. Nie wolno wyciszać innych ostrzeżeń rekonstrukcji.
 
 Jeżeli Windows, COM VFP, definicje tagów, `REINDEX` lub weryfikacja zawiodą,
 operacja MUSI zakończyć się `CDX_REINDEX_FAILED` i zablokować publikację.
@@ -824,7 +839,8 @@ logów nie należy publikować razem z kodem.
 | `HEADER_LAYOUT_*` | niebezpieczny/nieznany układ nagłówka; przerwać |
 | `CANONICAL_MISMATCH` | recovery różni się od źródła; FAIL |
 | `CANONICAL_MISMATCH_REPAIRED_BY_RAW_IDENTITY_PATCH` | naprawa potwierdzona ponownym hashem; warning |
-| `SOURCE_CDX_MISSING` | flaga strukturalna bez CDX; przerwać |
+| `SOURCE_CDX_MISSING` | bit `0x01` bez CDX; `0x02` oznacza tylko FPT i nie jest błędem |
+| `DBF_HEADER_TRUNCATED` | nie można odczytać bajtu flag z pełnego nagłówka; przerwać |
 | `CDX_REINDEX_FAILED` | REINDEX/weryfikacja VFP zawiodła; przerwać |
 | `VFP_WINDOWS_REQUIRED` | operacja CDX uruchomiona poza Windows |
 | `VFP_AUTOMATION_FAILED` | PowerShell/COM VFP zwrócił błąd |

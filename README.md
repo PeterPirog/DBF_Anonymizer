@@ -193,18 +193,27 @@ rekonstrukcji wszystkich tabel oraz REINDEX każdego CDX.
 
 ### Wczesna kontrola CDX i wykluczenia
 
-Przed eksportem pipeline odczytuje flagę strukturalnego indeksu z nagłówka
-każdego DBF. Jeżeli flaga jest ustawiona, ale nie istnieje CDX o tym samym
-rdzeniu, operacja kończy się natychmiast kodem `SOURCE_CDX_MISSING`. Brak indeksu
-nie jest więc wykrywany dopiero po zbudowaniu wielomilionowego słownika.
+Przed eksportem pipeline odczytuje bajt 28 nagłówka każdego DBF jako maskę
+flag VFP: `0x01` oznacza strukturalny CDX, `0x02` plik memo FPT, a `0x04`
+powiązanie z kontenerem DBC. Tylko ustawiony bit `0x01` wymaga CDX o tym samym
+rdzeniu; samo `0x02` jest prawidłowym przypadkiem DBF+FPT bez CDX. Gdy brakuje
+CDX wymaganego przez `0x01`, operacja kończy się przed eksportem kodem
+`SOURCE_CDX_MISSING`. Znaczenie bitów jest zgodne z
+[formatem tabel Visual FoxPro 9](https://vfphelp.com/vfp9/_5wn12pc0x.htm).
+
+`dbfbridge` zachowuje ten połączony bajt w historycznie nazwanym polu schematu
+`structural_index_flag`. Warstwa zgodności anonimizera zawsze maskuje `0x01`
+i ignoruje wyłącznie fałszywe ostrzeżenie CDX emitowane dla tabeli z samym
+FPT; pozostałe ostrzeżenia rekonstrukcji nadal blokują zielony wynik.
 
 `FOXUSER.DBF` jest domyślnie pomijany jako zasób ustawień środowiska VFP.
 Każde pominięcie jest zapisane w logu jako `event=file_excluded` i w manifeście
-`excluded_tables`. Tabel aplikacyjnych, np. `pomoc.dbf`, nie należy pomijać tylko
-po to, aby ominąć błąd CDX — najpierw trzeba odzyskać odpowiadający plik CDX.
-Świadome wykluczenie ma postać `--exclude "DANE/pomoc.dbf"` albo wpisu
-`DBF_ANON_EXCLUDE=DANE/pomoc.dbf` w `.env`. Opcja `--include-system-files`
-włącza również `FOXUSER.DBF`.
+`excluded_tables`. Tabel aplikacyjnych nie należy pomijać tylko po to, aby
+ominąć rzeczywisty błąd CDX. Tabela, np. `pomoc.dbf`, która ma tylko
+`pomoc.fpt` i flagę `0x02`, jest przetwarzana normalnie i nie wymaga
+`pomoc.cdx`. Świadome wykluczenie ma postać
+`--exclude "ARCHIWUM/stara_tabela.dbf"` albo wpisu o tej samej wartości w
+`DBF_ANON_EXCLUDE`. Opcja `--include-system-files` włącza również `FOXUSER.DBF`.
 
 `DBF_ANON_VFP_EXE` pozwala wcześnie sprawdzić, czy wskazany `vfp9.exe` istnieje.
 Sam `REINDEX` nadal jest wykonywany przez COM określony w
