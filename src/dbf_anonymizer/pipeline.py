@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+from decimal import Decimal, InvalidOperation
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,6 +244,128 @@ def _apply_reconstruct_result(outcome: TableOutcome, reconstruct_result: Any) ->
         outcome.status = "WARNING"
 
 
+def _numeric_width_context(
+    schema: Any,
+    records: list[dict[str, Any]],
+) -> str | None:
+    """Znajduje pierwszą wartość N/F, która nie mieści się w deklaracji pola.
+
+    dbfbridge zgłasza taki błąd dopiero podczas zapisu i bez nazwy pola ani
+    numeru rekordu. Kontekst jest obliczany wyłącznie po nieudanej rekonstrukcji,
+    więc nie dodaje kosztu do poprawnych tabel.
+    """
+
+    data_records = [
+        record for record in records
+        if record.get("type") not in ("summary", "table")
+    ]
+    for record_index, record in enumerate(data_records, start=1):
+        for field in schema.fields:
+            if not field.is_numeric:
+                continue
+            value = record.get(field.name)
+            if value in (None, ""):
+                continue
+            decimals = int(field.decimal or 0)
+            try:
+                number = Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                continue
+            rendered = format(number, f".{decimals}f")
+            if len(rendered) > field.length:
+                return (
+                    f"record={record_index} field={field.name} "
+                    f"dbf_type={field.dbf_type}({field.length},{decimals}) "
+                    f"rendered={rendered!r} rendered_width={len(rendered)}"
+                )
+    return None
+
+
+def _publish_reconstructed_table(
+    staging_output: Path,
+    output_parent: Path,
+    table_stem: str,
+    *,
+    overwrite: bool,
+) -> None:
+    """Publikuje atomowo wyłącznie artefakty jednej tabeli DBF.
+
+    Raporty dbfbridge pozostają w izolowanym katalogu zadania. Dzięki temu
+    procesy rekonstruujące różne tabele w tym samym katalogu nie współdzielą
+    ``reconstruction_report.jsonl`` ani jego pliku ``.partial``.
+    """
+
+    artifacts = sorted(
+        (
+            path for path in staging_output.iterdir()
+            if path.is_file() and path.stem.casefold() == table_stem.casefold()
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+    if not any(path.suffix.casefold() == ".dbf" for path in artifacts):
+        raise FileNotFoundError(
+            "[RECONSTRUCTED_DBF_MISSING] Rekonstrukcja nie utworzyła DBF "
+            f"dla tabeli {table_stem!r} w {staging_output}"
+        )
+
+    output_parent.mkdir(parents=True, exist_ok=True)
+    for source in artifacts:
+        destination = output_parent / source.name
+        if destination.exists() and not overwrite:
+            raise FileExistsError(f"Plik wynikowy już istnieje: {destination}")
+        temporary = destination.with_name(
+            f".{destination.name}.{os.getpid()}.partial"
+        )
+        temporary.unlink(missing_ok=True)
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _reconstruct_isolated(
+    *,
+    source_dir: Path,
+    staging_output: Path,
+    output_parent: Path,
+    table_stem: str,
+    relative_path: str,
+    schema: Any,
+    records: list[dict[str, Any]],
+    overwrite: bool,
+) -> Any:
+    """Rekonstruuje tabelę bez współdzielenia plików roboczych między workerami."""
+
+    staging_output.mkdir(parents=True, exist_ok=True)
+    try:
+        reconstruction = reconstruct_dbf(
+            source=source_dir,
+            output=staging_output,
+            input_format="jsonl",
+            memo="inline",
+            overwrite=True,
+        )
+    except Exception as exc:
+        numeric_context = _numeric_width_context(schema, records)
+        context = f" path={relative_path}"
+        if numeric_context:
+            context += f" {numeric_context}"
+        raise RuntimeError(
+            f"[RECONSTRUCTION_FAILED]{context} "
+            f"error_type={type(exc).__name__} error={exc}"
+        ) from exc
+
+    if not any(item.status == "FAILED" for item in reconstruction.results):
+        _publish_reconstructed_table(
+            staging_output,
+            output_parent,
+            table_stem,
+            overwrite=overwrite,
+        )
+    return reconstruction
+
+
 def _prepare_export_worker(
     source_path: str,
     relative_path: str,
@@ -326,11 +449,14 @@ def _anonymize_prepared_worker(
 
     output_parent = (Path(output_root) / Path(prepared.relative_path)).parent
     output_parent.mkdir(parents=True, exist_ok=True)
-    reconstruction = reconstruct_dbf(
-        source=anonymous_dir,
-        output=output_parent,
-        input_format="jsonl",
-        memo="inline",
+    reconstruction = _reconstruct_isolated(
+        source_dir=anonymous_dir,
+        staging_output=Path(prepared.job_root) / "reconstructed",
+        output_parent=output_parent,
+        table_stem=Path(prepared.source).stem,
+        relative_path=prepared.relative_path,
+        schema=schema,
+        records=anonymized,
         overwrite=overwrite,
     )
     _apply_reconstruct_result(outcome, reconstruction)
@@ -416,11 +542,14 @@ def _recover_one_table_worker(
 
     output_parent = (Path(output_root) / Path(relative_path)).parent
     output_parent.mkdir(parents=True, exist_ok=True)
-    reconstruction = reconstruct_dbf(
-        source=recovered_dir,
-        output=output_parent,
-        input_format="jsonl",
-        memo="inline",
+    reconstruction = _reconstruct_isolated(
+        source_dir=recovered_dir,
+        staging_output=job_root / "reconstructed",
+        output_parent=output_parent,
+        table_stem=source.stem,
+        relative_path=relative_path,
+        schema=schema,
+        records=recovered,
         overwrite=overwrite,
     )
     _apply_reconstruct_result(outcome, reconstruction)
