@@ -1,0 +1,14 @@
+# P0 acceptance-test pin for the DBF/FPT dependency boundary (REQ-P0-002).
+#
+# This is NOT the runtime dependency range: pyproject.toml stays
+# dbfbridge[write]>=1.1.0,<2.  This file pins the exact public dbfbridge
+# artifact that the acceptance environment (clean-wheel CI job and the
+# local clean-wheel simulation) is tested against.  It must contain exactly
+# one requirement line with an exact == pin; changing or removing it breaks
+# the acceptance evidence (the pinned-artifact tests fail and the CI gate
+# refuses to run without it).
+#
+# Source of truth: the immutable target architecture REQ-P0-002.
+# Bump this pin only together with a re-run of the P0 capability contract.
+
+dbfbridge[write]==1.1.0

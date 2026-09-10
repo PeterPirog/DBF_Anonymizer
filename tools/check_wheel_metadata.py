@@ -1,0 +1,95 @@
+"""P0 wheel metadata verifier (REQ-P0-002 evidence helper).
+
+Usage: python tools/check_wheel_metadata.py <path-to-wheel> [<wheel> ...]
+
+Verifies the built distribution carries the immutable 1.0 identity and the
+exact public dbfbridge dependency contract:
+
+- distribution name ``dbf-anonymizer``;
+- pre-1.0 development version (``1.0.0.dev0`` line);
+- exactly one runtime dependency equivalent to
+  ``Requires-Dist: dbfbridge[write]>=1.1.0,<2``;
+- no Git/VCS (``@``-URL) dependency;
+- no direct ``dbf`` dependency (``dbf`` may arrive only transitively through
+  the dbfbridge ``[write]`` extra).
+"""
+
+from __future__ import annotations
+
+import sys
+import zipfile
+from pathlib import Path
+
+EXPECTED_NAME = "dbf-anonymizer"
+EXPECTED_VERSION_PREFIX = "1.0.0.dev"
+EXPECTED_DBFBRIDGE_REQUIREMENT = "dbfbridge[write]>=1.1.0,<2"
+
+
+def _fail(message: str) -> None:
+    raise SystemExit(f"wheel metadata check FAILED: {message}")
+
+
+def check_wheel(wheel: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_names = [
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_names) != 1:
+            _fail(f"expected exactly one METADATA, found {metadata_names}")
+        metadata = archive.read(metadata_names[0]).decode("utf-8")
+
+    fields: dict[str, list[str]] = {}
+    for line in metadata.splitlines():
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            fields.setdefault(key, []).append(value)
+
+    name = fields.get("Name", [""])[0]
+    if name != EXPECTED_NAME:
+        _fail(f"distribution name is {name!r}, expected {EXPECTED_NAME!r}")
+
+    version = fields.get("Version", [""])[0]
+    if not version.startswith(EXPECTED_VERSION_PREFIX):
+        _fail(f"version {version!r} is not the 1.0 development baseline")
+
+    requirements = fields.get("Requires-Dist", [])
+    dbfbridge_requirements = [
+        r for r in requirements if r.split(";")[0].strip().replace(" ", "").startswith("dbfbridge")
+    ]
+    normalized = [r.split(";")[0].strip().replace(" ", "") for r in dbfbridge_requirements]
+    # setuptools normalizes constraint order; both orderings carry the exact
+    # pinned range dbfbridge[write]>=1.1.0,<2.
+    if normalized != ["dbfbridge[write]<2,>=1.1.0"] and normalized != [
+        "dbfbridge[write]>=1.1.0,<2"
+    ]:
+        _fail(
+            "dbfbridge dependency contract mismatch: "
+            f"{dbfbridge_requirements!r} != [{EXPECTED_DBFBRIDGE_REQUIREMENT!r}]"
+        )
+
+    vcs_requirements = [r for r in requirements if "@" in r]
+    if vcs_requirements:
+        _fail(f"Git/VCS URL dependency present: {vcs_requirements!r}")
+
+    direct_dbf = [
+        r for r in requirements if r.split(";")[0].split("[")[0].strip() == "dbf"
+    ]
+    if direct_dbf:
+        _fail(f"direct dbf dependency present: {direct_dbf!r} (must stay transitive)")
+
+    print(f"wheel metadata check PASSED: {wheel.name}")
+    print(f"  Name={name}  Version={version}")
+    print(f"  Requires-Dist: {dbfbridge_requirements[0]}")
+
+
+def main() -> int:
+    wheels = [Path(arg) for arg in sys.argv[1:]]
+    if not wheels:
+        _fail("no wheel path given")
+    for wheel in wheels:
+        check_wheel(wheel)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

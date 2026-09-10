@@ -1,80 +1,26 @@
-"""DBF_Anonymizer — framework do anonimizacji plików DBF (Visual FoxPro).
+"""DBF_Anonymizer 1.0 development baseline (clean slate).
 
-Public API:
-    from dbf_anonymizer import anonymize_directory, make_dbf_recovery, self_test
+This package is the clean-slate 1.0 line established by REQ-P0-001. It has no
+compatibility obligation toward the historical 0.3 Python API, CLI, JSONL
+pipeline, salt-based pseudonym generator, legacy reversible-store schema, JSON
+v1/v2 recovery formats, legacy module layout or the old VFP/CDX coupling; see
+``docs/migration-1.0-clean-slate.md``.
 
-Anonimizacja zastępuje wartości tekstowe ciągami o identycznej długości bajtowej,
-zachowuje unikalność kolumn unikatowych, pola N/F/L pozostawia bez zmian,
-daty/czas przesuwa o stałą liczbę dni, a pola M/G maskuje ('MEMO') lub zachowuje.
-Globalny słownik SQLite (dictionary.sqlite3) pozwala odtworzyć oryginalne dane —
-jest SENSITIWNY i musi być w .gitignore. Odczyt starszych JSON v1/v2 pozostaje
-dostępny dla zgodności wstecznej.
+The public 1.0 operation surface (``capabilities``, ``build_plan``,
+``preflight``, ``pseudonymize``, ``verify_dataset``, ``recover``,
+``create_transfer_bundle``, ``verify_transfer_bundle``) is defined by the
+immutable target architecture and is intentionally NOT implemented yet. This
+package does not export placeholder or stub operations in its place: at this
+stage an intentionally small public surface is preferable to false
+functionality.
+
+The sole DBF/FPT parser and writer boundary for 1.0 is the published public
+``dbfbridge[write]>=1.1.0,<2`` distribution, imported through the public
+``dbfbridge`` namespace (Direct Read + Direct Write).
 """
+
 from __future__ import annotations
 
-from .anonymizer import (
-    AnonymizeOptions,
-    anonymize_records,
-    build_shared_dictionary,
-    recover_records,
-)
-from .dictionary import (
-    FieldDict,
-    TableDict,
-    dictionary_filename,
-    load_dictionary,
-    save_dictionary,
-)
-from .global_store import (
-    GLOBAL_DICTIONARY_FILENAME,
-    GlobalDictionaryStore,
-    global_dictionary_path,
-)
-from .pipeline import (
-    AnonymizeResult,
-    RecoveryResult,
-    SelfTestReport,
-    TableOutcome,
-    anonymize_directory,
-    make_dbf_recovery,
-    self_test,
-)
-from .schema import FieldInfo, TableSchema, load_schema
-from .transforms import mask_char, mask_memo, shift_date, shift_datetime
+__version__ = "1.0.0.dev0"
 
-__all__ = [
-    # Pipeline (główne API)
-    "anonymize_directory",
-    "make_dbf_recovery",
-    "self_test",
-    # Typy wyników
-    "AnonymizeResult",
-    "RecoveryResult",
-    "SelfTestReport",
-    "TableOutcome",
-    # Opcje i per-tabela
-    "AnonymizeOptions",
-    "anonymize_records",
-    "build_shared_dictionary",
-    "recover_records",
-    # Słownik
-    "FieldDict",
-    "TableDict",
-    "dictionary_filename",
-    "save_dictionary",
-    "load_dictionary",
-    "GLOBAL_DICTIONARY_FILENAME",
-    "GlobalDictionaryStore",
-    "global_dictionary_path",
-    # Schema
-    "FieldInfo",
-    "TableSchema",
-    "load_schema",
-    # Transforms
-    "mask_char",
-    "mask_memo",
-    "shift_date",
-    "shift_datetime",
-]
-
-__version__ = "0.3.0"
+__all__: list[str] = []
