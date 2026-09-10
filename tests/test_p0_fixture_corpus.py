@@ -17,6 +17,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from decimal import Decimal
 from pathlib import Path
@@ -606,9 +607,16 @@ def test_vfp_dbc_bound_fixture() -> None:
     assert schema.record_count == 4
     # The genuine VFP-written backlink is a Windows-backslash relative path;
     # it must resolve to the committed DBC container from the table location.
+    # The backlink is a Windows-format relative path by DBF format definition:
+    # on Windows it resolves natively; on POSIX runners the logical target is
+    # derived with the documented separator semantics (no binary is modified).
     assert schema.dbc_backlink_path == "..\\fixture.dbc"
-    resolved = (table_path.parent / schema.dbc_backlink_path).resolve()
+    backlink_native = schema.dbc_backlink_path
+    backlink_posix = schema.dbc_backlink_path.replace("\\", "/")
+    resolved = (table_path.parent / backlink_posix).resolve()
     assert resolved == (FIXTURE_ROOT / "vfp" / "fixture.dbc").resolve()
+    if sys.platform == "win32":
+        assert (table_path.parent / backlink_native).resolve() == resolved
     for container_id in ("vfp.fixture_dbc", "vfp.fixture_dct", "vfp.fixture_dcx"):
         container_entry = _fixture_entry(manifest, container_id)
         assert (FIXTURE_ROOT / container_entry["path"]).is_file()
