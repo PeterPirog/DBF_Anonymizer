@@ -1,0 +1,911 @@
+{
+  "coverage": {
+    "character": [
+      "plain.plain_customers",
+      "text.cp1250",
+      "text.cp852",
+      "text.mazovia",
+      "nullable.nullable_varchar",
+      "topology.north_registry",
+      "topology.south_registry"
+    ],
+    "cp1250": [
+      "plain.plain_customers",
+      "text.cp1250",
+      "memos.memo_payloads"
+    ],
+    "cp852": [
+      "text.cp852"
+    ],
+    "currency": [
+      "plain.plain_customers"
+    ],
+    "date": [
+      "plain.plain_customers",
+      "nullable.nullable_varchar"
+    ],
+    "datetime": [
+      "plain.plain_customers"
+    ],
+    "dbc_bound_metadata": [
+      "vfp.dbc_bound_table",
+      "vfp.fixture_dbc",
+      "vfp.fixture_dct",
+      "vfp.fixture_dcx"
+    ],
+    "dbf_fpt": [
+      "memos.memo_payloads",
+      "memos.memo_payloads.fpt",
+      "malformed.missing_memo_companion"
+    ],
+    "deleted_records": [
+      "plain.plain_customers",
+      "topology.north_registry",
+      "memos.memo_payloads"
+    ],
+    "double": [
+      "plain.plain_customers"
+    ],
+    "duplicate_basenames": [
+      "topology.north_registry",
+      "topology.south_registry"
+    ],
+    "float": [
+      "plain.plain_customers"
+    ],
+    "general_picture_payloads": [
+      "memos.memo_payloads",
+      "memos.memo_payloads.fpt"
+    ],
+    "integer": [
+      "plain.plain_customers",
+      "nullable.nullable_varchar",
+      "topology.north_registry"
+    ],
+    "logical": [
+      "plain.plain_customers",
+      "nullable.nullable_varchar"
+    ],
+    "malformed_inputs": [
+      "malformed.truncated_records",
+      "malformed.unknown_version",
+      "malformed.corrupt_header_length",
+      "malformed.missing_memo_companion"
+    ],
+    "mazovia_piast_text": [
+      "text.mazovia"
+    ],
+    "memo": [
+      "memos.memo_payloads",
+      "memos.memo_payloads.fpt",
+      "malformed.missing_memo_companion"
+    ],
+    "negative_opaque_field_cases": [
+      "tests.test_p0_fixture_corpus::test_opaque_field_write_refusal",
+      "tests.test_p0_fixture_corpus::test_unknown_projection_negative",
+      "tests.test_p0_fixture_corpus::test_malformed_fixtures_fail_with_typed_dependency_errors",
+      "tests.test_p0_fixture_corpus::test_missing_memo_companion_behavior"
+    ],
+    "null_values_and_nullflags": [
+      "nullable.nullable_varchar"
+    ],
+    "numeric": [
+      "plain.plain_customers",
+      "nullable.nullable_varchar",
+      "topology.south_registry"
+    ],
+    "plain_dbf": [
+      "plain.plain_customers"
+    ],
+    "shared_cross_table_keys": [
+      "topology.north_registry",
+      "topology.south_registry"
+    ],
+    "standalone_idx_inventory": [
+      "vfp.standalone_idx_table",
+      "vfp.code_idx_idx"
+    ],
+    "structural_cdx_metadata": [
+      "vfp.structural_indexed_table",
+      "vfp.structural_indexed_table_cdx"
+    ],
+    "varchar_significant_trailing_spaces": [
+      "nullable.nullable_varchar"
+    ]
+  },
+  "fixtures": [
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "plain_dbf",
+        "deleted_records",
+        "character",
+        "integer",
+        "numeric",
+        "float",
+        "currency",
+        "double",
+        "logical",
+        "date",
+        "datetime",
+        "cp1250"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 2,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "I",
+          "N",
+          "F",
+          "Y",
+          "B",
+          "L",
+          "D",
+          "T"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 6
+      },
+      "expectations": {
+        "deleted_physical_indexes": [
+          3,
+          5
+        ],
+        "values": {
+          "row0": {
+            "AMOUNT": 123.45,
+            "CNT": -42,
+            "CODE": "SYNTH-01",
+            "FLAG": true,
+            "MEASURE": 3.14159,
+            "MOMENT": "2028-02-29T23:59:58",
+            "PRICE": "1234.5678",
+            "RATIO": 2.5,
+            "WHEN": "2028-02-29"
+          }
+        }
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "plain.plain_customers",
+      "path": "plain/plain_customers.dbf",
+      "sha256": "2d0d7ef653eaea54bbf3ada0242e3bcbe69369decc83e31ab7c10fdb1aa5b3cd",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "character",
+        "cp1250"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "C"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 2
+      },
+      "expectations": {
+        "row0_text": "Zażółć gęślą jaźń ĄĆĘŁŃÓŚŹŻ ąćęłńóśźż SYNTH-P1250"
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "text.cp1250",
+      "path": "text/text_cp1250.dbf",
+      "sha256": "983b8bef29b075a245b797ebd9aec0311321cc4a845d940db82fd00c0f618fb3",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "character",
+        "cp852"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp852",
+        "field_classes": [
+          "C",
+          "C"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 100,
+        "memo_companion_present": false,
+        "record_count": 2
+      },
+      "expectations": {
+        "row0_text": "Zażółć gęślą jaźń ĄĆĘŁŃÓŚŹŻ ąćęłńóśźż SYNTH-P852"
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "text.cp852",
+      "path": "text/text_cp852.dbf",
+      "sha256": "bea3c498beb2deac0b9e77ffdf8938ed70d1834ba33600914db20eb7ff2ffd03",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "character",
+        "mazovia_piast_text"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "mazovia",
+        "field_classes": [
+          "C",
+          "C"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 105,
+        "memo_companion_present": false,
+        "record_count": 2
+      },
+      "expectations": {
+        "row0_text": "Zażółć gęślą jaźń ĄĆĘŁŃÓŚŹŻ ąćęłńóśźż SYNTH-MAZOVIA"
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "text.mazovia",
+      "path": "text/text_mazovia.dbf",
+      "sha256": "3784d2623f62d89a76d21eb1d587388d128744583b36f54ef063b048c805e9e1",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "null_values_and_nullflags",
+        "varchar_significant_trailing_spaces",
+        "character",
+        "integer",
+        "numeric",
+        "logical",
+        "date"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 50,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "V",
+          "N",
+          "I",
+          "C",
+          "D"
+        ],
+        "has_memo": false,
+        "has_nullflags": true,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 4
+      },
+      "expectations": {
+        "null_row": {
+          "CNT": null,
+          "QTY": null,
+          "WHEN": null
+        },
+        "row0_varchar": "padded   ",
+        "system_column": "_NULLFLAGS",
+        "zero_row": {
+          "CNT": 0,
+          "QTY": 0.0
+        }
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "nullable.nullable_varchar",
+      "path": "nullable/nullable_varchar.dbf",
+      "sha256": "ee66dbe87d5a992c3026b869503d2c6e876e3dc51804bb763d5b281d68bd36b6",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "duplicate_basenames",
+        "shared_cross_table_keys",
+        "character",
+        "integer",
+        "deleted_records"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 1,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "C",
+          "I"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 5
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "topology.north_registry",
+      "path": "topology/north/registry.dbf",
+      "relationships": {
+        "duplicate_basename": "registry.dbf",
+        "key_uniqueness": "unique-active-rows",
+        "role": "primary-key-side",
+        "shared_key_field": "KEY",
+        "shared_key_values": [
+          "KEY0001",
+          "KEY0002",
+          "KEY0003",
+          "KEY0004"
+        ]
+      },
+      "sha256": "9c5c01ef7acf214872c28ebfbb04d0e5d4214268e5e751b3a820f05cb44dac6d",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "duplicate_basenames",
+        "shared_cross_table_keys",
+        "character",
+        "numeric"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 1,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 6
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "topology.south_registry",
+      "path": "topology/south/registry.dbf",
+      "relationships": {
+        "duplicate_basename": "registry.dbf",
+        "key_uniqueness": "duplicates-and-empty-key-rows-present",
+        "role": "foreign-key-side",
+        "shared_key_field": "KEY",
+        "shared_key_values": [
+          "KEY0001",
+          "KEY0002",
+          "KEY0003",
+          "KEY0004"
+        ]
+      },
+      "sha256": "83d3e5648fa4a84f3e2a3004e75f779c0e46a01346f3d17aa918c3a3b66c0221",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf",
+      "coverage": [
+        "dbf_fpt",
+        "memo",
+        "general_picture_payloads",
+        "deleted_records",
+        "cp1250"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 1,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "M",
+          "M",
+          "G",
+          "P"
+        ],
+        "has_memo": true,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": true,
+        "record_count": 3
+      },
+      "expectations": {
+        "deleted_memo_row_index": 2,
+        "null_memo_row_index": 1,
+        "row0": {
+          "BIN_hex": "53594e54482d42494e4152592d4d454d4f2d000102",
+          "GEN_hex": "53594e5448455449432d47454e4552414c2d5041594c4f41442d000102",
+          "PIC_hex": "53594e5448455449432d504943545552452d5041594c4f41442d0102",
+          "TXT": "Zażółć gęślą jaźń SYNTH-MEMO"
+        }
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "memos.memo_payloads",
+      "path": "memos/memo_payloads.dbf",
+      "sha256": "f6840f1a6015e926cb7b7db1a03c4dedac607f200534d5aa4c73a20cb020fe9f",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "fpt",
+      "coverage": [
+        "dbf_fpt",
+        "memo",
+        "general_picture_payloads"
+      ],
+      "expectations": {
+        "companion_of": "memos.memo_payloads"
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "memos.memo_payloads.fpt",
+      "path": "memos/memo_payloads.fpt",
+      "sha256": "a814b2a4e57899dfbbefd88ab0044b4c74103ef692e9ec8a6ff8be86d8f97027",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf-malformed",
+      "coverage": [
+        "malformed_inputs"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 3
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "malformed.truncated_records",
+      "malformed": {
+        "expected": {
+          "error_code": "DBF_TRUNCATED",
+          "operation": "iter_records"
+        },
+        "mutation": "remove exactly one trailing record image (len(data) - record_length bytes kept)",
+        "mutation_bytes": 17
+      },
+      "path": "malformed/truncated_records.dbf",
+      "sha256": "4591c2470f34b60196b80d620a03968d636a78b8949e958404af92287ea07ce1",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf-malformed",
+      "coverage": [
+        "malformed_inputs"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 3
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "malformed.unknown_version",
+      "malformed": {
+        "expected": {
+          "error_code": "DBF_FORMAT_UNSUPPORTED",
+          "operation": "read_schema"
+        },
+        "mutation": "header byte 0 set to 0x99",
+        "mutation_bytes": 1
+      },
+      "path": "malformed/unknown_version.dbf",
+      "sha256": "5c7fb70db025f3a6b6b4bd7fef5c34ca0cf991676c3d743c6215f592b9e531cf",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf-malformed",
+      "coverage": [
+        "malformed_inputs"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N"
+        ],
+        "has_memo": false,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 3
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "malformed.corrupt_header_length",
+      "malformed": {
+        "expected": {
+          "error_code": "DBF_TRUNCATED",
+          "operation": "read_schema"
+        },
+        "mutation": "little-endian header bytes 8-9 set to 65000 (declared header length far beyond EOF)",
+        "mutation_bytes": 2
+      },
+      "path": "malformed/corrupt_header_length.dbf",
+      "sha256": "48b320be03bc375f50958c65e75b1d1b63946342d8021c3f35fd1cfab764dca0",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf-missing-companion",
+      "coverage": [
+        "malformed_inputs",
+        "dbf_fpt",
+        "memo"
+      ],
+      "dbf": {
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "M"
+        ],
+        "has_memo": true,
+        "has_nullflags": false,
+        "has_structural_cdx": false,
+        "inspection_warnings": [
+          "Memo fields 'TXT' require a FPT companion file (.fpt) that was not found; memo values cannot be read."
+        ],
+        "language_driver": 200,
+        "memo_companion_present": false,
+        "record_count": 1
+      },
+      "generated_by": "tools/generate_p0_fixtures.py",
+      "id": "malformed.missing_memo_companion",
+      "malformed": {
+        "expected": {
+          "operations": [
+            {
+              "operation": "inspect_table",
+              "result": "companion-warning"
+            },
+            {
+              "error_code": "FPT_REQUIRED_MISSING",
+              "memo": "inline",
+              "operation": "iter_records"
+            },
+            {
+              "operation": "iter_records",
+              "result": "lazy-memo-values"
+            }
+          ]
+        },
+        "mutation": "companion produced by construction: the synthetic DBF was built through public write_table() in a staging directory and only the DBF was published; the FPT companion was intentionally not shipped",
+        "mutation_bytes": 0
+      },
+      "path": "malformed/missing_memo_companion.dbf",
+      "sha256": "49762d3b1aca6f4057835b6ea234ed30f633d23b030805234168fba3b55fcd40",
+      "synthetic": true
+    },
+    {
+      "artifact_class": "dbf_free_table_structural_cdx",
+      "coverage": [
+        "structural_cdx_metadata"
+      ],
+      "dbf": {
+        "companion_cdx_present": true,
+        "dbc_backlink_path_posix": null,
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": true,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.structural_indexed_table",
+      "path": "vfp/structural/indexed_table.dbf",
+      "sha256": "3076275e4bcd174500a9e1954596b5fd62f826e957fd9e3136b7bfe45e6054aa",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "structural_cdx",
+      "coverage": [
+        "structural_cdx_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.structural_indexed_table_cdx",
+      "path": "vfp/structural/indexed_table.cdx",
+      "relationships": {
+        "authoritative_producer": "Visual FoxPro 9",
+        "companion_filename": "INDEXED_TABLE.CDX",
+        "companion_of": "vfp.structural_indexed_table"
+      },
+      "sha256": "b5ab7ee37138971be4c565dcb2871879b700b416d8861ae2f5203a9e695a3fe7",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbf_dbc_bound",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "dbf": {
+        "companion_cdx_present": false,
+        "dbc_backlink_path_posix": "../fixture.dbc",
+        "dbc_bound": true,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.dbc_bound_table",
+      "path": "vfp/dbc/dbc_bound_table.dbf",
+      "relationships": {
+        "dbc_backlink_resolves_to": "vfp/fixture.dbc",
+        "dbc_container": "vfp.fixture_dbc"
+      },
+      "sha256": "e3af637ee9b9ab5a0fa8b5a31ab9a8a0f2ac3979c1110b05ecc8b25a31b27f6e",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_container",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dbc",
+      "path": "vfp/fixture.dbc",
+      "relationships": {
+        "companion_files": [
+          "vfp/fixture.dct",
+          "vfp/fixture.dcx"
+        ],
+        "container_of": "vfp.dbc_bound_table",
+        "minimal": true
+      },
+      "sha256": "66154a52129ddd4941ef300bf7dafa9bf4cc1394379248df91876f2535626fe5",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_companion",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dct",
+      "path": "vfp/fixture.dct",
+      "relationships": {
+        "companion_of": "vfp.fixture_dbc"
+      },
+      "sha256": "5a8f2864f65b65679b7f32371267b439c0a9371a865babf7cc68e8179b04bcc2",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_companion",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dcx",
+      "path": "vfp/fixture.dcx",
+      "relationships": {
+        "companion_of": "vfp.fixture_dbc"
+      },
+      "sha256": "682997f44cf5319a4dfb7d2df5c1294b8b8f5d6c354c1c0ab4fb65af395212a7",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbf_free_table_standalone_idx",
+      "coverage": [
+        "standalone_idx_inventory"
+      ],
+      "dbf": {
+        "companion_cdx_present": false,
+        "dbc_backlink_path_posix": null,
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.standalone_idx_table",
+      "path": "vfp/idx/standalone_idx_table.dbf",
+      "relationships": {
+        "index_inventory_policy": "dbfbridge's public inspection surface does not report standalone IDX companions; IDX semantic validity is established by the VFP reopen/ORDER evidence, not by a parser",
+        "standalone_index": "vfp.code_idx_idx"
+      },
+      "sha256": "4fccc6046832befc79452efd2669975a08635d3dc91749fafd5d1773d3728ee8",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "standalone_idx",
+      "coverage": [
+        "standalone_idx_inventory"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.code_idx_idx",
+      "path": "vfp/idx/code_idx.idx",
+      "relationships": {
+        "authoritative_producer": "Visual FoxPro 9",
+        "created_by": "INDEX ON CODE TO code_idx",
+        "index_of": "vfp.standalone_idx_table"
+      },
+      "sha256": "2fbafb9e4d019480e028be193aac95680476755f994535445775e1dca8ac41f1",
+      "synthetic": true,
+      "vfp_authoritative": true
+    }
+  ],
+  "generator": {
+    "dbfbridge": "1.1.0",
+    "dbfbridge_extra": "write",
+    "dbfbridge_import_namespace": "dbfbridge",
+    "deterministic": true,
+    "memo_block_size": 64,
+    "pinned_last_update": "2026-01-01",
+    "public_apis_used": [
+      "write_table",
+      "read_schema",
+      "iter_records",
+      "inspect_table",
+      "DirectRecord",
+      "FieldInfo",
+      "TableSchema"
+    ],
+    "tool": "tools/generate_p0_fixtures.py"
+  },
+  "manifest_schema": "req-p0-003/1",
+  "vfp_evidence": {
+    "authoritative_producer": "Visual FoxPro 9 (COM automation VisualFoxPro.Application)",
+    "evidence_json": "vfp/vfp_fixture_evidence.json",
+    "generation_prg": "vfp/generate_vfp_fixtures.prg",
+    "hosted_ci_policy": "hosted CI verifies committed SHA-256 values and public dbfbridge metadata facts; VFP/COM is NOT required on hosted CI",
+    "provenance_doc": "vfp/PROVENANCE_VFP.md",
+    "statement": "CDX/IDX/DBC structures were created by Visual FoxPro 9 itself; DBF_Anonymizer implements no CDX/IDX/DBC parser or writer.",
+    "verification_log": "vfp/vfp_gen_log.txt",
+    "vfp_verification": {
+      "dbc_bound": {
+        "dbc_at_create": "FIXTURE.DBC",
+        "dbc_value_after_close_sanitized": "<sanitized> PROJECTS\\<sanitized>\\<sanitized>\\FIXTURE.DBC",
+        "fields": "CODE,AMOUNT,NOTE",
+        "in_dbc_at_create": true,
+        "in_dbc_reopen": true,
+        "reccount": 4,
+        "reopen_dbc": "FIXTURE.DBC"
+      },
+      "raw_log_lines": [
+        "=== VFP synthetic fixture generation ===",
+        "VFP_VERSION=Visual FoxPro 09.00.0000.5815 for Windows",
+        "cleanup_done",
+        "A_RESULT cdx1=INDEXED_TABLE.CDX tagcount=2 tag1=SYNTHCODE expr1=CODE tag2=SYNTHNOTE expr2=NOTE order=SYNTHCODE reccount=4 fields=CODE,AMOUNT,NOTE",
+        "B_RESULT open_dbc=FIXTURE.DBC in_dbc_at_create=T dbc_value_after_close=[<sanitized> PROJECTS\\<sanitized>\\<sanitized>\\FIXTURE.DBC] reopen_dbc=FIXTURE.DBC in_dbc_reopen=T reccount=4 fields=CODE,AMOUNT,NOTE",
+        "C_RESULT ndx1=CODE_IDX.IDX expr=CODE order=CODE_IDX reccount=4 fields=CODE,AMOUNT,NOTE",
+        "=== ALL DONE ==="
+      ],
+      "standalone_idx": {
+        "expr": "CODE",
+        "fields": "CODE,AMOUNT,NOTE",
+        "idx_filename": "CODE_IDX.IDX",
+        "order": "CODE_IDX",
+        "reccount": 4
+      },
+      "structural_cdx": {
+        "cdx_filename": "INDEXED_TABLE.CDX",
+        "expr1": "CODE",
+        "expr2": "NOTE",
+        "fields": "CODE,AMOUNT,NOTE",
+        "order_after_set": "SYNTHCODE",
+        "reccount": 4,
+        "tag1": "SYNTHCODE",
+        "tag2": "SYNTHNOTE",
+        "tagcount": 2
+      }
+    },
+    "vfp_version": "Visual FoxPro 09.00.0000.5815 for Windows"
+  }
+}
