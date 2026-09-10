@@ -24,9 +24,14 @@ ship working 1.0 product operations.
 
 ```text
 python -m pip install -e ".[dev]"
+python -m pip install -r requirements/p0-dbfbridge-tested.txt
 python -m pytest
 python -m build
 ```
+
+The P0 acceptance environment uses the exact public dbfbridge artifact pinned
+in `requirements/p0-dbfbridge-tested.txt` (REQ-P0-002); the runtime metadata
+range stays `dbfbridge[write]>=1.1.0,<2`.
 
 P0 boundary evidence lives in `tests/` (dependency contract, public dbfbridge
 capability contract, architecture boundary, root public API regression) and is

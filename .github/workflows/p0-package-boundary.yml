@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   clean-wheel-boundary:
-    name: Clean environment / wheel resolves public dbfbridge 1.1+
+    name: Clean environment / pinned public dbfbridge 1.1+ acceptance artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,18 +25,25 @@ jobs:
           python -m build
       - name: Verify wheel metadata (identity + dbfbridge contract, no VCS URL)
         run: python tools/check_wheel_metadata.py dist/*.whl
-      - name: Install built wheel into a clean environment
-        # Dependency resolution happens ONLY against the public index; there
-        # is no Git-URL fallback and no repository-checkout install.  If the
-        # public dbfbridge 1.1+ distribution cannot be resolved this step
-        # fails and is reported as an external dependency blocker.
+      - name: Create clean venv and install the exact pinned public dbfbridge acceptance artifact
+        # Resolution happens ONLY against the public index through the
+        # committed exact pin (requirements/p0-dbfbridge-tested.txt).  There
+        # is no Git-URL fallback, no repository-checkout install, no editable
+        # install and no private package source.  If the pinned public
+        # artifact cannot be resolved, this step fails the job.
         run: |
           python -m venv clean-env
           clean-env/bin/python -m pip install --no-cache-dir --upgrade pip
-          clean-env/bin/python -m pip install --no-cache-dir dist/*.whl
+          clean-env/bin/python -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+      - name: Install the built DBF_Anonymizer wheel without dependency resolution
+        run: clean-env/bin/python -m pip install --no-cache-dir --no-deps dist/*.whl
+      - name: pip check (wheel metadata vs installed environment)
+        run: clean-env/bin/python -m pip check
+      - name: Assert the installed dbfbridge is exactly the pinned acceptance artifact
+        run: clean-env/bin/python tools/check_acceptance_pin.py
       - name: Install test tooling into the clean environment
         run: clean-env/bin/python -m pip install --no-cache-dir pytest
-      - name: Prove dbfbridge dependency and capability contracts in the clean environment
+      - name: Prove dependency, capability, boundary and public-API contracts in the clean environment
         env:
           PYTHONUTF8: "1"
         run: |
@@ -64,8 +71,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Align the environment with the tested dbfbridge acceptance artifact
+        run: python -m pip install -r requirements/p0-dbfbridge-tested.txt
       - name: Compile
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests tools
       - name: Pytest
         env:
           PYTHONUTF8: "1"

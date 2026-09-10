@@ -90,3 +90,50 @@ def test_no_vcs_url_dependency_for_dbfbridge() -> None:
         assert normalized in {"dbfbridge[write]>=1.1.0,<2", "dbfbridge[write]<2,>=1.1.0"}, (
             requirement
         )
+
+
+# ---------------------------------------------------------------------------
+# P0 acceptance-artifact pin (requirements/p0-dbfbridge-tested.txt)
+# ---------------------------------------------------------------------------
+
+PIN_FILE = REPO_ROOT / "requirements" / "p0-dbfbridge-tested.txt"
+ACCEPTANCE_PACKAGE = "dbfbridge[write]"
+
+
+def _read_acceptance_pin() -> str:
+    """Parse the acceptance pin file into its single exact requirement line."""
+    assert PIN_FILE.is_file(), f"acceptance pin file is missing: {PIN_FILE}"
+    requirement_lines = [
+        line.strip()
+        for line in PIN_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert len(requirement_lines) == 1, (
+        f"acceptance pin must contain exactly one requirement line, got {requirement_lines!r}"
+    )
+    normalized = requirement_lines[0].replace(" ", "")
+    assert normalized.count("==") == 1 and normalized.startswith(ACCEPTANCE_PACKAGE + "=="), (
+        f"acceptance pin must be an exact {ACCEPTANCE_PACKAGE}==<version> pin, got {normalized!r}"
+    )
+    return normalized
+
+
+def test_acceptance_pin_is_exact() -> None:
+    pin = _read_acceptance_pin()
+    assert pin == "dbfbridge[write]==1.1.0", pin
+
+
+def test_acceptance_pin_satisfies_runtime_range() -> None:
+    pin = _read_acceptance_pin()
+    pinned_version = tuple(int(part) for part in pin.split("==", 1)[1].split("."))
+    assert (1, 1, 0) <= pinned_version < (2,), pin
+
+
+def test_installed_dbfbridge_is_exactly_the_pinned_acceptance_artifact() -> None:
+    pin = _read_acceptance_pin()
+    pinned_version = pin.split("==", 1)[1]
+    installed = importlib.metadata.version("dbfbridge")
+    assert installed == pinned_version, (
+        f"installed dbfbridge {installed!r} is not exactly the pinned "
+        f"acceptance artifact {pinned_version!r}"
+    )
