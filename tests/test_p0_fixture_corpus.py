@@ -242,6 +242,38 @@ def test_committed_vfp_evidence_is_sanitized() -> None:
     assert evidence["vfp_verification"]["standalone_idx"]["reccount"] == 4
 
 
+def test_vfp_evidence_metadata_is_consistent() -> None:
+    """The committed VFP evidence record stays internally consistent.
+
+    Guards against provenance metadata drift:
+    - the recorded PRG filename matches the committed generator file;
+    - the recorded public import namespace is exactly ``dbfbridge``;
+    - a separately recorded internal module-object name (empirical fact) is
+      descriptive only and must never be presented as the allowed import
+      namespace.
+    """
+    evidence = json.loads(
+        (VFP_FIXTURE_ROOT / "vfp_fixture_evidence.json").read_text(encoding="utf-8")
+    )
+    prg = evidence["generation"]["prg"]
+    assert prg == "generate_vfp_fixtures.prg"
+    assert (VFP_FIXTURE_ROOT / prg).is_file()
+    assert evidence["generation"]["log_file"] == "vfp_gen_log.txt"
+    inspection = evidence["dbfbridge_1_1_0_inspection"]
+    assert inspection["import_namespace"] == "dbfbridge"
+    assert "no production or test code of DBF_Anonymizer imports dbf_bridge" in (
+        inspection["import_namespace_note"]
+    )
+    module_object = inspection.get("module_object_name")
+    if module_object is not None:
+        # The pinned distribution also installs the historical compatibility
+        # facade; that module OBJECT name is descriptive evidence only.
+        assert module_object != inspection["import_namespace"]
+        assert "must not be interpreted as the allowed import namespace" in (
+            inspection["module_object_note"]
+        )
+
+
 def test_gitignore_allowlist_is_narrow() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     for pattern in ("*.dbf", "*.fpt", "*.cdx", "*.idx", "*.dbc", "*.dct", "*.dcx"):

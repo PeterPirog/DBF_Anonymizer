@@ -1,19 +1,29 @@
 """Deterministic generator for the REQ-P0-003 synthetic fixture corpus.
 
-Every valid artifact is created EXCLUSIVELY through the public dbfbridge 1.1
-Direct Write contract (``write_table`` with a public ``TableSchema``) and
-verified through the public Direct Read contract.  The generator implements
-no DBF parser or writer of its own.
+The corpus has two valid authoritative production classes:
 
-The ONLY byte-level operations are the three narrowly scoped, fully
+1. The DBF/FPT fixtures are created EXCLUSIVELY through the public dbfbridge
+   1.1 Direct Write contract (``write_table`` with a public ``TableSchema``)
+   and verified through the public Direct Read contract.
+2. The static CDX/IDX/DBC evidence under ``tests/fixtures/p0/vfp/`` was
+   created by Visual FoxPro 9 itself (see ``vfp/PROVENANCE_VFP.md`` and the
+   committed authoritative evidence record); this generator incorporates it
+   byte-for-byte, WITHOUT rewriting, patching or normalizing it, and
+   re-verifies every artifact hash against the committed evidence record.
+
+The generator implements no DBF/FPT/CDX/IDX/DBC parser or writer of its own.
+
+The ONLY byte-level mutations are the three narrowly scoped, fully
 documented malformed-fixture mutations (``_corrupt_*`` functions below),
 applied exclusively to wholly synthetic artifacts built by this tool in a
 temporary staging directory.  They exist to create deterministic malformed
 input evidence only; they are not a DBF parser or writer.
 
-Regeneration is deterministic: all schemas pin ``last_update`` and all
-records are fixed literals; re-running this tool with the same pinned
-dbfbridge artifact reproduces byte-identical artifacts.
+Determinism: the dbfbridge-generated subset is byte-identically regenerable
+(all schemas pin ``last_update``; all records are fixed literals); the VFP9
+subset is static committed evidence that is copied byte-for-byte and
+hash-verified — this verifies the committed corpus, not that VFP itself is
+byte-deterministic on re-execution.
 
 Usage:
     python tools/generate_p0_fixtures.py [--out <dir>]

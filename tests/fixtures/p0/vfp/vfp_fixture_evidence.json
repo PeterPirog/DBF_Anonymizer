@@ -83,7 +83,10 @@
   ],
   "dbfbridge_1_1_0_inspection": {
     "distribution_version": "1.1.0",
-    "import_name": "dbf_bridge",
+    "import_namespace": "dbfbridge",
+    "import_namespace_note": "The architecture-approved public import namespace of the pinned public distribution is dbfbridge; no production or test code of DBF_Anonymizer imports dbf_bridge.",
+    "module_object_name": "dbf_bridge",
+    "module_object_note": "Empirical record: the evidence collection script used the pinned distribution's historical compatibility facade, whose module object name is dbf_bridge (the distribution installs both the public dbfbridge facade and the dbf_bridge compatibility facade). This field names the module OBJECT used by the evidence script and must not be interpreted as the allowed import namespace.",
     "missing_required_public_names": [],
     "public_names": [
       "Any",
@@ -647,7 +650,8 @@
   "generation": {
     "constants_note": "only KEY0001..KEY0004, 100, 200, SYNTH-A, SYNTH-B; schema CODE C(10), AMOUNT N(10,2), NOTE C(20); record counts 4/4/4",
     "log_file": "vfp_gen_log.txt",
-    "prg": "gen_fixtures.prg"
+    "prg": "generate_vfp_fixtures.prg",
+    "prg_commit_note": "committed as tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (staging-era filename gen_fixtures.prg)"
   },
   "notes": [
     "CDX/DBC/IDX structures were created by Visual FoxPro itself via COM automation.",

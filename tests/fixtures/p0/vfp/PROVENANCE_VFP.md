@@ -85,8 +85,13 @@ version 1.0). Raw VFP verification log (sanitized):
   `tools/generate_p0_fixtures.py` (byte-identical, proven by test).
 - The VFP9-generated subset is **static committed evidence**: CI verifies its
   committed SHA-256 values and the public metadata facts, and does NOT
-  require VFP/COM. Re-running `generate_vfp_fixtures.prg` in a VFP9-enabled
-  environment reproduces the artifacts; it is not part of hosted CI.
+  require VFP/COM. The committed `generate_vfp_fixtures.prg` reproduces the
+  same synthetic schema/data/index/container semantics in a VFP9-enabled
+  environment; byte-identical VFP regeneration has NOT been proven and is
+  NOT claimed — the committed, hash-verified binaries are the deterministic
+  evidence. The ordinary CI corpus regeneration test copies this committed
+  static VFP evidence byte-for-byte, which verifies the committed corpus,
+  not VFP byte-determinism.
 
 ## Licensing
 

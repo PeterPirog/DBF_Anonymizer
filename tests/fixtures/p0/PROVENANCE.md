@@ -93,13 +93,17 @@ self-contained, path-free and deterministic.
   The generator incorporates the committed static VFP evidence
   byte-for-byte (without modifying it) and re-verifies every VFP artifact
   hash against the committed authoritative evidence record. Re-running the
-  generator reproduces the complete corpus byte-identically (verified by
-  `test_regeneration_is_byte_deterministic`).
+  generator reproduces the complete committed corpus byte-identically
+  (verified by `test_regeneration_is_byte_deterministic`); this verifies the
+  committed corpus, not that VFP itself is byte-deterministic on
+  re-execution.
 - The VFP9-generated subset is static committed evidence; ordinary hosted CI
   verifies committed SHA-256 values and public dbfbridge metadata facts and
-  does NOT require VFP/COM. Re-running
-  `tests/fixtures/p0/vfp/generate_vfp_fixtures.prg` in a VFP9-enabled
-  environment reproduces those artifacts.
+  does NOT require VFP/COM. The committed VFP PRG reproduces the same
+  synthetic schema/data/index/container semantics in a VFP9-enabled
+  environment; byte-identical VFP regeneration has NOT been proven and is
+  NOT claimed — the committed, hash-verified binaries are the deterministic
+  evidence.
 - Committed-artifact verification:
   `python -m pytest tests/test_p0_fixture_corpus.py` verifies every declared
   artifact's existence and SHA-256, rejects undeclared artifacts, and
