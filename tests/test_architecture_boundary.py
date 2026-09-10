@@ -23,12 +23,13 @@ Rejected (among others):
     dbfbridge.write.write_table(...)
     import dbf / from dbf import Table
     export_dbf(...) / reconstruct_dbf(...)
-    in-place binary DBF patching (open(..., "r+b")) and the historical raw
-    DBF byte-patching/reconstruction path
+    in-place binary patching of DBF/FPT artifacts (open(..., "r+b") on a
+    .dbf/.fpt/.cdx target or with DBF/FPT layout context in the module) and
+    the historical raw DBF byte-patching/reconstruction path
 
 The guard enforces the DBF/FPT ownership boundary only; it deliberately does
-not ban generic implementation style (for example Python's ``struct``
-module) for unrelated future uses.
+not ban generic implementation style (for example Python's ``struct`` module
+or binary update I/O on unrelated artifacts) for unrelated future uses.
 
 The guard self-tests below feed representative allowed and forbidden
 snippets through the same checker so a future refactor cannot accidentally
@@ -229,21 +230,41 @@ def _is_open_call(call: ast.Call) -> bool:
     return name == "open"
 
 
-def _check_calls(tree: ast.Module) -> None:
+def _dbf_artifact_path_argument(call: ast.Call) -> str | None:
+    """Statically visible literal path of an ``open()`` call, if any."""
+    if call.args and isinstance(call.args[0], ast.Constant):
+        value = call.args[0].value
+        if isinstance(value, bytes):
+            return value.decode("latin-1")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _check_calls(tree: ast.Module, source: str) -> None:
+    # Module-level DBF/FPT context (artifact names, header/record-length
+    # surgery or the raw-record sentinel) turns a binary update open into
+    # evidence of the historical raw DBF patch path.  Without that context a
+    # binary update open on an unrelated artifact stays allowed.
+    module_has_dbf_context = bool(
+        DBF_ARTIFACT_RE.search(source) or RAW_RECORD_SENTINEL in source
+    )
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or not _is_open_call(node):
             continue
-        if _is_open_call(node):
-            mode = _open_modes(node).replace(" ", "")
-            # Any binary read-write/update mode ("r+b", "rb+", "w+b", ...) is
-            # the in-place byte-patching signature of the historical raw DBF
-            # patch path.
-            if "b" in mode and "+" in mode:
-                raise BoundaryViolation(
-                    f"in-place binary byte patching (mode {mode!r}) — the "
-                    "historical raw DBF patch path writes DBF bytes in place; "
-                    "1.0 delegates all DBF/FPT writing to public dbfbridge"
-                )
+        mode = _open_modes(node).replace(" ", "")
+        if not ("b" in mode and "+" in mode):
+            continue  # only binary read-write/update modes can patch in place
+        literal_path = _dbf_artifact_path_argument(node)
+        literal_dbf_target = (
+            literal_path is not None and DBF_ARTIFACT_RE.search(literal_path) is not None
+        )
+        if literal_dbf_target or module_has_dbf_context:
+            raise BoundaryViolation(
+                f"in-place binary patching of a DBF/FPT artifact (mode {mode!r}) — "
+                "the historical raw DBF patch path wrote DBF bytes in place; 1.0 "
+                "delegates all DBF/FPT parsing/writing to public dbfbridge"
+            )
 
 
 def check_module(label: str, source: str) -> None:
@@ -254,7 +275,7 @@ def check_module(label: str, source: str) -> None:
         raise BoundaryViolation(f"{label}: source does not parse: {exc}") from exc
     _check_imports(tree)
     _check_names_and_attributes(tree)
-    _check_calls(tree)
+    _check_calls(tree, source)
     if RAW_RECORD_SENTINEL in source:
         raise BoundaryViolation(
             f"{label}: raw-record restoration sentinel {RAW_RECORD_SENTINEL!r} present"
@@ -409,18 +430,45 @@ def test_guard_rejects_obsolete_export_reconstruct_pipeline() -> None:
     )
 
 
-def test_guard_rejects_in_place_binary_dbf_patching() -> None:
+def test_guard_rejects_explicit_dbf_binary_update() -> None:
     _assert_forbidden(
-        "def patch(path):\n"
-        "    with open(path, 'r+b') as handle:\n"
+        "def repair_table(path):\n"
+        "    with open('table.dbf', 'r+b') as handle:\n"
+        "        handle.seek(0)\n"
         "        handle.write(b'x')\n",
-        r"in-place binary byte patching",
+        r"in-place binary patching of a DBF/FPT artifact",
     )
+
+
+def test_guard_rejects_explicit_fpt_binary_update() -> None:
     _assert_forbidden(
-        "def patch(path):\n"
-        "    with open(path, mode='rb+') as handle:\n"
+        "def repair_memo(path):\n"
+        "    with open('memo.fpt', mode='r+b') as handle:\n"
         "        handle.write(b'x')\n",
-        r"in-place binary byte patching",
+        r"in-place binary patching of a DBF/FPT artifact",
+    )
+
+
+def test_guard_rejects_binary_update_with_dbf_artifact_module_context() -> None:
+    # No literal DBF path, but the module demonstrably targets DBF artifacts.
+    _assert_forbidden(
+        "TABLE_GLOB = '*.dbf'\n\n"
+        "def patch(handle_path):\n"
+        "    with open(handle_path, 'r+b') as handle:\n"
+        "        handle.write(b'x')\n",
+        r"in-place binary patching of a DBF/FPT artifact",
+    )
+
+
+def test_guard_rejects_binary_update_with_dbf_layout_surgery_context() -> None:
+    # Header/record-length surgery in the module is DBF/FPT layout context.
+    _assert_forbidden(
+        "HEADER_LENGTH = 32\n\n"
+        "def patch(handle_path):\n"
+        "    with open(handle_path, 'r+b') as handle:\n"
+        "        handle.seek(HEADER_LENGTH)\n"
+        "        handle.write(b'x')\n",
+        r"in-place binary patching of a DBF/FPT artifact",
     )
 
 
@@ -440,13 +488,34 @@ def test_guard_rejects_struct_based_dbf_byte_surgery() -> None:
     )
 
 
-def test_guard_allows_struct_and_r_plus_b_for_unrelated_future_uses() -> None:
+def test_guard_allows_unrelated_binary_update_io() -> None:
+    # Binary random-access/update I/O on an unrelated artifact is NOT a
+    # DBF/FPT boundary violation: the DBF/FPT ownership rule, not generic
+    # binary I/O, is what the architecture forbids.
+    _assert_allowed(
+        "def update_binary_cache(path):\n"
+        "    with open(path, 'r+b') as handle:\n"
+        "        handle.seek(0)\n"
+        "        handle.write(b'x')\n"
+    )
+    _assert_allowed(
+        "def update_binary_cache(path):\n"
+        "    with open(path, mode='rb+') as handle:\n"
+        "        handle.seek(0)\n"
+        "        handle.write(b'x')\n"
+    )
+
+
+def test_guard_allows_generic_struct_use() -> None:
     # struct without DBF artifact references in the same module is allowed.
     _assert_allowed(
         "import struct\n\n"
         "def encode(value):\n"
         "    return struct.pack('<i', value)\n"
     )
+
+
+def test_guard_allows_text_append_mode() -> None:
     # A text-mode reopen (no 'b') is not the raw-DBF patch path.
     _assert_allowed(
         "def append_log(path, line):\n"
