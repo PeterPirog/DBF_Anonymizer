@@ -1,0 +1,7 @@
+=== VFP synthetic fixture generation ===
+VFP_VERSION=Visual FoxPro 09.00.0000.5815 for Windows
+cleanup_done
+A_RESULT cdx1=INDEXED_TABLE.CDX tagcount=2 tag1=SYNTHCODE expr1=CODE tag2=SYNTHNOTE expr2=NOTE order=SYNTHCODE reccount=4 fields=CODE,AMOUNT,NOTE
+B_RESULT open_dbc=FIXTURE.DBC in_dbc_at_create=T dbc_value_after_close=[<sanitized-staging-path>\FIXTURE.DBC] reopen_dbc=FIXTURE.DBC in_dbc_reopen=T reccount=4 fields=CODE,AMOUNT,NOTE
+C_RESULT ndx1=CODE_IDX.IDX expr=CODE order=CODE_IDX reccount=4 fields=CODE,AMOUNT,NOTE
+=== ALL DONE ===

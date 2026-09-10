@@ -38,8 +38,9 @@ MANIFEST_PATH = FIXTURE_ROOT / "manifest.json"
 PROVENANCE_PATH = FIXTURE_ROOT / "PROVENANCE.md"
 GENERATOR_PATH = REPO_ROOT / "tools" / "generate_p0_fixtures.py"
 
-#: Every REQ-P0-003 coverage dimension that must be represented either by a
-#: fixture artifact or by an explicitly declared, justified gap.
+#: Every REQ-P0-003 coverage dimension.  All of them must resolve to actual
+#: evidence (committed fixture artifacts or, for the negative dimension, to
+#: named deterministic tests); no "gap" acceptance path exists.
 REQUIRED_DIMENSIONS = frozenset(
     {
         "plain_dbf",
@@ -71,10 +72,7 @@ REQUIRED_DIMENSIONS = frozenset(
     }
 )
 
-#: Dimensions that may only be declared as gaps (no fabricated artifacts).
-GAP_DIMENSIONS = frozenset(
-    {"structural_cdx_metadata", "dbc_bound_metadata", "standalone_idx_inventory"}
-)
+VFP_FIXTURE_ROOT = FIXTURE_ROOT / "vfp"
 
 PRIVACY_TOKENS = (
     "C:\\",
@@ -131,15 +129,17 @@ def test_manifest_is_valid_and_contains_no_private_information() -> None:
     assert manifest["generator"]["dbfbridge"] == "1.1.0"
     assert manifest["generator"]["dbfbridge_import_namespace"] == "dbfbridge"
     text = MANIFEST_PATH.read_text(encoding="utf-8")
-    assert "\\" not in text, "manifest must use posix relative paths only"
     assert not re.search(r"[A-Za-z]:[\\/]", text), "absolute paths are forbidden"
     for forbidden in ("Users", "peter", "AppData", "Temp", "Desktop", "Downloads"):
         assert forbidden not in text, f"private marker {forbidden!r} in manifest"
     for entry in manifest["fixtures"]:
         relative = entry["path"]
         assert not relative.startswith("/") and ":" not in relative
+        assert "\\" not in relative, "artifact paths must be posix-relative"
         assert entry["synthetic"] is True
         assert (FIXTURE_ROOT / relative).is_file()
+    for section in ("coverage", "vfp_evidence"):
+        assert not re.search(r"[A-Za-z]:[\\/]", json.dumps(manifest[section]))
 
 
 def test_declared_artifacts_exist_with_matching_sha256() -> None:
@@ -152,7 +152,14 @@ def test_declared_artifacts_exist_with_matching_sha256() -> None:
 
 def test_no_undeclared_committed_artifacts() -> None:
     manifest = _load_manifest()
-    allowed = {"manifest.json", "PROVENANCE.md"} | _committed_artifact_paths(manifest)
+    allowed = {
+        "manifest.json",
+        "PROVENANCE.md",
+        "vfp/PROVENANCE_VFP.md",
+        "vfp/vfp_fixture_evidence.json",
+        "vfp/generate_vfp_fixtures.prg",
+        "vfp/vfp_gen_log.txt",
+    } | _committed_artifact_paths(manifest)
     present = {
         path.relative_to(FIXTURE_ROOT).as_posix()
         for path in FIXTURE_ROOT.rglob("*")
@@ -179,49 +186,102 @@ def test_provenance_document_states_synthetic_origin() -> None:
         )
 
 
-def test_fixture_tree_has_no_sensitive_artifacts_or_paths() -> None:
+def test_fixture_binaries_are_synthetic_and_path_free() -> None:
     sensitive_names = (
         "dictionary.sqlite3",
         "*.sqlite3-wal",
         "*.sqlite3-shm",
         "*.sqlite3-journal",
-        "*-wal",
-        "*-shm",
     )
     for pattern in sensitive_names:
         assert not list(FIXTURE_ROOT.glob(f"**/{pattern}")), pattern
-    for artifact in FIXTURE_ROOT.rglob("*"):
-        if not artifact.is_file():
+    manifest = _load_manifest()
+    artifact_suffixes = (".dbf", ".fpt", ".cdx", ".idx", ".dbc", ".dct", ".dcx")
+    for entry in manifest["fixtures"]:
+        if not entry["path"].endswith(artifact_suffixes):
             continue
-        data = artifact.read_bytes()
-        for token in (b"dictionary.sqlite3", b"Users", b"AppData", b"Desktop"):
-            assert token not in data, f"{artifact.name} contains {token!r}"
+        data = (FIXTURE_ROOT / entry["path"]).read_bytes()
+        for token in (
+            b"D:\\Opencode",
+            b"D:/Opencode",
+            b"Project_dbfanonymizer",
+            b"_p0_vfp_fixture_staging",
+            b"Users\\",
+            b"C:\\Users",
+            b"AppData",
+            b"Desktop",
+            b"Documents",
+            b"Downloads",
+            b"peter",
+            b"dictionary.sqlite3",
+        ):
+            assert token not in data, f"{entry['path']} contains {token!r}"
+
+
+def test_committed_vfp_evidence_is_sanitized() -> None:
+    evidence_text = (VFP_FIXTURE_ROOT / "vfp_fixture_evidence.json").read_text(encoding="utf-8")
+    log_text = (VFP_FIXTURE_ROOT / "vfp_gen_log.txt").read_text(encoding="utf-8")
+    prg_text = (VFP_FIXTURE_ROOT / "generate_vfp_fixtures.prg").read_text(encoding="utf-8")
+    provenance_text = (VFP_FIXTURE_ROOT / "PROVENANCE_VFP.md").read_text(encoding="utf-8")
+    for text in (evidence_text, log_text, prg_text, provenance_text):
+        assert not re.search(r"[A-Za-z]:[\\/]", text_of := text), "absolute path leaked"
+        for token in ("Project_dbfanonymizer", "_p0_vfp_fixture_staging", "peter", "AppData"):
+            assert token not in text, token
+    assert "Visual FoxPro 09.00.0000.5815 for Windows" in evidence_text
+    assert "Visual FoxPro 9" in provenance_text
+    assert "INDEX ON CODE TO code_idx" in prg_text and "INDEX ON CODE TO code_idx" in evidence_text
+    assert "<sanitized-staging-path>" in log_text
+    evidence = json.loads(evidence_text)
+    assert evidence["synthetic"] is True
+    assert evidence["vfp"]["version"] == "Visual FoxPro 09.00.0000.5815 for Windows"
+    assert evidence["path_leak_scan"]["clean"] is True
+    assert evidence["vfp_verification"]["structural_cdx"]["tag1"] == "SYNTHCODE"
+    assert evidence["vfp_verification"]["structural_cdx"]["expr1"] == "CODE"
+    assert evidence["vfp_verification"]["standalone_idx"]["order"] == "CODE_IDX"
+    assert evidence["vfp_verification"]["standalone_idx"]["reccount"] == 4
 
 
 def test_gitignore_allowlist_is_narrow() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    for pattern in ("*.dbf", "*.fpt", "*.cdx"):
+    for pattern in ("*.dbf", "*.fpt", "*.cdx", "*.idx", "*.dbc", "*.dct", "*.dcx"):
         assert re.search(rf"^{re.escape(pattern)}\s*$", gitignore, re.MULTILINE), (
             f"global exclusion missing: {pattern}"
         )
-    assert re.search(r"^!tests/fixtures/p0/\*\*/\*\.dbf\s*$", gitignore, re.MULTILINE)
-    assert re.search(r"^!tests/fixtures/p0/\*\*/\*\.fpt\s*$", gitignore, re.MULTILINE)
-    assert "!*.dbf" not in gitignore.replace("!tests/fixtures/p0/**/*.dbf", "")
+    for suffix in ("dbf", "fpt", "cdx", "idx", "dbc", "dct", "dcx"):
+        assert re.search(rf"^!tests/fixtures/p0/\*\*/\*\.{suffix}\s*$", gitignore, re.MULTILINE)
+    remaining = gitignore
+    for suffix in ("dbf", "fpt", "cdx", "idx", "dbc", "dct", "dcx"):
+        remaining = remaining.replace(f"!tests/fixtures/p0/**/*.{suffix}", "")
+    assert "!*.dbf" not in remaining and "!*.idx" not in remaining
     if (REPO_ROOT / ".git").is_dir():
-        # Behavioral check (path-based; the file need not exist): a DBF in the
-        # production source tree must stay ignored while the committed
-        # synthetic fixture subtree is re-included.
-        ignored = subprocess.run(
-            ["git", "check-ignore", "-q", "src/canary_ignored.dbf"],
-            cwd=REPO_ROOT,
-            check=False,
-        ).returncode
-        assert ignored == 0, "DBF files outside the fixture subtree must stay ignored"
+        # Behavioral check (path-based; the file need not exist): DBF/FPT/CDX/
+        # IDX/DBC/DCT/DCX in the production source tree must stay ignored
+        # while the committed synthetic fixture subtree is re-included.
+        for canary in (
+            "src/canary_ignored.dbf",
+            "src/canary_ignored.idx",
+            "src/canary_ignored.dbc",
+        ):
+            ignored = subprocess.run(
+                ["git", "check-ignore", "-q", canary], cwd=REPO_ROOT, check=False
+            ).returncode
+            assert ignored == 0, f"canary must stay ignored: {canary}"
         fixture_rel = "tests/fixtures/p0/plain/plain_customers.dbf"
         not_ignored = subprocess.run(
             ["git", "check-ignore", "-q", fixture_rel], cwd=REPO_ROOT, check=False
         ).returncode
         assert not_ignored != 0, "committed synthetic fixtures must not be ignored"
+        for committed in (
+            "tests/fixtures/p0/vfp/structural/indexed_table.cdx",
+            "tests/fixtures/p0/vfp/idx/code_idx.idx",
+            "tests/fixtures/p0/vfp/fixture.dbc",
+            "tests/fixtures/p0/vfp/fixture.dct",
+            "tests/fixtures/p0/vfp/fixture.dcx",
+        ):
+            not_ignored = subprocess.run(
+                ["git", "check-ignore", "-q", committed], cwd=REPO_ROOT, check=False
+            ).returncode
+            assert not_ignored != 0, f"committed synthetic artifact must not be ignored: {committed}"
 
 
 # ---------------------------------------------------------------------------
@@ -229,32 +289,26 @@ def test_gitignore_allowlist_is_narrow() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_required_dimensions_are_represented() -> None:
+def test_required_dimensions_are_represented_with_actual_evidence() -> None:
     manifest = _load_manifest()
     coverage = manifest["coverage"]
-    gaps = {gap["dimension"] for gap in manifest["gaps"]}
-    covered = set(coverage)
-    assert covered | gaps == REQUIRED_DIMENSIONS, (
-        f"missing dimensions: {sorted(REQUIRED_DIMENSIONS - (covered | gaps))}"
+    assert "gaps" not in manifest, "mandatory gap acceptance must not exist"
+    assert set(coverage) == REQUIRED_DIMENSIONS, (
+        f"missing dimensions: {sorted(REQUIRED_DIMENSIONS - set(coverage))}; "
+        f"unknown dimensions: {sorted(set(coverage) - REQUIRED_DIMENSIONS)}"
     )
     for dimension, references in coverage.items():
-        assert dimension in REQUIRED_DIMENSIONS, f"unknown dimension: {dimension}"
         assert reference_is_resolvable(dimension, references), dimension
 
 
-def test_declared_gaps_are_not_claimed() -> None:
+def test_manifest_declares_no_gaps() -> None:
     manifest = _load_manifest()
-    gaps = {gap["dimension"]: gap for gap in manifest["gaps"]}
-    assert set(gaps) == GAP_DIMENSIONS
-    for dimension, gap in gaps.items():
-        assert gap["blocker"].strip(), f"gap without blocker: {dimension}"
-        for reference in gap["capability_evidence"]:
-            assert capability_test_exists(reference), reference
+    assert "gaps" not in manifest
     for entry in manifest["fixtures"]:
-        for dimension in entry["coverage"]:
-            assert dimension not in GAP_DIMENSIONS, (
-                f"gap dimension {dimension} claimed by fixture {entry['id']}"
-            )
+        assert entry["synthetic"] is True
+        if entry["id"].startswith("vfp."):
+            assert entry["vfp_authoritative"] is True
+            assert "Visual FoxPro 9" in entry["generated_by"]
 
 
 def reference_is_resolvable(dimension: str, references: list[str]) -> bool:
@@ -506,9 +560,111 @@ def test_structural_cdx_capability_fact(tmp_path: object) -> None:
     assert persisted.companion_cdx_present is False
 
 
+# ---------------------------------------------------------------------------
+# authoritative VFP9-generated evidence (structural CDX / DBC / IDX)
+# ---------------------------------------------------------------------------
+
+
+def test_vfp_structural_cdx_fixture() -> None:
+    """Authoritative VFP9 structural-CDX evidence through public dbfbridge only."""
+    manifest = _load_manifest()
+    dbf_entry = _fixture_entry(manifest, "vfp.structural_indexed_table")
+    cdx_entry = _fixture_entry(manifest, "vfp.structural_indexed_table_cdx")
+    dbf_path = FIXTURE_ROOT / dbf_entry["path"]
+    cdx_path = FIXTURE_ROOT / cdx_entry["path"]
+    assert cdx_path.is_file()
+    assert _sha256(cdx_path) == cdx_entry["sha256"]
+    assert _sha256(dbf_path) == dbf_entry["sha256"]
+    schema = read_schema(dbf_path)
+    assert schema.has_structural_cdx is True
+    assert schema.companion_cdx_present is True
+    assert schema.dbc_bound is False
+    assert schema.record_count == 4
+    # The companion resolves adjacent to the table, matching the manifest.
+    assert (dbf_path.parent / Path(schema.companion_cdx_path).name) == cdx_path
+    assert cdx_entry["relationships"]["companion_of"] == "vfp.structural_indexed_table"
+    records = list(iter_records(dbf_path))
+    assert len(records) == dbf_entry["expectations"]["vfp_reccount"] == 4
+    assert dict(records[0].values) == dbf_entry["expectations"]["first_record"]
+    # Tag names come from the committed authoritative VFP evidence record,
+    # never from a Python CDX parser.
+    verification = manifest["vfp_evidence"]["vfp_verification"]["structural_cdx"]
+    assert verification["tag1"] == "SYNTHCODE" and verification["expr1"] == "CODE"
+    assert verification["tag2"] == "SYNTHNOTE" and verification["expr2"] == "NOTE"
+    assert verification["order_after_set"] == "SYNTHCODE"
+
+
+def test_vfp_dbc_bound_fixture() -> None:
+    """Authoritative VFP9 DBC-bound evidence through public dbfbridge only."""
+    manifest = _load_manifest()
+    entry = _fixture_entry(manifest, "vfp.dbc_bound_table")
+    table_path = FIXTURE_ROOT / entry["path"]
+    schema = read_schema(table_path)
+    assert schema.dbc_bound is True
+    assert schema.is_database_container is False
+    assert schema.companion_cdx_present is False
+    assert schema.record_count == 4
+    # The genuine VFP-written backlink is a Windows-backslash relative path;
+    # it must resolve to the committed DBC container from the table location.
+    assert schema.dbc_backlink_path == "..\\fixture.dbc"
+    resolved = (table_path.parent / schema.dbc_backlink_path).resolve()
+    assert resolved == (FIXTURE_ROOT / "vfp" / "fixture.dbc").resolve()
+    for container_id in ("vfp.fixture_dbc", "vfp.fixture_dct", "vfp.fixture_dcx"):
+        container_entry = _fixture_entry(manifest, container_id)
+        assert (FIXTURE_ROOT / container_entry["path"]).is_file()
+        assert _sha256(FIXTURE_ROOT / container_entry["path"]) == container_entry["sha256"]
+    records = list(iter_records(table_path))
+    assert len(records) == 4
+    assert dict(records[0].values) == entry["expectations"]["first_record"]
+    assert entry["relationships"]["dbc_container"] == "vfp.fixture_dbc"
+    verification = manifest["vfp_evidence"]["vfp_verification"]["dbc_bound"]
+    assert verification["in_dbc_reopen"] is True
+    assert verification["reccount"] == 4
+
+
+def test_vfp_standalone_idx_fixture() -> None:
+    """Authoritative VFP9 standalone-IDX inventory evidence; no IDX parser."""
+    manifest = _load_manifest()
+    entry = _fixture_entry(manifest, "vfp.standalone_idx_table")
+    idx_entry = _fixture_entry(manifest, "vfp.code_idx_idx")
+    table_path = FIXTURE_ROOT / entry["path"]
+    idx_path = FIXTURE_ROOT / idx_entry["path"]
+    assert idx_path.is_file()
+    assert _sha256(idx_path) == idx_entry["sha256"]
+    assert _sha256(table_path) == entry["sha256"]
+    # The DBF stays publicly readable through dbfbridge...
+    schema = read_schema(table_path)
+    assert schema.record_count == 4
+    assert schema.has_structural_cdx is False
+    assert schema.companion_cdx_present is False
+    assert schema.dbc_bound is False
+    records = list(iter_records(table_path))
+    assert len(records) == 4
+    assert dict(records[0].values) == entry["expectations"]["first_record"]
+    # ...and the manifest records the authoritative VFP verification facts
+    # (INDEX ON CODE TO code_idx, reopen succeeded, ORDER() == CODE_IDX,
+    # RECCOUNT() == 4).  IDX internals are NOT parsed in Python.
+    verification = manifest["vfp_evidence"]["vfp_verification"]["standalone_idx"]
+    assert verification["idx_filename"] == "CODE_IDX.IDX"
+    assert verification["expr"] == "CODE"
+    assert verification["order"] == "CODE_IDX"
+    assert verification["reccount"] == 4
+    assert idx_entry["relationships"]["created_by"] == "INDEX ON CODE TO code_idx"
+    assert idx_entry["relationships"]["index_of"] == "vfp.standalone_idx_table"
+    assert "not by a parser" in entry["relationships"]["index_inventory_policy"]
+
+
 def test_written_fixtures_are_standalone() -> None:
+    """dbfbridge-generated fixtures are standalone (no CDX/DBC coupling).
+
+    VFP9-generated index/container fixtures are intentionally excluded: the
+    structural-CDX fixture carries a structural CDX and the DBC fixture is
+    genuinely DBC-bound.
+    """
     manifest = _load_manifest()
     for entry in manifest["fixtures"]:
+        if entry["generated_by"] != "tools/generate_p0_fixtures.py":
+            continue
         if entry["artifact_class"] not in {"dbf", "dbf-missing-companion"}:
             continue
         schema = read_schema(FIXTURE_ROOT / entry["path"])

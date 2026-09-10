@@ -62,51 +62,6 @@ MEMO_BINARY = b"SYNTH-BINARY-MEMO-\x00\x01\x02"
 GENERAL_PAYLOAD = b"SYNTHETIC-GENERAL-PAYLOAD-\x00\x01\x02"
 PICTURE_PAYLOAD = b"SYNTHETIC-PICTURE-PAYLOAD-\x01\x02"
 
-GAPS = [
-    {
-        "dimension": "structural_cdx_metadata",
-        "blocker": (
-            "No public dbfbridge 1.1.0 mechanism persists the structural-CDX "
-            "header flag in a freshly written DBF: write_table() accepts "
-            "schema.has_structural_cdx=True, returns structural_cdx=true / "
-            "index_rebuild_required=true and emits the authoritative "
-            "STRUCTURAL_CDX warning, but the published header keeps the "
-            "structural-CDX table flag unset and no CDX file is created.  "
-            "Authoritative CDX artifacts require the VFP index backend "
-            "(REQ-P6-003).  No CDX/IDX fixture artifact is committed."
-        ),
-        "capability_evidence": [
-            "tests.test_p0_fixture_corpus::test_structural_cdx_capability_fact"
-        ],
-    },
-    {
-        "dimension": "dbc_bound_metadata",
-        "blocker": (
-            "No public dbfbridge 1.1.0 mechanism writes a VFP 263-byte DBC "
-            "backlink: Direct Write publishes standalone tables "
-            "(read_schema().dbc_bound is always False).  DBC-bound metadata "
-            "evidence requires the authoritative VFP/DBC toolchain "
-            "(REQ-P6-005).  No DBC artifact is fabricated."
-        ),
-        "capability_evidence": [
-            "tests.test_p0_fixture_corpus::test_written_fixtures_are_standalone"
-        ],
-    },
-    {
-        "dimension": "standalone_idx_inventory",
-        "blocker": (
-            "No public dbfbridge 1.1.0 mechanism writes standalone .idx "
-            "artifacts and no index writer may be implemented in this "
-            "repository.  An IDX inventory fixture would therefore have to "
-            "be fabricated, which the architecture forbids.  IDX inventory "
-            "evidence is deferred to REQ-P6-004 with the VFP toolchain."
-        ),
-        "capability_evidence": [
-            "tests.test_p0_fixture_corpus::test_declared_gaps_are_not_claimed"
-        ],
-    },
-]
-
 COVERAGE_BY_CAPABILITY_ONLY = {
     "negative_opaque_field_cases": [
         "tests.test_p0_fixture_corpus::test_opaque_field_write_refusal",
@@ -396,6 +351,203 @@ def _dbf_facts(schema: TableSchema, path: Path, *, include_deleted: bool = True)
     }
 
 
+# ---------------------------------------------------------------------------
+# VFP9-generated evidence integration (static committed artifacts)
+# ---------------------------------------------------------------------------
+
+VFP_SOURCE_DIR = REPO_ROOT / "tests" / "fixtures" / "p0" / "vfp"
+VFP_PROVENANCE_DOC = "vfp/PROVENANCE_VFP.md"
+VFP_EVIDENCE_JSON = "vfp/vfp_fixture_evidence.json"
+VFP_GENERATION_PRG = "vfp/generate_vfp_fixtures.prg"
+VFP_VERIFICATION_LOG = "vfp/vfp_gen_log.txt"
+
+#: staging-relative path -> (fixture id, artifact class, coverage, extra entry
+#: fields).  The mapping is static and mirrors the committed VFP evidence
+#: record; the artifacts themselves are copied byte-for-byte, never modified.
+_VFP_ARTIFACT_ROLES: dict[str, dict[str, object]] = {
+    "structural/indexed_table.dbf": {
+        "id": "vfp.structural_indexed_table",
+        "artifact_class": "dbf_free_table_structural_cdx",
+        "coverage": ["structural_cdx_metadata"],
+    },
+    "structural/indexed_table.cdx": {
+        "id": "vfp.structural_indexed_table_cdx",
+        "artifact_class": "structural_cdx",
+        "coverage": ["structural_cdx_metadata"],
+        "relationships": {
+            "companion_of": "vfp.structural_indexed_table",
+            "companion_filename": "INDEXED_TABLE.CDX",
+            "authoritative_producer": "Visual FoxPro 9",
+        },
+    },
+    "dbc/dbc_bound_table.dbf": {
+        "id": "vfp.dbc_bound_table",
+        "artifact_class": "dbf_dbc_bound",
+        "coverage": ["dbc_bound_metadata"],
+        "relationships": {
+            "dbc_container": "vfp.fixture_dbc",
+            "dbc_backlink_resolves_to": "vfp/fixture.dbc",
+        },
+    },
+    "fixture.dbc": {
+        "id": "vfp.fixture_dbc",
+        "artifact_class": "dbc_container",
+        "coverage": ["dbc_bound_metadata"],
+        "relationships": {
+            "container_of": "vfp.dbc_bound_table",
+            "companion_files": ["vfp/fixture.dct", "vfp/fixture.dcx"],
+            "minimal": True,
+        },
+    },
+    "fixture.dct": {
+        "id": "vfp.fixture_dct",
+        "artifact_class": "dbc_companion",
+        "coverage": ["dbc_bound_metadata"],
+        "relationships": {"companion_of": "vfp.fixture_dbc"},
+    },
+    "fixture.dcx": {
+        "id": "vfp.fixture_dcx",
+        "artifact_class": "dbc_companion",
+        "coverage": ["dbc_bound_metadata"],
+        "relationships": {"companion_of": "vfp.fixture_dbc"},
+    },
+    "idx/standalone_idx_table.dbf": {
+        "id": "vfp.standalone_idx_table",
+        "artifact_class": "dbf_free_table_standalone_idx",
+        "coverage": ["standalone_idx_inventory"],
+        "relationships": {
+            "standalone_index": "vfp.code_idx_idx",
+            "index_inventory_policy": (
+                "dbfbridge's public inspection surface does not report "
+                "standalone IDX companions; IDX semantic validity is "
+                "established by the VFP reopen/ORDER evidence, not by a parser"
+            ),
+        },
+    },
+    "idx/code_idx.idx": {
+        "id": "vfp.code_idx_idx",
+        "artifact_class": "standalone_idx",
+        "coverage": ["standalone_idx_inventory"],
+        "relationships": {
+            "index_of": "vfp.standalone_idx_table",
+            "authoritative_producer": "Visual FoxPro 9",
+            "created_by": "INDEX ON CODE TO code_idx",
+        },
+    },
+}
+
+
+def _integrate_vfp_fixtures(out_root: Path, fixtures: list[dict[str, object]]) -> dict[str, object]:
+    """Incorporate the committed, verified VFP9-generated artifacts.
+
+    The artifacts are copied byte-for-byte from the repository's committed
+    VFP subtree (never rewritten, never patched), re-hashed, cross-checked
+    against the committed authoritative evidence record, verified through
+    the public dbfbridge API where the DBF boundary applies, and manifested.
+    """
+    if not VFP_SOURCE_DIR.is_dir():
+        raise RuntimeError(
+            f"committed VFP evidence subtree is missing: {VFP_SOURCE_DIR}"
+        )
+    evidence = json.loads(
+        (VFP_SOURCE_DIR / "vfp_fixture_evidence.json").read_text(encoding="utf-8")
+    )
+    for candidate in evidence["candidates"]:
+        relative = candidate["relative_path"]
+        source = VFP_SOURCE_DIR / relative
+        target = out_root / "vfp" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            # In-place regeneration of the committed tree is a no-op: the
+            # artifacts are static committed evidence and must never be
+            # rewritten.
+            shutil.copyfile(source, target)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if digest != candidate["sha256"]:
+            raise RuntimeError(
+                f"VFP artifact hash mismatch against the committed evidence "
+                f"record: {relative}"
+            )
+    # Companion facts are computed only AFTER every artifact (including
+    # companions such as the structural CDX) has been published, so the
+    # public inspection sees the same companion state as the committed tree.
+    for candidate in evidence["candidates"]:
+        relative = candidate["relative_path"]
+        role = _VFP_ARTIFACT_ROLES[relative]
+        target = out_root / "vfp" / relative
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if digest != candidate["sha256"]:
+            raise RuntimeError(
+                f"VFP artifact hash mismatch against the committed evidence "
+                f"record: {relative}"
+            )
+        entry: dict[str, object] = {
+            "id": role["id"],
+            "path": target.relative_to(out_root).as_posix(),
+            "artifact_class": role["artifact_class"],
+            "synthetic": True,
+            "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+            "sha256": digest,
+            "vfp_authoritative": True,
+            "coverage": cast("list[str]", role["coverage"]),
+        }
+        if "relationships" in role:
+            entry["relationships"] = role["relationships"]
+        if relative.endswith(".dbf"):
+            schema = read_schema(target)
+            info = inspect_table(target)
+            records = list(iter_records(target))
+            entry["dbf"] = {
+                "dbversion_byte": schema.dbversion_byte,
+                "language_driver": schema.language_driver,
+                "encoding": schema.encoding,
+                "record_count": len(records),
+                "deleted_records": sum(1 for record in records if record.deleted),
+                "field_classes": [f.dbf_type for f in schema.fields],
+                "has_structural_cdx": schema.has_structural_cdx,
+                "companion_cdx_present": schema.companion_cdx_present,
+                "dbc_bound": schema.dbc_bound,
+                "is_database_container": schema.is_database_container,
+                "dbc_backlink_path_posix": (
+                    schema.dbc_backlink_path.replace("\\", "/")
+                    if schema.dbc_backlink_path
+                    else None
+                ),
+                "inspection_warnings": list(info.warnings),
+            }
+            first = next(iter(records), None)
+            entry["expectations"] = {
+                "first_record": dict(first.values) if first is not None else None,
+                "vfp_reccount": evidence["vfp_verification"][_vfp_family(relative)]["reccount"],
+            }
+        fixtures.append(entry)
+    return {
+        "authoritative_producer": "Visual FoxPro 9 (COM automation VisualFoxPro.Application)",
+        "vfp_version": evidence["vfp"]["version"],
+        "generation_prg": VFP_GENERATION_PRG,
+        "evidence_json": VFP_EVIDENCE_JSON,
+        "verification_log": "vfp/vfp_gen_log.txt",
+        "provenance_doc": VFP_PROVENANCE_DOC,
+        "statement": (
+            "CDX/IDX/DBC structures were created by Visual FoxPro 9 itself; "
+            "DBF_Anonymizer implements no CDX/IDX/DBC parser or writer."
+        ),
+        "vfp_verification": evidence["vfp_verification"],
+        "hosted_ci_policy": (
+            "hosted CI verifies committed SHA-256 values and public dbfbridge "
+            "metadata facts; VFP/COM is NOT required on hosted CI"
+        ),
+    }
+
+
+def _vfp_family(relative: str) -> str:
+    if relative.startswith("structural/"):
+        return "structural_cdx"
+    if relative.startswith("dbc/") or relative.startswith("fixture."):
+        return "dbc_bound"
+    return "standalone_idx"
+
+
 def generate(out_root: Path) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     fixtures: list[dict[str, object]] = []
@@ -677,7 +829,10 @@ def generate(out_root: Path) -> None:
             },
         )
 
-    # G. explicitly declared gaps (no fabricated artifacts)
+    # G. VFP9-generated index/container fixtures (static committed evidence,
+    # incorporated byte-for-byte WITHOUT modification; authoritative producer
+    # is Visual FoxPro 9 per the committed VFP evidence record)
+    vfp_evidence = _integrate_vfp_fixtures(out_root, fixtures)
     coverage: dict[str, list[str]] = {}
     for fixture in fixtures:
         for dimension in cast("list[str]", fixture["coverage"]):
@@ -700,7 +855,7 @@ def generate(out_root: Path) -> None:
             "memo_block_size": MEMO_BLOCK_SIZE,
         },
         "coverage": coverage,
-        "gaps": GAPS,
+        "vfp_evidence": vfp_evidence,
         "fixtures": fixtures,
     }
     manifest_path = out_root / "manifest.json"

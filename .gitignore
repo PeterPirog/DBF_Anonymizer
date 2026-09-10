@@ -243,11 +243,20 @@ jsonl_recovered/
 *.dbf
 *.fpt
 *.cdx
+*.idx
+*.dbc
+*.dct
+*.dcx
 
 # REQ-P0-003 synthetic fixture corpus: NARROW allowlist under the global
 # excludes above. Only the committed synthetic evidence subtree is included.
 !tests/fixtures/p0/**/*.dbf
 !tests/fixtures/p0/**/*.fpt
+!tests/fixtures/p0/**/*.cdx
+!tests/fixtures/p0/**/*.idx
+!tests/fixtures/p0/**/*.dbc
+!tests/fixtures/p0/**/*.dct
+!tests/fixtures/p0/**/*.dcx
 
 # Self-test artifacts
 selftest_report.json

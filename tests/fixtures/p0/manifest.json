@@ -27,6 +27,12 @@
     "datetime": [
       "plain.plain_customers"
     ],
+    "dbc_bound_metadata": [
+      "vfp.dbc_bound_table",
+      "vfp.fixture_dbc",
+      "vfp.fixture_dct",
+      "vfp.fixture_dcx"
+    ],
     "dbf_fpt": [
       "memos.memo_payloads",
       "memos.memo_payloads.fpt",
@@ -94,6 +100,14 @@
     "shared_cross_table_keys": [
       "topology.north_registry",
       "topology.south_registry"
+    ],
+    "standalone_idx_inventory": [
+      "vfp.standalone_idx_table",
+      "vfp.code_idx_idx"
+    ],
+    "structural_cdx_metadata": [
+      "vfp.structural_indexed_table",
+      "vfp.structural_indexed_table_cdx"
     ],
     "varchar_significant_trailing_spaces": [
       "nullable.nullable_varchar"
@@ -619,29 +633,212 @@
       "path": "malformed/missing_memo_companion.dbf",
       "sha256": "49762d3b1aca6f4057835b6ea234ed30f633d23b030805234168fba3b55fcd40",
       "synthetic": true
-    }
-  ],
-  "gaps": [
-    {
-      "blocker": "No public dbfbridge 1.1.0 mechanism persists the structural-CDX header flag in a freshly written DBF: write_table() accepts schema.has_structural_cdx=True, returns structural_cdx=true / index_rebuild_required=true and emits the authoritative STRUCTURAL_CDX warning, but the published header keeps the structural-CDX table flag unset and no CDX file is created.  Authoritative CDX artifacts require the VFP index backend (REQ-P6-003).  No CDX/IDX fixture artifact is committed.",
-      "capability_evidence": [
-        "tests.test_p0_fixture_corpus::test_structural_cdx_capability_fact"
-      ],
-      "dimension": "structural_cdx_metadata"
     },
     {
-      "blocker": "No public dbfbridge 1.1.0 mechanism writes a VFP 263-byte DBC backlink: Direct Write publishes standalone tables (read_schema().dbc_bound is always False).  DBC-bound metadata evidence requires the authoritative VFP/DBC toolchain (REQ-P6-005).  No DBC artifact is fabricated.",
-      "capability_evidence": [
-        "tests.test_p0_fixture_corpus::test_written_fixtures_are_standalone"
+      "artifact_class": "dbf_free_table_structural_cdx",
+      "coverage": [
+        "structural_cdx_metadata"
       ],
-      "dimension": "dbc_bound_metadata"
+      "dbf": {
+        "companion_cdx_present": true,
+        "dbc_backlink_path_posix": null,
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": true,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.structural_indexed_table",
+      "path": "vfp/structural/indexed_table.dbf",
+      "sha256": "3076275e4bcd174500a9e1954596b5fd62f826e957fd9e3136b7bfe45e6054aa",
+      "synthetic": true,
+      "vfp_authoritative": true
     },
     {
-      "blocker": "No public dbfbridge 1.1.0 mechanism writes standalone .idx artifacts and no index writer may be implemented in this repository.  An IDX inventory fixture would therefore have to be fabricated, which the architecture forbids.  IDX inventory evidence is deferred to REQ-P6-004 with the VFP toolchain.",
-      "capability_evidence": [
-        "tests.test_p0_fixture_corpus::test_declared_gaps_are_not_claimed"
+      "artifact_class": "structural_cdx",
+      "coverage": [
+        "structural_cdx_metadata"
       ],
-      "dimension": "standalone_idx_inventory"
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.structural_indexed_table_cdx",
+      "path": "vfp/structural/indexed_table.cdx",
+      "relationships": {
+        "authoritative_producer": "Visual FoxPro 9",
+        "companion_filename": "INDEXED_TABLE.CDX",
+        "companion_of": "vfp.structural_indexed_table"
+      },
+      "sha256": "b5ab7ee37138971be4c565dcb2871879b700b416d8861ae2f5203a9e695a3fe7",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbf_dbc_bound",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "dbf": {
+        "companion_cdx_present": false,
+        "dbc_backlink_path_posix": "../fixture.dbc",
+        "dbc_bound": true,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.dbc_bound_table",
+      "path": "vfp/dbc/dbc_bound_table.dbf",
+      "relationships": {
+        "dbc_backlink_resolves_to": "vfp/fixture.dbc",
+        "dbc_container": "vfp.fixture_dbc"
+      },
+      "sha256": "e3af637ee9b9ab5a0fa8b5a31ab9a8a0f2ac3979c1110b05ecc8b25a31b27f6e",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_container",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dbc",
+      "path": "vfp/fixture.dbc",
+      "relationships": {
+        "companion_files": [
+          "vfp/fixture.dct",
+          "vfp/fixture.dcx"
+        ],
+        "container_of": "vfp.dbc_bound_table",
+        "minimal": true
+      },
+      "sha256": "66154a52129ddd4941ef300bf7dafa9bf4cc1394379248df91876f2535626fe5",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_companion",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dct",
+      "path": "vfp/fixture.dct",
+      "relationships": {
+        "companion_of": "vfp.fixture_dbc"
+      },
+      "sha256": "5a8f2864f65b65679b7f32371267b439c0a9371a865babf7cc68e8179b04bcc2",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbc_companion",
+      "coverage": [
+        "dbc_bound_metadata"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.fixture_dcx",
+      "path": "vfp/fixture.dcx",
+      "relationships": {
+        "companion_of": "vfp.fixture_dbc"
+      },
+      "sha256": "682997f44cf5319a4dfb7d2df5c1294b8b8f5d6c354c1c0ab4fb65af395212a7",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "dbf_free_table_standalone_idx",
+      "coverage": [
+        "standalone_idx_inventory"
+      ],
+      "dbf": {
+        "companion_cdx_present": false,
+        "dbc_backlink_path_posix": null,
+        "dbc_bound": false,
+        "dbversion_byte": 48,
+        "deleted_records": 0,
+        "encoding": "cp1250",
+        "field_classes": [
+          "C",
+          "N",
+          "C"
+        ],
+        "has_structural_cdx": false,
+        "inspection_warnings": [],
+        "is_database_container": false,
+        "language_driver": 200,
+        "record_count": 4
+      },
+      "expectations": {
+        "first_record": {
+          "AMOUNT": 100.0,
+          "CODE": "KEY0001",
+          "NOTE": "SYNTH-A"
+        },
+        "vfp_reccount": 4
+      },
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.standalone_idx_table",
+      "path": "vfp/idx/standalone_idx_table.dbf",
+      "relationships": {
+        "index_inventory_policy": "dbfbridge's public inspection surface does not report standalone IDX companions; IDX semantic validity is established by the VFP reopen/ORDER evidence, not by a parser",
+        "standalone_index": "vfp.code_idx_idx"
+      },
+      "sha256": "4fccc6046832befc79452efd2669975a08635d3dc91749fafd5d1773d3728ee8",
+      "synthetic": true,
+      "vfp_authoritative": true
+    },
+    {
+      "artifact_class": "standalone_idx",
+      "coverage": [
+        "standalone_idx_inventory"
+      ],
+      "generated_by": "tests/fixtures/p0/vfp/generate_vfp_fixtures.prg (Visual FoxPro 9)",
+      "id": "vfp.code_idx_idx",
+      "path": "vfp/idx/code_idx.idx",
+      "relationships": {
+        "authoritative_producer": "Visual FoxPro 9",
+        "created_by": "INDEX ON CODE TO code_idx",
+        "index_of": "vfp.standalone_idx_table"
+      },
+      "sha256": "2fbafb9e4d019480e028be193aac95680476755f994535445775e1dca8ac41f1",
+      "synthetic": true,
+      "vfp_authoritative": true
     }
   ],
   "generator": {
@@ -662,5 +859,53 @@
     ],
     "tool": "tools/generate_p0_fixtures.py"
   },
-  "manifest_schema": "req-p0-003/1"
+  "manifest_schema": "req-p0-003/1",
+  "vfp_evidence": {
+    "authoritative_producer": "Visual FoxPro 9 (COM automation VisualFoxPro.Application)",
+    "evidence_json": "vfp/vfp_fixture_evidence.json",
+    "generation_prg": "vfp/generate_vfp_fixtures.prg",
+    "hosted_ci_policy": "hosted CI verifies committed SHA-256 values and public dbfbridge metadata facts; VFP/COM is NOT required on hosted CI",
+    "provenance_doc": "vfp/PROVENANCE_VFP.md",
+    "statement": "CDX/IDX/DBC structures were created by Visual FoxPro 9 itself; DBF_Anonymizer implements no CDX/IDX/DBC parser or writer.",
+    "verification_log": "vfp/vfp_gen_log.txt",
+    "vfp_verification": {
+      "dbc_bound": {
+        "dbc_at_create": "FIXTURE.DBC",
+        "dbc_value_after_close_sanitized": "<sanitized> PROJECTS\\<sanitized>\\<sanitized>\\FIXTURE.DBC",
+        "fields": "CODE,AMOUNT,NOTE",
+        "in_dbc_at_create": true,
+        "in_dbc_reopen": true,
+        "reccount": 4,
+        "reopen_dbc": "FIXTURE.DBC"
+      },
+      "raw_log_lines": [
+        "=== VFP synthetic fixture generation ===",
+        "VFP_VERSION=Visual FoxPro 09.00.0000.5815 for Windows",
+        "cleanup_done",
+        "A_RESULT cdx1=INDEXED_TABLE.CDX tagcount=2 tag1=SYNTHCODE expr1=CODE tag2=SYNTHNOTE expr2=NOTE order=SYNTHCODE reccount=4 fields=CODE,AMOUNT,NOTE",
+        "B_RESULT open_dbc=FIXTURE.DBC in_dbc_at_create=T dbc_value_after_close=[<sanitized> PROJECTS\\<sanitized>\\<sanitized>\\FIXTURE.DBC] reopen_dbc=FIXTURE.DBC in_dbc_reopen=T reccount=4 fields=CODE,AMOUNT,NOTE",
+        "C_RESULT ndx1=CODE_IDX.IDX expr=CODE order=CODE_IDX reccount=4 fields=CODE,AMOUNT,NOTE",
+        "=== ALL DONE ==="
+      ],
+      "standalone_idx": {
+        "expr": "CODE",
+        "fields": "CODE,AMOUNT,NOTE",
+        "idx_filename": "CODE_IDX.IDX",
+        "order": "CODE_IDX",
+        "reccount": 4
+      },
+      "structural_cdx": {
+        "cdx_filename": "INDEXED_TABLE.CDX",
+        "expr1": "CODE",
+        "expr2": "NOTE",
+        "fields": "CODE,AMOUNT,NOTE",
+        "order_after_set": "SYNTHCODE",
+        "reccount": 4,
+        "tag1": "SYNTHCODE",
+        "tag2": "SYNTHNOTE",
+        "tagcount": 2
+      }
+    },
+    "vfp_version": "Visual FoxPro 09.00.0000.5815 for Windows"
+  }
 }
