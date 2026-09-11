@@ -1,7 +1,8 @@
 """DBF_Anonymizer clean-slate 1.0 public package boundary.
 
-The historical 0.3 API is intentionally not preserved.  The first public 1.0
-contracts are the immutable typed models from REQ-P1-002.  Product operations
+The historical 0.3 API is intentionally not preserved.  Public 1.0 contracts
+currently include the immutable typed models from REQ-P1-002 and the stable,
+privacy-safe error hierarchy from REQ-P1-003.  Product operations
 (``capabilities``, ``build_plan``, ``preflight``, ``pseudonymize``,
 ``verify_dataset``, ``recover``, ``create_transfer_bundle`` and
 ``verify_transfer_bundle``) are introduced only when their owning requirements
@@ -13,6 +14,26 @@ public ``dbfbridge[write]>=1.1.0,<2`` distribution.
 
 from __future__ import annotations
 
+from .errors import (
+    ERROR_REGISTRY,
+    ERROR_REGISTRY_VERSION,
+    ERROR_SCHEMA_VERSION,
+    AnonymizerError,
+    CancellationError,
+    DBFBridgeError,
+    ErrorCategory,
+    ErrorCode,
+    ErrorContext,
+    ErrorDefinition,
+    MappingError,
+    PathError,
+    PolicyError,
+    PublicationError,
+    RecoveryError,
+    RelationshipError,
+    VaultError,
+    VerificationError,
+)
 from .models import (
     MODEL_SCHEMA_VERSION,
     Capabilities,
@@ -51,4 +72,22 @@ __all__ = [
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
+    "ERROR_SCHEMA_VERSION",
+    "ERROR_REGISTRY_VERSION",
+    "ERROR_REGISTRY",
+    "ErrorCategory",
+    "ErrorCode",
+    "ErrorDefinition",
+    "ErrorContext",
+    "AnonymizerError",
+    "PathError",
+    "PolicyError",
+    "DBFBridgeError",
+    "VaultError",
+    "MappingError",
+    "RelationshipError",
+    "PublicationError",
+    "VerificationError",
+    "RecoveryError",
+    "CancellationError",
 ]
