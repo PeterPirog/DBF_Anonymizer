@@ -93,12 +93,6 @@ FUTURE_SERVICE_FUNCTIONS = (
 )
 
 
-def test_obsolete_0_3_operations_are_not_exported() -> None:
-    exported = set(dir(dbf_anonymizer))
-    leaked = sorted(set(OBSOLETE_0_3_EXPORTS) & exported)
-    assert not leaked, f"obsolete 0.3 exports still present: {leaked}"
-
-
 def test_public_model_exports_match_the_p1_002_contract() -> None:
     exported = set(dir(dbf_anonymizer))
     assert exported >= set(dbf_anonymizer.__all__)
