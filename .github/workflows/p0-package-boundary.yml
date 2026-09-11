@@ -48,10 +48,11 @@ jobs:
             tests/test_architecture_boundary.py \
             tests/test_root_public_api.py \
             tests/test_p1_public_models.py \
+            tests/test_p1_errors.py \
             -ra
 
   packaging-versions:
-    name: REQ-P1-001/P1-002 packaging / Python ${{ matrix.python-version }}
+    name: REQ-P1-001/P1-002/P1-003 packaging / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -116,13 +117,14 @@ jobs:
           SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
         run: |
           "$SMOKE_ROOT/venv/bin/python" -m pip install --no-cache-dir pytest
-      - name: Run focused P1-001/P1-002 contract tests against the installed wheel
+      - name: Run focused P1-001/P1-002/P1-003 contract tests against the installed wheel
         env:
           SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
         run: |
           "$SMOKE_ROOT/venv/bin/python" -m pytest \
             tests/test_p1_packaging.py \
             tests/test_p1_public_models.py \
+            tests/test_p1_errors.py \
             -ra
 
   tests:
