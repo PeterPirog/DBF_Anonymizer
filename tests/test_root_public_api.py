@@ -1,8 +1,8 @@
-"""P0 root public API regression evidence for REQ-P0-001.
+"""Root public API regression evidence for the clean-slate 1.0 line.
 
-Confirms that obsolete 0.3 public operations are no longer exported from
-``dbf_anonymizer`` merely for backward compatibility, and that no placeholder
-implementations of the future 1.0 API are faked in their place.
+The project deliberately does not preserve the historical 0.3 API.  This file
+protects that clean-slate decision while allowing the new REQ-P1-002 typed
+model surface to become public.
 """
 
 from __future__ import annotations
@@ -10,20 +10,16 @@ from __future__ import annotations
 import dbf_anonymizer
 
 OBSOLETE_0_3_EXPORTS = (
-    # Pipeline operations
     "anonymize_directory",
     "make_dbf_recovery",
     "self_test",
-    # Result / option types of the 0.3 pipeline
     "AnonymizeResult",
-    "RecoveryResult",
     "SelfTestReport",
     "TableOutcome",
     "AnonymizeOptions",
     "anonymize_records",
     "build_shared_dictionary",
     "recover_records",
-    # Legacy dictionary objects
     "FieldDict",
     "TableDict",
     "dictionary_filename",
@@ -32,16 +28,44 @@ OBSOLETE_0_3_EXPORTS = (
     "GLOBAL_DICTIONARY_FILENAME",
     "GlobalDictionaryStore",
     "global_dictionary_path",
-    # Legacy 0.3 schema access
     "FieldInfo",
     "TableSchema",
     "load_schema",
-    # Legacy low-level transforms exposed as public API
     "mask_char",
     "mask_memo",
     "shift_date",
     "shift_datetime",
 )
+
+EXPECTED_P1_002_EXPORTS = {
+    "MODEL_SCHEMA_VERSION",
+    "Capabilities",
+    "DatasetIdentity",
+    "Plan",
+    "TablePlan",
+    "PolicySummary",
+    "RelationshipMetadata",
+    "RelationalAssurance",
+    "RelationalAssuranceLevel",
+    "ProgressEvent",
+    "PreflightResult",
+    "PseudonymizationResult",
+    "VerificationResult",
+    "RecoveryResult",
+    "TransferBundleResult",
+    "TransferProfile",
+}
+
+FUTURE_OPERATION_EXPORTS = {
+    "capabilities",
+    "build_plan",
+    "preflight",
+    "pseudonymize",
+    "verify_dataset",
+    "recover",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
+}
 
 
 def test_obsolete_0_3_operations_are_not_exported() -> None:
@@ -50,8 +74,17 @@ def test_obsolete_0_3_operations_are_not_exported() -> None:
     assert not leaked, f"obsolete 0.3 exports still present: {leaked}"
 
 
-def test_public_surface_stays_intentionally_small() -> None:
-    assert dbf_anonymizer.__all__ == []
+def test_public_surface_is_exactly_the_current_1_0_contract() -> None:
+    assert set(dbf_anonymizer.__all__) == EXPECTED_P1_002_EXPORTS
+
+
+def test_future_operations_are_not_faked_before_their_requirements() -> None:
+    exported = set(dir(dbf_anonymizer))
+    assert FUTURE_OPERATION_EXPORTS.isdisjoint(exported)
+
+
+def test_recovery_result_is_the_new_1_0_model_not_a_legacy_compatibility_alias() -> None:
+    assert dbf_anonymizer.RecoveryResult.__module__ == "dbf_anonymizer.models"
 
 
 def test_development_version_is_not_0_3() -> None:
