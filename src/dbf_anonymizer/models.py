@@ -1,18 +1,16 @@
 """Immutable public result/planning models for the clean-slate 1.0 API.
 
-REQ-P1-002 owns this module. The models intentionally contain only
-privacy-safe operational metadata. They never accept arbitrary original field
-values, memo payloads, absolute source paths, vault contents or secrets.
-
-Every public model serializes through :meth:`to_dict` to a deterministic,
-JSON-safe dictionary carrying an explicit schema version and model type.
+Public serialization is deliberately privacy-safe.  Operational objects may
+carry local execution roots required to perform work, but those roots are
+kept out of ``repr`` and ``to_dict()``.  Transport payloads contain only
+normalized relative paths, fingerprints, counts and machine codes.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import ClassVar, TypeAlias
 
 MODEL_SCHEMA_VERSION = "1.0"
@@ -70,6 +68,12 @@ def _validated_code(value: str, *, field_name: str) -> str:
     return value
 
 
+def _validated_text(value: str, *, field_name: str) -> str:
+    if not value or value.strip() != value:
+        raise ValueError(f"{field_name} must be non-empty text")
+    return value
+
+
 def _non_negative(value: int, *, field_name: str) -> int:
     if value < 0:
         raise ValueError(f"{field_name} must be non-negative")
@@ -105,6 +109,10 @@ def _payload(model_type: str, **values: object) -> JsonDict:
 class Capabilities(PublicModel):
     direct_read: bool
     direct_write: bool
+    planning: bool
+    preflight: bool
+    pseudonymization: bool
+    verification: bool
     recovery: bool
     transfer_bundle: bool
     vfp_index_backend: bool
@@ -118,6 +126,10 @@ class Capabilities(PublicModel):
             "Capabilities",
             direct_read=self.direct_read,
             direct_write=self.direct_write,
+            planning=self.planning,
+            preflight=self.preflight,
+            pseudonymization=self.pseudonymization,
+            verification=self.verification,
             recovery=self.recovery,
             transfer_bundle=self.transfer_bundle,
             vfp_index_backend=self.vfp_index_backend,
@@ -149,52 +161,143 @@ class DatasetIdentity(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
+class FieldPlan(PublicModel):
+    """Safe physical schema facts plus the policy action for one field."""
+
+    ordinal: int
+    name: str
+    dbf_type: str
+    length: int
+    decimal_count: int
+    nullable: bool
+    nocptrans: bool
+    autoincrement: bool
+    memo: bool
+    binary: bool
+    supported: bool
+    transform_action: str
+    mapping_domain: str | None = None
+
+    def __post_init__(self) -> None:
+        _non_negative(self.ordinal, field_name="ordinal")
+        _validated_code(self.name, field_name="name")
+        _validated_code(self.dbf_type, field_name="dbf_type")
+        _non_negative(self.length, field_name="length")
+        _non_negative(self.decimal_count, field_name="decimal_count")
+        _validated_code(self.transform_action, field_name="transform_action")
+        if self.mapping_domain is not None:
+            _validated_code(self.mapping_domain, field_name="mapping_domain")
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "FieldPlan",
+            ordinal=self.ordinal,
+            name=self.name,
+            dbf_type=self.dbf_type,
+            length=self.length,
+            decimal_count=self.decimal_count,
+            nullable=self.nullable,
+            nocptrans=self.nocptrans,
+            autoincrement=self.autoincrement,
+            memo=self.memo,
+            binary=self.binary,
+            supported=self.supported,
+            transform_action=self.transform_action,
+            mapping_domain=self.mapping_domain,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TablePlan(PublicModel):
     table_path: str
-    memo_path: str | None
+    schema_fingerprint: str
+    dbf_version_name: str
+    encoding: str
     record_count: int
-    field_count: int
+    header_length: int
+    record_length: int
+    fields: tuple[FieldPlan, ...]
     transform_field_count: int
+    memo_required: bool
+    memo_present: bool
+    memo_path: str | None
     structural_cdx: bool
+    cdx_present: bool
+    cdx_path: str | None
     dbc_bound: bool
+    incomplete_transaction: bool
+    encryption_flag: bool
     index_strategy: str
+    warning_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        _validated_code(self.schema_fingerprint, field_name="schema_fingerprint")
+        _validated_text(self.dbf_version_name, field_name="dbf_version_name")
+        _validated_code(self.encoding, field_name="encoding")
+        _non_negative(self.record_count, field_name="record_count")
+        _non_negative(self.header_length, field_name="header_length")
+        _non_negative(self.record_length, field_name="record_length")
+        _non_negative(self.transform_field_count, field_name="transform_field_count")
+        if self.transform_field_count > len(self.fields):
+            raise ValueError("transform_field_count cannot exceed field count")
         if self.memo_path is not None:
             object.__setattr__(self, "memo_path", _normalized_relative_path(self.memo_path))
-        _non_negative(self.record_count, field_name="record_count")
-        _non_negative(self.field_count, field_name="field_count")
-        _non_negative(self.transform_field_count, field_name="transform_field_count")
-        if self.transform_field_count > self.field_count:
-            raise ValueError("transform_field_count cannot exceed field_count")
+        if self.cdx_path is not None:
+            object.__setattr__(self, "cdx_path", _normalized_relative_path(self.cdx_path))
+        if self.memo_present != (self.memo_path is not None):
+            raise ValueError("memo_present must match memo_path presence")
+        if self.cdx_present != (self.cdx_path is not None):
+            raise ValueError("cdx_present must match cdx_path presence")
         _validated_code(self.index_strategy, field_name="index_strategy")
+        for code in self.warning_codes:
+            _validated_code(code, field_name="warning_codes item")
+
+    @property
+    def field_count(self) -> int:
+        return len(self.fields)
 
     def to_dict(self) -> JsonDict:
         return _payload(
             "TablePlan",
             table_path=self.table_path,
-            memo_path=self.memo_path,
+            schema_fingerprint=self.schema_fingerprint,
+            dbf_version_name=self.dbf_version_name,
+            encoding=self.encoding,
             record_count=self.record_count,
+            header_length=self.header_length,
+            record_length=self.record_length,
             field_count=self.field_count,
+            fields=self.fields,
             transform_field_count=self.transform_field_count,
+            memo_required=self.memo_required,
+            memo_present=self.memo_present,
+            memo_path=self.memo_path,
             structural_cdx=self.structural_cdx,
+            cdx_present=self.cdx_present,
+            cdx_path=self.cdx_path,
             dbc_bound=self.dbc_bound,
+            incomplete_transaction=self.incomplete_transaction,
+            encryption_flag=self.encryption_flag,
             index_strategy=self.index_strategy,
+            warning_codes=self.warning_codes,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class PolicySummary(PublicModel):
     policy_schema_version: str
+    profile: str
     policy_fingerprint: str
     transformed_field_count: int
     relationship_count: int
     recovery_enabled: bool
     transformation_classes: tuple[str, ...]
+    index_profile: TransferProfile
 
     def __post_init__(self) -> None:
         _validated_code(self.policy_schema_version, field_name="policy_schema_version")
+        _validated_code(self.profile, field_name="profile")
         _validated_code(self.policy_fingerprint, field_name="policy_fingerprint")
         _non_negative(self.transformed_field_count, field_name="transformed_field_count")
         _non_negative(self.relationship_count, field_name="relationship_count")
@@ -205,11 +308,13 @@ class PolicySummary(PublicModel):
         return _payload(
             "PolicySummary",
             policy_schema_version=self.policy_schema_version,
+            profile=self.profile,
             policy_fingerprint=self.policy_fingerprint,
             transformed_field_count=self.transformed_field_count,
             relationship_count=self.relationship_count,
             recovery_enabled=self.recovery_enabled,
             transformation_classes=self.transformation_classes,
+            index_profile=self.index_profile,
         )
 
 
@@ -270,17 +375,39 @@ class RelationalAssurance(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionPaths:
+    """Trusted local roots required for execution, never serialized publicly."""
+
+    source_root: Path = field(repr=False)
+    output_root: Path = field(repr=False)
+    vault_root: Path = field(repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("source_root", "output_root", "vault_root"):
+            value = Path(getattr(self, name))
+            if not value.is_absolute():
+                raise ValueError(f"{name} must be absolute inside an execution plan")
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True, slots=True)
 class Plan(PublicModel):
     plan_id: str
     dataset: DatasetIdentity
     tables: tuple[TablePlan, ...]
     policy: PolicySummary
     relationships: RelationshipMetadata
+    capabilities: Capabilities
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
+    engine_strategy: str
+    vault_strategy: str
+    execution: ExecutionPaths = field(repr=False, compare=True)
 
     def __post_init__(self) -> None:
         _validated_code(self.plan_id, field_name="plan_id")
+        _validated_code(self.engine_strategy, field_name="engine_strategy")
+        _validated_code(self.vault_strategy, field_name="vault_strategy")
         planned_paths = tuple(table.table_path for table in self.tables)
         if planned_paths != self.dataset.table_paths:
             raise ValueError("plan table order must exactly match dataset.table_paths")
@@ -293,8 +420,11 @@ class Plan(PublicModel):
             tables=self.tables,
             policy=self.policy,
             relationships=self.relationships,
+            capabilities=self.capabilities,
             output_profile=self.output_profile,
             relationship_assurance_target=self.relationship_assurance_target,
+            engine_strategy=self.engine_strategy,
+            vault_strategy=self.vault_strategy,
         )
 
 
@@ -479,6 +609,7 @@ class TransferBundleResult(PublicModel):
 PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     Capabilities,
     DatasetIdentity,
+    FieldPlan,
     Plan,
     TablePlan,
     PolicySummary,
@@ -498,6 +629,8 @@ __all__ = [
     "JsonValue",
     "Capabilities",
     "DatasetIdentity",
+    "ExecutionPaths",
+    "FieldPlan",
     "Plan",
     "TablePlan",
     "PolicySummary",
