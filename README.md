@@ -18,7 +18,12 @@ CLI, JSONL pipeline, salt-based generator or legacy recovery formats; see
 
 The public 1.0 operation surface and CLI are specified by the immutable target
 architecture and are under active development; this repository does not yet
-ship working 1.0 product operations.
+ship working 1.0 product operations. The console script
+`dbf-anonymizer` is installed with the distribution but currently supports
+only `--help` and `--version`; no target command (`capabilities`, `plan`,
+`preflight`, `pseudonymize`, `verify`, `recover`, `export-bundle`,
+`verify-bundle`, `self-test`) is implemented yet, and unknown invocations
+fail rather than pretend success.
 
 ## Development
 
