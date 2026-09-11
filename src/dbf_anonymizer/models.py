@@ -1,8 +1,8 @@
 """Immutable public result/planning models for the clean-slate 1.0 API.
 
-Public serialization is deliberately privacy-safe.  Operational objects may
+Public serialization is deliberately privacy-safe. Operational objects may
 carry local execution roots required to perform work, but those roots are
-kept out of ``repr`` and ``to_dict()``.  Transport payloads contain only
+kept out of ``repr`` and ``to_dict()``. Transport payloads contain only
 normalized relative paths, fingerprints, counts and machine codes.
 """
 
@@ -224,6 +224,7 @@ class TablePlan(PublicModel):
     structural_cdx: bool
     cdx_present: bool
     cdx_path: str | None
+    standalone_idx_paths: tuple[str, ...]
     dbc_bound: bool
     incomplete_transaction: bool
     encryption_flag: bool
@@ -245,6 +246,11 @@ class TablePlan(PublicModel):
             object.__setattr__(self, "memo_path", _normalized_relative_path(self.memo_path))
         if self.cdx_path is not None:
             object.__setattr__(self, "cdx_path", _normalized_relative_path(self.cdx_path))
+        object.__setattr__(
+            self,
+            "standalone_idx_paths",
+            tuple(_normalized_relative_path(path) for path in self.standalone_idx_paths),
+        )
         if self.memo_present != (self.memo_path is not None):
             raise ValueError("memo_present must match memo_path presence")
         if self.cdx_present != (self.cdx_path is not None):
@@ -276,6 +282,7 @@ class TablePlan(PublicModel):
             structural_cdx=self.structural_cdx,
             cdx_present=self.cdx_present,
             cdx_path=self.cdx_path,
+            standalone_idx_paths=self.standalone_idx_paths,
             dbc_bound=self.dbc_bound,
             incomplete_transaction=self.incomplete_transaction,
             encryption_flag=self.encryption_flag,
