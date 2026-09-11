@@ -1,17 +1,11 @@
-"""P0 wheel metadata verifier (REQ-P0-002 evidence helper).
+"""Wheel metadata/content verifier for the clean-slate 1.0 package boundary.
 
 Usage: python tools/check_wheel_metadata.py <path-to-wheel> [<wheel> ...]
 
-Verifies the built distribution carries the immutable 1.0 identity and the
-exact public dbfbridge dependency contract:
-
-- distribution name ``dbf-anonymizer``;
-- pre-1.0 development version (``1.0.0.dev0`` line);
-- exactly one runtime dependency equivalent to
-  ``Requires-Dist: dbfbridge[write]>=1.1.0,<2``;
-- no Git/VCS (``@``-URL) dependency;
-- no direct ``dbf`` dependency (``dbf`` may arrive only transitively through
-  the dbfbridge ``[write]`` extra).
+Verifies the built distribution carries the immutable 1.0 identity, the exact
+public dbfbridge dependency contract, and only the intended runtime package
+members.  REQ-P1-002 extends the package-content check with the typed public
+model module and PEP 561 ``py.typed`` marker.
 """
 
 from __future__ import annotations
@@ -84,6 +78,8 @@ def check_wheel(wheel: Path) -> None:
         "dbf_anonymizer/__init__.py",
         "dbf_anonymizer/cli.py",
         "dbf_anonymizer/__main__.py",
+        "dbf_anonymizer/models.py",
+        "dbf_anonymizer/py.typed",
     }
     missing = [name for name in required_members if not any(n == name for n in members)]
     if missing:
