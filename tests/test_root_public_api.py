@@ -16,7 +16,6 @@ OBSOLETE_0_3_EXPORTS = (
     "self_test",
     # Result / option types of the 0.3 pipeline
     "AnonymizeResult",
-    "RecoveryResult",
     "SelfTestReport",
     "TableOutcome",
     "AnonymizeOptions",
@@ -42,6 +41,11 @@ OBSOLETE_0_3_EXPORTS = (
     "shift_date",
     "shift_datetime",
 )
+# Note: the historical 0.3 untyped "RecoveryResult" name is intentionally not
+# in this forbidden list any more: REQ-P1-002 legitimately exports a new
+# immutable typed `RecoveryResult` public model under the same name (a clean
+# replacement, not a compatibility alias — the 0.3 dataclass shape/semantics
+# are gone).
 
 
 def test_obsolete_0_3_operations_are_not_exported() -> None:
@@ -50,8 +54,61 @@ def test_obsolete_0_3_operations_are_not_exported() -> None:
     assert not leaked, f"obsolete 0.3 exports still present: {leaked}"
 
 
-def test_public_surface_stays_intentionally_small() -> None:
-    assert dbf_anonymizer.__all__ == []
+EXPECTED_PUBLIC_MODELS = frozenset(
+    {
+        "PUBLIC_MODEL_SCHEMA_VERSION",
+        "Capabilities",
+        "DatasetIdentity",
+        "FieldPlan",
+        "Plan",
+        "PolicySummary",
+        "PreflightIssue",
+        "PreflightResult",
+        "ProgressEvent",
+        "PseudonymizationResult",
+        "RelationalAssurance",
+        "RecoveryResult",
+        "RelationshipGroup",
+        "RelationshipMember",
+        "RelationshipMetadata",
+        "ResultStatus",
+        "TablePlan",
+        "TransferBundleResult",
+        "VerificationResult",
+        "VerificationStatus",
+    }
+)
+
+#: REQ-P1-004 public operation functions must remain absent (typed models
+#: only in REQ-P1-002).
+FUTURE_SERVICE_FUNCTIONS = (
+    "capabilities",
+    "build_plan",
+    "preflight",
+    "pseudonymize",
+    "verify_dataset",
+    "recover",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
+)
+
+
+def test_obsolete_0_3_operations_are_not_exported() -> None:
+    exported = set(dir(dbf_anonymizer))
+    leaked = sorted(set(OBSOLETE_0_3_EXPORTS) & exported)
+    assert not leaked, f"obsolete 0.3 exports still present: {leaked}"
+
+
+def test_public_model_exports_match_the_p1_002_contract() -> None:
+    exported = set(dir(dbf_anonymizer))
+    assert exported >= set(dbf_anonymizer.__all__)
+    assert set(dbf_anonymizer.__all__) == EXPECTED_PUBLIC_MODELS
+
+
+def test_future_service_functions_are_not_root_exported() -> None:
+    exported = set(dir(dbf_anonymizer))
+    leaked = exported & set(FUTURE_SERVICE_FUNCTIONS)
+    assert not leaked, f"future P1-004 service functions leaked: {sorted(leaked)}"
 
 
 def test_development_version_is_not_0_3() -> None:

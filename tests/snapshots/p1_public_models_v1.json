@@ -1,0 +1,171 @@
+{
+  "description": "Committed schema snapshot of the REQ-P1-002 public model serialization contract (schema version 1). Contains only generic schema metadata and synthetic identifiers; no machine-specific paths and no original values.",
+  "schema_version": 1,
+  "top_level_models": {
+    "Capabilities": {
+      "discriminator": "Capabilities",
+      "kind": "top-level",
+      "fields": {
+        "product_version": {"type": "string", "required": true, "path": false},
+        "dbfbridge_version": {"type": "string", "required": true, "path": false},
+        "supported_profiles": {"type": "array-of-string", "required": true, "path": false},
+        "features": {"type": "array-of-string", "required": true, "path": false}
+      }
+    },
+    "DatasetIdentity": {
+      "discriminator": "DatasetIdentity",
+      "kind": "top-level",
+      "fields": {
+        "dataset_fingerprint": {"type": "string", "required": true, "path": false},
+        "tables": {"type": "array-of-relative-path", "required": true, "path": true},
+        "table_count": {"type": "integer", "required": true, "path": false}
+      }
+    },
+    "Plan": {
+      "discriminator": "Plan",
+      "kind": "top-level",
+      "fields": {
+        "dataset_identity": {"type": "object:DatasetIdentity", "required": true, "path": false},
+        "policy_summary": {"type": "object:PolicySummary", "required": true, "path": false},
+        "relationships": {"type": "object:RelationshipMetadata", "required": true, "path": false},
+        "table_plans": {"type": "array-of-object:TablePlan", "required": true, "path": false},
+        "strategy": {"type": "string", "required": true, "path": false},
+        "plan_fingerprint": {"type": "string", "required": true, "path": false}
+      }
+    },
+    "ProgressEvent": {
+      "discriminator": "ProgressEvent",
+      "kind": "top-level",
+      "fields": {
+        "operation_id": {"type": "string", "required": true, "path": false},
+        "phase": {"type": "string", "required": true, "path": false},
+        "completed": {"type": "integer", "required": true, "path": false},
+        "total": {"type": "integer-or-null", "required": true, "path": false},
+        "unit": {"type": "string-or-null", "required": true, "path": false},
+        "table": {"type": "relative-path-or-null", "required": true, "path": true}
+      }
+    },
+    "PreflightResult": {
+      "discriminator": "PreflightResult",
+      "kind": "top-level",
+      "fields": {
+        "ready": {"type": "boolean", "required": true, "path": false},
+        "issues": {"type": "array-of-object:PreflightIssue", "required": true, "path": false}
+      }
+    },
+    "PseudonymizationResult": {
+      "discriminator": "PseudonymizationResult",
+      "kind": "top-level",
+      "fields": {
+        "operation_id": {"type": "string", "required": true, "path": false},
+        "status": {"type": "enum:ResultStatus", "required": true, "path": false},
+        "dataset_fingerprint": {"type": "string", "required": true, "path": false},
+        "artifact_paths": {"type": "array-of-relative-path", "required": true, "path": true},
+        "tables_processed": {"type": "integer", "required": true, "path": false},
+        "records_processed": {"type": "integer", "required": true, "path": false}
+      }
+    },
+    "VerificationResult": {
+      "discriminator": "VerificationResult",
+      "kind": "top-level",
+      "fields": {
+        "operation_id": {"type": "string", "required": true, "path": false},
+        "status": {"type": "enum:VerificationStatus", "required": true, "path": false},
+        "dataset_fingerprint": {"type": "string", "required": true, "path": false},
+        "tables_verified": {"type": "integer", "required": true, "path": false},
+        "records_verified": {"type": "integer", "required": true, "path": false},
+        "mismatches": {"type": "integer", "required": true, "path": false},
+        "assurance": {"type": "enum:RelationalAssurance", "required": true, "path": false}
+      }
+    },
+    "RecoveryResult": {
+      "discriminator": "RecoveryResult",
+      "kind": "top-level",
+      "fields": {
+        "operation_id": {"type": "string", "required": true, "path": false},
+        "status": {"type": "enum:ResultStatus", "required": true, "path": false},
+        "restored_artifact_paths": {"type": "array-of-relative-path", "required": true, "path": true},
+        "records_restored": {"type": "integer", "required": true, "path": false}
+      }
+    },
+    "TransferBundleResult": {
+      "discriminator": "TransferBundleResult",
+      "kind": "top-level",
+      "fields": {
+        "operation_id": {"type": "string", "required": true, "path": false},
+        "status": {"type": "enum:ResultStatus", "required": true, "path": false},
+        "bundle_id": {"type": "string", "required": true, "path": false},
+        "bundle_fingerprint": {"type": "string", "required": true, "path": false},
+        "artifact_paths": {"type": "array-of-relative-path", "required": true, "path": true}
+      }
+    }
+  },
+  "nested_models": {
+    "FieldPlan": {
+      "kind": "nested",
+      "fields": {
+        "field_name": {"type": "string", "required": true, "path": false},
+        "dbf_type": {"type": "string", "required": true, "path": false},
+        "action": {"type": "string", "required": true, "path": false},
+        "domain": {"type": "string-or-null", "required": true, "path": false}
+      }
+    },
+    "TablePlan": {
+      "kind": "nested",
+      "fields": {
+        "relative_path": {"type": "relative-path", "required": true, "path": true},
+        "schema_fingerprint": {"type": "string", "required": true, "path": false},
+        "fields": {"type": "array-of-object:FieldPlan", "required": true, "path": false}
+      }
+    },
+    "PolicySummary": {
+      "kind": "nested",
+      "fields": {
+        "profile": {"type": "string", "required": true, "path": false},
+        "policy_fingerprint": {"type": "string", "required": true, "path": false}
+      }
+    },
+    "RelationshipMember": {
+      "kind": "nested",
+      "fields": {
+        "relative_path": {"type": "relative-path", "required": true, "path": true},
+        "field_name": {"type": "string", "required": true, "path": false},
+        "role": {"type": "string", "required": true, "path": false}
+      }
+    },
+    "RelationshipGroup": {
+      "kind": "nested",
+      "fields": {
+        "group_id": {"type": "string", "required": true, "path": false},
+        "provenance": {"type": "string", "required": true, "path": false},
+        "members": {"type": "array-of-object:RelationshipMember", "required": true, "path": false},
+        "composite_ordering": {"type": "array-of-string", "required": true, "path": false}
+      }
+    },
+    "RelationshipMetadata": {
+      "kind": "nested",
+      "fields": {
+        "provenance": {"type": "string", "required": true, "path": false},
+        "groups": {"type": "array-of-object:RelationshipGroup", "required": true, "path": false}
+      }
+    },
+    "PreflightIssue": {
+      "kind": "nested",
+      "fields": {
+        "code": {"type": "string", "required": true, "path": false},
+        "table": {"type": "relative-path-or-null", "required": true, "path": true},
+        "field_name": {"type": "string-or-null", "required": true, "path": false}
+      }
+    }
+  },
+  "enums": {
+    "RelationalAssurance": [
+      "GLOBAL_EXACT_VALUE",
+      "DECLARED_RELATIONS_VERIFIED",
+      "VFP_METADATA_VERIFIED",
+      "INCOMPLETE"
+    ],
+    "VerificationStatus": ["PASS", "PARTIAL", "FAIL"],
+    "ResultStatus": ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"]
+  }
+}

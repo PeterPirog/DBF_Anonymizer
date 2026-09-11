@@ -132,9 +132,11 @@ def test_version_sources_agree() -> None:
 def test_import_is_side_effect_free() -> None:
     # Importing must not open DBFs, create files, or touch the network; the
     # full REQ-P1-007 sentinel proof is a later requirement.  Here we prove
-    # the import surface stays intentionally minimal and side-effect free.
-    assert dbf_anonymizer.__all__ == []
+    # the import surface stays the deliberate P1-002 model contract and
+    # remains side-effect free.
     assert dbf_anonymizer.__version__ == "1.0.0.dev0"
+    assert "DatasetIdentity" in dbf_anonymizer.__all__
+    assert "pseudonymize" not in dbf_anonymizer.__all__
 
 
 def test_module_execution_entry_delegates_without_duplication() -> None:

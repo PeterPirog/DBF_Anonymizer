@@ -37,10 +37,14 @@ dbf-anonymizer = "dbf_anonymizer.cli:main"
 dev = [
     "pytest>=8",
     "build>=1.2",
+    "mypy>=1.11",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dbf_anonymizer = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
