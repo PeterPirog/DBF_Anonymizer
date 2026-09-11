@@ -2,10 +2,8 @@
 
 Proves the distribution identity, the Python support contract, the console
 entry point, CLI behavior (``--help``/``--version`` only, unknown arguments
-non-zero), version consistency and import purity.  Clean-wheel installation
-from outside the repository checkout is proven by the CI clean-wheel job and
-the wheel metadata verifier; these tests additionally prove the metadata and
-CLI function contracts in-process.
+non-zero), version consistency and import purity. Clean-wheel installation
+from outside the repository checkout is proven by CI.
 """
 
 from __future__ import annotations
@@ -33,11 +31,6 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-# ---------------------------------------------------------------------------
-# distribution identity and dependency contract
-# ---------------------------------------------------------------------------
-
-
 def test_distribution_name_and_version_are_truthful() -> None:
     assert importlib.metadata.metadata(DISTRIBUTION)["Name"] == DISTRIBUTION
     version = importlib.metadata.version(DISTRIBUTION)
@@ -52,9 +45,7 @@ def test_import_package_exposes_dev_version() -> None:
 
 def test_requires_python_covers_declared_versions_and_no_more() -> None:
     requires_python = _metadata()["Requires-Python"]
-    # setuptools normalizes specifier ordering; compare the normalized form.
     assert requires_python.replace(" ", "") in {">=3.10,<3.15", "<3.15,>=3.10"}
-    # The classifier list truthfully names each mandatory interpreter version.
     classifiers = _metadata().get_all("Classifier") or []
     python_classifiers = [c for c in classifiers if c.startswith("Programming Language :: Python :: 3.")]
     assert {c.rsplit("::", 1)[1].strip() for c in python_classifiers} == set(
@@ -75,20 +66,12 @@ def test_runtime_dbfbridge_contract_unchanged() -> None:
         requirement.replace(" ", "")
         for requirement in (importlib.metadata.requires(DISTRIBUTION) or [])
     ]
-    dbfbridge = [
-        r for r in requirements if r.replace(" ", "").startswith("dbfbridge")
-    ]
+    dbfbridge = [r for r in requirements if r.replace(" ", "").startswith("dbfbridge")]
     assert dbfbridge == ["dbfbridge[write]<2,>=1.1.0"] or dbfbridge == [
         "dbfbridge[write]>=1.1.0,<2"
     ]
-    # No direct dbf dependency and no VCS dependency.
     assert not [r for r in requirements if r.replace(" ", "").split("[")[0] == "dbf"]
     assert not [r for r in requirements if "@" in r]
-
-
-# ---------------------------------------------------------------------------
-# CLI foundation behavior
-# ---------------------------------------------------------------------------
 
 
 def test_cli_help_succeeds_and_names_the_program() -> None:
@@ -124,17 +107,20 @@ def test_version_sources_agree() -> None:
     assert installed in stdout
 
 
-# ---------------------------------------------------------------------------
-# root import purity (package-level, no filesystem/network/DBF effects)
-# ---------------------------------------------------------------------------
-
-
-def test_import_is_side_effect_free() -> None:
-    # Importing must not open DBFs, create files, or touch the network; the
-    # full REQ-P1-007 sentinel proof is a later requirement.  Here we prove
-    # the import surface stays intentionally minimal and side-effect free.
-    assert dbf_anonymizer.__all__ == []
+def test_import_is_side_effect_free_and_does_not_fake_operations() -> None:
     assert dbf_anonymizer.__version__ == "1.0.0.dev0"
+    assert "Capabilities" in dbf_anonymizer.__all__
+    for operation in (
+        "capabilities",
+        "build_plan",
+        "preflight",
+        "pseudonymize",
+        "verify_dataset",
+        "recover",
+        "create_transfer_bundle",
+        "verify_transfer_bundle",
+    ):
+        assert not hasattr(dbf_anonymizer, operation)
 
 
 def test_module_execution_entry_delegates_without_duplication() -> None:
