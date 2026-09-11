@@ -77,9 +77,46 @@ def check_wheel(wheel: Path) -> None:
     if direct_dbf:
         _fail(f"direct dbf dependency present: {direct_dbf!r} (must stay transitive)")
 
+    # Wheel content: intended runtime members present, nothing accidental.
+    with zipfile.ZipFile(wheel) as archive:
+        members = archive.namelist()
+    required_members = {
+        "dbf_anonymizer/__init__.py",
+        "dbf_anonymizer/cli.py",
+        "dbf_anonymizer/__main__.py",
+    }
+    missing = [name for name in required_members if not any(n == name for n in members)]
+    if missing:
+        _fail(f"wheel is missing required runtime members: {missing}")
+    forbidden_prefixes = (
+        "tests/",
+        "tools/",
+        "requirements/",
+        "docs/",
+        "benchmark",
+        "AGENTS.md",
+        "INTERNAL_RAG",
+        ".agents",
+        ".opencode",
+    )
+    forbidden_suffixes = (
+        ".dbf", ".fpt", ".cdx", ".idx", ".dbc", ".dct", ".dcx",
+        ".sqlite3", "-wal", "-shm",
+    )
+    leaked = [
+        name
+        for name in members
+        if name.startswith(forbidden_prefixes)
+        or name.endswith(forbidden_suffixes)
+        or name.endswith("/LICENSES.md")
+    ]
+    if leaked:
+        _fail(f"wheel contains forbidden members: {leaked}")
+
     print(f"wheel metadata check PASSED: {wheel.name}")
     print(f"  Name={name}  Version={version}")
     print(f"  Requires-Dist: {dbfbridge_requirements[0]}")
+    print(f"  wheel members: {len(members)}; runtime package files verified")
 
 
 def main() -> int:
