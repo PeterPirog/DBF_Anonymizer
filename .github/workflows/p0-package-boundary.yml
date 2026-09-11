@@ -89,6 +89,8 @@ jobs:
           ../clean-env/bin/python -c "import dbf_anonymizer, sys; assert sys.modules['dbf_anonymizer'].__file__.find('site-packages') > 0"
           ../clean-env/bin/dbf-anonymizer --help
           ../clean-env/bin/dbf-anonymizer --version
+      - name: Install pytest into the clean environment
+        run: clean-env/bin/python -m pip install --no-cache-dir pytest
       - name: Run focused P1-001 contract tests against the installed wheel
         env:
           PYTHONUTF8: "1"
