@@ -38,7 +38,6 @@ OBSOLETE_0_3_EXPORTS = (
 )
 
 EXPECTED_PUBLIC_EXPORTS = {
-    # REQ-P1-002 models
     "MODEL_SCHEMA_VERSION",
     "Capabilities",
     "DatasetIdentity",
@@ -55,7 +54,6 @@ EXPECTED_PUBLIC_EXPORTS = {
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
-    # REQ-P1-003 errors
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
     "ERROR_REGISTRY",
@@ -109,7 +107,7 @@ def test_recovery_result_is_the_new_1_0_model_not_a_legacy_compatibility_alias()
 
 def test_error_hierarchy_is_the_new_1_0_contract() -> None:
     assert dbf_anonymizer.AnonymizerError.__module__ == "dbf_anonymizer.errors"
-    assert issubclass(dbf_anonymizer.DBBridgeError if hasattr(dbf_anonymizer, "DBBridgeError") else dbf_anonymizer.DBFBridgeError, dbf_anonymizer.AnonymizerError)
+    assert issubclass(dbf_anonymizer.DBFBridgeError, dbf_anonymizer.AnonymizerError)
 
 
 def test_development_version_is_not_0_3() -> None:
