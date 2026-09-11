@@ -54,8 +54,6 @@ def test_requires_python_covers_declared_versions_and_no_more() -> None:
     requires_python = _metadata()["Requires-Python"]
     # setuptools normalizes specifier ordering; compare the normalized form.
     assert requires_python.replace(" ", "") in {">=3.10,<3.15", "<3.15,>=3.10"}
-    # Every declared mandatory version is inside the contract.
-    assert "3.10" in requires_python or EXPECTED_REQUIRES_PYTHON.endswith(">=3.10,<3.15")
     # The classifier list truthfully names each mandatory interpreter version.
     classifiers = _metadata().get_all("Classifier") or []
     python_classifiers = [c for c in classifiers if c.startswith("Programming Language :: Python :: 3.")]

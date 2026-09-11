@@ -80,21 +80,61 @@ jobs:
           clean-env/bin/python -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
           clean-env/bin/python -m pip install --no-cache-dir --no-deps dist/*.whl
           clean-env/bin/python -m pip check
-      - name: Import + CLI smoke from outside the repository checkout
+      - name: Prepare the external smoke root (outside GITHUB_WORKSPACE)
+        # The wheel runtime smoke runs from runner.temp, NOT from a
+        # subdirectory of the checkout: the repository checkout must provide
+        # nothing for the import under test.
         env:
-          PYTHONUTF8: "1"
+          SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
         run: |
-          mkdir -p outside-checkout && cd outside-checkout
-          ../clean-env/bin/python -c "import dbf_anonymizer; print(dbf_anonymizer.__version__)"
-          ../clean-env/bin/python -c "import dbf_anonymizer, sys; assert sys.modules['dbf_anonymizer'].__file__.find('site-packages') > 0"
-          ../clean-env/bin/dbf-anonymizer --help
-          ../clean-env/bin/dbf-anonymizer --version
-      - name: Install pytest into the clean environment
-        run: clean-env/bin/python -m pip install --no-cache-dir pytest
-      - name: Run focused P1-001 contract tests against the installed wheel
+          rm -rf "$SMOKE_ROOT"
+          mkdir -p "$SMOKE_ROOT/wheelhouse" "$SMOKE_ROOT/work"
+          cp dist/*.whl "$SMOKE_ROOT/wheelhouse/"
+          cp requirements/p0-dbfbridge-tested.txt "$SMOKE_ROOT/"
+          echo "pin file copied verbatim:"
+          cat "$SMOKE_ROOT/p0-dbfbridge-tested.txt"
+      - name: Create the external venv and install (pinned public dbfbridge + built wheel)
         env:
-          PYTHONUTF8: "1"
-        run: clean-env/bin/python -m pytest tests/test_p1_packaging.py -ra
+          SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
+        run: |
+          python -m venv "$SMOKE_ROOT/venv"
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-cache-dir --upgrade pip
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-cache-dir -r "$SMOKE_ROOT/p0-dbfbridge-tested.txt"
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-cache-dir --no-deps "$SMOKE_ROOT"/wheelhouse/*.whl
+          "$SMOKE_ROOT/venv/bin/python" -m pip check
+      - name: Wheel runtime smoke from a directory objectively outside GITHUB_WORKSPACE
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
+        run: |
+          cd "$SMOKE_ROOT/work"
+          # Objective cwd assertion: fail the job if this cwd is inside the
+          # repository workspace.
+          case "$PWD" in
+            "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*)
+              echo "FAIL: smoke cwd $PWD is inside GITHUB_WORKSPACE" ; exit 1 ;;
+            *) echo "smoke cwd (outside GITHUB_WORKSPACE): $PWD" ;;
+          esac
+          VENV_PY="$SMOKE_ROOT/venv/bin/python"
+          VENV_CLI="$SMOKE_ROOT/venv/bin/dbf-anonymizer"
+          # Absolute interpreter paths only (no ../ relative prefix anomaly).
+          "$VENV_PY" -c "import dbf_anonymizer; print('version:', dbf_anonymizer.__version__)"
+          "$VENV_PY" -c "import dbf_anonymizer, sys; f = dbf_anonymizer.__file__; assert f.startswith('$SMOKE_ROOT'), f; assert 'site-packages' in f, f; assert not f.startswith('$GITHUB_WORKSPACE'), f; print('import origin:', f)"
+          "$VENV_CLI" --help
+          "$VENV_CLI" --version
+      - name: Install pytest into the external smoke venv
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
+        run: |
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-cache-dir pytest
+      - name: Run focused P1-001 contract tests against the installed wheel
+        # The TEST FILES are loaded from the repository checkout, but the
+        # dbf_anonymizer package under test is the wheel installed in the
+        # external venv under runner.temp (src/ is not importable from the
+        # repository root, so all imports resolve to the external venv).
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}
+        run: |
+          "$SMOKE_ROOT/venv/bin/python" -m pytest tests/test_p1_packaging.py -ra
 
   tests:
     name: Remaining pytest suite / ${{ matrix.os }}
