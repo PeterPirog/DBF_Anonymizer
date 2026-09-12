@@ -155,6 +155,7 @@ def build_plan(
         for field_info in schema.fields:
             action, is_unsafe, is_system = classify_field_capability(
                 field_info.dbf_type,
+                field_info.name,
                 field_info.supported,
                 field_info.is_binary,
                 field_info.system,
@@ -168,7 +169,8 @@ def build_plan(
                 unsafe_count += 1
             if is_system:
                 system_count += 1
-            if not field_info.supported:
+            # Unsupported user fields are unsafe; the trusted bitmap is system state.
+            if not field_info.supported and not is_system:
                 unsupported_count += 1
 
         total_transformed_fields += transform_count

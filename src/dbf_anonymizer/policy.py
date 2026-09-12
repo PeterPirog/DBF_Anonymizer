@@ -194,6 +194,7 @@ def _iter_leaves(obj: Any) -> Any:
 
 def classify_field_capability(
     dbf_type: str,
+    field_name: str,
     is_supported: bool,
     is_binary: bool,
     is_system: bool,
@@ -208,10 +209,12 @@ def classify_field_capability(
     - (None, True, False) = UNSAFE (requires future preflight rejection)
     - (None, False, True) = SYSTEM (writer-managed, not user data)
     """
-    if is_system:
+    # The descriptor system bit alone does not establish writer ownership.
+    # Only the known VFP NULL bitmap is trusted from public FieldInfo facts.
+    if dbf_type == "0" and is_system and field_name.upper() == "_NULLFLAGS":
         return (None, False, True)
 
-    if not is_supported:
+    if is_system or not is_supported:
         return (None, True, False)
 
     upper_type = dbf_type.upper()

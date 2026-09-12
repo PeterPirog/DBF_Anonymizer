@@ -670,6 +670,39 @@ def test_non_null_metadata_file_fails_closed(tmp_path: Path) -> None:
                    policy={"schema_version": 1, "relationships": {"metadata_file": "some_file.json"}})
 
 
+@pytest.mark.parametrize("policy", [
+    {"profile": "SAFE_TRANSFER"},
+    {"text": {"domain": "GLOBAL_TEXT"}},
+    {"numeric": {"default_action": "KEEP"}},
+])
+def test_supported_policy_values_accepted(tmp_path: Path, policy: dict[str, Any]) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    default = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    explicit = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy)
+    assert explicit.to_dict() == default.to_dict()
+
+
+@pytest.mark.parametrize("policy,detail_code", [
+    ({"profile": "DATA_ONLY"}, "unsupported_top_level_profile"),
+    ({"text": {"domain": "UNKNOWN_DOMAIN"}}, "unsupported_text_domain"),
+    ({"numeric": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}}, "unsupported_numeric_action"),
+])
+def test_unsupported_policy_values_rejected(
+    tmp_path: Path, policy: dict[str, Any], detail_code: str,
+) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    before = _sha256_files(tmp_path)
+    with pytest.raises(PolicyError) as exc_info:
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy)
+    assert exc_info.value.code.value == "POLICY_UNSUPPORTED"
+    assert exc_info.value.context.detail_code == detail_code
+    assert _sha256_files(tmp_path) == before
+    assert not (tmp_path / "out").exists()
+    assert not (tmp_path / "v").exists()
+
+
 # ---------------------------------------------------------------------------
 # REPAIR: C. Field classification V/M/G/P
 # ---------------------------------------------------------------------------
@@ -677,7 +710,7 @@ def test_non_null_metadata_file_fails_closed(tmp_path: Path) -> None:
 def test_V_field_planned_as_text_transformation(tmp_path: Path) -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
-    result, unsafe, system = classify_field_capability("V", True, False, False, False, policy)
+    result, unsafe, system = classify_field_capability("V", "TEXT", True, False, False, False, policy)
     assert result == "PSEUDONYMIZE_REVERSIBLE"
     assert not unsafe and not system
 
@@ -685,9 +718,9 @@ def test_V_field_planned_as_text_transformation(tmp_path: Path) -> None:
 def test_G_P_fields_planned_as_memo_binary(tmp_path: Path) -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
-    g_result, g_unsafe, _ = classify_field_capability("G", True, True, False, False, policy)
-    p_result, p_unsafe, _ = classify_field_capability("P", True, True, False, False, policy)
-    m_result, m_unsafe, _ = classify_field_capability("M", True, False, False, False, policy)
+    g_result, g_unsafe, _ = classify_field_capability("G", "GENERAL", True, True, False, False, policy)
+    p_result, p_unsafe, _ = classify_field_capability("P", "PICTURE", True, True, False, False, policy)
+    m_result, m_unsafe, _ = classify_field_capability("M", "MEMO", True, False, False, False, policy)
     assert g_result == "MASK_REVERSIBLE" and not g_unsafe
     assert p_result == "MASK_REVERSIBLE" and not p_unsafe
     assert m_result == "MASK_REVERSIBLE" and not m_unsafe
@@ -751,50 +784,33 @@ def test_no_cdx_inferred_without_structural_cdx(tmp_path: Path) -> None:
 # REPAIR: F. IDX truthfulness
 # ---------------------------------------------------------------------------
 
-def test_same_stem_idx_not_associated_with_dbf(tmp_path: Path) -> None:
+@pytest.mark.parametrize("idx_relative_path", ["north/registry.idx", "south/registry.idx"])
+def test_same_stem_idx_not_associated_with_dbf(tmp_path: Path, idx_relative_path: str) -> None:
     src = tmp_path / "source"
-    if src.exists():
-        shutil.rmtree(src)
-    src.mkdir(parents=True)
-    (src / "north").mkdir()
-    (src / "south").mkdir()
+    _make_valid_source(src)
+    baseline = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    idx = src / idx_relative_path
+    idx.write_bytes(b"synthetic disposable index A")
+    before = _sha256_files(src)
+    first = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    assert _sha256_files(src) == before
 
-    def _field(name: str, dbf_type: str, length: int):
-        return dbfbridge.FieldInfo(
-            ordinal=0, name=name, dbf_type=dbf_type, length=length,
-            decimal_count=0, address=0, flags=0, index_field_flag=0,
-            autoincrement_next_value=0, autoincrement_step=1,
-            is_memo=False, is_binary=False, supported=True, dbversion_byte=0x30,
-        )
+    idx.write_bytes(b"synthetic disposable index B")
+    changed = _sha256_files(src)
+    assert {p for p in before if before[p] != changed[p]} == {idx_relative_path}
+    second = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    assert _sha256_files(src) == changed
 
-    def _schema(fields: tuple) -> dbfbridge.TableSchema:
-        return dbfbridge.TableSchema(
-            path=Path("memory:test"), record_count=0,
-            header_length=32 + 32 * len(fields) + 1,
-            record_length=sum(f.length for f in fields) + 1,
-            language_driver=0xC8, encoding="cp1250",
-            has_memo=False, has_memo_flag=False, has_structural_cdx=False,
-            is_database_container=False, dbc_bound=False, dbc_backlink_path=None,
-            table_flags=0, fields=fields, warnings=(),
-            dbversion_byte=0x30, dbversion_name="Visual FoxPro",
-            last_update=None, incomplete_transaction=False, encryption_flag=False,
-            memo_companion_format=None, memo_companion_present=False,
-            memo_companion_path=None, memo_companion_size_bytes=None,
-            memo_block_size=None, memo_next_free_block=None,
-            companion_cdx_present=False, companion_cdx_path=None,
-        )
-
-    dbfbridge.write_table(
-        src / "north" / "table.dbf",
-        schema=_schema((_field("KEY", "C", 10),)),
-        records=[{"KEY": "K1"}],
-    )
-    (src / "south" / "table.idx").write_bytes(b"\x00" * 100)
-
-    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
-    d = plan.to_dict()
-    serialized = json.dumps(d)
-    assert "south/table.idx" not in d.get("tables", [{}])[0] if d.get("tables") else True
+    assert baseline.dataset.source_fingerprint != first.dataset.source_fingerprint
+    assert first.dataset.source_fingerprint != second.dataset.source_fingerprint
+    assert first.plan_id != second.plan_id
+    # Adding/changing IDX cannot invent an ownership relation on any TablePlan.
+    assert baseline.tables == first.tables == second.tables
+    assert baseline.to_dict()["tables"] == first.to_dict()["tables"] == second.to_dict()["tables"]
+    assert all(".idx" not in json.dumps(t.to_dict()).lower() for t in second.tables)
+    assert baseline.policy == first.policy == second.policy
+    assert baseline.relationships == first.relationships == second.relationships
+    assert baseline.output_profile == first.output_profile == second.output_profile
 
 
 # ---------------------------------------------------------------------------
@@ -846,38 +862,39 @@ def _full_policy() -> dict[str, object]:
     }
 
 
-def test_nocptrans_text_field_classified_unsafe() -> None:
+@pytest.mark.parametrize("dbf_type", ["C", "V"])
+def test_nocptrans_text_field_classified_unsafe(dbf_type: str) -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("C", True, False, False, True, policy)
+    action, unsafe, system = classify_field_capability(dbf_type, "TEXT", True, False, False, True, policy)
     assert action is None and unsafe is True and system is False
 
 
 def test_nocptrans_memo_field_classified_unsafe() -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("M", True, False, False, True, policy)
+    action, unsafe, system = classify_field_capability("M", "MEMO", True, False, False, True, policy)
     assert action is None and unsafe is True and system is False
 
 
 def test_nocptrans_numeric_field_stays_identity() -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("N", True, False, False, True, policy)
+    action, unsafe, system = classify_field_capability("N", "NUMBER", True, False, False, True, policy)
     assert action is None and unsafe is False and system is False
 
 
 def test_nocptrans_with_unsupported_is_unsafe() -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("C", False, False, False, True, policy)
+    action, unsafe, system = classify_field_capability("C", "TEXT", False, False, False, True, policy)
     assert action is None and unsafe is True and system is False
 
 
 def test_nocptrans_does_not_affect_system_field() -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("0", True, True, True, True, policy)
+    action, unsafe, system = classify_field_capability("0", "_NULLFLAGS", True, True, True, True, policy)
     assert action is None and unsafe is False and system is True
 
 
@@ -888,10 +905,21 @@ def test_nocptrans_does_not_affect_system_field() -> None:
 def test_nullflags_field_is_system_not_unsafe(tmp_path: Path) -> None:
     src = tmp_path / "source"
     shutil.copytree(FIXTURES / "nullable", src)
+    before = _sha256_files(src)
+    schema = dbfbridge.read_schema(src / "nullable_varchar.dbf")
+    nullflags = next(f for f in schema.fields if f.name == "_NULLFLAGS")
+    assert nullflags.dbf_type == "0" and nullflags.system is True
+    varchar = next(f for f in schema.fields if f.dbf_type == "V")
+    assert varchar.supported is True and varchar.system is False
     plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
     table = plan.tables[0]
+    assert table.table_path == "nullable_varchar.dbf"
     assert table.system_field_count == 1
     assert table.unsafe_field_count == 0
+    assert table.unsupported_field_count == 0
+    assert table.transform_field_count == 3  # Varchar, Character, Date only
+    assert "PSEUDONYMIZE_REVERSIBLE" in plan.policy.transformation_classes
+    assert _sha256_files(src) == before
 
 
 def test_nullflags_field_not_counted_as_transform(tmp_path: Path) -> None:
@@ -902,20 +930,87 @@ def test_nullflags_field_not_counted_as_transform(tmp_path: Path) -> None:
     # 5 user fields + 1 system = 6 total; none should be unsafe
     assert table.field_count == 6
     assert table.unsafe_field_count == 0
+    assert table.transform_field_count == 3
 
 
-def test_system_field_classification_unit() -> None:
+@pytest.mark.parametrize("field_name", ["_NullFlags", "_NULLFLAGS", "_nullflags"])
+def test_system_field_classification_unit(field_name: str) -> None:
     from dbf_anonymizer.policy import classify_field_capability
     policy = _full_policy()
-    action, unsafe, system = classify_field_capability("0", True, True, True, False, policy)
+    action, unsafe, system = classify_field_capability("0", field_name, True, True, True, False, policy)
     assert action is None and unsafe is False and system is True
 
 
-def test_system_field_overrides_unsupported() -> None:
+@pytest.mark.parametrize("dbf_type", ["C", "V", "M", "N", "X", "Q", "W"])
+@pytest.mark.parametrize("supported", [False, True])
+def test_untrusted_system_field_is_unsafe(dbf_type: str, supported: bool) -> None:
     from dbf_anonymizer.policy import classify_field_capability
-    policy = _full_policy()
-    action, unsafe, system = classify_field_capability("X", False, False, True, False, policy)
-    assert action is None and unsafe is False and system is True
+    assert classify_field_capability(
+        dbf_type, "USER_DATA", supported, False, True, False, _full_policy(),
+    ) == (None, True, False)
+
+
+@pytest.mark.parametrize("field_name,is_system", [
+    ("OTHER", True), ("_NULLFLAGS_EXTRA", True), ("_NULLFLAGS", False),
+])
+def test_type_zero_requires_known_name_and_system_flag(field_name: str, is_system: bool) -> None:
+    from dbf_anonymizer.policy import classify_field_capability
+    assert classify_field_capability(
+        "0", field_name, True, True, is_system, False, _full_policy(),
+    ) == (None, True, False)
+
+
+@pytest.mark.parametrize("dbf_type", ["C", "V", "M", "X", "Q", "W"])
+def test_unsupported_user_field_without_system_flag_is_unsafe(dbf_type: str) -> None:
+    from dbf_anonymizer.policy import classify_field_capability
+    assert classify_field_capability(
+        dbf_type, "USER_DATA", False, False, False, False, _full_policy(),
+    ) == (None, True, False)
+
+
+@pytest.mark.parametrize("dbf_type,field_name,supported,system,expected_system", [
+    ("0", "_NULLFLAGS", True, True, 1),
+    ("0", "_NullFlags", False, True, 1),
+    ("C", "USER_DATA", True, True, 0),
+    ("C", "_NULLFLAGS", True, True, 0),
+    ("V", "USER_DATA", True, True, 0),
+    ("M", "USER_DATA", True, True, 0),
+    ("X", "USER_DATA", False, True, 0),
+    ("Q", "USER_DATA", False, True, 0),
+    ("W", "USER_DATA", False, True, 0),
+    ("0", "OTHER", True, True, 0),
+    ("0", "_NULLFLAGS", True, False, 0),
+])
+def test_build_plan_classifies_public_field_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    dbf_type: str, field_name: str, supported: bool, system: bool, expected_system: int,
+) -> None:
+    src = tmp_path / "source"
+    shutil.copytree(FIXTURES / "nullable", src)
+    source_table = src / "nullable_varchar.dbf"
+    schema = dbfbridge.read_schema(source_table)
+    field = dataclasses.replace(
+        schema.fields[0], name=field_name, dbf_type=dbf_type,
+        supported=supported, flags=0x01 if system else 0,
+    )
+    assert isinstance(field, dbfbridge.FieldInfo)
+    assert field.system is system
+    schema = dataclasses.replace(schema, fields=(field,))
+
+    def read_schema(path: Path) -> dbfbridge.TableSchema:
+        assert Path(path) == source_table
+        return schema
+
+    monkeypatch.setattr(dbfbridge, "read_schema", read_schema)
+    before = _sha256_files(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    table = plan.tables[0]
+    assert table.field_count == 1
+    assert table.system_field_count == expected_system
+    assert table.unsafe_field_count == 1 - expected_system
+    assert table.transform_field_count == 0
+    assert table.unsupported_field_count == int(not supported and not expected_system)
+    assert _sha256_files(src) == before
 
 
 # ---------------------------------------------------------------------------
@@ -931,15 +1026,37 @@ def test_memo_required_when_has_memo_true(tmp_path: Path) -> None:
     assert table.memo_companion_present is True
 
 
-def test_memo_required_when_has_memo_flag_true(tmp_path: Path) -> None:
-    from dbf_anonymizer.models import TablePlan
-    # has_memo=False but has_memo_flag=True → memo_required should be True
-    # Simulated by checking the planning logic uses `or`
-    import dbfbridge
-    s = dbfbridge.read_schema(str(FIXTURES / "memos" / "memo_payloads.dbf"))
-    assert s.has_memo is True
-    # The planning code uses (s.has_memo or s.has_memo_flag)
-    # This is verified by the integration test above
+@pytest.mark.parametrize("has_memo,has_memo_flag,expected", [
+    (False, False, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+])
+def test_memo_required_public_schema_truth_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    has_memo: bool, has_memo_flag: bool, expected: bool,
+) -> None:
+    src = tmp_path / "source"
+    shutil.copytree(FIXTURES / "plain", src)
+    source_table = next(src.glob("*.dbf"))
+    schema = dataclasses.replace(
+        dbfbridge.read_schema(source_table),
+        has_memo=has_memo, has_memo_flag=has_memo_flag,
+    )
+    assert isinstance(schema, dbfbridge.TableSchema)
+    assert schema.has_memo is has_memo
+    assert schema.has_memo_flag is has_memo_flag
+
+    def read_schema(path: Path) -> dbfbridge.TableSchema:
+        assert Path(path) == source_table
+        return schema
+
+    monkeypatch.setattr(dbfbridge, "read_schema", read_schema)
+    before = _sha256_files(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    assert len(plan.tables) == 1
+    assert plan.tables[0].memo_required is expected
+    assert _sha256_files(src) == before
 
 
 def test_memo_required_false_when_no_memo_fields(tmp_path: Path) -> None:
@@ -954,6 +1071,36 @@ def test_memo_required_false_when_no_memo_fields(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # REPAIR: K. TablePlan invariants
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("unsupported,unsafe,expected_message", [
+    (2, 1, "unsupported_field_count cannot exceed unsafe_field_count"),
+    (4, 0, "unsupported_field_count cannot exceed field_count"),
+])
+def test_tableplan_unsupported_count_invariants(
+    unsupported: int, unsafe: int, expected_message: str,
+) -> None:
+    from dbf_anonymizer.models import TablePlan
+    with pytest.raises(ValueError, match=expected_message):
+        TablePlan(
+            table_path="a.dbf", memo_path=None, record_count=0, field_count=3,
+            transform_field_count=0, structural_cdx=False, dbc_bound=False,
+            index_strategy="DATA_ONLY", memo_required=False, memo_companion_present=False,
+            structural_cdx_companion_present=False, unsupported_field_count=unsupported,
+            unsafe_field_count=unsafe, system_field_count=0,
+        )
+
+
+def test_tableplan_all_fields_unsupported_and_unsafe_is_valid() -> None:
+    from dbf_anonymizer.models import TablePlan
+    table = TablePlan(
+        table_path="a.dbf", memo_path=None, record_count=0, field_count=3,
+        transform_field_count=0, structural_cdx=False, dbc_bound=False,
+        index_strategy="DATA_ONLY", memo_required=False, memo_companion_present=False,
+        structural_cdx_companion_present=False, unsupported_field_count=3,
+        unsafe_field_count=3, system_field_count=0,
+    )
+    assert table.unsupported_field_count == table.unsafe_field_count == table.field_count
+
 
 def test_tableplan_transform_plus_unsafe_plus_system_leq_field_count() -> None:
     from dbf_anonymizer.models import TablePlan

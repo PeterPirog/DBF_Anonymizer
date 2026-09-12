@@ -185,6 +185,10 @@ class TablePlan(PublicModel):
         _non_negative(self.unsupported_field_count, field_name="unsupported_field_count")
         _non_negative(self.unsafe_field_count, field_name="unsafe_field_count")
         _non_negative(self.system_field_count, field_name="system_field_count")
+        if self.unsupported_field_count > self.field_count:
+            raise ValueError("unsupported_field_count cannot exceed field_count")
+        if self.unsupported_field_count > self.unsafe_field_count:
+            raise ValueError("unsupported_field_count cannot exceed unsafe_field_count")
         if self.unsafe_field_count > self.field_count:
             raise ValueError("unsafe_field_count cannot exceed field_count")
         if self.system_field_count > self.field_count:
