@@ -304,8 +304,8 @@ def test_policy_change_changes_fingerprint(tmp_path: Path) -> None:
     src = tmp_path / "source"
     _make_valid_source(src)
 
-    policy1 = {"schema_version": 1, "profile": "SAFE_TRANSFER"}
-    policy2 = {"schema_version": 1, "profile": "DATA_ONLY"}
+    policy1 = {"schema_version": 1, "profile": "SAFE_TRANSFER", "text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}}
+    policy2 = {"schema_version": 1, "profile": "SAFE_TRANSFER", "text": {"default_action": "KEEP"}}
 
     plan1 = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy1)
     plan2 = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy2)
@@ -672,21 +672,22 @@ def test_non_null_metadata_file_fails_closed(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_V_field_planned_as_text_transformation(tmp_path: Path) -> None:
-    from dbf_anonymizer.policy import classify_field_transform
+    from dbf_anonymizer.policy import classify_field_capability
     policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
-    result = classify_field_transform("V", False, policy)
+    result, unsafe = classify_field_capability("V", True, False, policy)
     assert result == "PSEUDONYMIZE_REVERSIBLE"
+    assert not unsafe
 
 
 def test_G_P_fields_planned_as_memo_binary(tmp_path: Path) -> None:
-    from dbf_anonymizer.policy import classify_field_transform
+    from dbf_anonymizer.policy import classify_field_capability
     policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
-    g_result = classify_field_transform("G", True, policy)
-    p_result = classify_field_transform("P", True, policy)
-    m_result = classify_field_transform("M", False, policy)
-    assert g_result == "MASK_REVERSIBLE"
-    assert p_result == "MASK_REVERSIBLE"
-    assert m_result == "MASK_REVERSIBLE"
+    g_result, g_unsafe = classify_field_capability("G", True, True, policy)
+    p_result, p_unsafe = classify_field_capability("P", True, True, policy)
+    m_result, m_unsafe = classify_field_capability("M", True, False, policy)
+    assert g_result == "MASK_REVERSIBLE" and not g_unsafe
+    assert p_result == "MASK_REVERSIBLE" and not p_unsafe
+    assert m_result == "MASK_REVERSIBLE" and not m_unsafe
 
 
 # ---------------------------------------------------------------------------

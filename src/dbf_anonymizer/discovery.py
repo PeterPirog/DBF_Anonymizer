@@ -171,11 +171,18 @@ def compute_source_fingerprint(
 ) -> str:
     """Compute a deterministic SHA-256 source fingerprint.
 
-    The canonical sequence is the sorted tuple of (path, type, size, digest)
-    tuples, joined and hashed. No absolute paths, timestamps or user info.
+    Uses unambiguous canonical JSON encoding to avoid delimiter ambiguity
+    in hostile filenames. No absolute paths, timestamps or user info.
     """
-    canonical = "\n".join(
-        f"{e.relative_path}|{e.artifact_type}|{e.size_bytes}|{e.sha256}"
-        for e in entries
+    import json
+
+    canonical = json.dumps(
+        [
+            {"p": e.relative_path, "t": e.artifact_type, "s": e.size_bytes, "h": e.sha256}
+            for e in entries
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

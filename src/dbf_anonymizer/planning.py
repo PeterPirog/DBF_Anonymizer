@@ -28,7 +28,7 @@ from dbf_anonymizer.models import (
     VaultStrategy,
     _PlanExecutionContext,
 )
-from dbf_anonymizer.policy import classify_field_transform, resolve_policy
+from dbf_anonymizer.policy import classify_field_capability, resolve_policy
 
 
 def _resolve_index_strategy(
@@ -125,7 +125,7 @@ def build_plan(
     else:
         output_profile = TransferProfile.DATA_ONLY
 
-    # 6. Build per-table plans and count transformations
+    # 6. Build per-table plans with capability classification
     import dbfbridge
 
     tables: list[TablePlan] = []
@@ -148,15 +148,23 @@ def build_plan(
             ) from None
 
         transform_count = 0
+        unsupported_count = 0
+        unsafe_count = 0
+
         for field_info in schema.fields:
-            action = classify_field_transform(
+            action, is_unsafe = classify_field_capability(
                 field_info.dbf_type,
+                field_info.supported,
                 field_info.is_binary,
                 merged_policy,
             )
             if action is not None:
                 transform_count += 1
                 transformation_classes_set.add(action)
+            elif is_unsafe:
+                unsafe_count += 1
+            if not field_info.supported:
+                unsupported_count += 1
 
         total_transformed_fields += transform_count
         index_strategy = _resolve_index_strategy(table.structural_cdx, output_profile)
@@ -171,12 +179,17 @@ def build_plan(
                 structural_cdx=table.structural_cdx,
                 dbc_bound=table.dbc_bound,
                 index_strategy=index_strategy,
+                memo_required=schema.has_memo,
+                memo_companion_present=schema.memo_companion_present,
+                structural_cdx_companion_present=schema.companion_cdx_present,
+                unsupported_field_count=unsupported_count,
+                unsafe_field_count=unsafe_count,
             )
         )
 
     tables.sort(key=lambda t: t.table_path)
 
-    # 7. Recovery enabled if any reversible transformation is in the policy
+    # 7. Recovery enabled if any reversible transformation is planned
     recovery_enabled = bool(transformation_classes_set)
 
     # 8. Vault strategy

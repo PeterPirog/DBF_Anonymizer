@@ -17,12 +17,13 @@ KNOWN_TOP_LEVEL_KEYS = frozenset(
     {"schema_version", "profile", "text", "memo", "temporal", "numeric", "relationships", "indexes"}
 )
 
-KNOWN_PROFILES = frozenset({"SAFE_TRANSFER", "DATA_ONLY"})
+SUPPORTED_TOP_LEVEL_PROFILES = frozenset({"SAFE_TRANSFER"})
+SUPPORTED_TEXT_DOMAINS = frozenset({"GLOBAL_TEXT"})
 
 TEXT_ACTIONS = frozenset({"PSEUDONYMIZE_REVERSIBLE", "KEEP"})
 MEMO_ACTIONS = frozenset({"MASK_REVERSIBLE", "KEEP"})
 TEMPORAL_ACTIONS = frozenset({"SHIFT_REVERSIBLE", "KEEP"})
-NUMERIC_ACTIONS = frozenset({"KEEP", "PSEUDONYMIZE_REVERSIBLE"})
+NUMERIC_ACTIONS = frozenset({"KEEP"})
 
 TEXT_ALLOWED_KEYS = frozenset({"default_action", "domain"})
 MEMO_ALLOWED_KEYS = frozenset({"text", "binary"})
@@ -90,14 +91,16 @@ def _validate_policy(policy: Mapping[str, Any]) -> None:
     if unknown_top:
         _reject("unknown_top_level_keys")
 
-    if "profile" in policy and policy["profile"] not in KNOWN_PROFILES:
-        _reject_unsupported("unknown_profile")
+    if "profile" in policy and policy["profile"] not in SUPPORTED_TOP_LEVEL_PROFILES:
+        _reject_unsupported("unsupported_top_level_profile")
 
     if "text" in policy:
         _validate_nested(policy["text"], TEXT_ALLOWED_KEYS, "text")
         text = policy["text"]
         if "default_action" in text and text["default_action"] not in TEXT_ACTIONS:
             _reject_unsupported("unknown_text_action")
+        if "domain" in text and text["domain"] not in SUPPORTED_TEXT_DOMAINS:
+            _reject_unsupported("unsupported_text_domain")
 
     if "memo" in policy:
         _validate_nested(policy["memo"], MEMO_ALLOWED_KEYS, "memo")
@@ -117,7 +120,7 @@ def _validate_policy(policy: Mapping[str, Any]) -> None:
         _validate_nested(policy["numeric"], NUMERIC_ALLOWED_KEYS, "numeric")
         numeric = policy["numeric"]
         if "default_action" in numeric and numeric["default_action"] not in NUMERIC_ACTIONS:
-            _reject_unsupported("unknown_numeric_action")
+            _reject_unsupported("unsupported_numeric_action")
 
     if "relationships" in policy:
         _validate_nested(policy["relationships"], RELATIONSHIPS_ALLOWED_KEYS, "relationships")
@@ -189,57 +192,80 @@ def _iter_leaves(obj: Any) -> Any:
         yield obj
 
 
-def classify_field_transform(
+def classify_field_capability(
     dbf_type: str,
+    is_supported: bool,
     is_binary: bool,
     merged_policy: Mapping[str, Any],
-) -> str | None:
-    """Determine if a field type is transformed and which action applies.
+) -> tuple[str | None, bool]:
+    """Classify a field's planning capability.
 
-    Returns the action code (e.g. "PSEUDONYMIZE_REVERSIBLE") or None if KEEP.
-    Uses the DBF type code and the binary flag from FieldInfo.
+    Returns (action_or_None, is_unsafe):
+    - (action, False) = SAFE_TRANSFORM (action is the transformation code)
+    - (None, False) = IDENTITY (KEEP, no transformation needed)
+    - (None, True) = UNSAFE (requires future preflight rejection)
     """
+    if not is_supported:
+        return (None, True)
+
     upper_type = dbf_type.upper()
 
     if upper_type in ("C", "V"):
+        if is_binary:
+            return (None, True)
         text_section = merged_policy.get("text")
         if isinstance(text_section, dict):
             action: str = text_section.get("default_action", "PSEUDONYMIZE_REVERSIBLE")
         else:
             action = "PSEUDONYMIZE_REVERSIBLE"
+        if action == "KEEP":
+            return (None, False)
+        return (action, False)
+
     elif upper_type == "M":
+        if is_binary:
+            return (None, True)
         memo_section = merged_policy.get("memo")
         if isinstance(memo_section, dict):
             action = memo_section.get("text", "MASK_REVERSIBLE")
         else:
             action = "MASK_REVERSIBLE"
+        if action == "KEEP":
+            return (None, False)
+        return (action, False)
+
     elif upper_type in ("G", "P"):
         memo_section = merged_policy.get("memo")
         if isinstance(memo_section, dict):
             action = memo_section.get("binary", "MASK_REVERSIBLE")
         else:
             action = "MASK_REVERSIBLE"
+        if action == "KEEP":
+            return (None, False)
+        return (action, False)
+
     elif upper_type == "D":
         temporal_section = merged_policy.get("temporal")
         if isinstance(temporal_section, dict):
             action = temporal_section.get("date", "SHIFT_REVERSIBLE")
         else:
             action = "SHIFT_REVERSIBLE"
+        if action == "KEEP":
+            return (None, False)
+        return (action, False)
+
     elif upper_type == "T":
         temporal_section = merged_policy.get("temporal")
         if isinstance(temporal_section, dict):
             action = temporal_section.get("datetime", "SHIFT_REVERSIBLE")
         else:
             action = "SHIFT_REVERSIBLE"
-    elif upper_type in ("N", "I", "F", "Y", "B", "L"):
-        numeric_section = merged_policy.get("numeric")
-        if isinstance(numeric_section, dict):
-            action = numeric_section.get("default_action", "KEEP")
-        else:
-            action = "KEEP"
-    else:
-        action = "KEEP"
+        if action == "KEEP":
+            return (None, False)
+        return (action, False)
 
-    if action == "KEEP":
-        return None
-    return action
+    elif upper_type in ("N", "I", "F", "Y", "B", "L"):
+        return (None, False)
+
+    else:
+        return (None, True)
