@@ -10,12 +10,12 @@ JSON-safe dictionary carrying an explicit schema version and model type.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.0"
+MODEL_SCHEMA_VERSION = "1.1"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -45,6 +45,13 @@ class TransferProfile(str, Enum):
 
     DATA_ONLY = "DATA_ONLY"
     VFP_INDEXED = "VFP_INDEXED"
+
+
+class VaultStrategy(str, Enum):
+    """Explicit vault strategy identified during planning."""
+
+    NONE = "NONE"
+    SINGLE_DATASET_SQLITE = "SINGLE_DATASET_SQLITE"
 
 
 def _normalized_relative_path(value: str) -> str:
@@ -158,6 +165,12 @@ class TablePlan(PublicModel):
     structural_cdx: bool
     dbc_bound: bool
     index_strategy: str
+    memo_required: bool
+    memo_companion_present: bool
+    structural_cdx_companion_present: bool
+    unsupported_field_count: int
+    unsafe_field_count: int
+    system_field_count: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
@@ -169,6 +182,23 @@ class TablePlan(PublicModel):
         if self.transform_field_count > self.field_count:
             raise ValueError("transform_field_count cannot exceed field_count")
         _validated_code(self.index_strategy, field_name="index_strategy")
+        _non_negative(self.unsupported_field_count, field_name="unsupported_field_count")
+        _non_negative(self.unsafe_field_count, field_name="unsafe_field_count")
+        _non_negative(self.system_field_count, field_name="system_field_count")
+        if self.unsupported_field_count > self.field_count:
+            raise ValueError("unsupported_field_count cannot exceed field_count")
+        if self.unsupported_field_count > self.unsafe_field_count:
+            raise ValueError("unsupported_field_count cannot exceed unsafe_field_count")
+        if self.unsafe_field_count > self.field_count:
+            raise ValueError("unsafe_field_count cannot exceed field_count")
+        if self.system_field_count > self.field_count:
+            raise ValueError("system_field_count cannot exceed field_count")
+        if (
+            self.transform_field_count
+            + self.unsafe_field_count
+            + self.system_field_count
+        ) > self.field_count:
+            raise ValueError("transformed + unsafe + system cannot exceed field_count")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -181,6 +211,12 @@ class TablePlan(PublicModel):
             structural_cdx=self.structural_cdx,
             dbc_bound=self.dbc_bound,
             index_strategy=self.index_strategy,
+            memo_required=self.memo_required,
+            memo_companion_present=self.memo_companion_present,
+            structural_cdx_companion_present=self.structural_cdx_companion_present,
+            unsupported_field_count=self.unsupported_field_count,
+            unsafe_field_count=self.unsafe_field_count,
+            system_field_count=self.system_field_count,
         )
 
 
@@ -192,6 +228,7 @@ class PolicySummary(PublicModel):
     relationship_count: int
     recovery_enabled: bool
     transformation_classes: tuple[str, ...]
+    vault_strategy: VaultStrategy
 
     def __post_init__(self) -> None:
         _validated_code(self.policy_schema_version, field_name="policy_schema_version")
@@ -210,6 +247,7 @@ class PolicySummary(PublicModel):
             relationship_count=self.relationship_count,
             recovery_enabled=self.recovery_enabled,
             transformation_classes=self.transformation_classes,
+            vault_strategy=self.vault_strategy,
         )
 
 
@@ -270,6 +308,25 @@ class RelationalAssurance(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
+class _PlanExecutionContext:
+    """Runtime-only execution context carried by the in-memory Plan.
+
+    This is intentionally NOT a PublicModel: it is never serialized through
+    ``to_dict``, excluded from ``repr``, and excluded from equality
+    comparisons. It stores the absolute filesystem roots that a future
+    ``pseudonymize(plan)`` call needs to locate source, write output and
+    manage the vault, without leaking them into any public JSON boundary.
+    """
+
+    source_root: str
+    output_root: str
+    vault_path: str
+
+    def __repr__(self) -> str:
+        return "<_PlanExecutionContext>"
+
+
+@dataclass(frozen=True, slots=True)
 class Plan(PublicModel):
     plan_id: str
     dataset: DatasetIdentity
@@ -278,6 +335,9 @@ class Plan(PublicModel):
     relationships: RelationshipMetadata
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
+    execution_context: _PlanExecutionContext | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         _validated_code(self.plan_id, field_name="plan_id")
@@ -511,4 +571,5 @@ __all__ = [
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
+    "VaultStrategy",
 ]

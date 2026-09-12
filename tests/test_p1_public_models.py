@@ -25,6 +25,7 @@ from dbf_anonymizer import (
     TransferBundleResult,
     TransferProfile,
     VerificationResult,
+    VaultStrategy,
 )
 from dbf_anonymizer.models import PUBLIC_MODEL_TYPES
 
@@ -53,6 +54,12 @@ def _samples() -> tuple[object, ...]:
             structural_cdx=False,
             dbc_bound=False,
             index_strategy="DATA_ONLY",
+            memo_required=False,
+            memo_companion_present=False,
+            structural_cdx_companion_present=False,
+            unsupported_field_count=0,
+            unsafe_field_count=0,
+            system_field_count=0,
         ),
         TablePlan(
             table_path="south/orders.dbf",
@@ -62,7 +69,13 @@ def _samples() -> tuple[object, ...]:
             transform_field_count=2,
             structural_cdx=True,
             dbc_bound=True,
-            index_strategy="OMIT_STALE",
+            index_strategy="DATA_ONLY",
+            memo_required=True,
+            memo_companion_present=True,
+            structural_cdx_companion_present=True,
+            unsupported_field_count=0,
+            unsafe_field_count=0,
+            system_field_count=0,
         ),
     )
     policy = PolicySummary(
@@ -72,6 +85,7 @@ def _samples() -> tuple[object, ...]:
         relationship_count=1,
         recovery_enabled=True,
         transformation_classes=("BIJECTIVE_TEXT", "DATE_SHIFT"),
+        vault_strategy=VaultStrategy.SINGLE_DATASET_SQLITE,
     )
     relationships = RelationshipMetadata(
         metadata_schema_version="1.0",
@@ -202,7 +216,7 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in _samples():
         payload = model.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.0"
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.1"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
@@ -280,7 +294,7 @@ def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
     capabilities = _samples()[0]
     assert isinstance(capabilities, Capabilities)
     with pytest.raises(ValueError):
-        TablePlan("a.dbf", None, -1, 1, 0, False, False, "DATA_ONLY")
+        TablePlan("a.dbf", None, -1, 1, 0, False, False, "DATA_ONLY", False, False, False, 0, 0, 0)
     with pytest.raises(ValueError):
         RelationalAssurance(
             RelationalAssuranceLevel.INCOMPLETE,
@@ -317,10 +331,12 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         "TablePlan": (
             "schema_version", "model_type", "table_path", "memo_path", "record_count",
             "field_count", "transform_field_count", "structural_cdx", "dbc_bound", "index_strategy",
+            "memo_required", "memo_companion_present", "structural_cdx_companion_present",
+            "unsupported_field_count", "unsafe_field_count", "system_field_count",
         ),
         "PolicySummary": (
             "schema_version", "model_type", "policy_schema_version", "policy_fingerprint",
-            "transformed_field_count", "relationship_count", "recovery_enabled", "transformation_classes",
+            "transformed_field_count", "relationship_count", "recovery_enabled", "transformation_classes", "vault_strategy",
         ),
         "RelationshipMetadata": (
             "schema_version", "model_type", "metadata_schema_version", "provenance",

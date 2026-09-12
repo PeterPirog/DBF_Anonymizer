@@ -54,6 +54,8 @@ EXPECTED_PUBLIC_EXPORTS = {
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
+    "VaultStrategy",
+    "build_plan",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
     "ERROR_REGISTRY",
@@ -76,7 +78,6 @@ EXPECTED_PUBLIC_EXPORTS = {
 
 FUTURE_OPERATION_EXPORTS = {
     "capabilities",
-    "build_plan",
     "preflight",
     "pseudonymize",
     "verify_dataset",
