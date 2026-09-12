@@ -29,7 +29,6 @@ produce exactly equal ``to_dict()`` output.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -66,6 +65,7 @@ class PreflightCode:
 
     # --- rejection (error_codes, ready=False) ---
     PATH_OVERLAP = "PATH_OVERLAP"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     SOURCE_FINGERPRINT_MISMATCH = "SOURCE_FINGERPRINT_MISMATCH"
     DESTINATION_CONFLICT = "DESTINATION_CONFLICT"
     MISSING_MEMO_COMPANION = "MISSING_MEMO_COMPANION"
@@ -76,7 +76,7 @@ class PreflightCode:
     OUTPUT_PROFILE_UNSUPPORTED = "OUTPUT_PROFILE_UNSUPPORTED"
     CAPABILITY_MISSING = "CAPABILITY_MISSING"
     STORAGE_SPACE_INSUFFICIENT = "STORAGE_SPACE_INSUFFICIENT"
-    STORAGE_INFO_UNAVAILABLE = "STORAGE_INFO_UNAVAILABLE"
+    STORAGE_ESTIMATE_UNAVAILABLE = "STORAGE_ESTIMATE_UNAVAILABLE"
     RELATIONSHIP_DOMAIN_UNVERIFIED = "RELATIONSHIP_DOMAIN_UNVERIFIED"
     PSEUDONYM_CAPACITY_INSUFFICIENT = "PSEUDONYM_CAPACITY_INSUFFICIENT"
 
@@ -93,6 +93,7 @@ class PreflightCode:
 _ERROR_CODES = frozenset(
     {
         PreflightCode.PATH_OVERLAP,
+        PreflightCode.SOURCE_UNAVAILABLE,
         PreflightCode.SOURCE_FINGERPRINT_MISMATCH,
         PreflightCode.DESTINATION_CONFLICT,
         PreflightCode.MISSING_MEMO_COMPANION,
@@ -103,7 +104,7 @@ _ERROR_CODES = frozenset(
         PreflightCode.OUTPUT_PROFILE_UNSUPPORTED,
         PreflightCode.CAPABILITY_MISSING,
         PreflightCode.STORAGE_SPACE_INSUFFICIENT,
-        PreflightCode.STORAGE_INFO_UNAVAILABLE,
+        PreflightCode.STORAGE_ESTIMATE_UNAVAILABLE,
         PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED,
         PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT,
     }
@@ -143,6 +144,20 @@ _disk_usage: Callable[[Path], tuple[int, int, int]] = _default_disk_usage
 #: Conservative protected-vault reserve (bytes) used when reversible transforms
 #: are planned. Documented constant; not a benchmark figure.
 _VAULT_RESERVE_BYTES = 1024 * 1024
+
+#: Conservative dbfbridge writer/spool reserve (bytes) for temporary/spill
+#: state created while a table is written. Documented constant; not a
+#: benchmark figure.
+_WRITER_SPOOL_RESERVE_BYTES = 16 * 1024 * 1024
+
+#: Peak exposure of the fresh output footprint: the published output plus one
+#: full staged/temporary copy of the same data that may coexist before commit.
+_STAGING_FACTOR = 2
+
+#: Upper bound on exact distinct values retained per width class during the
+#: capacity scan. Tight classes keep at most ``tokens(width) + 1`` values;
+#: reaching a bound fails closed instead of growing unbounded.
+_MAX_TRACKED_DISTINCT = 65536
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
@@ -208,15 +223,21 @@ def _enumerate_in_scope(source_root: Path) -> dict[str, Path]:
     return result
 
 
-def _source_footprint_bytes(source_root: Path) -> int:
-    """Conservative in-scope source DBF/FPT byte footprint for the output."""
+def _source_footprint_bytes(source_root: Path) -> int | None:
+    """In-scope source DBF/FPT byte footprint, or None if not defensible.
+
+    A missing source root or any stat failure makes the footprint unknown;
+    the storage risk model then fails closed rather than under-estimate.
+    """
+    if not source_root.is_dir():
+        return None
     total = 0
     for rel, full in _enumerate_in_scope(source_root).items():
         if rel.lower().endswith((".dbf", ".fpt")):
             try:
                 total += full.stat().st_size
             except OSError:
-                continue
+                return None
     return total
 
 
@@ -266,11 +287,29 @@ def _paths_overlap(source: Path, output: Path, vault: Path) -> bool:
 # ---------------------------------------------------------------------------
 # Destination conflicts
 # ---------------------------------------------------------------------------
+def _ancestor_is_file(path: Path) -> bool:
+    """True when ANY ancestor of *path* is a file.
+
+    A directory cannot be nested under a file anywhere in the chain, so the
+    whole hierarchy must be checked, not only the immediate parent.
+    """
+    ancestor = path.parent
+    while True:
+        if ancestor.is_file():
+            return True
+        parent = ancestor.parent
+        if parent == ancestor:  # reached filesystem root
+            return False
+        ancestor = parent
+
+
 def _destination_conflict(output: Path, vault: Path) -> bool:
     """Detect path-type conflicts and unsafe existing destination state.
 
     Vault reuse is intentionally NOT implemented here (future REQ-P2-010); an
-    existing vault file therefore fails closed as a conflict.
+    existing vault file therefore fails closed as a conflict. The ancestor
+    chains of BOTH targets are checked: a file anywhere in the hierarchy
+    makes the destination uncreatable.
     """
     # Output is a directory target.
     if output.exists():
@@ -278,17 +317,15 @@ def _destination_conflict(output: Path, vault: Path) -> bool:
             return True  # type conflict: cannot publish a directory over a file
         if output.is_dir() and any(output.iterdir()):
             return True  # non-empty directory would overwrite existing state
-    # Output's parent must not be a file (a file cannot contain a directory).
-    parent = output.parent
-    if parent.exists() and parent.is_file():
-        return True
 
     # Vault is a file target.
     if vault.exists():
         if vault.is_dir():
             return True  # type conflict: cannot place a file where a dir is
         return True  # existing vault file: reuse unimplemented -> fail closed
-    return False
+
+    # Any file in either ancestor chain blocks directory creation.
+    return _ancestor_is_file(output) or _ancestor_is_file(vault)
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +455,8 @@ def _candidate_alphabet(participating_encodings: frozenset[str]) -> str:
     return "".join(keep)
 
 
-def _tokens_up_to_width(max_width: int, base: int, cap: int) -> int:
-    """Sum base^1..base^max_width, capped at *cap* to avoid unbounded growth."""
+def _tokens_up_to_width(max_width: int, base: int, limit: int | None = None) -> int:
+    """Sum base^1..base^max_width, optionally stopping once *limit* is reached."""
     if max_width < 1 or base < 1:
         return 0
     total = 0
@@ -427,7 +464,7 @@ def _tokens_up_to_width(max_width: int, base: int, cap: int) -> int:
     for _ in range(1, max_width + 1):
         term *= base
         total += term
-        if total >= cap:
+        if limit is not None and total >= limit:
             return total
     return total
 
@@ -438,8 +475,17 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
     Reads only the C/V character fields that participate in the global text
     domain (deleted records included, because they are transformed later).
     NULL and empty values are preserved and therefore do not consume capacity.
-    Only fingerprints of distinct values are retained in temporary memory; no
-    source value is ever logged or serialized.
+
+    Feasibility is decided on EXACT distinct values (never on digests) against
+    the mathematical token-space upper bound per width class: the number of
+    distinct values of width <= w must not exceed base^1 + ... + base^w.
+    Self-exclusion (a value must never map to itself) is only infeasible in
+    the single-token edge case; it never removes a token per value.
+
+    Memory is bounded: each width class retains at most
+    ``min(tokens(width), _MAX_TRACKED_DISTINCT) + 1`` exact values; reaching a
+    bound fails closed instead of tracking the whole dataset.
+    No source value is ever logged or serialized.
     """
     if "PSEUDONYMIZE_REVERSIBLE" not in plan.policy.transformation_classes:
         return True
@@ -452,7 +498,7 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
         return True
 
     participating: set[str] = set()
-    sensitive: list[tuple[Path, list[tuple[str, int]]]] = []
+    sensitive: list[tuple[str, Path, list[tuple[str, int]]]] = []
     for rel in dbf_paths:
         full = tables[rel]
         try:
@@ -478,7 +524,7 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
         if fields:
             if schema.encoding:
                 participating.add(schema.encoding)
-            sensitive.append((full, fields))
+            sensitive.append((rel, full, fields))
 
     if not sensitive:
         return True
@@ -488,42 +534,65 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
         return False  # no safe common alphabet -> fail closed
 
     base = len(alphabet)
-    alpha = set(alphabet)
+    widths = sorted({length for _rel, _full, fields in sensitive for _n, length in fields})
+    class_cap = {
+        width: _tokens_up_to_width(width, base, _MAX_TRACKED_DISTINCT) + 1
+        for width in widths
+    }
+    class_sets: dict[int, set[str]] = {width: set() for width in widths}
 
-    best: dict[bytes, tuple[int, bool]] = {}
-    for full, fields in sensitive:
+    for rel, full, fields in sensitive:
         names = [name for name, _length in fields]
         length_by_name = dict(fields)
-        for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
-            full, include_deleted=True, fields=names, memo="lazy"
-        ):
-            for name in names:
-                value = record.values.get(name)
-                if value is None or value == "":
-                    continue
-                if not isinstance(value, str):
-                    continue
-                width = length_by_name[name]
-                is_token = all(ch in alpha for ch in value)
-                fp = hashlib.sha256(value.encode("utf-8")).digest()
-                current = best.get(fp)
-                if current is None:
-                    best[fp] = (width, is_token)
-                elif width < current[0]:
-                    best[fp] = (width, current[1])
+        try:
+            for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
+                full, include_deleted=True, fields=names, memo="lazy"
+            ):
+                for name in names:
+                    value = record.values.get(name)
+                    if value is None or value == "":
+                        continue
+                    if not isinstance(value, str):
+                        continue
+                    width = length_by_name[name]
+                    members = class_sets[width]
+                    if len(members) < class_cap[width]:
+                        members.add(value)
+                    else:
+                        # Distinct count exceeded the class bound: either the
+                        # token budget is exhausted (infeasible) or the width
+                        # class is pathological (huge token space). Both fail
+                        # closed; never an unbounded in-memory scan.
+                        return False
+        except Exception as exc:  # unexpected dependency failure
+            raise DBFBridgeError.from_exception(
+                exc,
+                context=ErrorContext(
+                    operation="preflight",
+                    table_path=rel,
+                    detail_code="capacity_iter_records_failed",
+                ),
+            ) from None
 
-    # Greedy feasibility: sort by the strictest (smallest) width and verify
-    # each value can receive a distinct token no wider than its max width.
-    items = sorted((width, is_token) for width, is_token in best.values())
-    n = len(items)
-    for rank, (width, is_token) in enumerate(items, start=1):
-        available = _tokens_up_to_width(width, base, n)
-        # Conservatively reserve the one token identical to this original
-        # (REQ-P2-006: never emit an unchanged sensitive value as its own
-        # pseudonym).
-        if is_token:
-            available -= 1
-        if available < rank:
+    # Feasibility: exact distinct counts vs the token-space upper bound, in
+    # ascending width order (narrow classes bind first).
+    smaller = 0
+    total_distinct = 0
+    for width in widths:
+        count = len(class_sets[width])
+        total_distinct += count
+        if count + smaller > _tokens_up_to_width(width, base):
+            return False
+        smaller += count
+    if total_distinct == 0:
+        return True
+
+    # Single-token edge case: with one value and a one-token space, that value
+    # must not be the only token (it could not receive a different pseudonym).
+    if total_distinct == 1 and base == 1:
+        only_width = next(width for width in widths if class_sets[width])
+        only_value = next(iter(class_sets[only_width]))
+        if only_width == 1 and only_value == alphabet[0]:
             return False
     return True
 
@@ -537,9 +606,19 @@ def _storage_ok(
     vault: Path,
     recovery_enabled: bool,
 ) -> bool | None:
-    """Return True (ok), False (insufficient) or None (information unavailable)."""
+    """Return True (ok), False (insufficient) or None (estimate unavailable).
+
+    The risk model accounts for the fresh output footprint, the peak staged
+    exposure (output plus one full temporary copy), the dbfbridge
+    writer/spool reserve and, when reversible transforms are planned, the
+    protected recovery-state reserve. If any input needed for a defensible
+    estimate is unknown, None is returned and the caller fails closed.
+    """
     footprint = _source_footprint_bytes(source_root)
-    vault_reserve = _VAULT_RESERVE_BYTES if recovery_enabled else 0
+    if footprint is None:
+        return None
+    required_output = footprint * _STAGING_FACTOR + _WRITER_SPOOL_RESERVE_BYTES
+    required_vault = _VAULT_RESERVE_BYTES if recovery_enabled else 0
 
     try:
         out_total, _out_used, out_free = _disk_usage(output)
@@ -557,8 +636,8 @@ def _storage_ok(
         return None
 
     if out_dev == vault_dev:
-        return out_free >= footprint + vault_reserve
-    return out_free >= footprint and vault_free >= vault_reserve
+        return out_free >= required_output + required_vault
+    return out_free >= required_output and vault_free >= required_vault
 
 
 # ---------------------------------------------------------------------------
@@ -592,10 +671,15 @@ def preflight(plan: Plan) -> PreflightResult:
     if _paths_overlap(source_root, output_root, vault_path):
         findings.error(PreflightCode.PATH_OVERLAP)
 
-    # 2. Source freshness: recompute and compare the in-scope fingerprint.
-    if source_root.is_dir():
+    # 2. Source availability + freshness: a missing or unreadable source
+    #    fails closed; a changed source is a fingerprint mismatch.
+    if not source_root.is_dir():
+        findings.error(PreflightCode.SOURCE_UNAVAILABLE)
+    else:
         current_fp = _recompute_source_fingerprint(source_root)
-        if current_fp is not None and current_fp != plan.dataset.source_fingerprint:
+        if current_fp is None:
+            findings.error(PreflightCode.SOURCE_UNAVAILABLE)
+        elif current_fp != plan.dataset.source_fingerprint:
             findings.error(PreflightCode.SOURCE_FINGERPRINT_MISMATCH)
 
     # 3. Destination conflicts (type conflicts / unsafe existing state).
@@ -626,12 +710,13 @@ def preflight(plan: Plan) -> PreflightResult:
         if not _capacity_sufficient(source_root, plan):
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
 
-    # 11. Storage-space risk (side-effect-free; fail closed if unknown).
+    # 11. Storage-space risk (side-effect-free; fail closed if the estimate
+    #     cannot be made defensibly).
     storage = _storage_ok(
         source_root, output_root, vault_path, plan.policy.recovery_enabled
     )
     if storage is None:
-        findings.error(PreflightCode.STORAGE_INFO_UNAVAILABLE)
+        findings.error(PreflightCode.STORAGE_ESTIMATE_UNAVAILABLE)
     elif not storage:
         findings.error(PreflightCode.STORAGE_SPACE_INSUFFICIENT)
 

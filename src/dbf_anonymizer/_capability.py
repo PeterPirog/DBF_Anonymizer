@@ -32,19 +32,49 @@ def _importlib_metadata_version() -> str:
         return "unknown"
 
 
+def _read_dependency_available() -> bool:
+    """True when the reader's runtime dependency (dbfread) is discoverable."""
+    try:
+        return importlib.util.find_spec("dbfread") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _write_dependency_available() -> bool:
+    """True when the writer's runtime dependency (dbf) is discoverable.
+
+    The ``write_table`` symbol alone does not establish a usable writer: the
+    ``dbfbridge[write]`` extra must actually be installed.
+    """
+    try:
+        return importlib.util.find_spec("dbf") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def direct_read_available() -> bool:
-    """True only when the public dbfbridge direct-read API is present."""
-    return callable(getattr(dbfbridge, "read_schema", None))
+    """True only when the public dbfbridge direct-read API and its runtime
+    dependency (dbfread) are both present."""
+    return (
+        callable(getattr(dbfbridge, "read_schema", None))
+        and _read_dependency_available()
+    )
 
 
 def direct_write_available() -> bool:
-    """True only when the public dbfbridge direct-write API is present."""
-    return callable(getattr(dbfbridge, "write_table", None))
+    """True only when the public dbfbridge direct-write API and its runtime
+    dependency (dbf) are both present."""
+    return (
+        callable(getattr(dbfbridge, "write_table", None))
+        and _write_dependency_available()
+    )
 
 
 def snapshot() -> Capabilities:
     """Return a truthful, side-effect-free capability snapshot.
 
+    Direct read/write truthfulness requires both the public API symbol and
+    the discoverable runtime dependency of the ``dbfbridge[write]`` extra.
     ``vfp_index_backend`` is false in this standalone implementation (it will
     be supplied later by the REQ-P6 index backend), and ``recovery`` /
     ``transfer_bundle`` remain false until their owning requirements exist.

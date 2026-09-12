@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +28,7 @@ import dbfbridge
 
 import dbf_anonymizer._capability as _capabilities_mod
 from dbf_anonymizer import build_plan, preflight
+from dbf_anonymizer.errors import DBFBridgeError, ErrorCode
 from dbf_anonymizer.models import Capabilities, Plan, PreflightResult, RelationshipMetadata
 
 import dbf_anonymizer.preflight  # ensure module loaded
@@ -240,6 +242,18 @@ def test_source_fingerprint_mismatch_rejected(tmp_path: Path) -> None:
     assert "SOURCE_FINGERPRINT_MISMATCH" in result.error_codes
 
 
+def test_source_unavailable_rejected(tmp_path: Path) -> None:
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    # The source disappears after planning: preflight must fail closed.
+    shutil.rmtree(src)
+    result = preflight(plan)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    # Without a defensible footprint the storage estimate fails closed too.
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+
+
 # ---------------------------------------------------------------------------
 # 9. Missing memo companion (approved synthetic fixture)
 # ---------------------------------------------------------------------------
@@ -255,25 +269,75 @@ def test_missing_memo_companion_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 10-11. Unsupported / unsafe (binary/NOCPTRANS) user fields
 # ---------------------------------------------------------------------------
-def _tamper_field(plan: Plan, **overrides: Any) -> Plan:
-    table = dataclasses.replace(plan.tables[0], **overrides)
-    return dataclasses.replace(plan, tables=(table,))
+# The public dbfbridge writer intentionally refuses Q (Varbinary), W (Blob)
+# and binary/NOCPTRANS C/V fields, so these conditions cannot be produced via
+# ``write_table``. They are produced by deterministic synthetic DBF byte
+# layouts (disposable, under tmp_path) whose field descriptors objectively
+# carry the condition — no Plan tampering, no fixture modification.
+def _raw_dbf(
+    path: Path,
+    fields: list[tuple[str, str, int, int]],
+    records: list[bytes],
+) -> None:
+    """Deterministically build a synthetic VFP (0x30) DBF file.
+
+    *fields* are (name, type, length, flags) where flags is the descriptor
+    flag byte (0x01 system, 0x02 nullable, 0x04 binary/NOCPTRANS).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header_len = 32 + 32 * len(fields) + 1 + 263  # + VFP backlink extension
+    rec_len = 1 + sum(length for _n, _t, length, _f in fields)
+    header = bytearray(32)
+    header[0] = 0x03
+    header[1] = 0x30
+    header[2] = 0x26  # 2026, BCD
+    header[3] = 0x09
+    header[4] = 0x12
+    struct.pack_into("<I", header, 4, len(records))
+    struct.pack_into("<H", header, 8, header_len)
+    struct.pack_into("<H", header, 10, rec_len)
+    header[29] = 0xC8  # cp1250
+    descriptors = bytearray()
+    for name, ftype, length, flags in fields:
+        d = bytearray(32)
+        name_bytes = name.encode("ascii")
+        d[0:11] = name_bytes + b"\x00" * (11 - len(name_bytes))
+        d[11] = ord(ftype)
+        d[16] = length
+        d[18] = flags
+        descriptors += d
+    body = bytes(header) + bytes(descriptors) + b"\x0d" + bytes(263)
+    record_bytes = b"".join(b" " + data for data in records)
+    path.write_bytes(body + record_bytes + b"\x1a")
 
 
 def test_unsupported_field_rejected(tmp_path: Path) -> None:
-    plan = _tamper_field(
-        _build_plan(tmp_path),
-        transform_field_count=0,
-        unsupported_field_count=2,
-        unsafe_field_count=2,
+    src = tmp_path / "src"
+    # A Q (Varbinary) field is reader-unsupported; the table must also carry
+    # the VFP _NullFlags bitmap column the format requires for V/Q fields.
+    _raw_dbf(
+        src / "varbin" / "varbin.dbf",
+        [("NAME", "C", 10, 0), ("VARBIN", "Q", 16, 0), ("_NULLFLAGS", "0", 1, 0x01)],
+        [b"alpha" + b" " * 5 + bytes(range(16)) + b"\x00"],
     )
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    assert plan.tables[0].unsupported_field_count >= 1
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "UNSUPPORTED_FIELD" in result.error_codes
 
 
 def test_unsafe_nocptrans_binary_field_rejected(tmp_path: Path) -> None:
-    plan = _tamper_field(_build_plan(tmp_path), unsafe_field_count=1)
+    src = tmp_path / "src"
+    # A Character field carrying the 0x04 (binary/NOCPTRANS) descriptor bit
+    # is unsafe for the global-text domain.
+    _raw_dbf(
+        src / "binchar" / "binchar.dbf",
+        [("BCHAR", "C", 8, 0x04)],
+        [bytes(range(8))],
+    )
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    assert plan.tables[0].unsafe_field_count >= 1
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "UNSAFE_FIELD" in result.error_codes
@@ -294,6 +358,37 @@ def test_output_parent_is_a_file_rejected(tmp_path: Path) -> None:
     src = _make_source(tmp_path)
     plan = build_plan(source=src, output=tmp_path / "parentfile" / "out", vault=tmp_path / "v")
     (tmp_path / "parentfile").write_bytes(b"file-where-a-dir-is-expected")
+    result = preflight(plan)
+    assert result.ready is False
+    assert "DESTINATION_CONFLICT" in result.error_codes
+
+
+def test_deep_ancestor_is_file_rejected(tmp_path: Path) -> None:
+    # A file anywhere in the output ancestor chain (not just the immediate
+    # parent) makes the destination hierarchy uncreatable.
+    src = _make_source(tmp_path)
+    blocker = tmp_path / "block" / "file"
+    blocker.parent.mkdir(parents=True)
+    blocker.write_bytes(b"file-blocking-deeper-hierarchy")
+    plan = build_plan(
+        source=src,
+        output=tmp_path / "block" / "file" / "sub" / "out",
+        vault=tmp_path / "v",
+    )
+    result = preflight(plan)
+    assert result.ready is False
+    assert "DESTINATION_CONFLICT" in result.error_codes
+
+
+def test_vault_ancestor_is_file_rejected(tmp_path: Path) -> None:
+    src = _make_source(tmp_path)
+    blocker = tmp_path / "vblocker"
+    blocker.write_bytes(b"file-where-vault-hierarchy-expected")
+    plan = build_plan(
+        source=src,
+        output=tmp_path / "out",
+        vault=tmp_path / "vblocker" / "deep" / "dict.sqlite3",
+    )
     result = preflight(plan)
     assert result.ready is False
     assert "DESTINATION_CONFLICT" in result.error_codes
@@ -361,9 +456,10 @@ def test_structural_cdx_missing_companion_rejected(tmp_path: Path) -> None:
     _copy_fixture(src, "vfp/structural/indexed_table.dbf")  # DBF without its CDX
     plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
     table = plan.tables[0]
-    if not (table.structural_cdx and not table.structural_cdx_companion_present):
-        # Force the exact preflight condition regardless of header/companion facts.
-        plan = _tamper_field(plan, structural_cdx=True, structural_cdx_companion_present=False)
+    # The fixture objectively carries the structural-CDX flag without its
+    # companion file; fail the test (not the product) if that ever changes.
+    assert table.structural_cdx
+    assert not table.structural_cdx_companion_present
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "MISSING_STRUCTURAL_INDEX" in result.error_codes
@@ -398,6 +494,65 @@ def test_pseudonym_capacity_insufficient_rejected(tmp_path: Path) -> None:
     assert "PSEUDONYM_CAPACITY_INSUFFICIENT" in result.error_codes
 
 
+def test_pseudonym_capacity_feasible_at_exact_bound(tmp_path: Path) -> None:
+    # Exactly 36 distinct values in a C(1) field: the 36-token width-1 space
+    # suffices (a permutation with no self-mapping exists). A per-value token
+    # reservation would wrongly report infeasibility here.
+    src = tmp_path / "src"
+    values = [chr(ord("A") + i) for i in range(26)] + [str(i) for i in range(10)]
+    assert len(values) == 36
+    _write_table(src / "tight" / "tight.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+
+
+def test_pseudonym_capacity_distinctness_is_exact(tmp_path: Path) -> None:
+    # 37 records but only 36 EXACTLY distinct values -> feasible. Distinctness
+    # is exact value equality, not positional or digest identity.
+    src = tmp_path / "src"
+    values = [chr(ord("A") + i) for i in range(26)] + [str(i) for i in range(10)]
+    _write_table(src / "tight" / "tight.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values] + [{"CODE": "A"}])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+
+
+def test_capacity_scan_records_failure_is_wrapped_privately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A raw dependency failure mid-record-scan must surface as the structured
+    # DBFBRIDGE_FAILURE (never as the raw exception) and must not leak the
+    # dependency message, paths or values.
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+
+    class _RawBoom(Exception):
+        code = "DBF_RAW_INTERNAL"
+
+        def __init__(self) -> None:
+            super().__init__("CANARY_SECRET /abs/path/value ALPHA BETA GAMMA")
+
+    def _boom(*_args: Any, **_kwargs: Any):
+        raise _RawBoom()
+        yield  # pragma: no cover - generator marker
+
+    monkeypatch.setattr(dbfbridge, "iter_records", _boom)
+    with pytest.raises(DBFBridgeError) as excinfo:
+        preflight(plan)
+    error = excinfo.value
+    assert error.code is ErrorCode.DBFBRIDGE_FAILURE
+    assert error.context.detail_code == "capacity_iter_records_failed"
+    blob = json.dumps(error.to_dict(), ensure_ascii=False)
+    assert "CANARY_SECRET" not in blob
+    assert "ALPHA" not in blob
+    assert "/abs/path" not in blob
+
+
 # ---------------------------------------------------------------------------
 # 25-26. Missing direct read/write capability
 # ---------------------------------------------------------------------------
@@ -421,6 +576,30 @@ def test_missing_direct_write_capability_rejected(
     assert "CAPABILITY_MISSING" in result.error_codes
 
 
+def test_write_dependency_missing_detected_by_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Truthful capability: the write_table symbol alone is not enough; the
+    # dbfbridge[write] runtime dependency (dbf) must be discoverable.
+    monkeypatch.setattr(_capabilities_mod, "_write_dependency_available", lambda: False)
+    plan = _build_plan(tmp_path)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.capabilities.direct_write is False
+    assert result.ready is False
+    assert "CAPABILITY_MISSING" in result.error_codes
+
+
+def test_read_dependency_missing_detected_by_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_capabilities_mod, "_read_dependency_available", lambda: False)
+    plan = _build_plan(tmp_path)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.capabilities.direct_read is False
+    assert result.ready is False
+    assert "CAPABILITY_MISSING" in result.error_codes
+
+
 # ---------------------------------------------------------------------------
 # 27-28. Storage-space risk
 # ---------------------------------------------------------------------------
@@ -434,7 +613,7 @@ def test_insufficient_disk_space_rejected(
     assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
 
 
-def test_unavailable_storage_info_rejected(
+def test_unavailable_storage_estimate_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def _boom(_p: Path) -> tuple[int, int, int]:
@@ -444,7 +623,32 @@ def test_unavailable_storage_info_rejected(
     plan = _build_plan(tmp_path)
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
-    assert "STORAGE_INFO_UNAVAILABLE" in result.error_codes
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+
+
+def test_storage_model_counts_staging_and_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Free space that covers the bare footprint (plus the vault reserve) but
+    # NOT the fresh output + one staged copy + writer/spool reserve must be
+    # rejected: the model is not allowed to under-count peak exposure.
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    footprint = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
+    free = footprint + mod._VAULT_RESERVE_BYTES + 1
+    required = (
+        footprint * mod._STAGING_FACTOR
+        + mod._WRITER_SPOOL_RESERVE_BYTES
+        + mod._VAULT_RESERVE_BYTES
+    )
+    assert required > free
+    monkeypatch.setattr(
+        mod, "_disk_usage", lambda _p: (10**15, 10**15 - free, free)
+    )
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
 
 
 # ---------------------------------------------------------------------------
