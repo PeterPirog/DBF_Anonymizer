@@ -16,16 +16,17 @@ from dbf_anonymizer.discovery import (
     compute_source_fingerprint,
     discover_tables,
 )
-from dbf_anonymizer.errors import PathError, ErrorCode, ErrorContext
+from dbf_anonymizer.errors import DBFBridgeError, PathError, ErrorCode, ErrorContext
 from dbf_anonymizer.models import (
     DatasetIdentity,
     Plan,
-    PlanExecutionContext,
     PolicySummary,
     RelationalAssuranceLevel,
     RelationshipMetadata,
     TablePlan,
     TransferProfile,
+    VaultStrategy,
+    _PlanExecutionContext,
 )
 from dbf_anonymizer.policy import classify_field_transform, resolve_policy
 
@@ -38,11 +39,19 @@ def _resolve_index_strategy(
     return "DATA_ONLY"
 
 
+def _resolve_vault_strategy(
+    recovery_enabled: bool,
+) -> VaultStrategy:
+    if recovery_enabled:
+        return VaultStrategy.SINGLE_DATASET_SQLITE
+    return VaultStrategy.NONE
+
+
 def _default_relationships() -> RelationshipMetadata:
     """Create a deterministic empty relationship metadata for the None case."""
     empty_fp = hashlib.sha256(b"no-relationships").hexdigest()
     return RelationshipMetadata(
-        metadata_schema_version="1.0",
+        metadata_schema_version="1.1",
         provenance="none",
         relationship_fingerprint=empty_fp,
         relation_count=0,
@@ -84,7 +93,7 @@ def build_plan(
             ),
         )
 
-    # 1. Discover tables
+    # 1. Discover tables (wraps dbfbridge errors)
     discovered = discover_tables(source_root)
 
     if not discovered:
@@ -97,7 +106,7 @@ def build_plan(
         )
 
     # 2. Compute source fingerprint
-    fp_entries = collect_fingerprint_entries(source_root, discovered)
+    fp_entries = collect_fingerprint_entries(source_root)
     source_fp = compute_source_fingerprint(fp_entries)
 
     # 3. Resolve policy
@@ -117,19 +126,34 @@ def build_plan(
         output_profile = TransferProfile.DATA_ONLY
 
     # 6. Build per-table plans and count transformations
+    import dbfbridge
+
     tables: list[TablePlan] = []
     total_transformed_fields = 0
     transformation_classes_set: set[str] = set()
 
     for table in discovered:
-        import dbfbridge
-
         dbf_full_path = source_root / table.relative_path
-        schema = dbfbridge.read_schema(dbf_full_path)  # type: ignore[attr-defined]
+
+        try:
+            schema = dbfbridge.read_schema(dbf_full_path)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise DBFBridgeError.from_exception(
+                exc,
+                context=ErrorContext(
+                    operation="build_plan",
+                    table_path=table.relative_path,
+                    detail_code="read_schema_failed",
+                ),
+            ) from None
 
         transform_count = 0
         for field_info in schema.fields:
-            action = classify_field_transform(field_info.dbf_type, merged_policy)
+            action = classify_field_transform(
+                field_info.dbf_type,
+                field_info.is_binary,
+                merged_policy,
+            )
             if action is not None:
                 transform_count += 1
                 transformation_classes_set.add(action)
@@ -155,7 +179,10 @@ def build_plan(
     # 7. Recovery enabled if any reversible transformation is in the policy
     recovery_enabled = bool(transformation_classes_set)
 
-    # 8. Build PolicySummary
+    # 8. Vault strategy
+    vault_strategy = _resolve_vault_strategy(recovery_enabled)
+
+    # 9. Build PolicySummary
     policy_summary = PolicySummary(
         policy_schema_version=str(merged_policy.get("schema_version", "1")),
         policy_fingerprint=policy_fp,
@@ -163,9 +190,10 @@ def build_plan(
         relationship_count=rel_meta.relation_count,
         recovery_enabled=recovery_enabled,
         transformation_classes=tuple(sorted(transformation_classes_set)),
+        vault_strategy=vault_strategy,
     )
 
-    # 9. Build DatasetIdentity
+    # 10. Build DatasetIdentity
     dataset_id = "ds-" + source_fp[:16]
     table_paths = tuple(t.relative_path for t in discovered)
     dataset = DatasetIdentity(
@@ -174,17 +202,18 @@ def build_plan(
         table_paths=table_paths,
     )
 
-    # 10. Compute plan ID (deterministic from all inputs)
+    # 11. Compute plan ID (deterministic from all inputs)
     plan_id_material = (
         source_fp
         + policy_fp
         + rel_meta.relationship_fingerprint
         + output_profile.value
+        + vault_strategy.value
     )
     plan_id = "plan-" + hashlib.sha256(plan_id_material.encode("utf-8")).hexdigest()[:24]
 
-    # 11. Assemble Plan
-    execution_ctx = PlanExecutionContext(
+    # 12. Assemble Plan
+    execution_ctx = _PlanExecutionContext(
         source_root=str(source_root),
         output_root=str(output_root),
         vault_path=str(vault_path),

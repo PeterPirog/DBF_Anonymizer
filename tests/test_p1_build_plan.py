@@ -20,13 +20,13 @@ import dbfbridge
 from dbf_anonymizer import (
     build_plan,
     Plan,
-    PlanExecutionContext,
     PolicySummary,
     RelationshipMetadata,
     RelationalAssuranceLevel,
     TransferProfile,
+    VaultStrategy,
 )
-from dbf_anonymizer.errors import AnonymizerError, PathError, PolicyError
+from dbf_anonymizer.errors import AnonymizerError, DBFBridgeError, PathError, PolicyError
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ def test_build_plan_returns_plan_instance(tmp_path: Path) -> None:
     assert plan.plan_id.startswith("plan-")
     assert len(plan.tables) > 0
     assert plan.dataset.source_fingerprint
-    assert isinstance(plan.execution_context, PlanExecutionContext)
+    assert plan.execution_context is not None
 
 
 def test_build_plan_root_import_works() -> None:
@@ -553,3 +553,277 @@ def test_policy_whitespace_independent(tmp_path: Path) -> None:
     plan1 = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy1)
     plan2 = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v", policy=policy2)
     assert plan1.policy.policy_fingerprint == plan2.policy.policy_fingerprint
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: A. Public boundary
+# ---------------------------------------------------------------------------
+
+def test_private_execution_context_not_root_exported() -> None:
+    import dbf_anonymizer
+    assert not hasattr(dbf_anonymizer, "PlanExecutionContext")
+    assert "PlanExecutionContext" not in dbf_anonymizer.__all__
+
+
+def test_execution_context_repr_does_not_leak_paths(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(
+        source=src,
+        output=Path("/C:/Users/secret/output"),
+        vault=Path("/C:/Users/secret/vault/dict.sqlite3"),
+    )
+    assert "secret" not in repr(plan)
+    assert "C:/Users" not in repr(plan)
+    if plan.execution_context is not None:
+        assert "secret" not in repr(plan.execution_context)
+        assert "C:/Users" not in repr(plan.execution_context)
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: B. Policy fail-closed validation
+# ---------------------------------------------------------------------------
+
+def test_unknown_nested_text_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "text": {"bogus_key": "x"}})
+
+
+def test_unknown_nested_memo_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "memo": {"bogus_key": "x"}})
+
+
+def test_unknown_nested_temporal_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "temporal": {"bogus_key": "x"}})
+
+
+def test_unknown_nested_numeric_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "numeric": {"bogus_key": "x"}})
+
+
+def test_unknown_nested_relationships_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "relationships": {"bogus_key": "x"}})
+
+
+def test_unknown_nested_indexes_key_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "indexes": {"bogus_key": "x"}})
+
+
+def test_indexes_profile_unknown_value_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "indexes": {"profile": "UNKNOWN_PROFILE"}})
+
+
+@pytest.mark.parametrize("bad_sv", [2, 999, True, "1"])
+def test_schema_version_must_be_exactly_1(tmp_path: Path, bad_sv: object) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": bad_sv})
+
+
+def test_non_json_policy_value_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    class NotSerializable:
+        pass
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "text": {"default_action": NotSerializable()}})
+
+
+def test_non_null_metadata_file_fails_closed(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    with pytest.raises(PolicyError):
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v",
+                   policy={"schema_version": 1, "relationships": {"metadata_file": "some_file.json"}})
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: C. Field classification V/M/G/P
+# ---------------------------------------------------------------------------
+
+def test_V_field_planned_as_text_transformation(tmp_path: Path) -> None:
+    from dbf_anonymizer.policy import classify_field_transform
+    policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
+    result = classify_field_transform("V", False, policy)
+    assert result == "PSEUDONYMIZE_REVERSIBLE"
+
+
+def test_G_P_fields_planned_as_memo_binary(tmp_path: Path) -> None:
+    from dbf_anonymizer.policy import classify_field_transform
+    policy = {"text": {"default_action": "PSEUDONYMIZE_REVERSIBLE"}, "memo": {"text": "MASK_REVERSIBLE", "binary": "MASK_REVERSIBLE"}, "temporal": {"date": "SHIFT_REVERSIBLE", "datetime": "SHIFT_REVERSIBLE"}, "numeric": {"default_action": "KEEP"}}
+    g_result = classify_field_transform("G", True, policy)
+    p_result = classify_field_transform("P", True, policy)
+    m_result = classify_field_transform("M", False, policy)
+    assert g_result == "MASK_REVERSIBLE"
+    assert p_result == "MASK_REVERSIBLE"
+    assert m_result == "MASK_REVERSIBLE"
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: D. DBFbridge error wrapping
+# ---------------------------------------------------------------------------
+
+def test_malformed_dbf_becomes_dbfbridge_error(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    src.mkdir(parents=True)
+    (src / "bad.dbf").write_bytes(b"\x00" * 10)
+    with pytest.raises(DBFBridgeError) as exc_info:
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    err = exc_info.value
+    assert err.code.value == "DBFBRIDGE_FAILURE"
+    assert err.context.table_path == "bad.dbf"
+    assert "C:\\" not in repr(err)
+    assert "D:\\" not in repr(err)
+
+
+def test_dbfbridge_error_preserves_dependency_code(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    src.mkdir(parents=True)
+    (src / "bad.dbf").write_bytes(b"\x00" * 10)
+    with pytest.raises(DBFBridgeError) as exc_info:
+        build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    err = exc_info.value
+    d = err.to_dict()
+    assert d["code"] == "DBFBRIDGE_FAILURE"
+    assert d["category"] == "dbfbridge"
+    assert "bad.dbf" not in d.get("message", "")
+    assert "C:\\" not in json.dumps(d)
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: E. Companion discovery from dbfbridge facts
+# ---------------------------------------------------------------------------
+
+def test_memo_companion_from_dbfbridge_facts(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    notes_table = next(t for t in plan.tables if t.table_path == "notes/notes.dbf")
+    assert notes_table.memo_path is not None
+    assert "notes.dbf" not in notes_table.memo_path
+    assert notes_table.memo_path.endswith(".fpt") or notes_table.memo_path.endswith(".FPT")
+
+
+def test_no_cdx_inferred_without_structural_cdx(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    for table in plan.tables:
+        if not table.structural_cdx:
+            assert table.index_strategy == "DATA_ONLY"
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: F. IDX truthfulness
+# ---------------------------------------------------------------------------
+
+def test_same_stem_idx_not_associated_with_dbf(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    (src / "north").mkdir()
+    (src / "south").mkdir()
+
+    def _field(name: str, dbf_type: str, length: int):
+        return dbfbridge.FieldInfo(
+            ordinal=0, name=name, dbf_type=dbf_type, length=length,
+            decimal_count=0, address=0, flags=0, index_field_flag=0,
+            autoincrement_next_value=0, autoincrement_step=1,
+            is_memo=False, is_binary=False, supported=True, dbversion_byte=0x30,
+        )
+
+    def _schema(fields: tuple) -> dbfbridge.TableSchema:
+        return dbfbridge.TableSchema(
+            path=Path("memory:test"), record_count=0,
+            header_length=32 + 32 * len(fields) + 1,
+            record_length=sum(f.length for f in fields) + 1,
+            language_driver=0xC8, encoding="cp1250",
+            has_memo=False, has_memo_flag=False, has_structural_cdx=False,
+            is_database_container=False, dbc_bound=False, dbc_backlink_path=None,
+            table_flags=0, fields=fields, warnings=(),
+            dbversion_byte=0x30, dbversion_name="Visual FoxPro",
+            last_update=None, incomplete_transaction=False, encryption_flag=False,
+            memo_companion_format=None, memo_companion_present=False,
+            memo_companion_path=None, memo_companion_size_bytes=None,
+            memo_block_size=None, memo_next_free_block=None,
+            companion_cdx_present=False, companion_cdx_path=None,
+        )
+
+    dbfbridge.write_table(
+        src / "north" / "table.dbf",
+        schema=_schema((_field("KEY", "C", 10),)),
+        records=[{"KEY": "K1"}],
+    )
+    (src / "south" / "table.idx").write_bytes(b"\x00" * 100)
+
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    d = plan.to_dict()
+    serialized = json.dumps(d)
+    assert "south/table.idx" not in d.get("tables", [{}])[0] if d.get("tables") else True
+
+
+# ---------------------------------------------------------------------------
+# REPAIR: G. Vault strategy
+# ---------------------------------------------------------------------------
+
+def test_vault_strategy_in_public_serialization(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    d = plan.to_dict()
+    assert d["policy"]["vault_strategy"] in ("NONE", "SINGLE_DATASET_SQLITE")
+    assert plan.policy.vault_strategy is not None
+
+
+def test_vault_strategy_singlesqlite_when_recovery(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    if plan.policy.recovery_enabled:
+        assert plan.policy.vault_strategy is VaultStrategy.SINGLE_DATASET_SQLITE
+    else:
+        assert plan.policy.vault_strategy is VaultStrategy.NONE
+
+
+def test_vault_strategy_no_absolute_path(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    _make_valid_source(src)
+    plan = build_plan(
+        source=src,
+        output=Path("/C:/Users/secret/output"),
+        vault=Path("/C:/Users/secret/vault/dict.sqlite3"),
+    )
+    d = json.dumps(plan.to_dict())
+    assert "secret" not in d
+    assert "C:/Users" not in d

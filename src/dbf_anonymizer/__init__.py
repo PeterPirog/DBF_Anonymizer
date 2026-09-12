@@ -40,7 +40,6 @@ from .models import (
     Capabilities,
     DatasetIdentity,
     Plan,
-    PlanExecutionContext,
     PolicySummary,
     PreflightResult,
     ProgressEvent,
@@ -52,6 +51,7 @@ from .models import (
     TablePlan,
     TransferBundleResult,
     TransferProfile,
+    VaultStrategy,
     VerificationResult,
 )
 from .api import build_plan
@@ -63,7 +63,6 @@ __all__ = [
     "Capabilities",
     "DatasetIdentity",
     "Plan",
-    "PlanExecutionContext",
     "TablePlan",
     "PolicySummary",
     "RelationshipMetadata",
@@ -76,6 +75,7 @@ __all__ = [
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
+    "VaultStrategy",
     "build_plan",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",

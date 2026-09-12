@@ -1,7 +1,9 @@
 """Source dataset discovery for REQ-P1-005 read-only planning.
 
-Discovers DBF tables, FPT companions, structural CDX and standalone IDX
-artifacts under a source root. Uses only public ``dbfbridge`` read APIs.
+Discovers DBF tables and their companion artifacts under a source root.
+Uses only public ``dbfbridge`` read APIs for schema and companion facts.
+IDX files are inventoried globally for fingerprinting but never associated
+with a specific DBF by inference.
 """
 
 from __future__ import annotations
@@ -32,7 +34,6 @@ class DiscoveredTable:
     structural_cdx: bool
     dbc_bound: bool
     companion_cdx_relative_path: str | None
-    standalone_idx_relative_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,22 @@ class ArtifactFingerprintEntry:
 
 def _relative_posix(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def _safe_relative(path: str | None, root: Path) -> str | None:
+    """Normalize a companion path relative to source root, or return None."""
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.is_absolute():
+        p = (root.parent / p) if not p.exists() else Path.cwd() / p
+    try:
+        resolved = p.resolve()
+        root_resolved = root.resolve()
+        rel = resolved.relative_to(root_resolved)
+        return rel.as_posix()
+    except (ValueError, OSError):
+        return None
 
 
 def _file_sha256(path: Path) -> str:
@@ -82,25 +99,22 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
     for dbf_path in dbf_files:
         rel = _relative_posix(dbf_path, source_root)
 
-        schema = dbfbridge.read_schema(dbf_path)  # type: ignore[attr-defined]
+        from dbf_anonymizer.errors import DBFBridgeError, ErrorContext
 
-        memo_rel: str | None = None
-        if schema.has_memo:
-            fpt_path = dbf_path.with_suffix(".fpt")
-            if fpt_path.is_file():
-                memo_rel = _relative_posix(fpt_path, source_root)
+        try:
+            schema = dbfbridge.read_schema(dbf_path)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise DBFBridgeError.from_exception(
+                exc,
+                context=ErrorContext(
+                    operation="build_plan",
+                    table_path=rel,
+                    detail_code="read_schema_failed",
+                ),
+            ) from None
 
-        cdx_rel: str | None = None
-        cdx_path = dbf_path.with_suffix(".cdx")
-        if cdx_path.is_file():
-            cdx_rel = _relative_posix(cdx_path, source_root)
-
-        idx_files: list[str] = []
-        stem = dbf_path.stem
-        for dirpath2, _dirs, fnames in os.walk(source_root):
-            for fn in sorted(fnames):
-                if Path(fn).suffix.lower() in _IDX_EXTENSIONS and Path(fn).stem == stem:
-                    idx_files.append(_relative_posix(Path(dirpath2) / fn, source_root))
+        memo_rel = _safe_relative(schema.memo_companion_path, source_root) if schema.memo_companion_present else None
+        cdx_rel = _safe_relative(schema.companion_cdx_path, source_root) if schema.companion_cdx_present else None
 
         tables.append(
             DiscoveredTable(
@@ -111,7 +125,6 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
                 structural_cdx=schema.has_structural_cdx,
                 dbc_bound=schema.dbc_bound,
                 companion_cdx_relative_path=cdx_rel,
-                standalone_idx_relative_paths=tuple(sorted(idx_files)),
             )
         )
 
@@ -120,11 +133,13 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
 
 
 def collect_fingerprint_entries(
-    source_root: Path, tables: tuple[DiscoveredTable, ...]
+    source_root: Path,
 ) -> tuple[ArtifactFingerprintEntry, ...]:
     """Compute fingerprint entries for all in-scope artifacts under *source_root*.
 
     Includes all DBF, FPT, CDX, IDX files found in the tree.
+    IDX files are included in the global fingerprint but never associated
+    with a specific DBF.
     """
     entries: list[ArtifactFingerprintEntry] = []
 

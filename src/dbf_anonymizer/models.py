@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.0"
+MODEL_SCHEMA_VERSION = "1.1"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -45,6 +45,13 @@ class TransferProfile(str, Enum):
 
     DATA_ONLY = "DATA_ONLY"
     VFP_INDEXED = "VFP_INDEXED"
+
+
+class VaultStrategy(str, Enum):
+    """Explicit vault strategy identified during planning."""
+
+    NONE = "NONE"
+    SINGLE_DATASET_SQLITE = "SINGLE_DATASET_SQLITE"
 
 
 def _normalized_relative_path(value: str) -> str:
@@ -192,6 +199,7 @@ class PolicySummary(PublicModel):
     relationship_count: int
     recovery_enabled: bool
     transformation_classes: tuple[str, ...]
+    vault_strategy: VaultStrategy
 
     def __post_init__(self) -> None:
         _validated_code(self.policy_schema_version, field_name="policy_schema_version")
@@ -210,6 +218,7 @@ class PolicySummary(PublicModel):
             relationship_count=self.relationship_count,
             recovery_enabled=self.recovery_enabled,
             transformation_classes=self.transformation_classes,
+            vault_strategy=self.vault_strategy,
         )
 
 
@@ -270,7 +279,7 @@ class RelationalAssurance(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
-class PlanExecutionContext:
+class _PlanExecutionContext:
     """Runtime-only execution context carried by the in-memory Plan.
 
     This is intentionally NOT a PublicModel: it is never serialized through
@@ -284,6 +293,9 @@ class PlanExecutionContext:
     output_root: str
     vault_path: str
 
+    def __repr__(self) -> str:
+        return "<_PlanExecutionContext>"
+
 
 @dataclass(frozen=True, slots=True)
 class Plan(PublicModel):
@@ -294,7 +306,7 @@ class Plan(PublicModel):
     relationships: RelationshipMetadata
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
-    execution_context: PlanExecutionContext | None = field(
+    execution_context: _PlanExecutionContext | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -518,7 +530,6 @@ __all__ = [
     "Capabilities",
     "DatasetIdentity",
     "Plan",
-    "PlanExecutionContext",
     "TablePlan",
     "PolicySummary",
     "RelationshipMetadata",
@@ -531,4 +542,5 @@ __all__ = [
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
+    "VaultStrategy",
 ]

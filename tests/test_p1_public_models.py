@@ -25,6 +25,7 @@ from dbf_anonymizer import (
     TransferBundleResult,
     TransferProfile,
     VerificationResult,
+    VaultStrategy,
 )
 from dbf_anonymizer.models import PUBLIC_MODEL_TYPES
 
@@ -72,6 +73,7 @@ def _samples() -> tuple[object, ...]:
         relationship_count=1,
         recovery_enabled=True,
         transformation_classes=("BIJECTIVE_TEXT", "DATE_SHIFT"),
+        vault_strategy=VaultStrategy.SINGLE_DATASET_SQLITE,
     )
     relationships = RelationshipMetadata(
         metadata_schema_version="1.0",
@@ -202,7 +204,7 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in _samples():
         payload = model.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.0"
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.1"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
@@ -320,7 +322,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "PolicySummary": (
             "schema_version", "model_type", "policy_schema_version", "policy_fingerprint",
-            "transformed_field_count", "relationship_count", "recovery_enabled", "transformation_classes",
+            "transformed_field_count", "relationship_count", "recovery_enabled", "transformation_classes", "vault_strategy",
         ),
         "RelationshipMetadata": (
             "schema_version", "model_type", "metadata_schema_version", "provenance",
