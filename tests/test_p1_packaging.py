@@ -111,9 +111,9 @@ def test_import_is_side_effect_free_and_does_not_fake_operations() -> None:
     assert dbf_anonymizer.__version__ == "1.0.0.dev0"
     assert "Capabilities" in dbf_anonymizer.__all__
     assert "build_plan" in dbf_anonymizer.__all__
+    assert "preflight" in dbf_anonymizer.__all__
     for operation in (
         "capabilities",
-        "preflight",
         "pseudonymize",
         "verify_dataset",
         "recover",

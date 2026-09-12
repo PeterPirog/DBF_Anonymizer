@@ -2,12 +2,13 @@
 
 The historical 0.3 API is intentionally not preserved.  Public 1.0 contracts
 currently include the immutable typed models from REQ-P1-002, the stable,
-privacy-safe error hierarchy from REQ-P1-003, and the read-only deterministic
-build planning function ``build_plan`` from REQ-P1-005.  The remaining
-operations (``capabilities``, ``preflight``, ``pseudonymize``,
-``verify_dataset``, ``recover``, ``create_transfer_bundle`` and
-``verify_transfer_bundle``) are introduced only when their owning requirements
-are implemented; no placeholder success functions are exported.
+privacy-safe error hierarchy from REQ-P1-003, the read-only deterministic
+build planning function ``build_plan`` from REQ-P1-005, and the source-read-only,
+side-effect-free ``preflight`` operation from REQ-P1-006.  The remaining
+operations (``capabilities``, ``pseudonymize``, ``verify_dataset``, ``recover``,
+``create_transfer_bundle`` and ``verify_transfer_bundle``) are introduced only
+when their owning requirements are implemented; no placeholder success
+functions are exported.
 
 The sole DBF/FPT parser and writer boundary for 1.0 remains the published
 public ``dbfbridge[write]>=1.1.0,<2`` distribution.
@@ -54,7 +55,7 @@ from .models import (
     VaultStrategy,
     VerificationResult,
 )
-from .api import build_plan
+from .api import build_plan, preflight
 
 __version__ = "1.0.0.dev0"
 
@@ -77,6 +78,7 @@ __all__ = [
     "TransferProfile",
     "VaultStrategy",
     "build_plan",
+    "preflight",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
     "ERROR_REGISTRY",
