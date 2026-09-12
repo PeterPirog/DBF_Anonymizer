@@ -110,9 +110,9 @@ def test_version_sources_agree() -> None:
 def test_import_is_side_effect_free_and_does_not_fake_operations() -> None:
     assert dbf_anonymizer.__version__ == "1.0.0.dev0"
     assert "Capabilities" in dbf_anonymizer.__all__
+    assert "build_plan" in dbf_anonymizer.__all__
     for operation in (
         "capabilities",
-        "build_plan",
         "preflight",
         "pseudonymize",
         "verify_dataset",

@@ -10,7 +10,7 @@ JSON-safe dictionary carrying an explicit schema version and model type.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import ClassVar, TypeAlias
@@ -270,6 +270,22 @@ class RelationalAssurance(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
+class PlanExecutionContext:
+    """Runtime-only execution context carried by the in-memory Plan.
+
+    This is intentionally NOT a PublicModel: it is never serialized through
+    ``to_dict``, excluded from ``repr``, and excluded from equality
+    comparisons. It stores the absolute filesystem roots that a future
+    ``pseudonymize(plan)`` call needs to locate source, write output and
+    manage the vault, without leaking them into any public JSON boundary.
+    """
+
+    source_root: str
+    output_root: str
+    vault_path: str
+
+
+@dataclass(frozen=True, slots=True)
 class Plan(PublicModel):
     plan_id: str
     dataset: DatasetIdentity
@@ -278,6 +294,9 @@ class Plan(PublicModel):
     relationships: RelationshipMetadata
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
+    execution_context: PlanExecutionContext | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         _validated_code(self.plan_id, field_name="plan_id")
@@ -499,6 +518,7 @@ __all__ = [
     "Capabilities",
     "DatasetIdentity",
     "Plan",
+    "PlanExecutionContext",
     "TablePlan",
     "PolicySummary",
     "RelationshipMetadata",
