@@ -59,6 +59,7 @@ def _samples() -> tuple[object, ...]:
             structural_cdx_companion_present=False,
             unsupported_field_count=0,
             unsafe_field_count=0,
+            system_field_count=0,
         ),
         TablePlan(
             table_path="south/orders.dbf",
@@ -74,6 +75,7 @@ def _samples() -> tuple[object, ...]:
             structural_cdx_companion_present=True,
             unsupported_field_count=0,
             unsafe_field_count=0,
+            system_field_count=0,
         ),
     )
     policy = PolicySummary(
@@ -292,7 +294,7 @@ def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
     capabilities = _samples()[0]
     assert isinstance(capabilities, Capabilities)
     with pytest.raises(ValueError):
-        TablePlan("a.dbf", None, -1, 1, 0, False, False, "DATA_ONLY", False, False, False, 0, 0)
+        TablePlan("a.dbf", None, -1, 1, 0, False, False, "DATA_ONLY", False, False, False, 0, 0, 0)
     with pytest.raises(ValueError):
         RelationalAssurance(
             RelationalAssuranceLevel.INCOMPLETE,
@@ -330,7 +332,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
             "schema_version", "model_type", "table_path", "memo_path", "record_count",
             "field_count", "transform_field_count", "structural_cdx", "dbc_bound", "index_strategy",
             "memo_required", "memo_companion_present", "structural_cdx_companion_present",
-            "unsupported_field_count", "unsafe_field_count",
+            "unsupported_field_count", "unsafe_field_count", "system_field_count",
         ),
         "PolicySummary": (
             "schema_version", "model_type", "policy_schema_version", "policy_fingerprint",

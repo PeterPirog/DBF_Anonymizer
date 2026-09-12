@@ -170,6 +170,7 @@ class TablePlan(PublicModel):
     structural_cdx_companion_present: bool
     unsupported_field_count: int
     unsafe_field_count: int
+    system_field_count: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
@@ -183,6 +184,17 @@ class TablePlan(PublicModel):
         _validated_code(self.index_strategy, field_name="index_strategy")
         _non_negative(self.unsupported_field_count, field_name="unsupported_field_count")
         _non_negative(self.unsafe_field_count, field_name="unsafe_field_count")
+        _non_negative(self.system_field_count, field_name="system_field_count")
+        if self.unsafe_field_count > self.field_count:
+            raise ValueError("unsafe_field_count cannot exceed field_count")
+        if self.system_field_count > self.field_count:
+            raise ValueError("system_field_count cannot exceed field_count")
+        if (
+            self.transform_field_count
+            + self.unsafe_field_count
+            + self.system_field_count
+        ) > self.field_count:
+            raise ValueError("transformed + unsafe + system cannot exceed field_count")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -200,6 +212,7 @@ class TablePlan(PublicModel):
             structural_cdx_companion_present=self.structural_cdx_companion_present,
             unsupported_field_count=self.unsupported_field_count,
             unsafe_field_count=self.unsafe_field_count,
+            system_field_count=self.system_field_count,
         )
 
 

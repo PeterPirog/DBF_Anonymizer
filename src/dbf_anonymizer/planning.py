@@ -150,12 +150,15 @@ def build_plan(
         transform_count = 0
         unsupported_count = 0
         unsafe_count = 0
+        system_count = 0
 
         for field_info in schema.fields:
-            action, is_unsafe = classify_field_capability(
+            action, is_unsafe, is_system = classify_field_capability(
                 field_info.dbf_type,
                 field_info.supported,
                 field_info.is_binary,
+                field_info.system,
+                field_info.nocptrans,
                 merged_policy,
             )
             if action is not None:
@@ -163,6 +166,8 @@ def build_plan(
                 transformation_classes_set.add(action)
             elif is_unsafe:
                 unsafe_count += 1
+            if is_system:
+                system_count += 1
             if not field_info.supported:
                 unsupported_count += 1
 
@@ -179,11 +184,12 @@ def build_plan(
                 structural_cdx=table.structural_cdx,
                 dbc_bound=table.dbc_bound,
                 index_strategy=index_strategy,
-                memo_required=schema.has_memo,
+                memo_required=(schema.has_memo or schema.has_memo_flag),
                 memo_companion_present=schema.memo_companion_present,
                 structural_cdx_companion_present=schema.companion_cdx_present,
                 unsupported_field_count=unsupported_count,
                 unsafe_field_count=unsafe_count,
+                system_field_count=system_count,
             )
         )
 

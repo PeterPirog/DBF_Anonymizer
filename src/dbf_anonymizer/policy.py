@@ -196,43 +196,49 @@ def classify_field_capability(
     dbf_type: str,
     is_supported: bool,
     is_binary: bool,
+    is_system: bool,
+    nocptrans: bool,
     merged_policy: Mapping[str, Any],
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, bool, bool]:
     """Classify a field's planning capability.
 
-    Returns (action_or_None, is_unsafe):
-    - (action, False) = SAFE_TRANSFORM (action is the transformation code)
-    - (None, False) = IDENTITY (KEEP, no transformation needed)
-    - (None, True) = UNSAFE (requires future preflight rejection)
+    Returns (action_or_None, is_unsafe, is_system):
+    - (action, False, False) = SAFE_TRANSFORM
+    - (None, False, False) = IDENTITY (KEEP)
+    - (None, True, False) = UNSAFE (requires future preflight rejection)
+    - (None, False, True) = SYSTEM (writer-managed, not user data)
     """
+    if is_system:
+        return (None, False, True)
+
     if not is_supported:
-        return (None, True)
+        return (None, True, False)
 
     upper_type = dbf_type.upper()
 
     if upper_type in ("C", "V"):
-        if is_binary:
-            return (None, True)
+        if is_binary or nocptrans:
+            return (None, True, False)
         text_section = merged_policy.get("text")
         if isinstance(text_section, dict):
             action: str = text_section.get("default_action", "PSEUDONYMIZE_REVERSIBLE")
         else:
             action = "PSEUDONYMIZE_REVERSIBLE"
         if action == "KEEP":
-            return (None, False)
-        return (action, False)
+            return (None, False, False)
+        return (action, False, False)
 
     elif upper_type == "M":
-        if is_binary:
-            return (None, True)
+        if is_binary or nocptrans:
+            return (None, True, False)
         memo_section = merged_policy.get("memo")
         if isinstance(memo_section, dict):
             action = memo_section.get("text", "MASK_REVERSIBLE")
         else:
             action = "MASK_REVERSIBLE"
         if action == "KEEP":
-            return (None, False)
-        return (action, False)
+            return (None, False, False)
+        return (action, False, False)
 
     elif upper_type in ("G", "P"):
         memo_section = merged_policy.get("memo")
@@ -241,8 +247,8 @@ def classify_field_capability(
         else:
             action = "MASK_REVERSIBLE"
         if action == "KEEP":
-            return (None, False)
-        return (action, False)
+            return (None, False, False)
+        return (action, False, False)
 
     elif upper_type == "D":
         temporal_section = merged_policy.get("temporal")
@@ -251,8 +257,8 @@ def classify_field_capability(
         else:
             action = "SHIFT_REVERSIBLE"
         if action == "KEEP":
-            return (None, False)
-        return (action, False)
+            return (None, False, False)
+        return (action, False, False)
 
     elif upper_type == "T":
         temporal_section = merged_policy.get("temporal")
@@ -261,11 +267,11 @@ def classify_field_capability(
         else:
             action = "SHIFT_REVERSIBLE"
         if action == "KEEP":
-            return (None, False)
-        return (action, False)
+            return (None, False, False)
+        return (action, False, False)
 
     elif upper_type in ("N", "I", "F", "Y", "B", "L"):
-        return (None, False)
+        return (None, False, False)
 
     else:
-        return (None, True)
+        return (None, True, False)
