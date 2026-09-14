@@ -76,6 +76,14 @@ import dbfbridge
 
 from dbf_anonymizer import _capability
 from dbf_anonymizer import discovery
+from dbf_anonymizer.discovery import (
+    _PATH_BLOCKED,
+    _PATH_DIRECTORY,
+    _PATH_FILE,
+    _PATH_MISSING,
+    _PATH_OTHER,
+    probe_path,
+)
 from dbf_anonymizer.errors import DBFBridgeError, ErrorContext, ErrorCode
 from dbf_anonymizer.models import (
     Capabilities,
@@ -185,18 +193,6 @@ def _default_stat_dev(path: Path) -> int:
     return os.stat(path).st_dev
 
 
-def _default_path_exists(path: Path) -> bool:
-    return path.exists()
-
-
-def _default_path_is_file(path: Path) -> bool:
-    return path.is_file()
-
-
-def _default_path_is_dir(path: Path) -> bool:
-    return path.is_dir()
-
-
 def _default_iterdir(path: Path) -> list[Path]:
     return list(path.iterdir())
 
@@ -204,10 +200,13 @@ def _default_iterdir(path: Path) -> list[Path]:
 _resolve_path: Callable[[Path], Path] = _default_resolve_path
 _disk_usage: Callable[[Path], tuple[int, int, int]] = _default_disk_usage
 _stat_dev: Callable[[Path], int] = _default_stat_dev
-_path_exists: Callable[[Path], bool] = _default_path_exists
-_path_is_file: Callable[[Path], bool] = _default_path_is_file
-_path_is_dir: Callable[[Path], bool] = _default_path_is_dir
 _iterdir: Callable[[Path], list[Path]] = _default_iterdir
+#: Stat-based path-probe seam (see :mod:`dbf_anonymizer.discovery.probe_path`).
+#: Security-relevant inspection NEVER uses pathlib's exists/is_file/is_dir:
+#: on Python 3.12+ they suppress OSError/PermissionError and would report an
+#: inaccessible path as missing (fail-open). Only FileNotFoundError means
+#: "missing"; other OSError propagates for deterministic fail-closed codes.
+_probe: Callable[[Path], str] = probe_path
 
 # ---------------------------------------------------------------------------
 # Conservative storage-risk constants (documented risk bounds, NOT benchmark
@@ -268,10 +267,15 @@ def _vault_reserve_bytes(source_footprint: int) -> int:
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
-    """Return the nearest existing ancestor of *path* (for disk usage)."""
+    """Return the nearest existing ancestor of *path* (for disk usage).
+
+    Uses the raw stat probe: an inaccessible component raises ``OSError``
+    (the caller degrades the storage estimate); it is never walked past as if
+    it did not exist.
+    """
     candidate = path
     while True:
-        if _path_exists(candidate):
+        if _probe(candidate) != _PATH_MISSING:
             return candidate
         parent = candidate.parent
         if parent == candidate:  # reached filesystem root
@@ -391,15 +395,22 @@ def _paths_overlap(source: Path, output: Path, vault: Path) -> bool:
 # ---------------------------------------------------------------------------
 # Destination conflicts
 # ---------------------------------------------------------------------------
-def _ancestor_is_file(path: Path) -> bool:
-    """True when ANY ancestor of *path* is a file.
+def _ancestor_conflict(path: Path) -> bool:
+    """True when ANY ancestor of *path* makes the hierarchy uncreatable.
 
     A directory cannot be nested under a file anywhere in the chain, so the
-    whole hierarchy must be checked, not only the immediate parent.
+    whole hierarchy is walked with the raw stat probe: missing components are
+    walked past (they must be created), while an existing FILE/OTHER — or a
+    BLOCKED component (NotADirectoryError: some part of the chain is not a
+    directory) — is a deterministic destination conflict. ``OSError`` (e.g.
+    ``PermissionError``) propagates; the caller converts it into
+    ``PATH_INSPECTION_UNAVAILABLE``. An inaccessible component is never
+    treated as nonexistent (Python 3.12+ pathlib predicates would).
     """
     ancestor = path.parent
     while True:
-        if _path_is_file(ancestor):
+        kind = _probe(ancestor)
+        if kind in (_PATH_FILE, _PATH_OTHER, _PATH_BLOCKED):
             return True
         parent = ancestor.parent
         if parent == ancestor:  # reached filesystem root
@@ -411,27 +422,30 @@ def _destination_conflict(output: Path, vault: Path) -> bool:
     """Detect path-type conflicts and unsafe existing destination state.
 
     Vault reuse is intentionally NOT implemented here (future REQ-P2-010); an
-    existing vault file therefore fails closed as a conflict. The ancestor
-    chains of BOTH targets are checked: a file anywhere in the hierarchy
-    makes the destination uncreatable. Raises ``OSError`` when existing state
-    cannot be inspected; the caller converts that into the deterministic
+    existing vault target therefore fails closed as a conflict. The ancestor
+    chains of BOTH targets are checked: a file (or otherwise non-directory
+    component) anywhere in the hierarchy makes the destination uncreatable.
+
+    All decisions use the raw stat probe (never pathlib predicates):
+    MISSING is the only innocent state; an uninspectable path raises
+    ``OSError`` which the caller converts into the deterministic
     ``PATH_INSPECTION_UNAVAILABLE`` finding (never a raw OS error/path).
     """
     # Output is a directory target.
-    if _path_exists(output):
-        if _path_is_file(output):
-            return True  # type conflict: cannot publish a directory over a file
-        if _path_is_dir(output) and any(_iterdir(output)):
-            return True  # non-empty directory would overwrite existing state
+    output_kind = _probe(output)
+    if output_kind in (_PATH_FILE, _PATH_OTHER):
+        return True  # type conflict: cannot publish a directory over it
+    if output_kind == _PATH_BLOCKED:
+        return True  # blocked hierarchy: the target cannot be created
+    if output_kind == _PATH_DIRECTORY and any(_iterdir(output)):
+        return True  # non-empty directory would overwrite existing state
 
-    # Vault is a file target.
-    if _path_exists(vault):
-        if _path_is_dir(vault):
-            return True  # type conflict: cannot place a file where a dir is
-        return True  # existing vault file: reuse unimplemented -> fail closed
+    # Vault is a file target: only a MISSING target is acceptable.
+    if _probe(vault) != _PATH_MISSING:
+        return True  # existing vault state: reuse unimplemented -> fail closed
 
-    # Any file in either ancestor chain blocks directory creation.
-    return _ancestor_is_file(output) or _ancestor_is_file(vault)
+    # Any non-directory in either ancestor chain blocks directory creation.
+    return _ancestor_conflict(output) or _ancestor_conflict(vault)
 
 
 # ---------------------------------------------------------------------------
@@ -857,18 +871,20 @@ def preflight(plan: Plan) -> PreflightResult:
     if overlap:
         findings.error(PreflightCode.PATH_OVERLAP)
 
-    # 2. Source availability + freshness, under STRICT traversal: a missing or
-    #    unreadable source fails closed as SOURCE_UNAVAILABLE (an incomplete
-    #    enumeration is never treated as complete); a changed source is a
-    #    fingerprint mismatch. Downstream source-consuming checks (standalone
-    #    IDX inventory, capacity scan) only run on verified source state.
+    # 2. Source availability + freshness, under STRICT traversal: a missing,
+    #    unreadable or non-directory source fails closed as
+    #    SOURCE_UNAVAILABLE (an incomplete enumeration is never treated as
+    #    complete, and Python 3.12+ pathlib predicate suppression is never
+    #    trusted); a changed source is a fingerprint mismatch. Downstream
+    #    source-consuming checks (standalone IDX inventory, capacity scan)
+    #    only run on verified source state.
     source_files: dict[str, Path] | None = None
     source_verified = False
     try:
-        root_available = _path_is_dir(source_root)
+        root_kind = _probe(source_root)
     except OSError:
-        root_available = False
-    if not root_available:
+        root_kind = None
+    if root_kind != _PATH_DIRECTORY:
         findings.error(PreflightCode.SOURCE_UNAVAILABLE)
     else:
         try:

@@ -1066,7 +1066,7 @@ def test_storage_ancestor_stat_failure_fails_closed(
     mod = _pf_module()
 
     def _boom(_p: Path) -> int:
-        raise OSError("filesystem identity unavailable")
+        raise PermissionError(13, "filesystem identity unavailable")
 
     monkeypatch.setattr(mod, "_stat_dev", _boom)
     plan = _build_plan(tmp_path)
@@ -1114,11 +1114,14 @@ def test_ancestor_inspection_error_fails_closed_privacy_safe(
     plan = build_plan(
         source=src, output=tmp_path / "block" / "out", vault=tmp_path / "v"
     )
+    real_probe = mod._probe
 
-    def _denied(_p: Path) -> bool:
-        raise OSError(13, f"ancestor secrets under {tmp_path}")
+    def _denied(p: Path) -> str:
+        if p == tmp_path / "block":  # first (missing) output ancestor
+            raise PermissionError(13, f"ancestor secrets under {tmp_path}")
+        return real_probe(p)
 
-    monkeypatch.setattr(mod, "_path_is_file", _denied)
+    monkeypatch.setattr(mod, "_probe", _denied)
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
@@ -1142,6 +1145,202 @@ def test_alias_resolver_error_fails_closed_privacy_safe(
     assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
     assert "PATH_OVERLAP" not in result.error_codes
     _assert_no_private_paths(result, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# 29b. Python 3.12+/3.14-safe stat probing: an inaccessible path is NEVER
+#      treated as missing (pathlib predicates suppress OSError there)
+# ---------------------------------------------------------------------------
+def test_probe_path_classifies_raw_stat_kinds(tmp_path: Path) -> None:
+    import dbf_anonymizer.discovery as discovery
+
+    directory = tmp_path / "d"
+    directory.mkdir()
+    plain_file = tmp_path / "f"
+    plain_file.write_bytes(b"synthetic")
+    assert discovery.probe_path(directory) == discovery._PATH_DIRECTORY
+    assert discovery.probe_path(plain_file) == discovery._PATH_FILE
+    assert discovery.probe_path(tmp_path / "gone") == discovery._PATH_MISSING
+    # A component that is not a directory blocks the hierarchy: on POSIX this
+    # is NotADirectoryError (BLOCKED); on Windows os.stat reports FileNotFoundError
+    # (MISSING) — never DIRECTORY in either case.
+    assert discovery.probe_path(plain_file / "sub") != discovery._PATH_DIRECTORY
+
+
+def _patch_probe_denied_for(
+    monkeypatch: pytest.MonkeyPatch, mod: Any, denied_path: Path
+) -> None:
+    real_probe = mod._probe
+
+    def _denied(p: Path) -> str:
+        if p == denied_path:
+            raise PermissionError(13, f"probe secrets under {denied_path}")
+        return real_probe(p)
+
+    monkeypatch.setattr(mod, "_probe", _denied)
+
+
+def test_output_stat_permission_error_fails_closed_privacy_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An inaccessible output target is NEVER an innocent missing target:
+    # the stat probe propagates the failure and preflight fails closed.
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    _patch_probe_denied_for(monkeypatch, mod, tmp_path / "out")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_vault_stat_permission_error_fails_closed_privacy_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An inaccessible vault target cannot be proven acceptable: fail closed.
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "vault" / "dict.sqlite3")
+    _patch_probe_denied_for(monkeypatch, mod, tmp_path / "vault" / "dict.sqlite3")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_storage_ancestor_stat_permission_error_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The nearest-existing-ancestor walk for the storage estimate uses the
+    # same stat probe: an inaccessible ancestor must NOT be walked past as if
+    # it did not exist; the estimate degrades to STORAGE_ESTIMATE_UNAVAILABLE.
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    vault_dir = tmp_path / "vdir"
+    vault_dir.mkdir()  # pre-existing (blocked) vault ancestor
+    plan = build_plan(source=src, output=tmp_path / "out", vault=vault_dir / "dict.sqlite3")
+    _patch_probe_denied_for(monkeypatch, mod, vault_dir)
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vdir",))
+    assert result.ready is False
+    # The device comparison cannot be made defensibly without the ancestor.
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_deep_missing_ancestor_chain_is_not_a_false_conflict(tmp_path: Path) -> None:
+    # Deeply missing ancestor chains must still be created-able: missing
+    # components are walked past, never misread as conflicts.
+    src = _make_source(tmp_path)
+    plan = build_plan(
+        source=src,
+        output=tmp_path / "deep" / "l1" / "l2" / "out",
+        vault=tmp_path / "v" / "d" / "dict.sqlite3",
+    )
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    assert "PATH_INSPECTION_UNAVAILABLE" not in result.error_codes
+
+
+def test_source_root_stat_permission_error_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An inaccessible source root is not an innocent absence: the stat probe
+    # reports SOURCE_UNAVAILABLE (and the storage estimate degrades).
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+    _patch_probe_denied_for(monkeypatch, mod, src)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+    assert mod._LAST_CAPACITY_SCAN_STATS is None  # scan never entered
+
+
+def test_strict_discovery_root_inspection_error_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Strict discovery itself must not trust Python 3.12+/3.14 predicate
+    # suppression: an unreadable source root surfaces as a failure.
+    import dbf_anonymizer.discovery as discovery
+
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+
+    def _denied(_p: Path) -> str:
+        raise PermissionError(13, f"root secrets under {tmp_path}")
+
+    monkeypatch.setattr(discovery, "probe_path", _denied)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_strict_enumeration_rejects_missing_and_non_directory_roots(
+    tmp_path: Path,
+) -> None:
+    # Real-filesystem proof (no monkeypatching): strict enumeration must
+    # never turn a missing or non-directory source root into an innocent
+    # empty enumeration.
+    import dbf_anonymizer.discovery as discovery
+
+    plain_file = tmp_path / "not_a_dir"
+    plain_file.write_bytes(b"synthetic")
+
+    with pytest.raises(OSError):
+        discovery.enumerate_in_scope_paths(tmp_path / "gone", strict=True)
+    assert discovery.enumerate_in_scope_paths(tmp_path / "gone") == {}
+    with pytest.raises(OSError):
+        discovery.enumerate_in_scope_paths(plain_file, strict=True)
+    assert discovery.enumerate_in_scope_paths(plain_file) == {}
+
+
+def test_preflight_never_uses_314_suppressing_pathlib_predicates(
+    tmp_path: Path,
+) -> None:
+    # REGRESSION GUARD: production preflight security decisions must not call
+    # Path.exists()/is_file()/is_dir() at all — on Python 3.12+ those
+    # predicates suppress OSError/PermissionError and would report an
+    # inaccessible path as missing (fail-open). A normal preflight must still
+    # complete successfully with every pathlib predicate poisoned.
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    before = _tree_snapshot(tmp_path)
+
+    real_predicates = (Path.exists, Path.is_file, Path.is_dir)
+
+    def _forbidden(name: str) -> Any:
+        def _poison(_self: Any, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"Path.{name} used inside production preflight")
+
+        return _forbidden
+
+    Path.exists = _forbidden("exists")  # type: ignore[method-assign]
+    Path.is_file = _forbidden("is_file")  # type: ignore[method-assign]
+    Path.is_dir = _forbidden("is_dir")  # type: ignore[method-assign]
+    try:
+        result = preflight(plan)
+        assert result.ready is True
+        assert result.error_codes == ()
+        assert "PREFLIGHT_EVALUATED" in result.check_codes
+    finally:
+        (Path.exists, Path.is_file, Path.is_dir) = real_predicates
+
+    after = _tree_snapshot(tmp_path)
+    created = set(after) - set(before)
+    modified = {r for r in before if before[r] != after.get(r)}
+    assert not created, f"preflight created files: {sorted(created)}"
+    assert not modified, f"preflight modified files: {sorted(modified)}"
+    assert not (tmp_path / "out").exists()
+    assert not (tmp_path / "v").exists()
 
 
 def test_source_traversal_error_fails_closed(
