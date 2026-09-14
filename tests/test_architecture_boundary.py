@@ -669,3 +669,107 @@ def test_writer_scanner_allows_public_dbfbridge_writes() -> None:
         "def encode(value):\n"
         "    return struct.pack('<i', value)\n"
     ) is None
+
+
+# ---------------------------------------------------------------------------
+# REQ-P1-007 import/capability path purity (static regressions)
+# ---------------------------------------------------------------------------
+#: Modules executed by the normal public import/capabilities path
+#: (``import dbf_anonymizer`` -> api -> planning/preflight/discovery/
+#: _capability/capabilities + models/errors).
+IMPORT_PATH_MODULES = (
+    "__init__.py",
+    "api.py",
+    "capabilities.py",
+    "_capability.py",
+    "models.py",
+    "errors.py",
+    "preflight.py",
+    "planning.py",
+    "discovery.py",
+)
+
+#: COM/ole-automation and VFP integration modules: importing any of them from
+#: the public import/capability path would violate REQ-P1-007/REQ-P6-001.
+COM_VFP_IMPORT_ROOTS = frozenset(
+    {
+        "win32com",
+        "win32api",
+        "win32gui",
+        "win32process",
+        "win32ui",
+        "win32clipboard",
+        "win32file",
+        "pythoncom",
+        "comtypes",
+        "pywintypes",
+        "ctypes",
+    }
+)
+
+#: MCP/server frameworks must stay outside the synchronous, transport-neutral
+#: Python API (REQ-P7-001).
+MCP_SERVER_IMPORT_ROOTS = frozenset(
+    {
+        "mcp",
+        "fastmcp",
+        "mcp_vfp9sp2_toolchain",
+        "flask",
+        "django",
+        "fastapi",
+        "starlette",
+        "uvicorn",
+    }
+)
+
+#: Runtime package installation is forbidden (REQ-P0-002/REQ-P7-004).
+PACKAGE_INSTALL_IMPORT_ROOTS = frozenset(
+    {"pip", "setuptools", "pkg_resources", "ensurepip", "venv"}
+)
+
+
+def _top_level_import_roots(source: str) -> set[str]:
+    tree = ast.parse(source)
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # intra-package relative import
+                continue
+            if node.module:
+                roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_import_capability_path_imports_no_com_vfp_backend() -> None:
+    for module_name in IMPORT_PATH_MODULES:
+        path = SRC_ROOT / module_name
+        assert path.exists(), module_name
+        roots = _top_level_import_roots(path.read_text(encoding="utf-8"))
+        offending = sorted(roots & COM_VFP_IMPORT_ROOTS)
+        assert not offending, f"{module_name}: COM/VFP/ole import: {offending}"
+
+
+def test_no_mcp_or_server_framework_imports_in_the_python_api() -> None:
+    offending: list[str] = []
+    for path in _production_sources():
+        roots = _top_level_import_roots(path.read_text(encoding="utf-8"))
+        offending_roots = sorted(roots & MCP_SERVER_IMPORT_ROOTS)
+        if offending_roots:
+            offending.append(
+                f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
+            )
+    assert not offending, "MCP/server framework import: " + "; ".join(offending)
+
+
+def test_no_runtime_package_installation_imports() -> None:
+    offending: list[str] = []
+    for path in _production_sources():
+        roots = _top_level_import_roots(path.read_text(encoding="utf-8"))
+        offending_roots = sorted(roots & PACKAGE_INSTALL_IMPORT_ROOTS)
+        if offending_roots:
+            offending.append(
+                f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
+            )
+    assert not offending, "runtime package installation: " + "; ".join(offending)

@@ -1,8 +1,11 @@
 """Root public API regression evidence for the clean-slate 1.0 line.
 
 The project deliberately does not preserve the historical 0.3 API. This file
-protects that clean-slate decision while allowing the current 1.0 model and
-error contracts to become public.
+protects that clean-slate decision while allowing the current 1.0 model,
+error and operational contracts to become public. The currently implemented
+operational surface is exactly ``capabilities``, ``build_plan`` and
+``preflight``; the unfinished operations stay absent (no success
+placeholders).
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "VaultStrategy",
     "build_plan",
     "preflight",
+    "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
     "ERROR_REGISTRY",
@@ -78,7 +82,6 @@ EXPECTED_PUBLIC_EXPORTS = {
 }
 
 FUTURE_OPERATION_EXPORTS = {
-    "capabilities",
     "pseudonymize",
     "verify_dataset",
     "recover",
@@ -100,6 +103,23 @@ def test_public_surface_is_exactly_the_current_1_0_contract() -> None:
 def test_future_operations_are_not_faked_before_their_requirements() -> None:
     exported = set(dir(dbf_anonymizer))
     assert FUTURE_OPERATION_EXPORTS.isdisjoint(exported)
+
+
+def test_capabilities_is_public_and_has_a_single_implementation() -> None:
+    import dbf_anonymizer.api as api_module
+
+    assert dbf_anonymizer.capabilities is api_module.capabilities
+    assert dbf_anonymizer.capabilities.__module__ == "dbf_anonymizer.capabilities"
+
+
+def test_capabilities_returns_the_immutable_public_model() -> None:
+    from dbf_anonymizer import Capabilities
+
+    result = dbf_anonymizer.capabilities()
+    assert isinstance(result, Capabilities)
+    assert result.recovery is False
+    assert result.transfer_bundle is False
+    assert result.vfp_index_backend is False
 
 
 def test_recovery_result_is_the_new_1_0_model_not_a_legacy_compatibility_alias() -> None:

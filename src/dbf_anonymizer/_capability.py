@@ -1,14 +1,16 @@
-"""Side-effect-free runtime capability snapshot for REQ-P1-006 preflight.
+"""Side-effect-free runtime capability snapshot for REQ-P1-006/REQ-P1-007.
 
 This module only reports *truthful* capability facts derived from the public
 ``dbfbridge`` namespace and the installed distribution. It creates no files,
 opens no DBF, starts no subprocess, instantiates no COM object and touches no
 network endpoint. Capability discovery begins only when it is explicitly
-requested (preflight calls it); importing this module performs no I/O.
+requested; importing this module performs no I/O.
 
-The snapshot is intentionally private: ``capabilities()`` is a future public
-operation (REQ-P1-007) and is NOT exposed through the package root in this
-iteration. Preflight consumes it as an internal helper.
+The snapshot logic is intentionally private: the supported public discovery
+operation is :func:`dbf_anonymizer.capabilities.capabilities` (REQ-P1-007),
+which delegates to :func:`snapshot`. Preflight consumes the same logic
+through the ``capabilities_provider`` seam — there is exactly one discovery
+implementation in the package.
 """
 
 from __future__ import annotations
