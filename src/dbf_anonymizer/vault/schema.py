@@ -174,7 +174,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         width INTEGER NOT NULL CHECK (width >= 0),
         transform_action TEXT,
         mapping_domain_id TEXT REFERENCES mapping_domains(domain_id),
-        UNIQUE (table_id, name)
+        UNIQUE (table_id, name),
+        UNIQUE (field_id, table_id)
     )
     """,
     """
@@ -212,10 +213,11 @@ DDL_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE memo_recovery (
         table_id TEXT NOT NULL REFERENCES tables(table_id),
         physical_record_index INTEGER NOT NULL CHECK (physical_record_index >= 0),
-        field_id TEXT NOT NULL REFERENCES fields(field_id),
+        field_id TEXT NOT NULL,
         original_payload BLOB NOT NULL,
         payload_kind TEXT NOT NULL CHECK (payload_kind IN ('TEXT', 'BINARY')),
-        PRIMARY KEY (table_id, physical_record_index, field_id)
+        PRIMARY KEY (table_id, physical_record_index, field_id),
+        FOREIGN KEY (field_id, table_id) REFERENCES fields (field_id, table_id)
     )
     """,
     """

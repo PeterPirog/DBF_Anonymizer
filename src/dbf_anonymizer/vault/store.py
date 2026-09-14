@@ -6,25 +6,32 @@ database (``dictionary.sqlite3``) for the whole source tree (REQ-P2-001).
 This module owns the connection lifecycle and the fail-closed boundaries:
 
 * **Creation** — ``VaultDatabase.open(path, create=True, ...)`` creates the
-  schema 1.0 dictionary inside ONE transaction; creation over an existing
-  file is refused (no dropping/recreating of unknown databases).
-* **Reopen** — every open validates integrity (``PRAGMA quick_check``,
-  ``PRAGMA foreign_key_check``), the exact schema version, the vault-id shape
-  and — when expected values are supplied — the bound dataset identity
-  (source/policy/relationship fingerprints). Any mismatch fails CLOSED with
-  a typed ``VaultError`` and never exposes raw source values, private paths
-  or raw SQLite error text (classification is by exception TYPE only).
-* **Single logical writer authority** (REQ-P2-003) — a durable
-  ``writer_authority`` lease row inside the same SQLite database: the first
-  writer acquires it atomically (``BEGIN IMMEDIATE`` + conditional update);
-  any competing writer fails deterministically with
-  ``VAULT_WRITER_CONFLICT``; release returns authority cleanly; a crashed
-  writer leaves an EXPLICIT stale lease that is readable and reclaimable
-  only by naming its stored token. Readers never need the lease.
+  schema 1.0 dictionary inside ONE system transaction; creation over an
+  existing file is refused (an unknown database is never dropped, recreated
+  or converted); the WAL journal mode is SET and its PRAGMA RESULT verified.
+* **Non-mutating reopen validation** — an EXISTING database is validated in a
+  FIRST, strictly read-only stage (SQLite ``mode=ro`` URI connection): raw
+  stat probe, integrity boundary, exact schema version, vault-id shape,
+  dataset identity and expected fingerprints. The validation stage never
+  writes: no journal-mode change, no metadata, no schema, no sidecars — a
+  rejected vault stays byte-identical. Only AFTER acceptance does the
+  operational read/write connection open (STAGE 2) and require the expected
+  journal mode instead of silently converting it.
+* **Single logical writer authority** (REQ-P2-003) — the durable
+  ``writer_authority`` lease row is the ONLY mutation authority: a
+  ``VaultDatabase`` acquires it atomically, the successful lease is bound to
+  the instance, and every ordinary write transaction re-verifies the durable
+  ownership INSIDE the ``BEGIN IMMEDIATE`` lock. A connection that does not
+  hold the authority cannot execute any ordinary vault mutation. The private
+  system transaction is reserved for creation, lease acquire/release and
+  other narrowly scoped lifecycle work.
+* **Integrity** — ``quick_check``/``integrity_check`` plus
+  ``foreign_key_check`` and explicit metadata validation; classification is
+  by exception TYPE only, never by parsing SQLite text.
 * **Journal lifecycle** — WAL journaling with a truncate checkpoint on every
-  clean close (see :mod:`dbf_anonymizer.vault.schema`).
-* **Operations/publication state** — persisted ``operations`` rows with
-  bounded states and stable stored operation IDs.
+  clean close (see :mod:`dbf_anonymizer.vault.schema`); checkpoint/cleanup
+  failures surface as typed, privacy-safe vault failures (recorded instead of
+  raised only when an operation exception is already in flight).
 
 The vault never touches DBF/FPT files, never imports the ``dbfbridge``
 namespace, and is NOT reachable from ``build_plan``/``preflight`` (those
@@ -35,6 +42,8 @@ execution engine).
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 
 import importlib.metadata as _metadata
 import sqlite3
@@ -43,7 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
-from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError, VaultError
+from dbf_anonymizer.errors import ErrorCode, ErrorContext, VaultError
 from dbf_anonymizer.vault.schema import (
     CREATE_META_SEED,
     DDL_STATEMENTS,
@@ -75,6 +84,11 @@ __all__ = [
 VAULT_BUSY_TIMEOUT_MS = 10_000
 
 _MAX_TOKEN_LENGTH = 128
+
+_RAW_FILE_KIND_MISSING = "missing"
+_RAW_FILE_KIND_FILE = "file"
+_RAW_FILE_KIND_DIRECTORY = "directory"
+_RAW_FILE_KIND_OTHER = "other"
 
 
 def _validate_token(value: str, *, field_name: str) -> str:
@@ -131,6 +145,31 @@ def _vault_failure(
     )
 
 
+def _raw_file_kind(path: Path) -> str:
+    """Fail-closed raw stat probe (never pathlib predicates).
+
+    Modern pathlib predicates can suppress ``OSError``/``PermissionError``;
+    the vault therefore classifies filesystem reality with ``os.stat`` and
+    ``stat.S_ISREG``/``stat.S_ISDIR`` only, mapping failures to typed,
+    privacy-safe vault errors (no absolute paths escape).
+    """
+    try:
+        status = os.stat(path)
+    except FileNotFoundError:
+        return _RAW_FILE_KIND_MISSING
+    except NotADirectoryError:
+        return _RAW_FILE_KIND_MISSING
+    except PermissionError:
+        raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "TARGET_STAT_DENIED") from None
+    except OSError:
+        raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED") from None
+    if stat.S_ISREG(status.st_mode):
+        return _RAW_FILE_KIND_FILE
+    if stat.S_ISDIR(status.st_mode):
+        return _RAW_FILE_KIND_DIRECTORY
+    return _RAW_FILE_KIND_OTHER
+
+
 def _sha16(value: str) -> str:
     """First 16 hex characters of the SHA-256 of *value* (stable identity)."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
@@ -165,6 +204,10 @@ class VaultDatabase:
     The instance owns exactly one SQLite connection. It is NOT thread-safe and
     must not be shared between threads; competing writers create their own
     instance on the same file (see the concurrency evidence tests).
+
+    Mutation authority: the instance must hold the durable writer lease
+    (``acquire_writer_lease``) before any ordinary write transaction is
+    accepted. Readers never need the lease.
     """
 
     def __init__(
@@ -186,6 +229,9 @@ class VaultDatabase:
         self._policy_fingerprint = policy_fingerprint
         self._relationship_fingerprint = relationship_fingerprint
         self._transaction: VaultTransaction | None = None
+        self._transaction_authorized = False
+        self._writer_token: str | None = None
+        self._cleanup_failure: VaultError | None = None
         self._closed = False
 
     # -- lifecycle -----------------------------------------------------------
@@ -202,14 +248,16 @@ class VaultDatabase:
     ) -> "VaultDatabase":
         """Open (or create) the dictionary database with full validation.
 
-        ``create=True`` builds the schema 1.0 dictionary; the target file must
-        not already exist (an unknown database is never dropped or recreated).
-        ``dbfbridge_version`` (bounded token) is required for creation because
-        the vault layer never imports the ``dbfbridge`` namespace itself.
+        ``create=True`` builds the schema 1.0 dictionary (WAL mode set and its
+        PRAGMA result verified); the target file must not already exist.
 
-        Without ``create`` the existing database must pass integrity, exact
-        schema-version and metadata validation; expected dataset fingerprints
-        fail closed as ``VAULT_IDENTITY_MISMATCH`` on any difference.
+        Without ``create`` the open is TWO-STAGE and fail-closed: STAGE 1
+        validates the existing file through a READ-ONLY connection (integrity,
+        exact schema version, vault-id shape, dataset identity, expected
+        fingerprints) WITHOUT mutating anything — a rejected vault stays
+        byte-identical and journal-mode-identical. STAGE 2 then opens the
+        operational read/write connection and REQUIRES the expected WAL
+        journal mode (no silent conversion).
         """
         database_path = Path(path)
         if create:
@@ -220,24 +268,157 @@ class VaultDatabase:
                 relationship_fingerprint=expected_relationship_fingerprint,
                 dbfbridge_version=dbfbridge_version,
             )
-        if not Path(path).is_file():
+        kind = _raw_file_kind(database_path)
+        if kind == _RAW_FILE_KIND_MISSING:
             raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "DICTIONARY_MISSING")
-        connection = cls._connect(database_path)
+        if kind != _RAW_FILE_KIND_FILE:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_NOT_A_FILE")
+        if cls._has_wal_sidecar(database_path):
+            # Crash-dirty WAL: the immutable read-only snapshot cannot see the
+            # recovered state, so the operational connection performs SQLite's
+            # own committed-state recovery and the FULL validation then runs on
+            # it (before any vault mutation is possible). A rejection here may
+            # have checkpointed recovered state — that is recovery, never
+            # tampering with a compatible vault.
+            connection = cls._connect_operational(database_path)
+            try:
+                cls._require_wal_journal_mode(connection)
+                database = cls._bind(
+                    connection,
+                    database_path,
+                    expected_source_fingerprint=expected_source_fingerprint,
+                    expected_policy_fingerprint=expected_policy_fingerprint,
+                    expected_relationship_fingerprint=expected_relationship_fingerprint,
+                )
+            except BaseException:
+                connection.close()
+                raise
+            return database
+        # Cleanly-closed vault: STAGE 1 is strictly read-only, strictly
+        # non-mutating validation (byte-identical rejection, zero sidecars).
+        cls._validate_existing_readonly(
+            database_path,
+            expected_source_fingerprint=expected_source_fingerprint,
+            expected_policy_fingerprint=expected_policy_fingerprint,
+            expected_relationship_fingerprint=expected_relationship_fingerprint,
+        )
+        # STAGE 2 — accepted vault: open the operational connection.
+        connection = cls._connect_operational(database_path)
         try:
-            database = cls._validate_and_bind(
-                connection,
-                database_path,
-                expected_source_fingerprint=expected_source_fingerprint,
-                expected_policy_fingerprint=expected_policy_fingerprint,
-                expected_relationship_fingerprint=expected_relationship_fingerprint,
-            )
+            cls._require_wal_journal_mode(connection)
         except BaseException:
             connection.close()
             raise
-        return database
+        return cls._bind(
+            connection,
+            database_path,
+            expected_source_fingerprint=expected_source_fingerprint,
+            expected_policy_fingerprint=expected_policy_fingerprint,
+            expected_relationship_fingerprint=expected_relationship_fingerprint,
+        )
+
+    @staticmethod
+    def _has_wal_sidecar(path: Path) -> bool:
+        """True when a crash-dirty ``-wal`` sidecar exists for the dictionary."""
+        try:
+            names = os.listdir(path.parent)
+        except PermissionError:
+            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "TARGET_STAT_DENIED") from None
+        except OSError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED") from None
+        return f"{path.name}-wal" in names
+
+    @classmethod
+    def _require_wal_journal_mode(cls, connection: sqlite3.Connection) -> None:
+        """Require the explicit WAL policy; never silently convert a vault."""
+        current_mode = cls._read_journal_mode(connection)
+        if current_mode.lower() != VAULT_JOURNAL_MODE.lower():
+            raise _vault_failure(
+                ErrorCode.VAULT_STATE_INVALID, "JOURNAL_MODE_UNEXPECTED"
+            )
+
+    @classmethod
+    def _validate_existing_readonly(
+        cls,
+        path: Path,
+        *,
+        expected_source_fingerprint: str | None,
+        expected_policy_fingerprint: str | None,
+        expected_relationship_fingerprint: str | None,
+    ) -> None:
+        """STAGE 1: read-only validation — never writes, never converts.
+
+        Uses an SQLite read-only URI connection so an incompatible, foreign or
+        corrupt database is rejected without any possibility of journal-mode
+        changes, metadata writes, sidecar creation or recovery writes. The
+        expected dataset identity is compared HERE, before any read/write
+        connection can exist.
+        """
+        connection = cls._connect_readonly(path)
+        try:
+            _vault_id, _schema_version, fingerprints = cls._read_identity(connection)
+        except sqlite3.DatabaseError:
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
+        finally:
+            connection.close()
+        mismatches = (
+            ("SOURCE_FINGERPRINT", expected_source_fingerprint, fingerprints["source"]),
+            ("POLICY_FINGERPRINT", expected_policy_fingerprint, fingerprints["policy"]),
+            (
+                "RELATIONSHIP_FINGERPRINT",
+                expected_relationship_fingerprint,
+                fingerprints["relationship"],
+            ),
+        )
+        for detail_code, expected, actual in mismatches:
+            if expected is not None and expected != actual:
+                raise _vault_failure(ErrorCode.VAULT_IDENTITY_MISMATCH, detail_code)
+
+    @classmethod
+    def _connect_readonly(cls, path: Path) -> sqlite3.Connection:
+        try:
+            # ``immutable=1`` reads the file without creating any -wal/-shm
+            # wal-index artifacts (a plain ``mode=ro`` open of a WAL database
+            # makes SQLite create persistent sidecars). The vault identity and
+            # schema are immutable after creation, so the validation snapshot
+            # is exact for every supported, cleanly-closed vault; a rejected
+            # database stays byte-identical and artifact-free.
+            uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=VAULT_BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
+        except PermissionError:
+            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "OPEN_DENIED") from None
+        except OSError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
+        except sqlite3.Error:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
+        try:
+            connection.execute(f"PRAGMA busy_timeout = {VAULT_BUSY_TIMEOUT_MS}")
+        except sqlite3.Error:
+            connection.close()
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
+        return connection
+
+    @staticmethod
+    def _apply_journal_mode(connection: sqlite3.Connection) -> str:
+        """Set the explicit WAL policy and RETURN the verified PRAGMA result."""
+        row = connection.execute(
+            f"PRAGMA journal_mode = {VAULT_JOURNAL_MODE}"
+        ).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else ""
+
+    @staticmethod
+    def _read_journal_mode(connection: sqlite3.Connection) -> str:
+        row = connection.execute("PRAGMA journal_mode").fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else ""
 
     @classmethod
     def _connect(cls, path: Path) -> sqlite3.Connection:
+        """Open the operational read/write connection (no journal changes)."""
         try:
             connection = sqlite3.connect(
                 str(path),
@@ -250,15 +431,16 @@ class VaultDatabase:
             raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
         except sqlite3.Error:
             raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
-        connection.row_factory = sqlite3.Row
         try:
-            connection.execute(f"PRAGMA journal_mode = {VAULT_JOURNAL_MODE}")
             connection.execute(f"PRAGMA busy_timeout = {VAULT_BUSY_TIMEOUT_MS}")
             connection.execute("PRAGMA foreign_keys = ON")
         except sqlite3.Error:
             connection.close()
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
         return connection
+
+    #: Backwards-compatible internal alias for the operational connection.
+    _connect_operational = _connect
 
     @classmethod
     def _create(
@@ -292,15 +474,23 @@ class VaultDatabase:
         _validate_token(relationship_fingerprint, field_name="relationship_fingerprint")
         _validate_token(dbfbridge_version, field_name="dbfbridge_version")
 
-        if path.is_file():
+        kind = _raw_file_kind(path)
+        if kind == _RAW_FILE_KIND_FILE:
             raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "ALREADY_EXISTS")
-        if path.exists() and not path.is_file():
+        if kind != _RAW_FILE_KIND_MISSING:
             raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_NOT_A_FILE")
-        parent = path.parent
-        if not parent.exists():
-            parent.mkdir(parents=True)
+        cls._ensure_parent_directory(path)
 
         connection = cls._connect(path)
+        try:
+            applied = cls._apply_journal_mode(connection)
+        except sqlite3.Error:
+            connection.close()
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
+        if applied.lower() != VAULT_JOURNAL_MODE.lower():
+            connection.close()
+            cls._remove_partial_dictionary(path)
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE")
         vault_id = _new_hex_id(VAULT_ID_PREFIX)
         try:
             transaction = VaultTransaction(connection)
@@ -329,11 +519,9 @@ class VaultDatabase:
         except sqlite3.Error:
             connection.close()
             # The partially created file was never a valid vault; remove it so
-            # a retry starts deterministically from a clean slate.
-            try:
-                path.unlink()
-            except OSError:  # pragma: no cover - defensive
-                pass
+            # a retry starts deterministically from a clean slate. A cleanup
+            # failure SURFACES (it must never disappear silently).
+            cls._remove_partial_dictionary(path)
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_FAILED") from None
         return cls(
             connection,
@@ -345,8 +533,34 @@ class VaultDatabase:
             relationship_fingerprint=relationship_fingerprint,
         )
 
+    @staticmethod
+    def _remove_partial_dictionary(path: Path) -> None:
+        """Remove a partially created dictionary; cleanup failures SURFACE."""
+        try:
+            path.unlink()
+        except OSError:
+            raise _vault_failure(
+                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
+            ) from None
+
     @classmethod
-    def _validate_and_bind(
+    def _ensure_parent_directory(cls, path: Path) -> None:
+        parent = path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "PARENT_NOT_A_DIRECTORY") from None
+        except NotADirectoryError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "PARENT_NOT_A_DIRECTORY") from None
+        except PermissionError:
+            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "PARENT_CREATE_DENIED") from None
+        except OSError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "PARENT_CREATE_FAILED") from None
+        if _raw_file_kind(parent) != _RAW_FILE_KIND_DIRECTORY:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "PARENT_NOT_A_DIRECTORY")
+
+    @classmethod
+    def _bind(
         cls,
         connection: sqlite3.Connection,
         path: Path,
@@ -355,9 +569,11 @@ class VaultDatabase:
         expected_policy_fingerprint: str | None,
         expected_relationship_fingerprint: str | None,
     ) -> "VaultDatabase":
+        """Bind the accepted connection to the validated identity."""
         try:
             vault_id, schema_version, fingerprints = cls._read_identity(connection)
         except sqlite3.DatabaseError:
+            connection.close()
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
         database = cls(
             connection,
@@ -458,6 +674,22 @@ class VaultDatabase:
         return self._relationship_fingerprint
 
     @property
+    def writer_token(self) -> str | None:
+        """The lease token bound to this instance, or None when unauthorized."""
+        return self._writer_token
+
+    @property
+    def cleanup_failure(self) -> VaultError | None:
+        """A typed cleanup failure recorded during close (never raw OS text).
+
+        Deterministic policy: an explicit ``close()`` re-raises cleanup
+        failures immediately; a ``with``-block exit that already carries an
+        operation exception records the cleanup failure here instead of
+        replacing the more important original exception.
+        """
+        return self._cleanup_failure
+
+    @property
     def connection(self) -> sqlite3.Connection:
         """The raw connection (internal seam; readers and the test suite)."""
         if self._closed:
@@ -479,10 +711,33 @@ class VaultDatabase:
 
     # -- transaction boundary --------------------------------------------------
     def transaction(self) -> VaultTransaction:
-        """Start the deterministic ``BEGIN IMMEDIATE`` transaction unit.
+        """Start one AUTHORIZED mutation transaction unit.
 
-        Exactly one transaction may be active per connection; nested or
-        overlapping use is refused instead of silently merged.
+        The calling instance must hold the durable writer lease: entry is
+        refused BEFORE any database access when no lease is bound to this
+        instance, and the durable ownership is re-verified INSIDE the
+        ``BEGIN IMMEDIATE`` lock (an authority handoff can never be raced).
+        Exactly one transaction may be active per connection.
+        """
+        if self._closed:
+            raise RuntimeError("vault database is closed")
+        if self._transaction is not None and self._transaction.active:
+            raise ValueError("vault transaction already active")
+        if self._writer_token is None:
+            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_REQUIRED")
+        transaction = VaultTransaction(
+            self._connection, on_begin=self._verify_writer_ownership
+        )
+        self._transaction = transaction
+        self._transaction_authorized = True
+        return transaction
+
+    def _system_transaction(self) -> VaultTransaction:
+        """PRIVATE system-level transaction (creation, lease acquire/release).
+
+        This is the only transaction form that does not require the writer
+        lease, because it IS the mechanism that establishes or transfers the
+        authority. It must never be exposed for ordinary vault mutations.
         """
         if self._closed:
             raise RuntimeError("vault database is closed")
@@ -490,13 +745,26 @@ class VaultDatabase:
             raise ValueError("vault transaction already active")
         transaction = VaultTransaction(self._connection)
         self._transaction = transaction
+        self._transaction_authorized = False
         return transaction
+
+    def _verify_writer_ownership(self) -> None:
+        """Durable authority check, executed inside BEGIN IMMEDIATE."""
+        row = self._connection.execute(
+            "SELECT owner_token FROM writer_authority WHERE singleton = 1"
+        ).fetchone()
+        if row is None or row[0] is None or str(row[0]) != self._writer_token:
+            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_REQUIRED")
 
     def _require_active_transaction(self, action: str) -> VaultTransaction:
         transaction = self._transaction
-        if transaction is None or not transaction.active:
+        if (
+            transaction is None
+            or not transaction.active
+            or not self._transaction_authorized
+        ):
             raise ValueError(
-                f"{action} requires an active VaultDatabase.transaction() unit"
+                f"{action} requires an active authorized VaultDatabase.transaction() unit"
             )
         return transaction
 
@@ -537,9 +805,11 @@ class VaultDatabase:
 
         The lease lives in the durable ``writer_authority`` row of the same
         database: the conditional update succeeds for exactly one competing
-        writer; any other writer (or an exhausted busy timeout) fails with
-        the typed ``VAULT_WRITER_CONFLICT`` classification. The lease must be
-        acquired outside any active transaction.
+        writer; any other writer fails with the typed ``VAULT_WRITER_CONFLICT``
+        classification. A physical SQLite operational failure is a storage
+        failure (``VAULT_UNAVAILABLE``), never a writer conflict. On success
+        the lease is bound to THIS instance, which from then on is the only
+        connection allowed to run ordinary mutation transactions.
         """
         _validate_token(owner_token, field_name="owner_token")
         if self._closed:
@@ -547,7 +817,7 @@ class VaultDatabase:
         if self._transaction is not None and self._transaction.active:
             raise ValueError("writer lease acquisition requires no active transaction")
         try:
-            with self.transaction() as unit:
+            with self._system_transaction():
                 cursor = self._connection.execute(
                     "UPDATE writer_authority SET owner_token = ?, "
                     "acquire_tick = acquire_tick + 1 "
@@ -562,10 +832,12 @@ class VaultDatabase:
                     "SELECT acquire_tick FROM writer_authority WHERE singleton = 1"
                 ).fetchone()
         except sqlite3.OperationalError:
-            # Type-based classification (never SQLite text parsing): a busy
-            # write lock on the lease row means another logical writer is
-            # active — fail closed as a writer conflict.
-            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_BUSY") from None
+            # Type-based classification (never SQLite text parsing): a physical
+            # operational failure is NOT proof of logical writer ownership.
+            raise _vault_failure(
+                ErrorCode.VAULT_UNAVAILABLE, "WRITER_LEASE_STORAGE_FAILURE"
+            ) from None
+        self._writer_token = owner_token
         tick = tick_row[0] if tick_row is not None else 0
         return int(tick)
 
@@ -575,7 +847,7 @@ class VaultDatabase:
         if self._closed:
             raise RuntimeError("vault database is closed")
         try:
-            with self.transaction():
+            with self._system_transaction():
                 cursor = self._connection.execute(
                     "UPDATE writer_authority SET owner_token = NULL "
                     "WHERE singleton = 1 AND owner_token = ?",
@@ -586,7 +858,11 @@ class VaultDatabase:
                         ErrorCode.VAULT_WRITER_CONFLICT, "NOT_LEASE_HOLDER"
                     )
         except sqlite3.OperationalError:
-            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_BUSY") from None
+            raise _vault_failure(
+                ErrorCode.VAULT_UNAVAILABLE, "WRITER_LEASE_STORAGE_FAILURE"
+            ) from None
+        if self._writer_token == owner_token:
+            self._writer_token = None
 
     def stale_writer_lease(self) -> str | None:
         """The currently stored lease token (explicit crash-state evidence)."""
@@ -779,22 +1055,42 @@ class VaultDatabase:
         )
 
     # -- close -----------------------------------------------------------------
+    def _checkpoint_wal(self) -> None:
+        """The clean-close WAL checkpoint (test seam for cleanup failures)."""
+        self._connection.execute(f"PRAGMA wal_checkpoint({VAULT_CLOSE_CHECKPOINT})")
+
     def close(self) -> None:
         """Clean close: truncate-checkpoint the WAL, then close the connection.
 
         A normal clean close leaves NO persistent ``-wal``/``-shm`` sidecars
-        (SQLite removes them with the last connection). Checkpoint failures
-        are absorbed at close time; surfacing cleanup failures is owned by
-        REQ-P2-009 and is not part of this foundation.
+        (SQLite removes them with the last connection). A checkpoint or close
+        failure SURFACES as a typed, privacy-safe ``VaultError`` — it is never
+        silently absorbed (the P2-009 protected-artifact policy builds on
+        this). Deterministic policy for a ``with``-block exit that already
+        carries an operation exception: the cleanup failure is RECORDED on
+        :attr:`cleanup_failure` instead of replacing the original exception.
         """
+        self._close(record_failure_only=False)
+
+    def _close(self, *, record_failure_only: bool) -> None:
         if self._closed:
             return
         self._closed = True
+        failure: VaultError | None = None
         try:
-            self._connection.execute(f"PRAGMA wal_checkpoint({VAULT_CLOSE_CHECKPOINT})")
+            self._checkpoint_wal()
         except sqlite3.Error:
-            pass
-        self._connection.close()
+            failure = _vault_failure(
+                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_FAILED"
+            )
+        try:
+            self._connection.close()
+        except sqlite3.Error:
+            if failure is None:
+                failure = _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "CLOSE_FAILED")
+        self._cleanup_failure = failure
+        if failure is not None and not record_failure_only:
+            raise failure
 
     def __enter__(self) -> "VaultDatabase":
         return self
@@ -805,4 +1101,4 @@ class VaultDatabase:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        self._close(record_failure_only=exc_type is not None)

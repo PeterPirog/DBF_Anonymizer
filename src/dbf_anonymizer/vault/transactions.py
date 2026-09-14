@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 from types import TracebackType
+from typing import Callable
 
 __all__ = ["VaultTransaction"]
 
@@ -27,10 +28,21 @@ class VaultTransaction:
     implicit transaction promotion), a clean exit always commits exactly once,
     and any exception always rolls back before the original exception is
     re-raised. Re-entrant/nested use is refused rather than silently merged.
+
+    ``on_begin`` (used by the store's authorized transaction path) runs INSIDE
+    the ``BEGIN IMMEDIATE`` lock right after begin: when it raises, the unit
+    rolls back and the original failure propagates — so an authority check can
+    never be bypassed by a race between the check and the physical lock.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        on_begin: Callable[[], None] | None = None,
+    ) -> None:
         self._connection = connection
+        self._on_begin = on_begin
         self._active = False
 
     @property
@@ -43,6 +55,19 @@ class VaultTransaction:
             raise ValueError("vault transaction already active")
         self._connection.execute("BEGIN IMMEDIATE")
         self._active = True
+        if self._on_begin is not None:
+            try:
+                self._on_begin()
+            except BaseException:
+                # A with-statement never runs __exit__ when __enter__ raises;
+                # the unit therefore rolls itself back here so a failed
+                # authority check can never leave an open write transaction.
+                self._active = False
+                try:
+                    self._connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
         return self
 
     def __exit__(

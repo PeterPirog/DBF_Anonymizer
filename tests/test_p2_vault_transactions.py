@@ -4,8 +4,8 @@ Covers: real SQLite enforcement of both bijection directions per mapping
 domain (text and numeric-key), independence of different domains, the
 deterministic ``BEGIN IMMEDIATE`` transaction unit with proven before/after
 rollback state, deterministic failure/crash injection at transaction-safe
-seams, reopen-after-interruption integrity, and the no-hidden-autocommit
-contract for multi-step vault mutations.
+seams, reopen-after-interruption integrity, the no-hidden-autocommit contract
+and the authoritative writer lease that gates all ordinary mutations.
 
 Mapping values are synthetic canaries; originals live ONLY inside the
 protected vault and never appear in public errors.
@@ -24,6 +24,7 @@ from dbf_anonymizer.vault import (
     VaultDatabase,
     mappings,
 )
+from support.vault_sessions import error_boundary_payload, writer_session
 
 SOURCE_FP = "src-" + "7" * 60
 POLICY_FP = "pol-" + "8" * 60
@@ -61,7 +62,7 @@ def _reopen(tmp_path: Path) -> VaultDatabase:
 # ---------------------------------------------------------------------------
 def test_duplicate_original_with_conflicting_pseudonym_is_rejected(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
             # Same original -> conflicting pseudonym: UNIQUE(domain, original).
@@ -72,15 +73,14 @@ def test_duplicate_original_with_conflicting_pseudonym_is_rejected(tmp_path: Pat
             # Duplicate pseudonym -> conflicting original: UNIQUE(domain, pseudonym).
             with pytest.raises(MappingError):
                 mappings.add_text_mapping(vault, domain, ORIGINAL_B, PSEUDONYM_A, logical_byte_length=17)
-            # Same pseudonym for the same original (identical pair) is the
-            # natural no-op conflict and is also rejected: the row exists.
+            # The identical duplicate pair is likewise a database conflict.
             with pytest.raises(MappingError):
                 mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=19)
 
 
 def test_identical_pairs_in_different_domains_are_independent(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain_one = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             domain_two = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             mappings.add_text_mapping(vault, domain_one, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
@@ -93,7 +93,7 @@ def test_identical_pairs_in_different_domains_are_independent(tmp_path: Path) ->
 
 def test_numeric_key_bijection_is_bidirectionally_unique(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain = mappings.create_domain(
                 vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY
             )
@@ -114,7 +114,7 @@ def test_numeric_key_bijection_is_bidirectionally_unique(tmp_path: Path) -> None
 
 def test_reverse_lookup_roundtrip_is_exact(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
         assert mappings.get_text_pseudonym(vault, domain, ORIGINAL_A) == PSEUDONYM_A
@@ -125,7 +125,7 @@ def test_reverse_lookup_roundtrip_is_exact(tmp_path: Path) -> None:
 
 def test_memo_and_temporal_rows_are_stored_in_the_protected_zone(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             table_id = vault.register_table("memo/table.dbf", schema_fingerprint="fp-memo")
             domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             field_id = vault.register_field(
@@ -147,7 +147,7 @@ def test_memo_and_temporal_rows_are_stored_in_the_protected_zone(tmp_path: Path)
         assert mappings.temporal_parameter(vault, temporal) == -7
         # Duplicated memo identity is refused.
         with pytest.raises(VaultError):
-            with vault.transaction():
+            with writer_session(vault), vault.transaction():
                 mappings.add_memo_recovery(
                     vault, table_id, 3, field_id, "again",
                     payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
@@ -162,7 +162,7 @@ def test_transaction_rollback_leaves_no_partial_rows(tmp_path: Path) -> None:
         # BEFORE: the domain/mapping state is empty.
         assert mappings.mapping_domains(vault) == ()
         with pytest.raises(ValueError):
-            with vault.transaction():
+            with writer_session(vault), vault.transaction():
                 domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
                 mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
                 # Dependent second insert fails mid-transaction (duplicate
@@ -184,7 +184,7 @@ def test_transaction_rollback_leaves_no_partial_rows(tmp_path: Path) -> None:
 def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with pytest.raises(RuntimeError):
-            with vault.transaction():
+            with writer_session(vault), vault.transaction():
                 table_id = vault.register_table("orders/data.dbf", schema_fingerprint="fp-x")
                 domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
                 field_id = vault.register_field(
@@ -208,7 +208,7 @@ def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -
 
 def test_committed_transaction_survives_reopen(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
     with _reopen(tmp_path) as reopened:
@@ -219,16 +219,10 @@ def test_committed_transaction_survives_reopen(tmp_path: Path) -> None:
 def test_multi_step_mutation_cannot_autocommit_outside_a_transaction(
     tmp_path: Path,
 ) -> None:
-    # No hidden autocommit: vault mutations require the explicit transaction
-    # unit; calling them outside one is a refused programmer error.
-    with VaultDatabase.open(
-        tmp_path / "vault" / "dictionary.sqlite3",
-        create=True,
-        expected_source_fingerprint=SOURCE_FP,
-        expected_policy_fingerprint=POLICY_FP,
-        expected_relationship_fingerprint=RELATIONSHIP_FP,
-        dbfbridge_version=DBFBRIDGE_VERSION,
-    ) as vault:
+    # No hidden autocommit: vault mutations require the explicit AUTHORIZED
+    # transaction unit; calling them outside one (or without the lease) is a
+    # refused programmer/caller error and writes nothing.
+    with _create(tmp_path) as vault:
         with pytest.raises(ValueError, match="requires an active"):
             vault.begin_operation()
         with pytest.raises(ValueError, match="requires an active"):
@@ -238,9 +232,19 @@ def test_multi_step_mutation_cannot_autocommit_outside_a_transaction(
         assert mappings.mapping_domains(vault) == ()
 
 
+def test_mutation_transaction_without_lease_is_rejected_first(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+        assert excinfo.value.code is ErrorCode.VAULT_WRITER_CONFLICT
+        assert excinfo.value.context.detail_code == "WRITER_LEASE_REQUIRED"
+        assert mappings.mapping_domains(vault) == ()
+
+
 def test_nested_transaction_use_is_refused(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             with pytest.raises(ValueError):
                 with vault.transaction():
                     pass
@@ -248,13 +252,13 @@ def test_nested_transaction_use_is_refused(tmp_path: Path) -> None:
 
 def test_failed_mutation_never_exposes_mapping_values(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        with vault.transaction():
+        with writer_session(vault), vault.transaction():
             domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
             mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
             with pytest.raises(MappingError) as excinfo:
                 mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
             error = excinfo.value
-            blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
+            blob = error_boundary_payload(error)
             assert ORIGINAL_A not in blob
             assert ORIGINAL_B not in blob
             assert PSEUDONYM_A not in blob
