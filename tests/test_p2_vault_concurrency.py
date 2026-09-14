@@ -162,14 +162,31 @@ def test_concurrent_writers_admit_exactly_one(tmp_path: Path) -> None:
     # Genuinely concurrent competing writers on separate threads and
     # connections; a barrier maximizes overlap. SQLite serializes the lease
     # transaction, so EXACTLY one acquire succeeds — every time.
+    #
+    # TEARDOWN IS A SEPARATE DETERMINISTIC PHASE: close() truthfully runs
+    # ``wal_checkpoint(TRUNCATE)`` and SURFACES a busy/incomplete checkpoint
+    # (CLOSE_CHECKPOINT_INCOMPLETE). Four SIMULTANEOUS closes legitimately
+    # contend for the WAL while peer lease transactions/checkpoints run —
+    # that contention belongs to the connection lifecycle, NOT to writer
+    # authority, and must not be conflated with the acquisition outcome
+    # (post-merge main CI 34900344682 regression). The acquisition outcomes
+    # are recorded BEFORE teardown; a second barrier proves every lease
+    # attempt finished; a teardown-only lock serializes the closes (no
+    # overlapping TRUNCATE checkpoints); any close failure is captured and
+    # asserted absent — never swallowed.
     dictionary = tmp_path / "vault" / "dictionary.sqlite3"
     with _open(tmp_path, create=True) as creator:
         creator.close()
 
     attempts = 4
-    barrier = threading.Barrier(attempts)
+    barrier_timeout = 60.0
+    acquisition_barrier = threading.Barrier(attempts)
+    teardown_barrier = threading.Barrier(attempts)
     results: list[tuple[str, str]] = []
     results_lock = threading.Lock()
+    close_errors: list[str] = []
+    close_errors_lock = threading.Lock()
+    close_lock = threading.Lock()  # teardown ordering ONLY (never acquisition)
 
     def _attempt() -> None:
         token = new_writer_token()
@@ -181,22 +198,34 @@ def test_concurrent_writers_admit_exactly_one(tmp_path: Path) -> None:
             expected_relationship_fingerprint=RELATIONSHIP_FP,
         )
         try:
-            barrier.wait()  # deterministic overlap point
             try:
-                database.acquire_writer_lease(token)
-                outcome = "ACQUIRED"
-            except VaultError as error:
-                outcome = (
-                    "CONFLICT"
-                    if error.code is ErrorCode.VAULT_WRITER_CONFLICT
-                    else f"UNEXPECTED:{error.code.value}"
-                )
-        except BaseException:  # barrier/thread failure must not hang the suite
-            outcome = "UNEXPECTED:BARRIER"
+                acquisition_barrier.wait(timeout=barrier_timeout)
+                try:
+                    database.acquire_writer_lease(token)
+                    outcome = "ACQUIRED"
+                except VaultError as error:
+                    outcome = (
+                        "CONFLICT"
+                        if error.code is ErrorCode.VAULT_WRITER_CONFLICT
+                        else f"UNEXPECTED:{error.code.value}"
+                    )
+            except BaseException:  # barrier/thread failure must not hang
+                outcome = "UNEXPECTED:BARRIER"
         finally:
-            database.close()
+            # The acquisition outcome is recorded BEFORE teardown: writer
+            # contention is never conflated with close/checkpoint lifecycle.
             with results_lock:
                 results.append((token, outcome))
+        # Deterministic orderly teardown (phase 2): all acquisition attempts
+        # are complete, so no peer lease transaction is in flight; the
+        # teardown-only lock prevents overlapping TRUNCATE checkpoints.
+        try:
+            teardown_barrier.wait(timeout=barrier_timeout)
+            with close_lock:
+                database.close()
+        except BaseException as error:
+            with close_errors_lock:
+                close_errors.append(f"{type(error).__name__}: {error}")
 
     threads = [threading.Thread(target=_attempt) for _index in range(attempts)]
     for thread in threads:
@@ -207,17 +236,27 @@ def test_concurrent_writers_admit_exactly_one(tmp_path: Path) -> None:
     acquired = [token for token, outcome in results if outcome == "ACQUIRED"]
     conflicts = [token for token, outcome in results if outcome == "CONFLICT"]
     unexpected = [outcome for _token, outcome in results if outcome.startswith("UNEXPECTED")]
+    assert len(results) == attempts, results  # zero missing results
     assert not unexpected, results
     assert len(acquired) == 1, results
     assert len(conflicts) == attempts - 1, results
-    # The durable lease records the single winner.
+    # Teardown completed according to the lifecycle contract: no close or
+    # checkpoint failure occurred (and none was hidden).
+    assert not close_errors, close_errors
+    # The durable lease records the single winner; the full integrity boundary
+    # (integrity_check + foreign_key_check + identity validation) passes on the
+    # reopened vault after the concurrency round.
     check = _reopen_existing(tmp_path)
     try:
         assert check.stale_writer_lease() == acquired[0]
         assert check.writer_acquire_tick() == 1
-    finally:
+        check.verify(full=True)
         check.release_writer_lease(acquired[0])
+        assert check.stale_writer_lease() is None
+    finally:
         check.close()
+    # The final clean close of the last connection leaves no journal residue.
+    assert sidecar_inventory(dictionary.parent) == []
 
 
 def test_process_level_second_writer_is_rejected(tmp_path: Path) -> None:
