@@ -13,8 +13,12 @@ import os
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import dbfbridge
+
+from dbf_anonymizer import progress as _progress
+from dbf_anonymizer.errors import CancellationError, CallbackError
 
 _DBF_EXTENSIONS = frozenset({".dbf"})
 _FPT_EXTENSIONS = frozenset({".fpt"})
@@ -108,18 +112,52 @@ def _safe_relative(path: str | None, root: Path) -> str | None:
         return None
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(
+    path: Path,
+    *,
+    cancel_probe: Callable[[], None] | None = None,
+) -> str:
+    """Compute the SHA-256 of *path* in the existing 64 KiB-chunk streaming way.
+
+    ``cancel_probe`` (a REQ-P1-008 private hook supplied by the progress
+    controller) is invoked before the first chunk and at least every
+    ``FINGERPRINT_CANCEL_CHUNK_QUANTUM`` chunks while hashing, so cooperative
+    cancellation can be observed no later than the declared bound even for a
+    very large artifact.  With ``cancel_probe=None`` the hashing is exactly
+    the pre-existing behavior (same reads, same digest).
+    """
     h = hashlib.sha256()
+    cancel_quantum = _progress.FINGERPRINT_CANCEL_CHUNK_QUANTUM
+    chunk_size = _progress.FINGERPRINT_HASH_CHUNK_SIZE
+    chunks = 0
     with path.open("rb") as fh:
-        while chunk := fh.read(65536):
+        while True:
+            if cancel_probe is not None and chunks % cancel_quantum == 0:
+                cancel_probe()
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
             h.update(chunk)
+            chunks += 1
     return h.hexdigest()
 
 
-def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
+def discover_tables(
+    source_root: Path,
+    *,
+    cancel_probe: Callable[[], None] | None = None,
+    progress_probe: Callable[[str], None] | None = None,
+) -> tuple[DiscoveredTable, ...]:
     """Discover all DBF tables under *source_root* deterministically.
 
     Returns a tuple sorted by normalized relative path.
+
+    The optional private REQ-P1-008 hooks are supplied by the progress
+    controller: ``cancel_probe`` is polled before every table's schema read
+    (a scan safe point between discovered tables) and raises on cancellation;
+    ``progress_probe`` is called with the table's normalized relative path
+    after each table has been read.  With both hooks ``None`` the behavior is
+    exactly the pre-existing deterministic discovery.
     """
     if not source_root.is_dir():
         from dbf_anonymizer.errors import PathError, ErrorCode, ErrorContext
@@ -141,10 +179,15 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
     for dbf_path in dbf_files:
         rel = _relative_posix(dbf_path, source_root)
 
+        if cancel_probe is not None:
+            cancel_probe()
+
         from dbf_anonymizer.errors import DBFBridgeError, ErrorContext
 
         try:
             schema = dbfbridge.read_schema(dbf_path)  # type: ignore[attr-defined]
+        except (CancellationError, CallbackError):
+            raise
         except Exception as exc:
             raise DBFBridgeError.from_exception(
                 exc,
@@ -169,6 +212,9 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
                 companion_cdx_relative_path=cdx_rel,
             )
         )
+
+        if progress_probe is not None:
+            progress_probe(rel)
 
     tables.sort(key=lambda t: t.relative_path)
     return tuple(tables)
@@ -216,6 +262,8 @@ def collect_fingerprint_entries(
     source_root: Path,
     *,
     strict: bool = False,
+    cancel_probe: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
 ) -> tuple[ArtifactFingerprintEntry, ...]:
     """Compute fingerprint entries for all in-scope artifacts under *source_root*.
 
@@ -225,31 +273,45 @@ def collect_fingerprint_entries(
     ``strict=True`` raises ``OSError`` on traversal errors instead of silently
     skipping them (used by preflight so incomplete enumeration cannot masquerade
     as a complete fingerprint).
+
+    The optional private REQ-P1-008 hooks are supplied by the progress
+    controller: the in-scope artifacts are enumerated first, then hashed in
+    deterministic sorted-relative-path order; ``cancel_probe`` is polled once
+    before every artifact and inside the chunked hashing loop (bounded
+    cancellation latency); ``progress_probe(done, total, relative_path)`` is
+    called after each artifact digest, with ``total`` the defensible artifact
+    count.  With both hooks ``None`` the results are exactly the pre-existing
+    deterministic fingerprint entries.
     """
     def _on_error(error: OSError) -> None:
         if strict:
             raise error
 
-    entries: list[ArtifactFingerprintEntry] = []
+    paths = enumerate_in_scope_paths(source_root, strict=strict)
+    ordered = sorted(paths)
+    total = len(ordered)
 
-    for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
-        for fname in sorted(filenames):
-            p = Path(dirpath) / fname
-            suffix = Path(fname).suffix.lower()
-            if suffix not in IN_SCOPE_EXTENSIONS:
-                continue
-            rel = _relative_posix(p, source_root)
-            size = p.stat().st_size
+    entries: list[ArtifactFingerprintEntry] = []
+    for done, rel in enumerate(ordered, start=1):
+        p = paths[rel]
+        if cancel_probe is not None:
+            cancel_probe()
+        size = p.stat().st_size
+        if cancel_probe is None:
             digest = _file_sha256(p)
-            artifact_type = suffix.lstrip(".").upper()
-            entries.append(
-                ArtifactFingerprintEntry(
-                    relative_path=rel,
-                    artifact_type=artifact_type,
-                    size_bytes=size,
-                    sha256=digest,
-                )
+        else:
+            digest = _file_sha256(p, cancel_probe=cancel_probe)
+        artifact_type = Path(rel).suffix.lstrip(".").upper()
+        entries.append(
+            ArtifactFingerprintEntry(
+                relative_path=rel,
+                artifact_type=artifact_type,
+                size_bytes=size,
+                sha256=digest,
             )
+        )
+        if progress_probe is not None:
+            progress_probe(done, total, rel)
 
     entries.sort(key=lambda e: e.relative_path)
     return tuple(entries)

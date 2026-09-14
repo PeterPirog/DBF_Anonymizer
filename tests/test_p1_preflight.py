@@ -1408,7 +1408,7 @@ def test_source_read_failure_fails_closed(
     mod = _pf_module()
     monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
 
-    def _denied_hash(_p: Path) -> str:
+    def _denied_hash(_p: Path, *, cancel_probe: Any = None) -> str:
         raise OSError(13, f"read secrets under {src}")
 
     monkeypatch.setattr(discovery, "_file_sha256", _denied_hash)

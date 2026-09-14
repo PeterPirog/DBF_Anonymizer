@@ -2,6 +2,13 @@
 
 Orchestrates source discovery, policy resolution, relationship resolution,
 fingerprint computation and Plan assembly. Side-effect-free by design.
+
+REQ-P1-008 adds optional bounded structured progress and cooperative
+cancellation callbacks (``progress`` / ``cancel_check`` keyword-only
+arguments) driven through the shared :mod:`dbf_anonymizer.progress` control
+layer.  With both callbacks omitted the deterministic behavior and the public
+``Plan`` serialization are byte-identical to the pre-P1-008 contract; the
+invocation ``operation_id`` never enters the ``Plan``.
 """
 
 from __future__ import annotations
@@ -16,7 +23,14 @@ from dbf_anonymizer.discovery import (
     compute_source_fingerprint,
     discover_tables,
 )
-from dbf_anonymizer.errors import DBFBridgeError, PathError, ErrorCode, ErrorContext
+from dbf_anonymizer.errors import (
+    CancellationError,
+    CallbackError,
+    DBFBridgeError,
+    PathError,
+    ErrorCode,
+    ErrorContext,
+)
 from dbf_anonymizer.models import (
     DatasetIdentity,
     Plan,
@@ -29,6 +43,12 @@ from dbf_anonymizer.models import (
     _PlanExecutionContext,
 )
 from dbf_anonymizer.policy import classify_field_capability, resolve_policy
+from dbf_anonymizer.progress import (
+    CancelCheck,
+    ProgressCallback,
+    ProgressController,
+    ProgressPhase,
+)
 
 
 def _resolve_index_strategy(
@@ -73,13 +93,32 @@ def build_plan(
     vault: str | os.PathLike[str],
     policy: Mapping[str, Any] | None = None,
     relationships: RelationshipMetadata | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> Plan:
     """Build a deterministic, read-only, side-effect-free pseudonymization plan.
 
     This function only reads the source filesystem (bounded reads for
     schema and fingerprint computation). It creates no files, directories,
     locks, logs, vaults or staging areas.
+
+    REQ-P1-008: the optional keyword-only ``progress`` callback receives
+    bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
+    and ``cancel_check`` is polled at scan safe points (phase boundaries,
+    between discovered tables, per fingerprinted artifact and at bounded
+    chunk intervals while hashing).  Cancellation raises the typed
+    :class:`~dbf_anonymizer.errors.CancellationError`; callback failures are
+    contained into the classified
+    :class:`~dbf_anonymizer.errors.CallbackError`.  With both callbacks
+    omitted the deterministic result is unchanged and no callback work
+    happens at all.
     """
+    control = ProgressController(
+        operation="build_plan", progress=progress, cancel_check=cancel_check
+    )
+    control.start_phase(ProgressPhase.OPERATION)
+
     source_root = Path(source).resolve()
     output_root = Path(output).resolve()
     vault_path = Path(vault).resolve()
@@ -93,8 +132,16 @@ def build_plan(
             ),
         )
 
-    # 1. Discover tables (wraps dbfbridge errors)
-    discovered = discover_tables(source_root)
+    # 1. Discover tables (wraps dbfbridge errors); scan safe points between
+    #    discovered tables are provided through the private probes.
+    control.start_phase(ProgressPhase.DISCOVERY)
+    discovered = discover_tables(
+        source_root,
+        cancel_probe=control.check_cancelled,
+        progress_probe=lambda rel: control.bump(
+            ProgressPhase.DISCOVERY, table_path=rel
+        ),
+    )
 
     if not discovered:
         raise PathError(
@@ -105,8 +152,23 @@ def build_plan(
             ),
         )
 
-    # 2. Compute source fingerprint
-    fp_entries = collect_fingerprint_entries(source_root)
+    # 2. Compute source fingerprint (scan safe points per artifact and at
+    #    bounded chunk intervals inside large artifacts).
+    control.start_phase(ProgressPhase.FINGERPRINT)
+
+    def _on_fingerprint_artifact(done: int, total: int, rel: str) -> None:
+        control.progress(
+            ProgressPhase.FINGERPRINT,
+            completed=done,
+            total=total,
+            table_path=rel,
+        )
+
+    fp_entries = collect_fingerprint_entries(
+        source_root,
+        cancel_probe=control.check_cancelled,
+        progress_probe=_on_fingerprint_artifact,
+    )
     source_fp = compute_source_fingerprint(fp_entries)
 
     # 3. Resolve policy
@@ -132,11 +194,16 @@ def build_plan(
     total_transformed_fields = 0
     transformation_classes_set: set[str] = set()
 
+    control.start_phase(ProgressPhase.TABLE_EVALUATION, total=len(discovered))
+
     for table in discovered:
+        control.check_cancelled()
         dbf_full_path = source_root / table.relative_path
 
         try:
             schema = dbfbridge.read_schema(dbf_full_path)  # type: ignore[attr-defined]
+        except (CancellationError, CallbackError):
+            raise
         except Exception as exc:
             raise DBFBridgeError.from_exception(
                 exc,
@@ -194,6 +261,7 @@ def build_plan(
                 system_field_count=system_count,
             )
         )
+        control.bump(ProgressPhase.TABLE_EVALUATION, table_path=table.relative_path)
 
     tables.sort(key=lambda t: t.table_path)
 
@@ -250,5 +318,9 @@ def build_plan(
         relationship_assurance_target=_assure_target(rel_meta),
         execution_context=execution_ctx,
     )
+
+    # The single terminal completion event is emitted only now — after the
+    # public Plan object genuinely exists (never after cancellation).
+    control.complete(completed=len(tables))
 
     return plan

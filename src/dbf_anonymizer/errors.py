@@ -21,7 +21,7 @@ from typing import ClassVar
 from .models import JsonDict
 
 ERROR_SCHEMA_VERSION = "1.0"
-ERROR_REGISTRY_VERSION = "1.0"
+ERROR_REGISTRY_VERSION = "1.1"
 
 
 class ErrorCategory(str, Enum):
@@ -37,6 +37,7 @@ class ErrorCategory(str, Enum):
     VERIFICATION = "verification"
     RECOVERY = "recovery"
     CANCELLATION = "cancellation"
+    CALLBACK = "callback"
 
 
 class ErrorCode(str, Enum):
@@ -71,6 +72,9 @@ class ErrorCode(str, Enum):
     RECOVERY_NOT_PERMITTED = "RECOVERY_NOT_PERMITTED"
 
     OPERATION_CANCELLED = "OPERATION_CANCELLED"
+
+    PROGRESS_CALLBACK_FAILED = "PROGRESS_CALLBACK_FAILED"
+    CANCEL_CALLBACK_FAILED = "CANCEL_CALLBACK_FAILED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +177,16 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCode.OPERATION_CANCELLED,
         ErrorCategory.CANCELLATION,
         "The operation was cooperatively cancelled.",
+    ),
+    ErrorDefinition(
+        ErrorCode.PROGRESS_CALLBACK_FAILED,
+        ErrorCategory.CALLBACK,
+        "The progress callback raised an exception; the failure was contained.",
+    ),
+    ErrorDefinition(
+        ErrorCode.CANCEL_CALLBACK_FAILED,
+        ErrorCategory.CALLBACK,
+        "The cancellation-check callback raised an exception; the failure was contained.",
     ),
 )
 
@@ -359,6 +373,19 @@ class CancellationError(AnonymizerError):
     category = ErrorCategory.CANCELLATION
 
 
+class CallbackError(AnonymizerError):
+    """Contained, classified callback failure (REQ-P1-008).
+
+    Raised when a caller-supplied progress or cancellation-check callback
+    throws.  The raw exception never escapes: its message may contain private
+    paths, source values or secrets, so only the registry-controlled message
+    and the stable machine code are exposed.  Classification never parses
+    exception text.
+    """
+
+    category = ErrorCategory.CALLBACK
+
+
 __all__ = [
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -378,4 +405,5 @@ __all__ = [
     "VerificationError",
     "RecoveryError",
     "CancellationError",
+    "CallbackError",
 ]
