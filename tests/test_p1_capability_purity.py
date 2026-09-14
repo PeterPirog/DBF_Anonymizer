@@ -40,7 +40,12 @@ from dbf_anonymizer import Capabilities
 VERDICT_PREFIX = "DBF_PURITY_VERDICT:"
 
 #: Optional backend modules that must never be loaded by import/discovery.
-FORBIDDEN_BACKEND_MODULES = "win32com,pythoncom,comtypes,pywintypes"
+#: The COM/ole set plus the architecture's external VFP toolchain provider
+#: (REQ-P6-006: accepted as injected metadata, never imported). The active
+#: repository contains no VFP/COM backend implementation module.
+FORBIDDEN_BACKEND_MODULES = (
+    "win32com,pythoncom,comtypes,pywintypes,mcp_vfp9sp2_toolchain"
+)
 
 #: The five public dbfbridge data operations that discovery must never call.
 DBFBRIDGE_DATA_OPERATIONS = (
@@ -455,7 +460,9 @@ def test_import_and_discovery_load_no_com_or_vfp_backend_modules() -> None:
     dbf_anonymizer.capabilities()
     added = set(sys.modules) - before
     loaded = sorted(
-        name for name in added if name.split(".")[0] in FORBIDDEN_BACKEND_MODULES.split(",")
+        name
+        for name in added
+        if name.split(".")[0] in FORBIDDEN_BACKEND_MODULES.split(",")
     )
     assert loaded == []
     assert dbf_anonymizer.capabilities().vfp_index_backend is False
