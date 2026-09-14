@@ -35,6 +35,7 @@ from dbf_anonymizer.vault import (
     mappings,
 )
 from support.vault_sessions import (
+    FailingExecuteConnection,
     error_boundary_payload,
     file_sha256,
     sidecar_inventory,
@@ -591,6 +592,79 @@ def test_rejected_compatible_identity_reopens_normally(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# STAGE-2 binding owns the operational connection (failed bind closes it)
+# ---------------------------------------------------------------------------
+def test_stage2_bind_failure_closes_the_operational_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    with _open_create(tmp_path) as vault:
+        vault.close()
+    dictionary = _dictionary(tmp_path)
+    vault_dir = dictionary.parent
+
+    # STAGE 1 (read-only validation) passes; the STAGE-2 identity read raises
+    # a TYPED validation failure AFTER the operational connection has opened —
+    # simulating a file replacement/race between the two open stages.
+    real_read_identity = store_module.VaultDatabase._read_identity
+    calls = {"count": 0}
+
+    def _failing_read_identity(cls: type, connection: sqlite3.Connection) -> object:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return real_read_identity(connection)
+        raise store_module._vault_failure(  # noqa: SLF001 - typed injection seam
+            store_module.ErrorCode.VAULT_SCHEMA_UNSUPPORTED,
+            "SCHEMA_VERSION_UNSUPPORTED",
+        )
+
+    monkeypatch.setattr(
+        store_module.VaultDatabase,
+        "_read_identity",
+        classmethod(_failing_read_identity),
+    )
+
+    captured: list[sqlite3.Connection] = []
+    real_connect_operational = store_module.VaultDatabase._connect_operational
+
+    def _capturing_connect(path: Path) -> sqlite3.Connection:
+        connection = real_connect_operational(path)
+        captured.append(connection)
+        return connection
+
+    monkeypatch.setattr(
+        store_module.VaultDatabase,
+        "_connect_operational",
+        staticmethod(_capturing_connect),
+    )
+
+    with pytest.raises(VaultError) as excinfo:
+        VaultDatabase.open(
+            dictionary,
+            expected_source_fingerprint=SOURCE_FP,
+            expected_policy_fingerprint=POLICY_FP,
+            expected_relationship_fingerprint=RELATIONSHIP_FP,
+        )
+    # The original typed validation error is preserved.
+    assert excinfo.value.code is ErrorCode.VAULT_SCHEMA_UNSUPPORTED
+    assert excinfo.value.context.detail_code == "SCHEMA_VERSION_UNSUPPORTED"
+    payload = error_boundary_payload(excinfo.value)
+    assert str(tmp_path) not in payload
+    # The failed binding CLOSED the raw operational connection: no handle
+    # remains usable.
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("PRAGMA quick_check")
+    # No persistent sidecar residue is left by the failed stage-2 binding.
+    assert sidecar_inventory(vault_dir) == []
+    # The rejected vault was not modified: after the injected failure is
+    # removed, the same dictionary reopens cleanly and passes full validation.
+    monkeypatch.undo()
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+
+
+# ---------------------------------------------------------------------------
 # Foreign / wrong-journal databases fail closed WITHOUT mutation
 # ---------------------------------------------------------------------------
 def test_foreign_sqlite_database_is_rejected_byte_identical(
@@ -1025,6 +1099,240 @@ def test_creation_reservation_refuses_competing_creator(tmp_path: Path) -> None:
     assert excinfo.value.context.detail_code == "ALREADY_EXISTS"
     # The placeholder file was never truncated or rewritten.
     assert file_sha256(target) == file_sha256(target)
+
+
+# ---------------------------------------------------------------------------
+# Exception-complete creation lifecycle (every post-reservation failure
+# closes and cleans ONLY its own partial vault)
+# ---------------------------------------------------------------------------
+def test_connect_failure_after_reservation_cleans_up_and_preserves_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+    from dbf_anonymizer.errors import ErrorContext
+
+    dictionary = _dictionary(tmp_path, "connect_failure")
+    injected = VaultError(
+        ErrorCode.VAULT_UNAVAILABLE,
+        context=ErrorContext(operation="vault", detail_code="OPEN_FAILED"),
+    )
+
+    def _failing_connect(path: Path) -> sqlite3.Connection:
+        raise injected
+
+    monkeypatch.setattr(
+        store_module.VaultDatabase, "_connect", staticmethod(_failing_connect)
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "connect_failure")
+    # The ORIGINAL typed error is preserved — cleanup never replaces it.
+    assert excinfo.value is injected
+    payload = error_boundary_payload(excinfo.value)
+    assert str(tmp_path) not in payload
+    # The reserved dictionary was removed: no file, no sidecar residue.
+    assert not dictionary.exists()
+    assert sidecar_inventory(dictionary.parent) == []
+    # A retry starts deterministically from a clean slate and succeeds.
+    monkeypatch.undo()
+    with _open_create(tmp_path, "connect_failure") as vault:
+        vault.verify(full=True)
+
+
+def test_wal_pragma_failure_after_reservation_closes_and_cleans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    dictionary = _dictionary(tmp_path, "wal_pragma_failure")
+    real_connect = store_module.VaultDatabase._connect
+    captured: list[sqlite3.Connection] = []
+
+    def _capturing_connect(path: Path) -> sqlite3.Connection:
+        connection = real_connect(path)
+        captured.append(connection)
+        return connection
+
+    def _failing_journal_mode(connection: sqlite3.Connection) -> str:
+        raise sqlite3.OperationalError("injected journal failure")
+
+    monkeypatch.setattr(
+        store_module.VaultDatabase, "_connect", staticmethod(_capturing_connect)
+    )
+    monkeypatch.setattr(
+        store_module.VaultDatabase, "_apply_journal_mode", _failing_journal_mode
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "wal_pragma_failure")
+    # The existing truthful classification for a failing WAL PRAGMA.
+    assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
+    assert excinfo.value.context.detail_code == "DATABASE_UNREADABLE"
+    payload = error_boundary_payload(excinfo.value)
+    assert "injected journal failure" not in payload
+    assert str(tmp_path) not in payload
+    # The opened connection was closed: no usable handle remains.
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("PRAGMA journal_mode")
+    # The owned reservation was removed; no sidecars remain.
+    assert not dictionary.exists()
+    assert sidecar_inventory(dictionary.parent) == []
+
+
+def test_creation_begin_failure_cleans_up_and_retry_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    dictionary = _dictionary(tmp_path, "begin_failure")
+
+    class _FailingBeginCreateTransaction(store_module.VaultTransaction):
+        def __init__(self, connection: sqlite3.Connection, **kwargs: Any) -> None:
+            super().__init__(
+                FailingExecuteConnection(
+                    connection, lambda sql: "BEGIN IMMEDIATE" in sql
+                ),
+                **kwargs,
+            )
+
+    monkeypatch.setattr(
+        store_module, "VaultTransaction", _FailingBeginCreateTransaction
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "begin_failure")
+    # The typed BEGIN control failure is preserved (not replaced/reclassified).
+    assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+    assert excinfo.value.context.detail_code == "TRANSACTION_BEGIN_FAILED"
+    payload = error_boundary_payload(excinfo.value)
+    assert "injected storage failure" not in payload
+    assert str(tmp_path) not in payload
+    # The owned partial dictionary was removed; no sidecars remain.
+    assert not dictionary.exists()
+    assert sidecar_inventory(dictionary.parent) == []
+    # A retry create succeeds deterministically.
+    monkeypatch.undo()
+    with _open_create(tmp_path, "begin_failure") as vault:
+        vault.verify(full=True)
+
+
+def test_creation_commit_failure_cleans_up_and_retry_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    dictionary = _dictionary(tmp_path, "commit_failure")
+
+    class _FailingCommitCreateTransaction(store_module.VaultTransaction):
+        def __init__(self, connection: sqlite3.Connection, **kwargs: Any) -> None:
+            super().__init__(
+                FailingExecuteConnection(connection, lambda sql: "COMMIT" in sql),
+                **kwargs,
+            )
+
+    monkeypatch.setattr(
+        store_module, "VaultTransaction", _FailingCommitCreateTransaction
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "commit_failure")
+    # The typed COMMIT control failure is preserved.
+    assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+    assert excinfo.value.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+    payload = error_boundary_payload(excinfo.value)
+    assert "injected storage failure" not in payload
+    assert str(tmp_path) not in payload
+    # The owned partial dictionary was removed while still owned.
+    assert not dictionary.exists()
+    assert sidecar_inventory(dictionary.parent) == []
+    # A retry create succeeds deterministically.
+    monkeypatch.undo()
+    with _open_create(tmp_path, "commit_failure") as vault:
+        vault.verify(full=True)
+
+
+def test_creation_cleanup_never_unlinks_an_unprovable_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    dictionary = _dictionary(tmp_path, "unprovable")
+    real_reserve = store_module.VaultDatabase._reserve_dictionary_file
+
+    def _foreign_identity_reserve(path: Path) -> tuple[int, int]:
+        real_reserve(path)  # the real reservation file is created
+        # Simulate that the reservation was REPLACED before cleanup: the
+        # captured ownership identity can never match the file again.
+        return (-1, -1)
+
+    monkeypatch.setattr(store_module, "DDL_STATEMENTS", ("CREATE TABLE broken (",))
+    monkeypatch.setattr(
+        store_module.VaultDatabase,
+        "_reserve_dictionary_file",
+        staticmethod(_foreign_identity_reserve),
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "unprovable")
+    # The unprovable-ownership cleanup failure SURFACES (never success, never
+    # the raw creation classification of a cleanup that was refused).
+    assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
+    assert excinfo.value.context.detail_code == "CREATION_CLEANUP_FAILED"
+    payload = error_boundary_payload(excinfo.value)
+    assert str(tmp_path) not in payload
+    # The file at the dictionary path was NEVER unlinked: the owner guard held.
+    assert dictionary.is_file()
+    assert sidecar_inventory(dictionary.parent) == []
+
+
+def test_creation_connection_close_failure_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    dictionary = _dictionary(tmp_path, "close_failure")
+    inner_connections: list[sqlite3.Connection] = []
+
+    class _FailingCloseConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self._inner = inner
+            inner_connections.append(inner)
+
+        def execute(self, sql: str, *parameters: Any) -> object:
+            return self._inner.execute(sql, *parameters)
+
+        def close(self) -> None:
+            raise sqlite3.OperationalError("injected close failure")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    real_connect = store_module.VaultDatabase._connect
+    unlink_attempts: list[Path] = []
+    real_unlink = Path.unlink
+
+    def _recording_unlink(self: Path) -> None:
+        unlink_attempts.append(self)
+        real_unlink(self)
+
+    def _failing_close_connect(path: Path) -> sqlite3.Connection:
+        return _FailingCloseConnection(real_connect(path))
+
+    monkeypatch.setattr(store_module, "DDL_STATEMENTS", ("CREATE TABLE broken (",))
+    monkeypatch.setattr(Path, "unlink", _recording_unlink)
+    monkeypatch.setattr(
+        store_module.VaultDatabase, "_connect", staticmethod(_failing_close_connect)
+    )
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "close_failure")
+    # A cleanup problem can never turn a failed creation into a success.
+    assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
+    assert excinfo.value.context.detail_code == "CREATION_CLEANUP_FAILED"
+    payload = error_boundary_payload(excinfo.value)
+    assert "injected close failure" not in payload
+    assert str(tmp_path) not in payload
+    # The owner-scoped cleanup still ATTEMPTED the unlink of its own
+    # reservation (whether that unlink can complete is platform-dependent
+    # while the un-closable connection holds the file handle).
+    assert unlink_attempts == [dictionary]
+    # Test hygiene: release the deliberately un-closable real connection.
+    for connection in inner_connections:
+        connection.close()
 
 
 # ---------------------------------------------------------------------------

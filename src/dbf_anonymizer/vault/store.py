@@ -9,6 +9,13 @@ This module owns the connection lifecycle and the fail-closed boundaries:
   schema 1.0 dictionary inside ONE system transaction; creation over an
   existing file is refused (an unknown database is never dropped, recreated
   or converted); the WAL journal mode is SET and its PRAGMA RESULT verified.
+  Once the atomic ``O_CREAT | O_EXCL`` reservation succeeds, the whole
+  creation runs inside ONE owner-scoped lifecycle boundary: EVERY
+  initialization failure deterministically closes the opened connection and
+  removes OUR reservation (only while the ownership identity still matches),
+  cleanup failures SURFACE as typed privacy-safe failures, typed transaction
+  control failures keep their root cause, and a replacement file is never
+  unlinked.
 * **Non-mutating reopen validation** — an EXISTING database is validated in a
   FIRST, strictly read-only stage (SQLite ``mode=ro`` URI connection): raw
   stat probe, integrity boundary, exact schema version, vault-id shape,
@@ -284,17 +291,18 @@ class VaultDatabase:
             connection = cls._connect_operational(database_path)
             try:
                 cls._require_wal_journal_mode(connection)
-                database = cls._bind(
-                    connection,
-                    database_path,
-                    expected_source_fingerprint=expected_source_fingerprint,
-                    expected_policy_fingerprint=expected_policy_fingerprint,
-                    expected_relationship_fingerprint=expected_relationship_fingerprint,
-                )
             except BaseException:
                 connection.close()
                 raise
-            return database
+            # The binding OWNS the connection from here: every failure path
+            # inside ``_bind`` closes the raw operational connection itself.
+            return cls._bind(
+                connection,
+                database_path,
+                expected_source_fingerprint=expected_source_fingerprint,
+                expected_policy_fingerprint=expected_policy_fingerprint,
+                expected_relationship_fingerprint=expected_relationship_fingerprint,
+            )
         # Cleanly-closed vault: STAGE 1 is strictly read-only, strictly
         # non-mutating validation (byte-identical rejection, zero sidecars).
         cls._validate_existing_readonly(
@@ -487,18 +495,30 @@ class VaultDatabase:
         # opens, truncates, converts or unlinks the winner's dictionary.
         reserved_identity = cls._reserve_dictionary_file(path)
 
-        connection = cls._connect(path)
+        # OWNER-SCOPED CREATION LIFECYCLE: from the successful reservation
+        # until the VaultDatabase object exists, EVERY initialization failure
+        # deterministically closes the opened connection (when present) and
+        # removes OUR reservation (only while the ownership identity still
+        # matches). Typed transaction-control failures (e.g.
+        # TRANSACTION_BEGIN_FAILED / TRANSACTION_COMMIT_FAILED) preserve their
+        # root cause; raw SQLite failures map to the truthful typed creation
+        # classification AFTER safe cleanup; cleanup failures surface instead
+        # of silently leaving protected residue; control exceptions are never
+        # converted into vault errors.
+        connection: sqlite3.Connection | None = None
         try:
-            applied = cls._apply_journal_mode(connection)
-        except sqlite3.Error:
-            connection.close()
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
-        if applied.lower() != VAULT_JOURNAL_MODE.lower():
-            connection.close()
-            cls._remove_partial_dictionary(path, reserved_identity)
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE")
-        vault_id = _new_hex_id(VAULT_ID_PREFIX)
-        try:
+            connection = cls._connect(path)
+            try:
+                applied = cls._apply_journal_mode(connection)
+            except sqlite3.Error:
+                raise _vault_failure(
+                    ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE"
+                ) from None
+            if applied.lower() != VAULT_JOURNAL_MODE.lower():
+                raise _vault_failure(
+                    ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE"
+                )
+            vault_id = _new_hex_id(VAULT_ID_PREFIX)
             transaction = VaultTransaction(connection)
             with transaction:
                 for statement in DDL_STATEMENTS:
@@ -523,14 +543,25 @@ class VaultDatabase:
                     (source_fingerprint, policy_fingerprint, relationship_fingerprint),
                 )
         except sqlite3.Error:
-            connection.close()
-            # The partially created file was never a valid vault; remove it so
-            # a retry starts deterministically from a clean slate. A cleanup
-            # failure SURFACES (it must never disappear silently), and the
-            # ownership identity guarantees we never delete a file that a
-            # competing creator may have replaced our reservation with.
-            cls._remove_partial_dictionary(path, reserved_identity)
+            # An unexpected raw SQLite failure during creation: perform the
+            # safe owner-scoped cleanup FIRST, then map to the truthful typed
+            # creation classification (never raw SQLite text).
+            cls._abort_failed_creation(connection, path, reserved_identity)
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_FAILED") from None
+        except VaultError:
+            # A typed creation failure (journal policy, BEGIN/COMMIT control
+            # failure, ...): cleanup, then preserve the original typed error.
+            cls._abort_failed_creation(connection, path, reserved_identity)
+            raise
+        except BaseException:
+            # Control exceptions (KeyboardInterrupt/SystemExit) are NEVER
+            # converted: best-effort safe cleanup, then the original control
+            # exception propagates.
+            try:
+                cls._abort_failed_creation(connection, path, reserved_identity)
+            except VaultError:
+                pass
+            raise
         return cls(
             connection,
             path,
@@ -540,6 +571,39 @@ class VaultDatabase:
             policy_fingerprint=policy_fingerprint,
             relationship_fingerprint=relationship_fingerprint,
         )
+
+    @classmethod
+    def _abort_failed_creation(
+        cls,
+        connection: sqlite3.Connection | None,
+        path: Path,
+        reserved_identity: tuple[int, int] | None,
+    ) -> None:
+        """Deterministic owner-scoped cleanup after a failed creation.
+
+        Closes the opened connection when present and removes OUR reserved
+        dictionary ONLY while the ownership identity still matches (a
+        replacement file is never unlinked). Every cleanup failure surfaces as
+        the typed, privacy-safe ``CREATION_CLEANUP_FAILED`` — protected residue
+        is never silently absorbed and raw OS/SQLite text never escapes. A
+        cleanup problem can never turn a failed creation into a success.
+        """
+        close_failed = False
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                close_failed = True
+        try:
+            cls._remove_partial_dictionary(path, reserved_identity)
+        except VaultError:
+            raise _vault_failure(
+                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
+            ) from None
+        if close_failed:
+            raise _vault_failure(
+                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
+            ) from None
 
     @staticmethod
     def _reserve_dictionary_file(path: Path) -> tuple[int, int]:
@@ -628,12 +692,25 @@ class VaultDatabase:
         expected_policy_fingerprint: str | None,
         expected_relationship_fingerprint: str | None,
     ) -> "VaultDatabase":
-        """Bind the accepted connection to the validated identity."""
+        """Bind the accepted connection to the validated identity.
+
+        The raw connection is OWNED by the binding until the VaultDatabase is
+        successfully returned: EVERY failure path closes the raw operational
+        connection exactly once and preserves the original typed failure. A
+        rejected foreign vault is never checkpointed or rewritten merely to
+        release its failed pre-bind connection.
+        """
         try:
             vault_id, schema_version, fingerprints = cls._read_identity(connection)
         except sqlite3.DatabaseError:
             connection.close()
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
+        except BaseException:
+            # Typed validation failures (e.g. VAULT_SCHEMA_UNSUPPORTED,
+            # META_MISSING, VAULT_ID_MALFORMED) and control exceptions close
+            # the connection, too — a failed binding can never leak it.
+            connection.close()
+            raise
         database = cls(
             connection,
             path,
@@ -654,7 +731,8 @@ class VaultDatabase:
         )
         for detail_code, expected, actual in mismatches:
             if expected is not None and expected != actual:
-                database.close()
+                # Raw close of the REJECTED vault: no checkpoint, no rewrite.
+                connection.close()
                 raise _vault_failure(ErrorCode.VAULT_IDENTITY_MISMATCH, detail_code)
         return database
 
@@ -866,9 +944,13 @@ class VaultDatabase:
         (``full=True``), plus ``foreign_key_check`` and the explicit
         metadata/schema validation. Any failure raises the typed
         ``VAULT_CORRUPT`` / ``VAULT_SCHEMA_UNSUPPORTED`` classification.
+
+        Fail-closed: a poisoned connection refuses verification BEFORE any
+        verification SQL runs — verification can never rehabilitate an
+        untrusted connection state. Only :meth:`close` followed by
+        :meth:`open` (which revalidates the whole vault) restores trust.
         """
-        if self._closed:
-            raise RuntimeError("vault database is closed")
+        self._require_trusted_connection()
         check_pragma = "PRAGMA integrity_check" if full else "PRAGMA quick_check"
         try:
             check_rows = self._connection.execute(check_pragma).fetchall()

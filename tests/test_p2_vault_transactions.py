@@ -333,6 +333,84 @@ def test_commit_failure_is_typed_fails_closed_and_rolls_back(
         assert mappings.mapping_domains(reopened) == ()
 
 
+def test_poisoned_connection_refuses_verify_until_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail-closed verification: a connection poisoned by a failed COMMIT
+    # refuses verify() in BOTH modes BEFORE any verification SQL runs —
+    # verification can never rehabilitate the untrusted state.
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo.value.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        assert vault.poisoned is not None
+        with pytest.raises(VaultError) as quick:
+            vault.verify()
+        assert quick.value.code is ErrorCode.VAULT_STATE_INVALID
+        assert quick.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as full:
+            vault.verify(full=True)
+        assert full.value.code is ErrorCode.VAULT_STATE_INVALID
+        assert full.value.context.detail_code == "CONNECTION_POISONED"
+        # Ordinary readers and lease operations are refused as well.
+        with pytest.raises(VaultError) as excinfo_read:
+            vault.operations()
+        assert excinfo_read.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_lease:
+            vault.acquire_writer_lease(new_writer_token())
+        assert excinfo_lease.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_release:
+            vault.release_writer_lease(token)
+        assert excinfo_release.value.context.detail_code == "CONNECTION_POISONED"
+    # ONLY close() + reopen (full revalidation) restores trust: verify passes
+    # and only known committed state is visible (the commit was discarded).
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_rollback_failure_poison_refuses_verify_until_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed ROLLBACK poisons the connection as well: the same fail-closed
+    # verification refusal applies until the deterministic close/reopen.
+    vault = _create(tmp_path)
+    try:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "ROLLBACK" in sql, monkeypatch)
+        with pytest.raises(ValueError, match="original failure"):
+            with vault.transaction():
+                vault.begin_operation()
+                raise ValueError("original failure")
+        assert vault.poisoned is not None
+        assert vault.poisoned.context.detail_code == "TRANSACTION_ROLLBACK_FAILED"
+        with pytest.raises(VaultError) as quick:
+            vault.verify()
+        assert quick.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as full:
+            vault.verify(full=True)
+        assert full.value.context.detail_code == "CONNECTION_POISONED"
+        monkeypatch.undo()
+        # The injected rollback failure left the physical transaction open, so
+        # the real rollback is issued through the raw seam before the
+        # deterministic close (the poisoned instance can only be closed).
+        vault._connection.execute("ROLLBACK")  # noqa: SLF001 - test seam
+        vault.close()
+    finally:
+        if not vault.closed:
+            vault.close()
+
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+
+
 def test_rollback_failure_with_operation_exception_is_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
