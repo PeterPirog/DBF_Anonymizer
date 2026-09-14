@@ -35,7 +35,9 @@ from dbf_anonymizer import (
 
 def test_error_registry_is_versioned_complete_and_unique() -> None:
     assert ERROR_SCHEMA_VERSION == "1.0"
-    assert ERROR_REGISTRY_VERSION == "1.0"
+    # REQ-P1-008 advanced the registry: PROGRESS_CALLBACK_FAILED and
+    # CANCEL_CALLBACK_FAILED were added (existing codes unchanged).
+    assert ERROR_REGISTRY_VERSION == "1.1"
     registered_codes = [definition.code for definition in ERROR_REGISTRY]
     assert len(registered_codes) == len(set(registered_codes))
     assert set(registered_codes) == set(ErrorCode)

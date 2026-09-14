@@ -76,6 +76,7 @@ import dbfbridge
 
 from dbf_anonymizer import _capability
 from dbf_anonymizer import discovery
+from dbf_anonymizer import progress as progress_layer
 from dbf_anonymizer.discovery import (
     _PATH_BLOCKED,
     _PATH_DIRECTORY,
@@ -84,7 +85,13 @@ from dbf_anonymizer.discovery import (
     _PATH_OTHER,
     probe_path,
 )
-from dbf_anonymizer.errors import DBFBridgeError, ErrorContext, ErrorCode
+from dbf_anonymizer.errors import (
+    CancellationError,
+    CallbackError,
+    DBFBridgeError,
+    ErrorContext,
+    ErrorCode,
+)
 from dbf_anonymizer.models import (
     Capabilities,
     PreflightResult,
@@ -92,6 +99,12 @@ from dbf_anonymizer.models import (
     TablePlan,
     TransferProfile,
     VaultStrategy,
+)
+from dbf_anonymizer.progress import (
+    CancelCheck,
+    ProgressCallback,
+    ProgressController,
+    ProgressPhase,
 )
 
 __all__ = ["preflight", "PREFLIGHT_CODE_VERSION", "PreflightCode"]
@@ -319,14 +332,26 @@ class _Findings:
 # ---------------------------------------------------------------------------
 # Source artifact enumeration (read-only, STRICT traversal)
 # ---------------------------------------------------------------------------
-def _enumerate_in_scope_strict(source_root: Path) -> dict[str, Path]:
+def _enumerate_in_scope_strict(
+    source_root: Path,
+    *,
+    cancel_probe: Callable[[], None] | None = None,
+) -> dict[str, Path]:
     """Strict in-scope enumeration: traversal errors raise ``OSError``.
 
     Source verification in preflight must never treat an incomplete traversal
     as complete: an unreadable directory or disappeared entry fails closed
     (``SOURCE_UNAVAILABLE``) instead of being silently skipped.
+
+    ``cancel_probe`` (a REQ-P1-008 private hook supplied by the progress
+    controller) is forwarded into the traversal so cancellation is observed
+    once per visited directory — the strict enumeration itself can never run
+    to exhaustion unobserved.  The probe's typed cancellation/control
+    exceptions propagate; they are never converted into findings.
     """
-    return discovery.enumerate_in_scope_paths(source_root, strict=True)
+    return discovery.enumerate_in_scope_paths(
+        source_root, strict=True, cancel_probe=cancel_probe
+    )
 
 
 def _source_footprint_bytes(source_files: dict[str, Path] | None) -> int | None:
@@ -347,16 +372,31 @@ def _source_footprint_bytes(source_files: dict[str, Path] | None) -> int | None:
     return total
 
 
-def _recompute_source_fingerprint(source_root: Path) -> str | None:
+def _recompute_source_fingerprint(
+    source_root: Path,
+    *,
+    cancel_probe: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
+) -> str | None:
     """Recompute the current source fingerprint using the P1-005/P0-004 logic.
 
     STRICT traversal: an incomplete enumeration (unreadable directory, racing
     deletion) raises ``OSError`` and the caller reports ``SOURCE_UNAVAILABLE``
     instead of treating a partial fingerprint as complete. The fingerprint
     payload format itself is unchanged.
+
+    The optional private REQ-P1-008 hooks thread the shared progress
+    controller into the strict fingerprinting: cancellation is polled per
+    artifact and at bounded chunk intervals; one progress event is emitted
+    per hashed artifact.
     """
     try:
-        entries = discovery.collect_fingerprint_entries(source_root, strict=True)
+        entries = discovery.collect_fingerprint_entries(
+            source_root,
+            strict=True,
+            cancel_probe=cancel_probe,
+            progress_probe=progress_probe,
+        )
     except OSError:
         return None
     return discovery.compute_source_fingerprint(entries)
@@ -458,8 +498,14 @@ _SUPPORTED_TRANSFORMATION_CLASSES = frozenset(
 _SUPPORTED_INDEX_STRATEGIES = frozenset({"DATA_ONLY", "VFP_INDEXED"})
 
 
-def _check_fields(tables: tuple[TablePlan, ...], findings: _Findings) -> None:
-    for table in tables:
+def _check_fields(
+    tables: tuple[TablePlan, ...],
+    findings: _Findings,
+    on_table: Callable[[int, str], None] | None = None,
+) -> None:
+    for index, table in enumerate(tables, start=1):
+        if on_table is not None:
+            on_table(index, table.table_path)
         if table.unsupported_field_count > 0:
             findings.error(PreflightCode.UNSUPPORTED_FIELD)
         if table.unsafe_field_count > 0:
@@ -595,7 +641,11 @@ def _token_space_at_least(max_width: int, base: int, needed: int) -> bool:
     return False
 
 
-def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
+def _capacity_sufficient(
+    source_files: dict[str, Path],
+    plan: Plan,
+    control: ProgressController | None = None,
+) -> str:
     """Conservative, deterministic GLOBAL_TEXT C/V capacity feasibility check.
 
     Reads only the C/V character fields that participate in the global text
@@ -624,8 +674,17 @@ def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
 
     Returns ``_CAPACITY_OK``, ``_CAPACITY_INSUFFICIENT`` or
     ``_CAPACITY_UNPROVEN``. No source value is ever logged or serialized.
+
+    REQ-P1-008: when a progress controller is supplied, the scan emits
+    bounded structured progress (one ``CAPACITY_SCAN`` progress event per
+    ``CAPACITY_PROGRESS_RECORD_QUANTUM`` streamed records) and polls
+    cooperative cancellation at every streamed record boundary and at every
+    table boundary.  Cancellation raises the typed
+    ``CancellationError``; the result is never computed after cancellation.
     """
     global _LAST_CAPACITY_SCAN_STATS
+    if control is None:
+        control = ProgressController(operation="preflight")
     _LAST_CAPACITY_SCAN_STATS = {
         "retained_distinct": 0,
         "exact_ceiling": _MAX_EXACT_VALUES,
@@ -644,9 +703,12 @@ def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
     participating: set[str] = set()
     sensitive: list[tuple[str, Path, int, list[tuple[str, int]]]] = []
     for rel in dbf_rels:
+        control.check_cancelled()
         full = source_files[rel]
         try:
             schema = dbfbridge.read_schema(full)  # type: ignore[attr-defined]
+        except (CancellationError, CallbackError):
+            raise
         except Exception as exc:  # unexpected dependency failure
             raise DBFBridgeError.from_exception(
                 exc,
@@ -726,15 +788,36 @@ def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
                     return True
         return False
 
-    for rel, full, _record_count, table_fields in sensitive:
+    streaming_tables: list[tuple[str, Path, list[tuple[str, int]]]] = []
+    total_stream_records = 0
+    for rel, full, record_count, table_fields in sensitive:
         selected = [(name, length) for name, length in table_fields if length <= max_tight]
-        if not selected:
-            continue
+        if selected:
+            streaming_tables.append((rel, full, selected))
+            total_stream_records += record_count
+
+    # The capacity scan is a real long-running safe point: cancellation is
+    # polled at EVERY streamed record boundary (quantum 1 record, minimal
+    # deterministic latency) and at every table boundary; progress events are
+    # bounded to one per CAPACITY_PROGRESS_RECORD_QUANTUM streamed records.
+    control.start_phase(ProgressPhase.CAPACITY_SCAN, total=total_stream_records)
+    record_quantum = progress_layer.CAPACITY_PROGRESS_RECORD_QUANTUM
+    streamed = 0
+    for rel, full, selected in streaming_tables:
         names = [name for name, _length in selected]
         try:
             for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
                 full, include_deleted=True, fields=names, memo="lazy"
             ):
+                streamed += 1
+                control.check_cancelled()
+                if control.has_progress and streamed % record_quantum == 0:
+                    control.progress(
+                        ProgressPhase.CAPACITY_SCAN,
+                        completed=streamed,
+                        total=total_stream_records,
+                        table_path=rel,
+                    )
                 for name, length in selected:
                     value = record.values.get(name)
                     if value is None or value == "":
@@ -763,6 +846,8 @@ def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
                     break
             if outcome is not _CAPACITY_OK:
                 break
+        except (CancellationError, CallbackError):
+            raise
         except Exception as exc:  # unexpected dependency failure
             raise DBFBridgeError.from_exception(
                 exc,
@@ -837,16 +922,39 @@ def _storage_ok(
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def preflight(plan: Plan) -> PreflightResult:
+def preflight(
+    plan: Plan,
+    *,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> PreflightResult:
     """Evaluate a planned dataset for preconditions before transformation.
 
     ``preflight`` is source-read-only and side-effect-free. It aggregates all
     preconditions into a single immutable :class:`PreflightResult`. Ordinary
     findings never raise; only invalid object contracts, unexpected dependency
     failures and impossible invariants do.
+
+    REQ-P1-008: the optional keyword-only ``progress`` callback receives
+    bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
+    and ``cancel_check`` is polled at scan safe points (before every major
+    stage, once per visited directory during the strict source enumeration,
+    per checked table, per revalidated artifact, at bounded chunk intervals
+    while hashing and at every streamed capacity-scan record).
+    Cancellation raises the typed
+    :class:`~dbf_anonymizer.errors.CancellationError` — it is never turned
+    into an ordinary preflight finding and no result is produced after it.
+    Callback failures are contained into the classified
+    :class:`~dbf_anonymizer.errors.CallbackError`.  With both callbacks
+    omitted the deterministic result is unchanged.
     """
     if not isinstance(plan, Plan):
         raise TypeError("preflight requires a Plan")
+
+    control = ProgressController(
+        operation="preflight", progress=progress, cancel_check=cancel_check
+    )
+    control.start_phase(ProgressPhase.OPERATION)
 
     findings = _Findings()
     caps = _capability.capabilities_provider()
@@ -855,7 +963,9 @@ def preflight(plan: Plan) -> PreflightResult:
     if context is None:
         # Impossible for a real build_plan result; fail closed rather than guess.
         findings.error(PreflightCode.SOURCE_FINGERPRINT_MISMATCH)
-        return findings.result(plan, caps)
+        result = findings.result(plan, caps)
+        control.complete(completed=len(plan.tables))
+        return result
 
     source_root = Path(context.source_root)
     output_root = Path(context.output_root)
@@ -863,6 +973,7 @@ def preflight(plan: Plan) -> PreflightResult:
 
     # 1. Source/output/vault overlap (resolved aliases where practical).
     #    Unresolvable/unsafe path inspection fails closed deterministically.
+    control.check_cancelled()
     try:
         overlap = _paths_overlap(source_root, output_root, vault_path)
     except OSError:
@@ -878,6 +989,7 @@ def preflight(plan: Plan) -> PreflightResult:
     #    trusted); a changed source is a fingerprint mismatch. Downstream
     #    source-consuming checks (standalone IDX inventory, capacity scan)
     #    only run on verified source state.
+    control.start_phase(ProgressPhase.SOURCE_VERIFICATION)
     source_files: dict[str, Path] | None = None
     source_verified = False
     try:
@@ -888,12 +1000,23 @@ def preflight(plan: Plan) -> PreflightResult:
         findings.error(PreflightCode.SOURCE_UNAVAILABLE)
     else:
         try:
-            source_files = _enumerate_in_scope_strict(source_root)
+            source_files = _enumerate_in_scope_strict(
+                source_root, cancel_probe=control.check_cancelled
+            )
         except OSError:
             source_files = None
             findings.error(PreflightCode.SOURCE_UNAVAILABLE)
         if source_files is not None:
-            current_fp = _recompute_source_fingerprint(source_root)
+            current_fp = _recompute_source_fingerprint(
+                source_root,
+                cancel_probe=control.check_cancelled,
+                progress_probe=lambda done, total, rel: control.progress(
+                    ProgressPhase.SOURCE_VERIFICATION,
+                    completed=done,
+                    total=total,
+                    table_path=rel,
+                ),
+            )
             if current_fp is None:
                 findings.error(PreflightCode.SOURCE_UNAVAILABLE)
             elif current_fp != plan.dataset.source_fingerprint:
@@ -903,6 +1026,7 @@ def preflight(plan: Plan) -> PreflightResult:
 
     # 3. Destination conflicts (type conflicts / unsafe existing state).
     #    Uninspectable existing state fails closed deterministically.
+    control.check_cancelled()
     try:
         conflict = _destination_conflict(output_root, vault_path)
     except OSError:
@@ -911,22 +1035,37 @@ def preflight(plan: Plan) -> PreflightResult:
     if conflict:
         findings.error(PreflightCode.DESTINATION_CONFLICT)
 
-    # 4. Table-level field/companion findings (unsupported/unsafe/memo/cdx).
-    _check_fields(plan.tables, findings)
+    # 4. Table-level field/companion findings (unsupported/unsafe/memo/cdx),
+    #    with a per-table cancellation safe point and a progress event per
+    #    table: at every table evaluation boundary cancellation is polled
+    #    first, then the progress event is reported (deterministic order),
+    #    then the table's findings are evaluated.  The bound is one table.
+    control.start_phase(ProgressPhase.TABLE_EVALUATION, total=len(plan.tables))
+
+    def _on_table(_index: int, table_path: str) -> None:
+        control.check_cancelled()
+        control.bump(ProgressPhase.TABLE_EVALUATION, table_path=table_path)
+
+    _check_fields(plan.tables, findings, on_table=_on_table)
 
     # 5. Policy/plan consistency (tamper-resistant).
+    control.check_cancelled()
     _check_policy_consistency(plan, findings)
 
     # 6. Output profile safety + runtime capabilities.
+    control.check_cancelled()
     _check_output_profile_and_capabilities(plan, caps, findings)
 
     # 7. Relationship-domain safety (fail closed when unprovable).
+    control.check_cancelled()
     _check_relationships(plan, findings)
 
     # 8. Structural-index and DBC semantic conditions.
+    control.check_cancelled()
     _check_index_conditions(plan, findings)
 
     # 9. Standalone IDX presence (dataset-level, no ownership inference).
+    control.check_cancelled()
     if source_files is not None:
         _check_standalone_idx(source_files, plan, findings)
 
@@ -934,13 +1073,14 @@ def preflight(plan: Plan) -> PreflightResult:
     #     Requires verified source state AND the direct-read capability
     #     (schema + record streaming): a missing capability is reported as
     #     CAPABILITY_MISSING and the capacity scan is not entered at all.
+    control.check_cancelled()
     if (
         source_verified
         and source_files is not None
         and caps.direct_read
         and "PSEUDONYMIZE_REVERSIBLE" in plan.policy.transformation_classes
     ):
-        outcome = _capacity_sufficient(source_files, plan)
+        outcome = _capacity_sufficient(source_files, plan, control)
         if outcome == _CAPACITY_INSUFFICIENT:
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
         elif outcome == _CAPACITY_UNPROVEN:
@@ -948,10 +1088,15 @@ def preflight(plan: Plan) -> PreflightResult:
 
     # 11. Storage-space risk (side-effect-free; fail closed if the estimate
     #     cannot be made defensibly).
+    control.check_cancelled()
     storage = _storage_ok(source_files, output_root, vault_path, plan.policy.recovery_enabled)
     if storage is None:
         findings.error(PreflightCode.STORAGE_ESTIMATE_UNAVAILABLE)
     elif not storage:
         findings.error(PreflightCode.STORAGE_SPACE_INSUFFICIENT)
 
-    return findings.result(plan, caps)
+    result = findings.result(plan, caps)
+    # The single terminal completion event is emitted only now — after the
+    # public result genuinely exists (never after cancellation).
+    control.complete(completed=len(plan.tables))
+    return result

@@ -79,6 +79,9 @@ EXPECTED_PUBLIC_EXPORTS = {
     "VerificationError",
     "RecoveryError",
     "CancellationError",
+    # REQ-P1-008: the contained, classified callback-failure type is public so
+    # consumers can catch callback failures without importing private modules.
+    "CallbackError",
 }
 
 FUTURE_OPERATION_EXPORTS = {

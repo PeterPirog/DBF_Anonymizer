@@ -6,10 +6,13 @@ privacy-safe error hierarchy from REQ-P1-003, the read-only deterministic
 build planning function ``build_plan`` from REQ-P1-005, the source-read-only,
 side-effect-free ``preflight`` operation from REQ-P1-006, and the
 side-effect-free public capability discovery ``capabilities`` from
-REQ-P1-007.  The remaining operations (``pseudonymize``, ``verify_dataset``,
-``recover``, ``create_transfer_bundle`` and ``verify_transfer_bundle``) are
-introduced only when their owning requirements are implemented; no
-placeholder success functions are exported.
+REQ-P1-007.  The long-running read/scan operations support the REQ-P1-008
+bounded structured progress and cooperative cancellation callbacks
+(keyword-only ``progress`` / ``cancel_check`` arguments).  The remaining
+operations (``pseudonymize``, ``verify_dataset``, ``recover``,
+``create_transfer_bundle`` and ``verify_transfer_bundle``) are introduced only
+when their owning requirements are implemented; no placeholder success
+functions are exported.
 
 The sole DBF/FPT parser and writer boundary for 1.0 remains the published
 public ``dbfbridge[write]>=1.1.0,<2`` distribution.
@@ -22,6 +25,7 @@ from .errors import (
     ERROR_REGISTRY_VERSION,
     ERROR_SCHEMA_VERSION,
     AnonymizerError,
+    CallbackError,
     CancellationError,
     DBFBridgeError,
     ErrorCategory,
@@ -99,4 +103,5 @@ __all__ = [
     "VerificationError",
     "RecoveryError",
     "CancellationError",
+    "CallbackError",
 ]
