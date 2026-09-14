@@ -332,14 +332,26 @@ class _Findings:
 # ---------------------------------------------------------------------------
 # Source artifact enumeration (read-only, STRICT traversal)
 # ---------------------------------------------------------------------------
-def _enumerate_in_scope_strict(source_root: Path) -> dict[str, Path]:
+def _enumerate_in_scope_strict(
+    source_root: Path,
+    *,
+    cancel_probe: Callable[[], None] | None = None,
+) -> dict[str, Path]:
     """Strict in-scope enumeration: traversal errors raise ``OSError``.
 
     Source verification in preflight must never treat an incomplete traversal
     as complete: an unreadable directory or disappeared entry fails closed
     (``SOURCE_UNAVAILABLE``) instead of being silently skipped.
+
+    ``cancel_probe`` (a REQ-P1-008 private hook supplied by the progress
+    controller) is forwarded into the traversal so cancellation is observed
+    once per visited directory — the strict enumeration itself can never run
+    to exhaustion unobserved.  The probe's typed cancellation/control
+    exceptions propagate; they are never converted into findings.
     """
-    return discovery.enumerate_in_scope_paths(source_root, strict=True)
+    return discovery.enumerate_in_scope_paths(
+        source_root, strict=True, cancel_probe=cancel_probe
+    )
 
 
 def _source_footprint_bytes(source_files: dict[str, Path] | None) -> int | None:
@@ -926,8 +938,9 @@ def preflight(
     REQ-P1-008: the optional keyword-only ``progress`` callback receives
     bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
     and ``cancel_check`` is polled at scan safe points (before every major
-    stage, per checked table, per revalidated artifact, at bounded chunk
-    intervals while hashing and at every streamed capacity-scan record).
+    stage, once per visited directory during the strict source enumeration,
+    per checked table, per revalidated artifact, at bounded chunk intervals
+    while hashing and at every streamed capacity-scan record).
     Cancellation raises the typed
     :class:`~dbf_anonymizer.errors.CancellationError` — it is never turned
     into an ordinary preflight finding and no result is produced after it.
@@ -987,7 +1000,9 @@ def preflight(
         findings.error(PreflightCode.SOURCE_UNAVAILABLE)
     else:
         try:
-            source_files = _enumerate_in_scope_strict(source_root)
+            source_files = _enumerate_in_scope_strict(
+                source_root, cancel_probe=control.check_cancelled
+            )
         except OSError:
             source_files = None
             findings.error(PreflightCode.SOURCE_UNAVAILABLE)
@@ -1021,15 +1036,17 @@ def preflight(
         findings.error(PreflightCode.DESTINATION_CONFLICT)
 
     # 4. Table-level field/companion findings (unsupported/unsafe/memo/cdx),
-    #    with a cancellation safe point and a progress event per table.
+    #    with a per-table cancellation safe point and a progress event per
+    #    table: at every table evaluation boundary cancellation is polled
+    #    first, then the progress event is reported (deterministic order),
+    #    then the table's findings are evaluated.  The bound is one table.
     control.start_phase(ProgressPhase.TABLE_EVALUATION, total=len(plan.tables))
-    _check_fields(
-        plan.tables,
-        findings,
-        on_table=lambda _index, table_path: control.bump(
-            ProgressPhase.TABLE_EVALUATION, table_path=table_path
-        ),
-    )
+
+    def _on_table(_index: int, table_path: str) -> None:
+        control.check_cancelled()
+        control.bump(ProgressPhase.TABLE_EVALUATION, table_path=table_path)
+
+    _check_fields(plan.tables, findings, on_table=_on_table)
 
     # 5. Policy/plan consistency (tamper-resistant).
     control.check_cancelled()

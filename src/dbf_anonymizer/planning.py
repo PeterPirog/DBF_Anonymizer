@@ -106,8 +106,9 @@ def build_plan(
     REQ-P1-008: the optional keyword-only ``progress`` callback receives
     bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
     and ``cancel_check`` is polled at scan safe points (phase boundaries,
-    between discovered tables, per fingerprinted artifact and at bounded
-    chunk intervals while hashing).  Cancellation raises the typed
+    once per visited directory during source traversal, between discovered
+    tables, per fingerprinted artifact and at bounded chunk intervals while
+    hashing).  Cancellation raises the typed
     :class:`~dbf_anonymizer.errors.CancellationError`; callback failures are
     contained into the classified
     :class:`~dbf_anonymizer.errors.CallbackError`.  With both callbacks

@@ -19,11 +19,15 @@ Contracts implemented here:
   is raised and no result / completion event is produced.
 * **Contained, classified callback failures** — a progress callback or
   cancel-check callback may contain private paths, source values, secrets or
-  arbitrary exception text.  Raw exceptions therefore never escape: they are
-  contained into :class:`~dbf_anonymizer.errors.CallbackError` carrying only
-  the registry-controlled message and a stable machine code
-  (``PROGRESS_CALLBACK_FAILED`` / ``CANCEL_CALLBACK_FAILED``).  Exception text
-  is never parsed and never propagated.
+  arbitrary exception text.  Raw exceptions therefore never escape: EVERY
+  ``Exception`` raised by a user callback — ``CancellationError`` and
+  ``CallbackError`` included — is reclassified at the callback boundary into
+  :class:`~dbf_anonymizer.errors.CallbackError` carrying only the
+  registry-controlled message and a stable machine code
+  (``PROGRESS_CALLBACK_FAILED`` / ``CANCEL_CALLBACK_FAILED``).  A user
+  callback can never manufacture ``OPERATION_CANCELLED`` by raising;
+  cancellation is produced only by a ``cancel_check`` that RETURNS a truthy
+  value.  Exception text is never parsed and never propagated.
 
 The layer is synchronous and transport-neutral: no asyncio, jobs, threads,
 MCP or server logic.  ``progress=None`` / ``cancel_check=None`` (the defaults)
@@ -124,8 +128,6 @@ _PROGRESS_CALLBACK_DETAIL = "PROGRESS_CALLBACK"
 _CANCEL_CHECK_DETAIL = "CANCEL_CHECK"
 _CANCELLED_DETAIL = "CANCELLED_BY_CHECK"
 
-_RETHROWN_CALLBACK_ERRORS = (CancellationError, CallbackError)
-
 
 def _uuid_operation_id() -> str:
     """Privacy-safe in-memory invocation ID (no files, no network, no globals)."""
@@ -181,15 +183,17 @@ class ProgressController:
 
         Raises the typed :class:`CancellationError` (``OPERATION_CANCELLED``,
         privacy-safe bounded context) when the caller's check returns a truthy
-        value.  A raising cancel-check is contained and classified as
-        ``CANCEL_CALLBACK_FAILED``; the raw exception never escapes.
+        value — this is the ONLY way an ``OPERATION_CANCELLED`` outcome is
+        produced.  A raising cancel-check is contained and classified as
+        ``CANCEL_CALLBACK_FAILED`` no matter what the callback throws
+        (``CancellationError`` and ``CallbackError`` included): a user
+        callback can never manufacture a genuine cancellation by raising, and
+        the raw exception never escapes.
         """
         if self._cancel_check is None:
             return
         try:
             requested = self._cancel_check()
-        except _RETHROWN_CALLBACK_ERRORS:
-            raise
         except Exception:
             raise CallbackError(
                 ErrorCode.CANCEL_CALLBACK_FAILED,
@@ -268,10 +272,12 @@ class ProgressController:
     ) -> None:
         """Build one immutable ProgressEvent and invoke the callback safely.
 
-        Callback exceptions are contained: they become the stable
-        ``PROGRESS_CALLBACK_FAILED`` classification without any of the raw
-        exception content.  ``CancellationError``/``CallbackError`` raised by
-        the callback itself propagate unchanged.
+        Callback exceptions are contained: ANY exception raised by the
+        callback — ``CancellationError`` and ``CallbackError`` included —
+        becomes the stable ``PROGRESS_CALLBACK_FAILED`` classification without
+        any of the raw exception content.  A user callback therefore can never
+        manufacture an ``OPERATION_CANCELLED`` outcome or any other machine
+        code by throwing; the raw exception never escapes.
         """
         if self._progress is None:
             return
@@ -285,8 +291,6 @@ class ProgressController:
         )
         try:
             self._progress(event)
-        except _RETHROWN_CALLBACK_ERRORS:
-            raise
         except Exception:
             raise CallbackError(
                 ErrorCode.PROGRESS_CALLBACK_FAILED,

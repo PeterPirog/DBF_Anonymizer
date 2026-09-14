@@ -8,14 +8,21 @@ long-running operations (``build_plan`` / ``preflight``):
   terminal ``COMPLETED`` event last on success);
 * REAL cancellation latency inside scans: cancellation is polled per
   fingerprinted artifact, at bounded chunk intervals while hashing (no later
-  than ``FINGERPRINT_CANCEL_CHUNK_QUANTUM`` chunks) and at every streamed
-  capacity-scan record boundary — measured in deterministic work units, never
-  wall-clock;
+  than ``FINGERPRINT_CANCEL_CHUNK_QUANTUM`` chunks), at every streamed
+  capacity-scan record boundary and once per visited directory during source
+  traversal (deterministic enumeration bound) — measured in deterministic
+  work units, never wall-clock;
 * contained and classified callback failures: a progress callback or
   cancel-check callback may raise arbitrary exceptions containing canary
-  secrets/private paths — the raw exception never escapes, the canary never
+  secrets/private paths — including ``CancellationError``/``CallbackError``
+  themselves.  EVERY ``Exception`` raised by a user callback is reclassified
+  at the callback boundary, the raw exception never escapes, the canary never
   appears in ``str``/``repr``/``to_dict`` and the stable machine codes
   (``PROGRESS_CALLBACK_FAILED`` / ``CANCEL_CALLBACK_FAILED``) are used;
+  ``OPERATION_CANCELLED`` is produced only by a ``cancel_check`` that RETURNS
+  a truthy value, never by a callback that throws;
+* preflight table evaluation has a per-table cancellation safe point
+  (poll first, then report progress, bound: one table);
 * cancellation produces no result and no completion event, and the source
   stays byte-identical with zero created output/vault state (REQ-P0-004).
 
@@ -31,7 +38,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -45,9 +52,21 @@ from dbf_anonymizer import (
     build_plan,
     preflight,
 )
+from dbf_anonymizer import discovery as _discovery
 from dbf_anonymizer import progress as progress_layer
-from dbf_anonymizer.errors import CallbackError as _CallbackErrorImport
-from dbf_anonymizer.models import Plan, PreflightResult
+from dbf_anonymizer.errors import ErrorContext
+from dbf_anonymizer.models import (
+    DatasetIdentity,
+    Plan,
+    PolicySummary,
+    PreflightResult,
+    RelationalAssuranceLevel,
+    RelationshipMetadata,
+    TablePlan,
+    TransferProfile,
+    VaultStrategy,
+    _PlanExecutionContext,
+)
 
 import dbf_anonymizer.preflight  # ensure module loaded
 
@@ -154,6 +173,111 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
             rel = p.relative_to(root).as_posix()
             out[rel] = p.read_bytes().hex()
     return out
+
+
+class _FakeWalkOS:
+    """Module-like stand-in for the ``os`` module used by
+    ``dbf_anonymizer.discovery``: ``walk`` yields a fixed synthetic directory
+    list and records live traversal consumption so tests can prove a
+    deterministic cancellation bound in consumed work units (never
+    wall-clock).  Every other attribute is delegated to the real ``os``
+    module (``stat`` etc.)."""
+
+    def __init__(self, entries: list[tuple[str, list[str], list[str]]]) -> None:
+        self._entries = entries
+        self._real_os = os
+        self.walk_calls = 0
+        self.consumed = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_os, name)
+
+    def walk(
+        self, top: str, onerror: Any = None, followlinks: bool = False
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        self.walk_calls += 1
+        self.consumed = 0
+        for entry in self._entries:
+            self.consumed += 1
+            yield entry
+
+
+def _synthetic_walk_entries(real_table_dir: Path, filler_count: int) -> list[tuple[str, list[str], list[str]]]:
+    """A synthetic walk: the REAL table directory first (so a complete
+    traversal would succeed), then many filler directories.  Exhaustion would
+    consume ``1 + filler_count`` directories."""
+
+    entries: list[tuple[str, list[str], list[str]]] = [
+        (str(real_table_dir), [], ["customers.dbf"])
+    ]
+    entries += [
+        (str(real_table_dir.parent / f"filler{i:03d}"), [], ["noise.txt"])
+        for i in range(filler_count)
+    ]
+    return entries
+
+
+def _synthetic_plan(table_count: int, tmp: Path) -> Plan:
+    """A valid in-memory Plan with many tables and a MISSING source root.
+
+    The missing root keeps preflight's poll sequence deterministic (no
+    traversal polls): the capacity/storage stages are never reached because
+    cancellation fires during table evaluation.
+    """
+    tables = tuple(
+        TablePlan(
+            table_path=f"t{i:02d}/table.dbf",
+            memo_path=None,
+            record_count=0,
+            field_count=1,
+            transform_field_count=0,
+            structural_cdx=False,
+            dbc_bound=False,
+            index_strategy="DATA_ONLY",
+            memo_required=False,
+            memo_companion_present=False,
+            structural_cdx_companion_present=False,
+            unsupported_field_count=0,
+            unsafe_field_count=0,
+            system_field_count=0,
+        )
+        for i in range(table_count)
+    )
+    dataset = DatasetIdentity(
+        dataset_id="ds-synthetic",
+        source_fingerprint="fingerprint-synthetic",
+        table_paths=tuple(t.table_path for t in tables),
+    )
+    policy = PolicySummary(
+        policy_schema_version="1",
+        policy_fingerprint="fingerprint-policy",
+        transformed_field_count=0,
+        relationship_count=0,
+        recovery_enabled=False,
+        transformation_classes=(),
+        vault_strategy=VaultStrategy.NONE,
+    )
+    relationships = RelationshipMetadata(
+        metadata_schema_version="1.1",
+        provenance="none",
+        relationship_fingerprint="fingerprint-relationships",
+        relation_count=0,
+        authoritative=False,
+    )
+    return Plan(
+        plan_id="plan-synthetic",
+        dataset=dataset,
+        tables=tables,
+        policy=policy,
+        relationships=relationships,
+        output_profile=TransferProfile.DATA_ONLY,
+        relationship_assurance_target=RelationalAssuranceLevel.INCOMPLETE,
+        execution_context=_PlanExecutionContext(
+            source_root=str(tmp / "missing_src"),
+            output_root=str(tmp / "out"),
+            vault_path=str(tmp / "vault"),
+        ),
+    )
 
 
 def _assert_no_side_effects(tmp: Path) -> None:
@@ -471,13 +595,160 @@ def test_callback_error_chain_does_not_leak_through_public_boundary(
             progress=_boom,
         )
     error = excinfo.value
-    # The suppressed __context__ chain is never rendered by the public
-    # boundary; str/repr/to_dict stay registry-controlled.
+    # Objective public-boundary evidence: the contained classification
+    # suppresses the cause chain and the registry-controlled public
+    # serialization (str/repr/to_dict) never renders the canary.
     blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
     assert CANARY_SECRET not in blob
     assert CANARY_ABSOLUTE not in blob
-    assert not isinstance(error, _CallbackErrorImport.__mro__[0].__bases__[0]) or True
+    assert error.__cause__ is None
     assert error.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+
+
+def test_progress_callback_raising_cancellation_error_is_reclassified(
+    tmp_path: Path,
+) -> None:
+    src = _make_source(tmp_path)
+    before = _tree_snapshot(src)
+    seen: list[ProgressEvent] = []
+
+    def _boom(event: ProgressEvent) -> None:
+        seen.append(event)
+        raise CancellationError(
+            ErrorCode.OPERATION_CANCELLED,
+            context=ErrorContext(
+                operation="build_plan", detail_code="CANARY_CALLBACK_CANCEL"
+            ),
+        )
+
+    with pytest.raises(CallbackError) as excinfo:
+        build_plan(
+            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            progress=_boom,
+        )
+    error = excinfo.value
+    # A user callback can NEVER manufacture a genuine cancellation by
+    # throwing: its typed CancellationError is reclassified at the callback
+    # boundary and the raw machine code/context do not replace the
+    # callback-failure classification.
+    assert error.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+    assert not isinstance(error, CancellationError)
+    assert error.context.detail_code == "PROGRESS_CALLBACK"
+    blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
+    assert "CANARY_CALLBACK_CANCEL" not in blob
+    assert "OPERATION_CANCELLED" not in blob
+    assert error.__cause__ is None
+
+    _assert_no_completion(seen)
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
+
+
+def test_progress_callback_raising_callback_error_is_reclassified(
+    tmp_path: Path,
+) -> None:
+    src = _make_source(tmp_path)
+    before = _tree_snapshot(src)
+    seen: list[ProgressEvent] = []
+
+    def _boom(event: ProgressEvent) -> None:
+        seen.append(event)
+        raise CallbackError(
+            ErrorCode.PROGRESS_CALLBACK_FAILED,
+            context=ErrorContext(
+                operation="build_plan", detail_code="CANARY_RAW_DETAIL"
+            ),
+        )
+
+    with pytest.raises(CallbackError) as excinfo:
+        build_plan(
+            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            progress=_boom,
+        )
+    error = excinfo.value
+    # A callback-thrown CallbackError is likewise reclassified: the new
+    # containment error carries only registry-controlled context.
+    assert error.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+    assert error.context.detail_code == "PROGRESS_CALLBACK"
+    blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
+    assert "CANARY_RAW_DETAIL" not in blob
+    assert error.__cause__ is None
+
+    _assert_no_completion(seen)
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
+
+
+def test_cancel_check_raising_cancellation_error_is_reclassified(
+    tmp_path: Path,
+) -> None:
+    src = _make_capacity_source(tmp_path, record_count=3)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "vault")
+    before = _tree_snapshot(src)
+    recorder = _Recorder()
+    calls = {"n": 0}
+
+    def _boom() -> bool:
+        calls["n"] += 1
+        if calls["n"] >= 2:  # first poll passes so STARTED is emitted
+            raise CancellationError(
+                ErrorCode.OPERATION_CANCELLED,
+                context=ErrorContext(
+                    operation="preflight", detail_code="CANARY_CANCEL_DETAIL"
+                ),
+            )
+        return False
+
+    with pytest.raises(CallbackError) as excinfo:
+        preflight(plan, progress=recorder, cancel_check=_boom)
+    error = excinfo.value
+    # A raising cancel-check is a callback failure, never a genuine
+    # cancellation: the typed exception it throws is reclassified.
+    assert error.code is ErrorCode.CANCEL_CALLBACK_FAILED
+    assert not isinstance(error, CancellationError)
+    assert error.context.detail_code == "CANCEL_CHECK"
+    blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
+    assert "CANARY_CANCEL_DETAIL" not in blob
+    assert "OPERATION_CANCELLED" not in blob
+    assert error.__cause__ is None
+
+    _assert_no_completion(recorder.events)
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
+
+
+def test_cancel_check_raising_callback_error_is_reclassified(
+    tmp_path: Path,
+) -> None:
+    src = _make_capacity_source(tmp_path, record_count=3)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "vault")
+    before = _tree_snapshot(src)
+    recorder = _Recorder()
+    calls = {"n": 0}
+
+    def _boom() -> bool:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise CallbackError(
+                ErrorCode.CANCEL_CALLBACK_FAILED,
+                context=ErrorContext(
+                    operation="preflight", detail_code="CANARY_CANCEL_RAW"
+                ),
+            )
+        return False
+
+    with pytest.raises(CallbackError) as excinfo:
+        preflight(plan, progress=recorder, cancel_check=_boom)
+    error = excinfo.value
+    assert error.code is ErrorCode.CANCEL_CALLBACK_FAILED
+    assert error.context.detail_code == "CANCEL_CHECK"
+    blob = f"{str(error)}|{repr(error)}|{json.dumps(error.to_dict(), sort_keys=True)}"
+    assert "CANARY_CANCEL_RAW" not in blob
+    assert error.__cause__ is None
+
+    _assert_no_completion(recorder.events)
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -581,10 +852,12 @@ def test_fingerprint_cancellation_latency_is_bounded_by_chunk_quantum(
 
     def _cancel_at_third_intra_file_probe() -> bool:
         checks["calls"] += 1
-        # 1 OPERATION start + 1 DISCOVERY start + 1 discovered-table probe
-        # + 1 FINGERPRINT start + 1 artifact pre-check + chunk-0 probe
-        # + chunk-16 probe -> the 7th poll is the chunk-32 boundary.
-        return checks["calls"] >= 7
+        # 1 OPERATION start + 1 DISCOVERY start + 2 discovery-traversal
+        # directories (src, z_customers) + 1 discovered-table probe
+        # + 1 FINGERPRINT start + 2 fingerprint-enumeration directories
+        # + 1 artifact pre-check + chunk-0 probe + chunk-16 probe
+        # -> the 12th poll is the chunk-32 boundary.
+        return checks["calls"] >= 12
 
     with pytest.raises(CancellationError) as excinfo:
         build_plan(
@@ -596,7 +869,7 @@ def test_fingerprint_cancellation_latency_is_bounded_by_chunk_quantum(
     # Deterministic work units: the poll fired exactly at the documented
     # intra-file boundary and the remaining unread part of the big artifact
     # is strictly smaller than the declared quantum.
-    assert checks["calls"] == 7
+    assert checks["calls"] == 12
     remaining_chunks = chunk_count - 2 * quantum
     assert 0 < remaining_chunks <= quantum
 
@@ -615,7 +888,11 @@ def test_preflight_cancellation_during_fingerprint_revalidation(
 
     def _cancel_during_revalidation() -> bool:
         checks["calls"] += 1
-        return checks["calls"] >= 7
+        # 1 OPERATION start + 1 overlap check + 1 SOURCE_VERIFICATION start
+        # + 2 strict-enumeration directories + 2 fingerprint-enumeration
+        # directories + 1 artifact pre-check + chunk-0 + chunk-16
+        # -> the 11th poll is the chunk-32 boundary.
+        return checks["calls"] >= 11
 
     with pytest.raises(CancellationError) as excinfo:
         preflight(plan, progress=recorder, cancel_check=_cancel_during_revalidation)
@@ -625,6 +902,137 @@ def test_preflight_cancellation_during_fingerprint_revalidation(
     _assert_no_completion(recorder.events)
     _assert_no_side_effects(tmp_path)
     _assert_source_unchanged(before, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Bounded directory-traversal cancellation (deterministic enumeration bound)
+# ---------------------------------------------------------------------------
+def test_build_plan_cancellation_during_discovery_traversal_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A synthetic tree of 51 directories.  Cancellation is requested at the
+    # FIRST visited directory of the discovery traversal, so the walk must
+    # stop after ONE consumed directory instead of running to exhaustion.
+    src = tmp_path / "src"
+    src.mkdir()
+    entries = [
+        (str(src / f"filler{i:03d}"), [], ["noise.txt"]) for i in range(51)
+    ]
+    fake = _FakeWalkOS(entries)
+    monkeypatch.setattr(_discovery, "os", fake)
+
+    def _cancel_at_first_visited_directory() -> bool:
+        return fake.walk_calls >= 1 and fake.consumed >= 1
+
+    with pytest.raises(CancellationError) as excinfo:
+        build_plan(
+            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            cancel_check=_cancel_at_first_visited_directory,
+        )
+    assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
+    # Deterministic work units: exactly one directory was consumed before the
+    # cancellation was observed — the 51-directory traversal never completed.
+    assert fake.walk_calls == 1
+    assert fake.consumed == 1
+    assert fake.consumed < len(entries)
+
+    _assert_no_side_effects(tmp_path)
+    assert _tree_snapshot(src) == {}
+
+
+def test_build_plan_cancellation_during_fingerprint_enumeration_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The discovery traversal completes (walk call 1, no cancellation), then
+    # cancellation is requested at the SECOND visited directory of the
+    # fingerprint enumeration walk (call 2): the enumeration must stop after
+    # 2 consumed directories instead of walking the whole synthetic tree.
+    src = _make_source(tmp_path)
+    before = _tree_snapshot(src)
+    entries = _synthetic_walk_entries(src / "customers", filler_count=50)
+    fake = _FakeWalkOS(entries)
+    monkeypatch.setattr(_discovery, "os", fake)
+
+    def _cancel_on_second_enumeration_directory() -> bool:
+        return fake.walk_calls >= 2 and fake.consumed >= 2
+
+    with pytest.raises(CancellationError) as excinfo:
+        build_plan(
+            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            cancel_check=_cancel_on_second_enumeration_directory,
+        )
+    assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
+    # Walk call 1 was discovery (full synthetic traversal, no cancellation);
+    # walk call 2 is the fingerprint enumeration and it stopped early.
+    assert fake.walk_calls == 2
+    assert fake.consumed == 2
+    assert fake.consumed < len(entries)
+
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
+
+
+def test_preflight_cancellation_during_strict_enumeration_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The plan is built with the REAL walk; preflight's STRICT source
+    # enumeration then runs against the synthetic tree and cancellation is
+    # requested at its SECOND visited directory.  The traversal must stop
+    # before exhaustion and the typed cancellation must propagate (it is
+    # never converted into SOURCE_UNAVAILABLE or any other finding).
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "vault")
+    before = _tree_snapshot(src)
+    entries = _synthetic_walk_entries(src / "customers", filler_count=50)
+    fake = _FakeWalkOS(entries)
+    monkeypatch.setattr(_discovery, "os", fake)
+
+    def _cancel_at_second_strict_directory() -> bool:
+        return fake.walk_calls >= 1 and fake.consumed >= 2
+
+    with pytest.raises(CancellationError) as excinfo:
+        preflight(plan, cancel_check=_cancel_at_second_strict_directory)
+    assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
+    assert excinfo.value.context.detail_code == "CANCELLED_BY_CHECK"
+    assert fake.walk_calls == 1
+    assert fake.consumed == 2
+    assert fake.consumed < len(entries)
+
+    _assert_no_side_effects(tmp_path)
+    _assert_source_unchanged(before, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Preflight per-table cancellation bound (independent of progress callbacks)
+# ---------------------------------------------------------------------------
+def test_preflight_table_evaluation_cancellation_is_bounded_per_table(
+    tmp_path: Path,
+) -> None:
+    # A synthetic Plan with 20 tables, NO progress callback and a counting
+    # cancel_check: cancellation must not depend on progress reporting.  With
+    # a missing source root there is no traversal, so the poll sequence is
+    # deterministic: 1 OPERATION start + 1 overlap check +
+    # 1 SOURCE_VERIFICATION start + 1 destination check +
+    # 1 TABLE_EVALUATION start = 5 polls before the first table boundary,
+    # then exactly one poll per table evaluation boundary (quantum: 1 table).
+    plan = _synthetic_plan(table_count=20, tmp=tmp_path)
+    pre_table_polls = 5
+    polls = {"n": 0}
+
+    def _cancel_at_second_table_boundary() -> bool:
+        polls["n"] += 1
+        return polls["n"] >= pre_table_polls + 2
+
+    with pytest.raises(CancellationError) as excinfo:
+        preflight(plan, progress=None, cancel_check=_cancel_at_second_table_boundary)
+    assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
+    # Cancellation was observed exactly at the SECOND table-evaluation
+    # boundary: only one table was fully evaluated and the remaining 19 were
+    # never reached (bound: one table).  No result was returned and a
+    # COMPLETED event is structurally impossible — preflight emits it only
+    # immediately before returning a genuine result.
+    assert polls["n"] == pre_table_polls + 2
+    assert polls["n"] < pre_table_polls + len(plan.tables)
 
 
 # ---------------------------------------------------------------------------

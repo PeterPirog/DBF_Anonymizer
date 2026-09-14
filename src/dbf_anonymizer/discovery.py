@@ -153,11 +153,15 @@ def discover_tables(
     Returns a tuple sorted by normalized relative path.
 
     The optional private REQ-P1-008 hooks are supplied by the progress
-    controller: ``cancel_probe`` is polled before every table's schema read
-    (a scan safe point between discovered tables) and raises on cancellation;
+    controller: ``cancel_probe`` is polled once per visited directory during
+    the ``os.walk`` traversal (the deterministic enumeration bound — a huge
+    source tree can never spend an unbounded time in directory enumeration
+    before cancellation is observed) and again before every table's schema
+    read (a scan safe point between discovered tables);
     ``progress_probe`` is called with the table's normalized relative path
-    after each table has been read.  With both hooks ``None`` the behavior is
-    exactly the pre-existing deterministic discovery.
+    after each table has been read.  Cancellation probes never emit progress
+    events.  With both hooks ``None`` the behavior is exactly the
+    pre-existing deterministic discovery (same walk, same ordering).
     """
     if not source_root.is_dir():
         from dbf_anonymizer.errors import PathError, ErrorCode, ErrorContext
@@ -169,6 +173,10 @@ def discover_tables(
 
     dbf_files: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(source_root):
+        # REQ-P1-008 bounded traversal: cancellation is observed at least once
+        # per visited directory (quantum 1), before its entries are scanned.
+        if cancel_probe is not None:
+            cancel_probe()
         for fname in filenames:
             if Path(fname).suffix.lower() in _DBF_EXTENSIONS:
                 dbf_files.append(Path(dirpath) / fname)
@@ -220,7 +228,12 @@ def discover_tables(
     return tuple(tables)
 
 
-def enumerate_in_scope_paths(source_root: Path, *, strict: bool = False) -> dict[str, Path]:
+def enumerate_in_scope_paths(
+    source_root: Path,
+    *,
+    strict: bool = False,
+    cancel_probe: Callable[[], None] | None = None,
+) -> dict[str, Path]:
     """Map relative posix path -> absolute path for in-scope source artifacts.
 
     Includes all DBF, FPT, CDX and IDX files found in the tree.  With
@@ -231,7 +244,17 @@ def enumerate_in_scope_paths(source_root: Path, *, strict: bool = False) -> dict
     or non-directory source root raises instead of producing an innocent empty
     enumeration.  With ``strict=False`` the historical P1-005 planning
     behaviour is kept. The fingerprint payload format is unchanged.
+
+    ``cancel_probe`` (a REQ-P1-008 private hook supplied by the progress
+    controller) is polled once per visited directory during the ``os.walk``
+    traversal (the deterministic enumeration bound — the whole directory tree
+    can never be walked without observing cancellation).  The probe raises
+    the typed cancellation/control exceptions, which are never suppressed by
+    the strict error handling (only ordinary traversal ``OSError`` semantics
+    are affected by ``strict``).  With ``cancel_probe=None`` the enumeration
+    is exactly the pre-existing behavior.
     """
+
     def _on_error(error: OSError) -> None:
         if strict:
             raise error
@@ -250,6 +273,10 @@ def enumerate_in_scope_paths(source_root: Path, *, strict: bool = False) -> dict
     elif not source_root.is_dir():
         return result
     for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
+        # REQ-P1-008 bounded traversal: cancellation is observed at least once
+        # per visited directory (quantum 1), before its entries are scanned.
+        if cancel_probe is not None:
+            cancel_probe()
         for name in filenames:
             suffix = Path(name).suffix.lower()
             if suffix in IN_SCOPE_EXTENSIONS:
@@ -275,19 +302,23 @@ def collect_fingerprint_entries(
     as a complete fingerprint).
 
     The optional private REQ-P1-008 hooks are supplied by the progress
-    controller: the in-scope artifacts are enumerated first, then hashed in
-    deterministic sorted-relative-path order; ``cancel_probe`` is polled once
-    before every artifact and inside the chunked hashing loop (bounded
-    cancellation latency); ``progress_probe(done, total, relative_path)`` is
-    called after each artifact digest, with ``total`` the defensible artifact
-    count.  With both hooks ``None`` the results are exactly the pre-existing
+    controller: the in-scope artifacts are enumerated first — with
+    ``cancel_probe`` polled once per visited directory during that traversal
+    (deterministic enumeration bound) — then hashed in deterministic
+    sorted-relative-path order; ``cancel_probe`` is polled again once before
+    every artifact and inside the chunked hashing loop (bounded cancellation
+    latency); ``progress_probe(done, total, relative_path)`` is called after
+    each artifact digest, with ``total`` the defensible artifact count.  With
+    both hooks ``None`` the results are exactly the pre-existing
     deterministic fingerprint entries.
     """
     def _on_error(error: OSError) -> None:
         if strict:
             raise error
 
-    paths = enumerate_in_scope_paths(source_root, strict=strict)
+    paths = enumerate_in_scope_paths(
+        source_root, strict=strict, cancel_probe=cancel_probe
+    )
     ordered = sorted(paths)
     total = len(ordered)
 
