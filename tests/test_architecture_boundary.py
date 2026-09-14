@@ -522,3 +522,150 @@ def test_guard_allows_text_append_mode() -> None:
         "    with open(path, 'a') as handle:\n"
         "        handle.write(line)\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# REQ-P1-006 boundary regression: no manual/raw DBF writer anywhere
+# ---------------------------------------------------------------------------
+
+#: Every Python source in the active package, the test suite and the tooling.
+WRITER_SCAN_ROOTS = (
+    Path(__file__).resolve().parents[1] / "src" / "dbf_anonymizer",
+    Path(__file__).resolve().parents[1] / "tests",
+    Path(__file__).resolve().parents[1] / "tools",
+)
+
+#: The single, narrowly documented exception: the three pre-existing malformed
+#: synthetic-fixture mutations of the approved P0 fixture generator. They are
+#: byte-level test tooling (deterministic corrupting mutations of wholly
+#: synthetic tables), NOT a DBF writer, and their existence and count are
+#: pinned by ``test_raw_writer_exception_is_the_documented_generator_mutations``.
+RAW_WRITER_ALLOWLIST: dict[str, str] = {
+    "tools/generate_p0_fixtures.py": (
+        "the three pre-existing, narrowly documented malformed synthetic "
+        "fixture mutations (_corrupt_truncate_records, _corrupt_version_byte, "
+        "_corrupt_header_length)"
+    ),
+}
+
+#: The exact three documented mutation helpers the exception covers.
+_GENERATOR_MUTATION_FUNCTIONS = (
+    "_corrupt_header_length",
+    "_corrupt_truncate_records",
+    "_corrupt_version_byte",
+)
+
+
+def _tree_sources() -> list[tuple[str, Path]]:
+    files: list[tuple[str, Path]] = []
+    for root in WRITER_SCAN_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            files.append((path.relative_to(root).as_posix(), path))
+    return files
+
+
+def _manual_dbf_writer_evidence(source: str) -> str | None:
+    """Return a violation reason when *source* builds/patches DBF bytes itself.
+
+    AST-based so that string literals (documentation, guard self-test
+    snippets) are never mistaken for code. Mirrors the accepted production
+    guard rules — direct ``dbf`` engine use, in-place binary DBF update, and
+    struct-based DBF/FPT byte surgery — applied to tests and tools as well.
+    (The raw-record sentinel rule stays enforced on production code by
+    :func:`check_module`; the sentinel constant defined by this guard module
+    itself is documentation, not a writer.)
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    has_dbf_context = bool(DBF_ARTIFACT_RE.search(source))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            try:
+                _check_imports(node)  # type: ignore[arg-type]
+            except BoundaryViolation as violation:
+                return str(violation)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        if _is_open_call(node):
+            mode = _open_modes(node).replace(" ", "")
+            if "b" in mode and "+" in mode and has_dbf_context:
+                return f"in-place binary DBF/FPT update (mode {mode!r})"
+        if isinstance(node.func, ast.Attribute):
+            chain = _base_attribute_chain(node.func)
+            if chain is not None:
+                base, attrs = chain
+                if base.id == "struct" and attrs and attrs[0] in {
+                    "pack", "pack_into", "unpack", "unpack_from",
+                } and has_dbf_context:
+                    return "struct-based DBF/FPT byte surgery"
+    return None
+
+
+def test_no_manual_dbf_writer_in_src_tests_tools() -> None:
+    """No raw/manual DBF writer exists in src, tests or tools (REQ-P1-006).
+
+    Synthetic DBF/FPT data is produced exclusively through the public
+    ``dbfbridge`` write boundary. The only allowed byte-level DBF handling in
+    the repository is the narrowly documented malformed-fixture mutation set
+    inside the approved P0 generator (pinned below).
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    violations: list[str] = []
+    for label, path in _tree_sources():
+        rel = path.relative_to(repo_root).as_posix()
+        evidence = _manual_dbf_writer_evidence(path.read_text(encoding="utf-8"))
+        if evidence is None:
+            continue
+        if rel in RAW_WRITER_ALLOWLIST:
+            continue
+        violations.append(f"{label}: {evidence}")
+    assert not violations, "manual DBF writer logic found: " + "; ".join(violations)
+
+
+def test_raw_writer_exception_is_the_documented_generator_mutations() -> None:
+    # The allowlist is exactly one file, and that file contains exactly the
+    # three documented mutation helpers — the exception cannot silently grow.
+    assert set(RAW_WRITER_ALLOWLIST) == {"tools/generate_p0_fixtures.py"}
+    generator = WRITER_SCAN_ROOTS[2] / "generate_p0_fixtures.py"
+    assert generator.exists()
+    source = generator.read_text(encoding="utf-8")
+    corrupt_functions = sorted(re.findall(r"^def (_corrupt_\w+)\(", source, re.M))
+    assert corrupt_functions == sorted(_GENERATOR_MUTATION_FUNCTIONS)
+    assert "implements no DBF/FPT/CDX/IDX/DBC parser or writer" in source
+
+
+def test_writer_scanner_flags_raw_dbf_writer_snippets() -> None:
+    # The regression scanner itself detects the removed test-side raw writer
+    # pattern (header/field-descriptor/record construction via struct).
+    raw_writer_snippet = (
+        "import struct\n"
+        "from pathlib import Path\n"
+        "\n"
+        "def _raw_dbf(path, fields, records):\n"
+        "    header_length = 32 + 32 * len(fields) + 1\n"
+        "    record_length = 1 + sum(length for _n, _t, length, _f in fields)\n"
+        "    header = bytearray(32)\n"
+        "    struct.pack_into('<H', header, 8, header_length)\n"
+        "    struct.pack_into('<H', header, 10, record_length)\n"
+        "    path.write_bytes(bytes(header) + b'')\n"
+    )
+    evidence = _manual_dbf_writer_evidence(raw_writer_snippet)
+    assert evidence is not None
+    assert "struct-based DBF/FPT byte surgery" in evidence
+
+
+def test_writer_scanner_allows_public_dbfbridge_writes() -> None:
+    # Public dbfbridge writes and unrelated binary I/O stay allowed.
+    assert _manual_dbf_writer_evidence(
+        "import dbfbridge\n\n"
+        "def make_table(path):\n"
+        "    dbfbridge.write_table(path / 'table.dbf', schema=schema, records=[])\n"
+    ) is None
+    assert _manual_dbf_writer_evidence(
+        "import struct\n\n"
+        "def encode(value):\n"
+        "    return struct.pack('<i', value)\n"
+    ) is None

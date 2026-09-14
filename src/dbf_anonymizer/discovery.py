@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,47 @@ _CDX_EXTENSIONS = frozenset({".cdx"})
 _IDX_EXTENSIONS = frozenset({".idx"})
 
 IN_SCOPE_EXTENSIONS = _DBF_EXTENSIONS | _FPT_EXTENSIONS | _CDX_EXTENSIONS | _IDX_EXTENSIONS
+
+# ---------------------------------------------------------------------------
+# Internal stat-based path probe (shared by preflight security decisions)
+# ---------------------------------------------------------------------------
+# Pathlib's Path.exists()/is_file()/is_dir() predicates suppress OS-level
+# errors on modern Python (3.12+): an inaccessible (e.g. permission-denied)
+# path reports as missing. Security-relevant inspection must therefore use a
+# raw stat probe where ONLY FileNotFoundError means "missing"; PermissionError
+# and every other OSError propagate to the caller for deterministic fail-closed
+# handling (PATH_INSPECTION_UNAVAILABLE / SOURCE_UNAVAILABLE /
+# STORAGE_ESTIMATE_UNAVAILABLE).
+_PATH_MISSING = "missing"
+_PATH_FILE = "file"
+_PATH_DIRECTORY = "directory"
+_PATH_OTHER = "other"
+#: A path component that is not a directory (NotADirectoryError): the
+#: hierarchy is blocked/invalid, not innocent-empty.
+_PATH_BLOCKED = "blocked"
+
+
+def probe_path(path: Path) -> str:
+    """Classify *path* with one raw stat probe (never pathlib predicates).
+
+    Returns one of the ``_PATH_*`` kind constants. Raises ``OSError`` when the
+    path cannot be inspected (e.g. ``PermissionError``): an inaccessible path
+    is NEVER treated as missing.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return _PATH_MISSING
+    except NotADirectoryError:
+        # A component of *path* itself is not a directory: the hierarchy is
+        # blocked/invalid. Callers treat it deterministically (an uncreatable
+        # destination), never as a missing/empty path.
+        return _PATH_BLOCKED
+    if stat_module.S_ISDIR(st.st_mode):
+        return _PATH_DIRECTORY
+    if stat_module.S_ISREG(st.st_mode):
+        return _PATH_FILE
+    return _PATH_OTHER
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,18 +174,65 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
     return tuple(tables)
 
 
+def enumerate_in_scope_paths(source_root: Path, *, strict: bool = False) -> dict[str, Path]:
+    """Map relative posix path -> absolute path for in-scope source artifacts.
+
+    Includes all DBF, FPT, CDX and IDX files found in the tree.  With
+    ``strict=True`` (the preflight/verification setting) a traversal error
+    (unreadable directory, disappeared entry) is raised as ``OSError`` so an
+    incomplete enumeration can never silently degrade source completeness, and
+    the root itself is checked with the raw stat probe: an absent, unreadable
+    or non-directory source root raises instead of producing an innocent empty
+    enumeration.  With ``strict=False`` the historical P1-005 planning
+    behaviour is kept. The fingerprint payload format is unchanged.
+    """
+    def _on_error(error: OSError) -> None:
+        if strict:
+            raise error
+
+    result: dict[str, Path] = {}
+    if strict:
+        # Raw stat semantics: only FileNotFoundError means "missing" here.
+        # Path.is_dir() would swallow PermissionError on Python 3.12+ and
+        # turn an unreadable source root into an innocent empty enumeration.
+        # The raised error carries no path payload (privacy-safe).
+        kind = probe_path(source_root)
+        if kind == _PATH_MISSING:
+            raise FileNotFoundError(2, "source root is missing")
+        if kind != _PATH_DIRECTORY:
+            raise NotADirectoryError(20, "source root is not a directory")
+    elif not source_root.is_dir():
+        return result
+    for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
+        for name in filenames:
+            suffix = Path(name).suffix.lower()
+            if suffix in IN_SCOPE_EXTENSIONS:
+                full = Path(dirpath) / name
+                result[full.relative_to(source_root).as_posix()] = full
+    return result
+
+
 def collect_fingerprint_entries(
     source_root: Path,
+    *,
+    strict: bool = False,
 ) -> tuple[ArtifactFingerprintEntry, ...]:
     """Compute fingerprint entries for all in-scope artifacts under *source_root*.
 
     Includes all DBF, FPT, CDX, IDX files found in the tree.
     IDX files are included in the global fingerprint but never associated
-    with a specific DBF.
+    with a specific DBF.  The fingerprint payload format is unchanged.
+    ``strict=True`` raises ``OSError`` on traversal errors instead of silently
+    skipping them (used by preflight so incomplete enumeration cannot masquerade
+    as a complete fingerprint).
     """
+    def _on_error(error: OSError) -> None:
+        if strict:
+            raise error
+
     entries: list[ArtifactFingerprintEntry] = []
 
-    for dirpath, _dirnames, filenames in os.walk(source_root):
+    for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
         for fname in sorted(filenames):
             p = Path(dirpath) / fname
             suffix = Path(fname).suffix.lower()
