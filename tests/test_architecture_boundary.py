@@ -773,3 +773,95 @@ def test_no_runtime_package_installation_imports() -> None:
                 f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
             )
     assert not offending, "runtime package installation: " + "; ".join(offending)
+
+
+# ---------------------------------------------------------------------------
+# REQ-P2-001/002/003 vault-layer boundaries (static regressions)
+# ---------------------------------------------------------------------------
+VAULT_MODULES = (
+    "vault/__init__.py",
+    "vault/schema.py",
+    "vault/store.py",
+    "vault/mappings.py",
+    "vault/transactions.py",
+)
+
+#: The source-read-only public operations must never reach the vault layer:
+#: vault creation belongs to the future execution engine (REQ-P1-005/006).
+SOURCE_READ_ONLY_MODULES = ("api.py", "planning.py", "preflight.py")
+
+
+def test_vault_modules_exist_and_own_the_vault_layer() -> None:
+    for module_name in VAULT_MODULES:
+        assert (SRC_ROOT / module_name).is_file(), module_name
+
+
+def test_vault_layer_imports_no_dbfbridge_namespace() -> None:
+    # The vault MUST NOT parse DBF/FPT and has no reason to import the
+    # dbfbridge namespace at all — public or private.
+    for module_name in VAULT_MODULES:
+        source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] != "dbfbridge", module_name
+            elif isinstance(node, ast.ImportFrom):
+                full = _import_full_name(node)
+                assert not full.startswith("dbfbridge"), module_name
+
+
+def test_vault_layer_imports_no_com_vfp_backend() -> None:
+    for module_name in VAULT_MODULES:
+        source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
+        roots = _top_level_import_roots(source)
+        offending = sorted(roots & COM_VFP_IMPORT_ROOTS)
+        assert not offending, f"{module_name}: COM/VFP/ole import: {offending}"
+
+
+def test_vault_layer_avoids_weak_random_generators() -> None:
+    # Pseudonym ALLOCATION is REQ-P2-004; the storage foundation must not
+    # even accidentally wire a weak deterministic generator into the vault.
+    for module_name in VAULT_MODULES:
+        source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] != "random", module_name
+            elif isinstance(node, ast.ImportFrom):
+                full = _import_full_name(node)
+                assert not full.startswith("random"), module_name
+
+
+def test_source_read_only_operations_never_instantiate_the_vault() -> None:
+    for module_name in SOURCE_READ_ONLY_MODULES:
+        source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                full = _import_full_name(node)
+                dotted = full.lstrip(".")
+                assert not dotted.startswith("vault"), module_name
+                assert dotted != "vault", module_name
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name != "vault", module_name
+                    assert not alias.name.startswith("dbf_anonymizer.vault"), module_name
+
+
+def test_no_sqlite_database_files_in_package_or_fixtures() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    scanned = [repo_root / "src" / "dbf_anonymizer", repo_root / "tests" / "fixtures"]
+    offending: list[str] = []
+    for root in scanned:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            name = path.name
+            if (
+                path.suffix.lower() in {".sqlite", ".sqlite3", ".db"}
+                or name.endswith(("-wal", "-shm", ".journal"))
+            ):
+                offending.append(str(path.relative_to(repo_root)))
+    assert not offending, f"committed SQLite vault artifacts: {offending}"
