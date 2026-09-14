@@ -53,10 +53,16 @@ def _write_dependency_available() -> bool:
 
 
 def direct_read_available() -> bool:
-    """True only when the public dbfbridge direct-read API and its runtime
-    dependency (dbfread) are both present."""
+    """True only when EVERY public dbfbridge direct-read operation required by
+    preflight is callable and the runtime dependency (dbfread) is discoverable.
+
+    Preflight needs ``read_schema`` (schema/companion facts, capacity domain)
+    AND ``iter_records`` (streaming GLOBAL_TEXT capacity scan, deleted records
+    included). Missing either symbol means direct read is unavailable.
+    """
     return (
         callable(getattr(dbfbridge, "read_schema", None))
+        and callable(getattr(dbfbridge, "iter_records", None))
         and _read_dependency_available()
     )
 

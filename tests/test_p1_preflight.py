@@ -2,12 +2,27 @@
 
 This suite proves the stable negative-fixture matrix (aggregated ``ready=False``
 findings), the truthful positive/warning cases, deterministic repeatability,
-privacy/redaction, and — for every rejection — zero created output/vault state
-and byte-identical source.
+privacy/redaction, the global-strictest-width pseudonym capacity proof with a
+hard enforced memory ceiling, source-scaled storage risk reserves, strict
+source traversal, privacy-safe filesystem-error degradation, and — for every
+rejection — zero created output/vault state and byte-identical source.
 
 Only approved synthetic fixtures (``tests/fixtures/p0/**``) and disposable
 synthetic data created under ``tmp_path`` via the public ``dbfbridge`` API are
-used. No production data is accessed.
+used. No production data is accessed. No raw/manual DBF writer exists in this
+suite: every synthetic table is produced through the public ``dbfbridge``
+``write_table`` boundary (the repository-wide no-raw-DBF-writer regression
+lives in ``tests/test_architecture_boundary.py``).
+
+Unsupported-field and NOCPTRANS acceptance evidence is deliberately split:
+
+* the P0 fixture corpus proves the dependency's negative/opaque classification
+  through the public API (``test_opaque_field_write_refusal``: the public
+  writer refuses Q/W, so no on-disk unsupported-type fixture can exist) and
+  the P1-005 planning tests prove NOCPTRANS/binary classification
+  (``test_nocptrans_*`` in ``tests/test_p1_build_plan.py``);
+* THIS suite proves the preflight decision logic with immutable public
+  ``TablePlan``/``Plan`` models — no byte-level fixture fabrication.
 """
 
 from __future__ import annotations
@@ -17,10 +32,9 @@ import hashlib
 import json
 import os
 import shutil
-import struct
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -29,12 +43,20 @@ import dbfbridge
 import dbf_anonymizer._capability as _capabilities_mod
 from dbf_anonymizer import build_plan, preflight
 from dbf_anonymizer.errors import DBFBridgeError, ErrorCode
-from dbf_anonymizer.models import Capabilities, Plan, PreflightResult, RelationshipMetadata
+from dbf_anonymizer.models import (
+    Capabilities,
+    Plan,
+    PreflightResult,
+    RelationshipMetadata,
+)
 
 import dbf_anonymizer.preflight  # ensure module loaded
 from dbf_anonymizer import preflight as _preflight_mod  # noqa: F401
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "p0"
+
+#: The conservative single-case pseudonym alphabet mirrored from the product.
+_BASE36 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def _pf_module():
@@ -45,12 +67,15 @@ def _pf_module():
 # ---------------------------------------------------------------------------
 # Synthetic data helpers (public dbfbridge only)
 # ---------------------------------------------------------------------------
-def _field(name: str, dbf_type: str, length: int) -> dbfbridge.FieldInfo:
+def _field(
+    name: str, dbf_type: str, length: int, *, flags: int = 0
+) -> dbfbridge.FieldInfo:
     return dbfbridge.FieldInfo(
         ordinal=0, name=name, dbf_type=dbf_type, length=length,
-        decimal_count=0, address=0, flags=0, index_field_flag=0,
+        decimal_count=0, address=0, flags=flags, index_field_flag=0,
         autoincrement_next_value=0, autoincrement_step=1,
-        is_memo=False, is_binary=False, supported=True, dbversion_byte=0x30,
+        is_memo=dbf_type in {"M", "G", "P"}, is_binary=False, supported=True,
+        dbversion_byte=0x30,
     )
 
 
@@ -78,6 +103,23 @@ def _write_table(path: Path, fields: list[tuple[str, str, int]], records: list[d
     dbfbridge.write_table(path, schema=_schema(fdefs), records=records)
 
 
+def _nullflags_field() -> dbfbridge.FieldInfo:
+    """The trusted VFP NULL bitmap system column required beside V fields."""
+    return _field("_NULLFLAGS", "0", 1, flags=0x01)
+
+
+def _write_varchar_table(path: Path, values: list[str | None]) -> None:
+    """Write a Varchar table through public dbfbridge (V values keep their
+    significant trailing spaces; NULL/empty are preserved as-is)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fdefs = (_field("VC", "V", 2), _nullflags_field())
+    dbfbridge.write_table(
+        path,
+        schema=_schema(fdefs),
+        records=[{"VC": value, "_NULLFLAGS": 0} for value in values],
+    )
+
+
 def _copy_fixture(dest_root: Path, rel: str) -> None:
     dst = dest_root / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +138,15 @@ def _make_source(tmp: Path) -> Path:
 def _build_plan(tmp: Path, **kwargs: Any) -> Plan:
     src = _make_source(tmp)
     return build_plan(source=src, output=tmp / "out", vault=tmp / "vault" / "dict.sqlite3", **kwargs)
+
+
+def _source_dbf_footprint(src: Path) -> int:
+    """The in-scope (DBF/FPT) source byte footprint, mirroring the product."""
+    return sum(
+        p.stat().st_size
+        for p in src.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".dbf", ".fpt"}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +194,13 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
 
 def _preflight_no_side_effects(
-    plan: Plan, tmp: Path,
+    plan: Plan, tmp: Path, *, preexisting: tuple[str, ...] = (),
 ) -> PreflightResult:
+    """Run preflight and prove zero created/modified state.
+
+    Paths named in *preexisting* may already exist (they are part of the
+    tested filesystem state) but must gain no new files either.
+    """
     before = _tree_snapshot(tmp)
     result = preflight(plan)
     after = _tree_snapshot(tmp)
@@ -152,8 +208,9 @@ def _preflight_no_side_effects(
     modified = {r for r in before if before[r] != after.get(r)}
     assert not created, f"preflight created files: {sorted(created)}"
     assert not modified, f"preflight modified files: {sorted(modified)}"
-    assert not (tmp / "out").exists(), "output directory was created"
-    assert not (tmp / "vault").exists(), "vault directory was created"
+    for absent in ("out", "vault"):
+        if absent not in preexisting:
+            assert not (tmp / absent).exists(), f"{absent} directory was created"
     sqlite_sidecars = [n for n in (*created, *after) if "sqlite" in n.lower() or n.lower().endswith(("-wal", "-shm", ".lock", ".log"))]
     assert not sqlite_sidecars, f"sqlite/sidecar created: {sqlite_sidecars}"
     return result
@@ -267,77 +324,53 @@ def test_missing_memo_companion_rejected(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10-11. Unsupported / unsafe (binary/NOCPTRANS) user fields
+# 10-11. Unsupported / unsafe (NOCPTRANS) user fields
 # ---------------------------------------------------------------------------
-# The public dbfbridge writer intentionally refuses Q (Varbinary), W (Blob)
-# and binary/NOCPTRANS C/V fields, so these conditions cannot be produced via
-# ``write_table``. They are produced by deterministic synthetic DBF byte
-# layouts (disposable, under tmp_path) whose field descriptors objectively
-# carry the condition — no Plan tampering, no fixture modification.
-def _raw_dbf(
-    path: Path,
-    fields: list[tuple[str, str, int, int]],
-    records: list[bytes],
-) -> None:
-    """Deterministically build a synthetic VFP (0x30) DBF file.
-
-    *fields* are (name, type, length, flags) where flags is the descriptor
-    flag byte (0x01 system, 0x02 nullable, 0x04 binary/NOCPTRANS).
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header_len = 32 + 32 * len(fields) + 1 + 263  # + VFP backlink extension
-    rec_len = 1 + sum(length for _n, _t, length, _f in fields)
-    header = bytearray(32)
-    header[0] = 0x03
-    header[1] = 0x30
-    header[2] = 0x26  # 2026, BCD
-    header[3] = 0x09
-    header[4] = 0x12
-    struct.pack_into("<I", header, 4, len(records))
-    struct.pack_into("<H", header, 8, header_len)
-    struct.pack_into("<H", header, 10, rec_len)
-    header[29] = 0xC8  # cp1250
-    descriptors = bytearray()
-    for name, ftype, length, flags in fields:
-        d = bytearray(32)
-        name_bytes = name.encode("ascii")
-        d[0:11] = name_bytes + b"\x00" * (11 - len(name_bytes))
-        d[11] = ord(ftype)
-        d[16] = length
-        d[18] = flags
-        descriptors += d
-    body = bytes(header) + bytes(descriptors) + b"\x0d" + bytes(263)
-    record_bytes = b"".join(b" " + data for data in records)
-    path.write_bytes(body + record_bytes + b"\x1a")
+# The public dbfbridge writer refuses unsupported (Q/W) and binary/NOCPTRANS
+# user fields, so no on-disk fixture with those conditions can be produced
+# through the approved boundary (see the P0 corpus negative evidence
+# ``test_opaque_field_write_refusal`` and P1-005 ``test_nocptrans_*``).
+# The preflight DECISION logic is therefore proven here with immutable public
+# models: a real synthetic plan whose TablePlan counts objectively carry the
+# condition. No byte-level fixture is fabricated.
+def _plan_with_field_counts(tmp_path: Path, **count_overrides: int) -> Plan:
+    plan = _build_plan(tmp_path)
+    table = plan.tables[0]
+    mutated = dataclasses.replace(table, **count_overrides)
+    return dataclasses.replace(plan, tables=(mutated, *plan.tables[1:]))
 
 
 def test_unsupported_field_rejected(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    # A Q (Varbinary) field is reader-unsupported; the table must also carry
-    # the VFP _NullFlags bitmap column the format requires for V/Q fields.
-    _raw_dbf(
-        src / "varbin" / "varbin.dbf",
-        [("NAME", "C", 10, 0), ("VARBIN", "Q", 16, 0), ("_NULLFLAGS", "0", 1, 0x01)],
-        [b"alpha" + b" " * 5 + bytes(range(16)) + b"\x00"],
-    )
-    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
-    assert plan.tables[0].unsupported_field_count >= 1
+    # A reader-unsupported (e.g. Q Varbinary) user field is rejected by the
+    # preflight decision, mirroring the TablePlan facts build_plan computes.
+    plan = _plan_with_field_counts(tmp_path, unsupported_field_count=1, unsafe_field_count=1)
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "UNSUPPORTED_FIELD" in result.error_codes
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
 
 
 def test_unsafe_nocptrans_binary_field_rejected(tmp_path: Path) -> None:
+    # A Character field carrying the binary/NOCPTRANS descriptor condition is
+    # unsafe for the global-text domain and must reject.
+    plan = _plan_with_field_counts(tmp_path, unsafe_field_count=1)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "UNSAFE_FIELD" in result.error_codes
+
+
+def test_unsafe_only_text_field_is_not_capacity_participating(tmp_path: Path) -> None:
+    # A binary/NOCPTRANS C field is excluded from the GLOBAL_TEXT domain: a
+    # table whose only text field is unsafe contributes no capacity constraint,
+    # so the sole rejection is UNSAFE_FIELD (mirroring the P1-005 planning
+    # classification that makes such fields non-participating).
     src = tmp_path / "src"
-    # A Character field carrying the 0x04 (binary/NOCPTRANS) descriptor bit
-    # is unsafe for the global-text domain.
-    _raw_dbf(
-        src / "binchar" / "binchar.dbf",
-        [("BCHAR", "C", 8, 0x04)],
-        [bytes(range(8))],
-    )
+    _write_table(src / "only" / "only.dbf", [("NOTE", "C", 8)], [{"NOTE": "keep-me"}])
     plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
-    assert plan.tables[0].unsafe_field_count >= 1
+    table = dataclasses.replace(
+        plan.tables[0], transform_field_count=0, unsafe_field_count=1
+    )
+    plan = dataclasses.replace(plan, tables=(table,))
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "UNSAFE_FIELD" in result.error_codes
@@ -480,8 +513,15 @@ def test_relationship_domain_unverifiable_rejected(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 24. Deliberately insufficient GLOBAL_TEXT pseudonym capacity
+# 24. GLOBAL_TEXT pseudonym capacity — global original, strictest width
 # ---------------------------------------------------------------------------
+def _tight_c_source(tmp: Path, rel: str, width: int, values: list[str]) -> Path:
+    src = tmp / "src"
+    _write_table(src / rel / f"{rel}.dbf", [("CODE", "C", width)],
+                 [{"CODE": v} for v in values])
+    return src
+
+
 def test_pseudonym_capacity_insufficient_rejected(tmp_path: Path) -> None:
     src = tmp_path / "src"
     values = [chr(ord("A") + i) for i in range(26)] + [str(i) for i in range(10)] + ["\u017b"]
@@ -509,6 +549,32 @@ def test_pseudonym_capacity_feasible_at_exact_bound(tmp_path: Path) -> None:
     assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
 
 
+def test_pseudonym_capacity_35_values_feasible(tmp_path: Path) -> None:
+    # 35 distinct C(1) originals: below the exact 36-token bound -> feasible;
+    # the occurrence upper bound alone already proves the constraint.
+    src = tmp_path / "src"
+    values = [chr(ord("A") + i) for i in range(26)] + [str(i) for i in range(9)]
+    assert len(set(values)) == 35
+    _write_table(src / "tight" / "tight.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    assert _pf_module()._LAST_CAPACITY_SCAN_STATS is not None
+    assert _pf_module()._LAST_CAPACITY_SCAN_STATS["retained_distinct"] == 0
+
+
+def test_pseudonym_capacity_single_value_c1_feasible(tmp_path: Path) -> None:
+    # One original in C(1): feasible — it receives one of the OTHER 35 tokens.
+    src = tmp_path / "src"
+    _write_table(src / "single" / "single.dbf", [("CODE", "C", 1)], [{"CODE": "A"}])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+
+
 def test_pseudonym_capacity_distinctness_is_exact(tmp_path: Path) -> None:
     # 37 records but only 36 EXACTLY distinct values -> feasible. Distinctness
     # is exact value equality, not positional or digest identity.
@@ -522,13 +588,148 @@ def test_pseudonym_capacity_distinctness_is_exact(tmp_path: Path) -> None:
     assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
 
 
+def test_capacity_strictest_width_same_original_c1_c2(tmp_path: Path) -> None:
+    # The same 36 originals occur in C(1) AND in C(2). The global domain holds
+    # each original ONCE with its ONE strictest width (1), so the exact
+    # narrow-domain count is 36 — not 72 — and the domain stays feasible.
+    src = tmp_path / "src"
+    values = list(_BASE36)
+    assert len(values) == 36
+    records = [{"CODE": values[i % 36], "WIDE": values[i % 36]} for i in range(40)]
+    _write_table(src / "mixed" / "mixed.dbf",
+                 [("CODE", "C", 1), ("WIDE", "C", 10)], records)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    stats = _pf_module()._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    assert stats["retained_distinct"] == 36  # one global original each
+
+
+def test_capacity_36_narrow_plus_1296_wide_only_is_feasible(tmp_path: Path) -> None:
+    # THE strictest-width regression: 36 distinct originals occur in C(1); the
+    # same 36 also occur in C(2); 1296 additional originals occur only in C(2).
+    # Global distinct originals = 1332. Available tokens up to width 2 =
+    # 36 + 36^2 = 1332. The domain is feasible and the 36 narrow originals
+    # MUST NOT be counted twice.
+    src = tmp_path / "src"
+    singles = list(_BASE36)
+    pairs = [a + b for a in _BASE36 for b in _BASE36]
+    assert len(pairs) == 1296
+    _write_table(src / "narrow" / "narrow.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in singles])
+    _write_table(src / "wide" / "wide.dbf", [("CODE", "C", 2)],
+                 [{"CODE": v} for v in singles] + [{"CODE": p} for p in pairs])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    stats = _pf_module()._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    # Width 1 was proven by the cheap occurrence bound; width 2 (tight) needed
+    # the exact 1332-value proof at the exact token-space boundary.
+    assert stats["phase_a_proven_widths"] == 1
+    assert stats["tight_widths"] == 1
+    assert stats["retained_distinct"] == 1332
+    assert stats["outcome"] == "OK"
+
+
+def test_capacity_same_original_across_tables_counted_once(tmp_path: Path) -> None:
+    # The same 36 originals occur in TWO tables (both C(1)): the global domain
+    # counts each original exactly once -> feasible. A per-table double count
+    # would wrongly report 72 distinct originals.
+    src = tmp_path / "src"
+    values = list(_BASE36)
+    _write_table(src / "alpha" / "alpha.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values])
+    _write_table(src / "beta" / "beta.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    stats = _pf_module()._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    assert stats["retained_distinct"] == 36  # not 72
+
+
+def test_capacity_varchar_trailing_space_values_remain_distinct(tmp_path: Path) -> None:
+    # Significant Varchar trailing spaces are part of the exact original:
+    # "A" and "A " are DIFFERENT originals. NULL and empty remain excluded.
+    src = tmp_path / "src"
+    values: list[str | None] = []
+    for i in range(1500):
+        values.extend(("A", "A "))
+    values.extend((None, "", "B"))  # NULL/empty excluded; B is a third original
+    _write_varchar_table(src / "vchar" / "vchar.dbf", values)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    stats = _pf_module()._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    # Exactly 3 distinct originals survived: "A", "A " (trailing space exact)
+    # and "B" — the 1500 duplicates and the NULL/empty values did not.
+    assert stats["retained_distinct"] == 3
+
+
+def test_capacity_duplicate_after_tracker_saturation_not_false_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With a small exact-tracker ceiling, repeated duplicates of already-known
+    # originals must NOT falsely report the ceiling as exceeded.
+    mod = _pf_module()
+    monkeypatch.setattr(mod, "_MAX_EXACT_VALUES", 8)
+    src = tmp_path / "src"
+    values = ["A", "B", "C", "D", "E"]
+    records = [{"CODE": values[i % 5]} for i in range(40)]
+    _write_table(src / "dup" / "dup.dbf", [("CODE", "C", 1)], records)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert "PSEUDONYM_CAPACITY_UNPROVEN" not in result.error_codes
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    stats = mod._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    assert stats["retained_distinct"] == 5
+    assert stats["exact_ceiling"] == 8
+
+
+def test_capacity_analysis_memory_ceiling_fails_closed_unproven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When the exact proof would need more than the configured ceiling, the
+    # analysis fails closed with PSEUDONYM_CAPACITY_UNPROVEN — it must NOT
+    # pretend mathematical insufficiency and must NOT exceed the ceiling.
+    mod = _pf_module()
+    monkeypatch.setattr(mod, "_MAX_EXACT_VALUES", 8)
+    src = tmp_path / "src"
+    values = [chr(33 + i) for i in range(40)]
+    assert len(set(values)) == 40
+    _write_table(src / "wide_tight" / "wide_tight.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in values])
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "PSEUDONYM_CAPACITY_UNPROVEN" in result.error_codes
+    # Never claim insufficiency without the exact proof.
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    stats = mod._LAST_CAPACITY_SCAN_STATS
+    assert stats is not None
+    assert stats["retained_distinct"] == 8  # the ceiling was actually enforced
+    assert stats["outcome"] == "UNPROVEN"
+
+
 def test_capacity_scan_records_failure_is_wrapped_privately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A raw dependency failure mid-record-scan must surface as the structured
     # DBFBRIDGE_FAILURE (never as the raw exception) and must not leak the
-    # dependency message, paths or values.
-    src = _make_source(tmp_path)
+    # dependency message, paths or values. The source is deliberately tight so
+    # the exact-tracking scan actually consumes the dependency generator.
+    src = tmp_path / "src"
+    _write_table(src / "tight" / "tight.dbf", [("CODE", "C", 1)],
+                 [{"CODE": v} for v in list(_BASE36) + ["\u017b"]])
     plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
 
     class _RawBoom(Exception):
@@ -546,6 +747,7 @@ def test_capacity_scan_records_failure_is_wrapped_privately(
         preflight(plan)
     error = excinfo.value
     assert error.code is ErrorCode.DBFBRIDGE_FAILURE
+    assert error.dependency_code == "DBF_RAW_INTERNAL"  # machine code preserved
     assert error.context.detail_code == "capacity_iter_records_failed"
     blob = json.dumps(error.to_dict(), ensure_ascii=False)
     assert "CANARY_SECRET" not in blob
@@ -553,8 +755,38 @@ def test_capacity_scan_records_failure_is_wrapped_privately(
     assert "/abs/path" not in blob
 
 
+def test_capacity_scan_read_schema_failure_is_wrapped_privately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A raw dependency failure during the capacity schema collection must
+    # surface as the structured DBFBRIDGE_FAILURE with its machine code
+    # preserved and no message/path/value leakage.
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+
+    class _SchemaBoom(Exception):
+        code = "SCHEMA_RAW_INTERNAL"
+
+        def __init__(self) -> None:
+            super().__init__("SCHEMA_CANARY /abs/schema/path")
+
+    def _boom(*_args: Any, **_kwargs: Any):
+        raise _SchemaBoom()
+
+    monkeypatch.setattr(dbfbridge, "read_schema", _boom)
+    with pytest.raises(DBFBridgeError) as excinfo:
+        preflight(plan)
+    error = excinfo.value
+    assert error.code is ErrorCode.DBFBRIDGE_FAILURE
+    assert error.dependency_code == "SCHEMA_RAW_INTERNAL"
+    assert error.context.detail_code == "capacity_read_schema_failed"
+    blob = json.dumps(error.to_dict(), ensure_ascii=False)
+    assert "SCHEMA_CANARY" not in blob
+    assert "/abs/schema" not in blob
+
+
 # ---------------------------------------------------------------------------
-# 25-26. Missing direct read/write capability
+# 25-26. Missing direct read/write capability (symbol and dependency truth)
 # ---------------------------------------------------------------------------
 def test_missing_direct_read_capability_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -600,9 +832,70 @@ def test_read_dependency_missing_detected_by_snapshot(
     assert "CAPABILITY_MISSING" in result.error_codes
 
 
+def test_missing_iter_records_symbol_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # iter_records is REQUIRED for the GLOBAL_TEXT capacity scan: without it,
+    # direct read is unavailable, preflight reports CAPABILITY_MISSING and the
+    # capacity scan is never entered.
+    mod = _pf_module()
+    plan = _build_plan(tmp_path)
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+    monkeypatch.setattr(dbfbridge, "iter_records", None)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.capabilities.direct_read is False
+    assert result.ready is False
+    assert "CAPABILITY_MISSING" in result.error_codes
+    assert mod._LAST_CAPACITY_SCAN_STATS is None  # scan never entered
+
+
+def test_missing_read_schema_symbol_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # read_schema is REQUIRED for schema/companion facts and the capacity
+    # domain: without it, direct read is unavailable.
+    mod = _pf_module()
+    plan = _build_plan(tmp_path)
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+    monkeypatch.setattr(dbfbridge, "read_schema", None)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.capabilities.direct_read is False
+    assert result.ready is False
+    assert "CAPABILITY_MISSING" in result.error_codes
+    assert mod._LAST_CAPACITY_SCAN_STATS is None  # scan never entered
+
+
+def test_missing_direct_read_symbol_does_not_enter_capacity_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Even with every other precondition satisfied, a missing iter_records
+    # capability yields CAPABILITY_MISSING rather than any capacity finding.
+    mod = _pf_module()
+    plan = _build_plan(tmp_path)
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+    monkeypatch.setattr(dbfbridge, "iter_records", None)
+    result = preflight(plan)
+    assert result.ready is False
+    assert "PSEUDONYM_CAPACITY_INSUFFICIENT" not in result.error_codes
+    assert "PSEUDONYM_CAPACITY_UNPROVEN" not in result.error_codes
+    assert "CAPABILITY_MISSING" in result.error_codes
+    assert mod._LAST_CAPACITY_SCAN_STATS is None
+
+
 # ---------------------------------------------------------------------------
-# 27-28. Storage-space risk
+# 27-28. Storage-space risk (source-scaled reserves, boundary-exact)
 # ---------------------------------------------------------------------------
+def test_vault_reserve_grows_with_source_footprint() -> None:
+    mod = _pf_module()
+    assert mod._vault_reserve_bytes(0) == mod._VAULT_FIXED_RESERVE_BYTES
+    assert mod._vault_reserve_bytes(1) > mod._vault_reserve_bytes(0)
+    assert mod._vault_reserve_bytes(10**6) < mod._vault_reserve_bytes(10**9)
+    assert (
+        mod._vault_reserve_bytes(5)
+        == mod._VAULT_SOURCE_FACTOR * 5 + mod._VAULT_FIXED_RESERVE_BYTES
+    )
+
+
 def test_insufficient_disk_space_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -629,30 +922,334 @@ def test_unavailable_storage_estimate_rejected(
 def test_storage_model_counts_staging_and_spool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Free space that covers the bare footprint (plus the vault reserve) but
-    # NOT the fresh output + one staged copy + writer/spool reserve must be
-    # rejected: the model is not allowed to under-count peak exposure.
+    # Free space that covers a naive single-copy estimate (footprint plus one
+    # writer/spool reserve) but NOT the real peak (fresh output + staged copy
+    # + the source-scaled vault reserve) must be rejected.
     mod = _pf_module()
     src = _make_source(tmp_path)
-    footprint = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
-    free = footprint + mod._VAULT_RESERVE_BYTES + 1
-    required = (
-        footprint * mod._STAGING_FACTOR
-        + mod._WRITER_SPOOL_RESERVE_BYTES
-        + mod._VAULT_RESERVE_BYTES
-    )
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    footprint = _source_dbf_footprint(src)
+    required_output = footprint * mod._STAGING_FACTOR + mod._WRITER_SPOOL_RESERVE_BYTES
+    required_vault = mod._vault_reserve_bytes(footprint)
+    required = required_output + required_vault
+    free = footprint + mod._WRITER_SPOOL_RESERVE_BYTES + 1
     assert required > free
     monkeypatch.setattr(
         mod, "_disk_usage", lambda _p: (10**15, 10**15 - free, free)
     )
-    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
     assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
 
 
+def test_same_filesystem_combined_reserve_exact_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Output and vault share one filesystem: the peak reserve is the combined
+    # output + vault exposure; the exact boundary must be ACCEPTED.
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    footprint = _source_dbf_footprint(src)
+    required_output = footprint * mod._STAGING_FACTOR + mod._WRITER_SPOOL_RESERVE_BYTES
+    required_vault = mod._vault_reserve_bytes(footprint)
+    free = required_output + required_vault
+    monkeypatch.setattr(mod, "_disk_usage", lambda _p: (10**15, 0, free))
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is True
+    assert result.error_codes == ()
+
+
+def test_same_filesystem_combined_reserve_one_byte_below_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    footprint = _source_dbf_footprint(src)
+    free = (
+        footprint * mod._STAGING_FACTOR
+        + mod._WRITER_SPOOL_RESERVE_BYTES
+        + mod._vault_reserve_bytes(footprint)
+        - 1
+    )
+    monkeypatch.setattr(mod, "_disk_usage", lambda _p: (10**15, 0, free))
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
+
+
+def test_separate_filesystem_vault_reserve_scales(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a DIFFERENT filesystem the vault must independently require the
+    # source-scaled reserve: a multi-megabyte dataset cannot pass merely
+    # because the vault filesystem has slightly more than 1 MiB free.
+    mod = _pf_module()
+    src = tmp_path / "src"
+    # A realistically large (multi-record) synthetic table ~2.4 MB.
+    wide = "W" * 40
+    _write_table(src / "bulk" / "bulk.dbf", [("CODE", "C", 40)],
+                 [{"CODE": wide} for _i in range(60000)])
+    footprint = _source_dbf_footprint(src)
+    required_vault = mod._vault_reserve_bytes(footprint)
+    # The pre-repair 1 MiB constant reserve would have (wrongly) accepted this.
+    assert required_vault > 2 * 1024 * 1024
+    vault_dir = tmp_path / "vdir"
+    vault_dir.mkdir()  # separate-filesystem ancestor for the dev seam
+    plan = build_plan(source=src, output=tmp_path / "out", vault=vault_dir / "dict.sqlite3")
+
+    def _fake_dev(path: Path) -> int:
+        return 2 if path == vault_dir else 1
+
+    def _usage(path: Path) -> tuple[int, int, int]:
+        if path.name.startswith("out"):
+            return (10**15, 0, 10**15)
+        return (10**7, 0, 2 * 1024 * 1024)
+
+    monkeypatch.setattr(mod, "_stat_dev", _fake_dev)
+    monkeypatch.setattr(mod, "_disk_usage", _usage)
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vdir",))
+    assert result.ready is False
+    assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
+
+
+def test_separate_filesystem_vault_boundary_exact_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    footprint = _source_dbf_footprint(src)
+    required_vault = mod._vault_reserve_bytes(footprint)
+    vault_dir = tmp_path / "vdir"
+    vault_dir.mkdir()
+    plan = build_plan(source=src, output=tmp_path / "out", vault=vault_dir / "dict.sqlite3")
+
+    monkeypatch.setattr(mod, "_stat_dev", lambda path: 2 if path == vault_dir else 1)
+    monkeypatch.setattr(
+        mod, "_disk_usage",
+        lambda path: (10**7, 0, required_vault)
+        if not path.name.startswith("out")
+        else (10**15, 0, 10**15),
+    )
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vdir",))
+    assert result.ready is True
+    assert result.error_codes == ()
+
+
+def test_separate_filesystem_vault_boundary_one_byte_below_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    footprint = _source_dbf_footprint(src)
+    required_vault = mod._vault_reserve_bytes(footprint) - 1
+    vault_dir = tmp_path / "vdir"
+    vault_dir.mkdir()
+    plan = build_plan(source=src, output=tmp_path / "out", vault=vault_dir / "dict.sqlite3")
+
+    monkeypatch.setattr(mod, "_stat_dev", lambda path: 2 if path == vault_dir else 1)
+    monkeypatch.setattr(
+        mod, "_disk_usage",
+        lambda path: (10**7, 0, required_vault)
+        if not path.name.startswith("out")
+        else (10**15, 0, 10**15),
+    )
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vdir",))
+    assert result.ready is False
+    assert "STORAGE_SPACE_INSUFFICIENT" in result.error_codes
+
+
+def test_storage_ancestor_stat_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+
+    def _boom(_p: Path) -> int:
+        raise OSError("filesystem identity unavailable")
+
+    monkeypatch.setattr(mod, "_stat_dev", _boom)
+    plan = _build_plan(tmp_path)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+
+
 # ---------------------------------------------------------------------------
-# 29. Multiple simultaneous findings aggregate deterministically
+# 29. Filesystem inspection errors: fail closed, privacy-safe, no side effects
+# ---------------------------------------------------------------------------
+def _assert_no_private_paths(result: PreflightResult, tmp_path: Path) -> None:
+    blob = json.dumps(result.to_dict(), ensure_ascii=False)
+    assert str(tmp_path) not in blob
+    assert "C:\\" not in blob
+    assert "D:\\" not in blob
+    assert "denied" not in blob.lower()
+
+
+def test_output_iterdir_error_fails_closed_privacy_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "stale.txt").write_bytes(b"stale")
+
+    def _denied(_p: Path) -> list[Path]:
+        raise PermissionError(13, f"secrets under {tmp_path}")
+
+    monkeypatch.setattr(mod, "_iterdir", _denied)
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("out",))
+    assert result.ready is False
+    assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_ancestor_inspection_error_fails_closed_privacy_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(
+        source=src, output=tmp_path / "block" / "out", vault=tmp_path / "v"
+    )
+
+    def _denied(_p: Path) -> bool:
+        raise OSError(13, f"ancestor secrets under {tmp_path}")
+
+    monkeypatch.setattr(mod, "_path_is_file", _denied)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_alias_resolver_error_fails_closed_privacy_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _pf_module()
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+
+    def _denied(_p: Path) -> Path:
+        raise OSError(13, f"resolver secrets under {tmp_path}")
+
+    monkeypatch.setattr(mod, "_resolve_path", _denied)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "PATH_INSPECTION_UNAVAILABLE" in result.error_codes
+    assert "PATH_OVERLAP" not in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_source_traversal_error_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # STRICT preflight traversal: an unreadable source directory must never be
+    # treated as a complete enumeration; it fails closed as SOURCE_UNAVAILABLE
+    # (and the storage estimate becomes unavailable without a footprint).
+    import dbf_anonymizer.discovery as discovery
+
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    real_walk = os.walk
+
+    def _broken_walk(top: Any, onerror: Any = None, followlinks: bool = False) -> Any:
+        if str(top) == str(src):
+            if onerror is not None:
+                onerror(OSError(13, f"traversal secrets under {src}"))
+            return iter(())
+        return real_walk(top, onerror=onerror, followlinks=followlinks)
+
+    monkeypatch.setattr(discovery.os, "walk", _broken_walk)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+
+
+def test_source_stat_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A source DBF that cannot be statted/read makes the fingerprint (and the
+    # footprint) indefensible: fail closed as SOURCE_UNAVAILABLE plus
+    # STORAGE_ESTIMATE_UNAVAILABLE, with no capacity scan on unverified state.
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    mod = _pf_module()
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+    real_stat = Path.stat
+
+    def _denied_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.suffix.lower() == ".dbf" and str(self).startswith(str(src)):
+            raise PermissionError(13, f"stat secrets under {src}")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _denied_stat)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    assert "STORAGE_ESTIMATE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+    assert mod._LAST_CAPACITY_SCAN_STATS is None  # scan never entered
+
+
+def test_source_read_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A source file that cannot be READ during strict fingerprinting fails
+    # closed (an incomplete fingerprint is never treated as complete).
+    import dbf_anonymizer.discovery as discovery
+
+    src = _make_source(tmp_path)
+    plan = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
+    mod = _pf_module()
+    monkeypatch.setattr(mod, "_LAST_CAPACITY_SCAN_STATS", None)
+
+    def _denied_hash(_p: Path) -> str:
+        raise OSError(13, f"read secrets under {src}")
+
+    monkeypatch.setattr(discovery, "_file_sha256", _denied_hash)
+    result = _preflight_no_side_effects(plan, tmp_path)
+    assert result.ready is False
+    assert "SOURCE_UNAVAILABLE" in result.error_codes
+    _assert_no_private_paths(result, tmp_path)
+    assert mod._LAST_CAPACITY_SCAN_STATS is None  # scan never entered
+
+
+def test_strict_discovery_enumeration_raises_on_traversal_error(
+    tmp_path: Path,
+) -> None:
+    # Direct unit proof of the strict flag contract in discovery.
+    import dbf_anonymizer.discovery as discovery
+
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "table.dbf").write_bytes(b"placeholder")
+
+    def _broken_walk(top: Any, onerror: Any = None, followlinks: bool = False) -> Any:
+        if onerror is not None:
+            onerror(OSError(13, "denied"))
+        return iter(())
+
+    real_walk = discovery.os.walk
+    try:
+        discovery.os.walk = _broken_walk  # type: ignore[assignment]
+        with pytest.raises(OSError):
+            discovery.enumerate_in_scope_paths(tmp_path, strict=True)
+        # Non-strict planning behaviour is unchanged (errors are skipped).
+        assert discovery.enumerate_in_scope_paths(tmp_path) == {}
+        with pytest.raises(OSError):
+            discovery.collect_fingerprint_entries(tmp_path, strict=True)
+        assert discovery.collect_fingerprint_entries(tmp_path) == ()
+    finally:
+        discovery.os.walk = real_walk  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# 30. Multiple simultaneous findings aggregate deterministically
 # ---------------------------------------------------------------------------
 def test_multiple_findings_aggregate_deterministically(tmp_path: Path) -> None:
     src = tmp_path / "src"
@@ -668,7 +1265,7 @@ def test_multiple_findings_aggregate_deterministically(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 30. Repeatability / determinism
+# 31. Repeatability / determinism
 # ---------------------------------------------------------------------------
 def test_repeated_preflight_is_exactly_equal(tmp_path: Path) -> None:
     plan = _build_plan(tmp_path)

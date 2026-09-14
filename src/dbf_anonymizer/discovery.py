@@ -132,18 +132,52 @@ def discover_tables(source_root: Path) -> tuple[DiscoveredTable, ...]:
     return tuple(tables)
 
 
+def enumerate_in_scope_paths(source_root: Path, *, strict: bool = False) -> dict[str, Path]:
+    """Map relative posix path -> absolute path for in-scope source artifacts.
+
+    Includes all DBF, FPT, CDX and IDX files found in the tree.  With
+    ``strict=True`` (the preflight/verification setting) a traversal error
+    (unreadable directory, disappeared entry) is raised as ``OSError`` so an
+    incomplete enumeration can never silently degrade source completeness;
+    with ``strict=False`` the historical P1-005 planning behaviour is kept.
+    """
+    def _on_error(error: OSError) -> None:
+        if strict:
+            raise error
+
+    result: dict[str, Path] = {}
+    if not source_root.is_dir():
+        return result
+    for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
+        for name in filenames:
+            suffix = Path(name).suffix.lower()
+            if suffix in IN_SCOPE_EXTENSIONS:
+                full = Path(dirpath) / name
+                result[full.relative_to(source_root).as_posix()] = full
+    return result
+
+
 def collect_fingerprint_entries(
     source_root: Path,
+    *,
+    strict: bool = False,
 ) -> tuple[ArtifactFingerprintEntry, ...]:
     """Compute fingerprint entries for all in-scope artifacts under *source_root*.
 
     Includes all DBF, FPT, CDX, IDX files found in the tree.
     IDX files are included in the global fingerprint but never associated
-    with a specific DBF.
+    with a specific DBF.  The fingerprint payload format is unchanged.
+    ``strict=True`` raises ``OSError`` on traversal errors instead of silently
+    skipping them (used by preflight so incomplete enumeration cannot masquerade
+    as a complete fingerprint).
     """
+    def _on_error(error: OSError) -> None:
+        if strict:
+            raise error
+
     entries: list[ArtifactFingerprintEntry] = []
 
-    for dirpath, _dirnames, filenames in os.walk(source_root):
+    for dirpath, _dirnames, filenames in os.walk(source_root, onerror=_on_error):
         for fname in sorted(filenames):
             p = Path(dirpath) / fname
             suffix = Path(fname).suffix.lower()

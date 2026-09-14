@@ -13,7 +13,11 @@ Guarantees enforced by this module:
 * ordinary preflight findings are AGGREGATED into a single ``PreflightResult``
   with ``ready=False`` rather than throwing after the first finding;
 * the public result carries only bounded machine codes and capability facts
-  (no source values, memo payloads, absolute paths or dependency messages).
+  (no source values, memo payloads, absolute paths or dependency messages);
+* filesystem inspection failures (permission errors, vanished entries) never
+  leak raw ``OSError`` text or private absolute paths: they degrade to the
+  deterministic ``PATH_INSPECTION_UNAVAILABLE`` / ``SOURCE_UNAVAILABLE`` /
+  ``STORAGE_ESTIMATE_UNAVAILABLE`` findings and the caller fails closed.
 
 Exceptions remain reserved for invalid object contracts, unexpected dependency
 failures and impossible internal invariants (see :mod:`dbf_anonymizer.errors`).
@@ -25,6 +29,40 @@ ascending code-string order. No code is duplicated within a category. The
 result depends only on the ``Plan``, the current source state and the
 deterministic capability/storage inputs, so repeated calls over the same state
 produce exactly equal ``to_dict()`` output.
+
+Pseudonym capacity model (GLOBAL_TEXT C/V domain)
+-------------------------------------------------
+For every exact non-empty decoded original across the WHOLE dataset there is
+ONE global strictest width: ``strictest_width(original)`` is the minimum
+logical byte-width constraint encountered across every occurrence of that
+original in any participating table/field. The same original is represented
+exactly once in the global domain, no matter in how many fields, widths or
+tables it occurs. Feasibility is Hall's condition over the nested token pools:
+for each field width ``w`` (ascending), the number of distinct originals whose
+strictest width is ``<= w`` must not exceed the token space
+``base^1 + ... + base^w``.
+
+The proof runs in two phases:
+
+* PHASE A — cheap mathematical upper bounds: with ``schema.record_count`` and
+  the participating C/V field lengths, the cumulative occurrence upper bound
+  ``sum(record_count * participating fields with length <= w)`` bounds the
+  distinct-original count from above. When that bound already fits the token
+  space, the width constraint is proven WITHOUT storing any source value.
+* PHASE B — exact tracking only for tight widths: widths whose occurrence
+  bound exceeds the token space keep exact originals (exact-value equality,
+  never digests) in a bounded in-memory tracker, each mapped to its strictest
+  width. The tracker has a hard, enforced integer ceiling
+  (``_MAX_EXACT_VALUES``): membership is tested BEFORE the ceiling so repeated
+  duplicates never falsely exceed it, and a genuine new value beyond the
+  ceiling fails closed with ``PSEUDONYM_CAPACITY_UNPROVEN`` instead of
+  exhausting RAM or pretending mathematical insufficiency. An exact
+  contradiction found within the ceiling fails closed with
+  ``PSEUDONYM_CAPACITY_INSUFFICIENT``.
+
+The public result contains no original values; the bounded scan retains at
+most ``_MAX_EXACT_VALUES`` source strings in memory and never serializes them.
+No SQLite database and no original-bearing temporary file is created.
 """
 
 from __future__ import annotations
@@ -32,7 +70,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable
 
 import dbfbridge
 
@@ -51,7 +89,7 @@ from dbf_anonymizer.models import (
 __all__ = ["preflight", "PREFLIGHT_CODE_VERSION", "PreflightCode"]
 
 #: Versioned identity of the preflight code vocabulary.
-PREFLIGHT_CODE_VERSION = "1.0"
+PREFLIGHT_CODE_VERSION = "1.1"
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +103,7 @@ class PreflightCode:
 
     # --- rejection (error_codes, ready=False) ---
     PATH_OVERLAP = "PATH_OVERLAP"
+    PATH_INSPECTION_UNAVAILABLE = "PATH_INSPECTION_UNAVAILABLE"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     SOURCE_FINGERPRINT_MISMATCH = "SOURCE_FINGERPRINT_MISMATCH"
     DESTINATION_CONFLICT = "DESTINATION_CONFLICT"
@@ -79,6 +118,7 @@ class PreflightCode:
     STORAGE_ESTIMATE_UNAVAILABLE = "STORAGE_ESTIMATE_UNAVAILABLE"
     RELATIONSHIP_DOMAIN_UNVERIFIED = "RELATIONSHIP_DOMAIN_UNVERIFIED"
     PSEUDONYM_CAPACITY_INSUFFICIENT = "PSEUDONYM_CAPACITY_INSUFFICIENT"
+    PSEUDONYM_CAPACITY_UNPROVEN = "PSEUDONYM_CAPACITY_UNPROVEN"
 
     # --- advisory (warning_codes) ---
     STRUCTURAL_CDX_DATA_ONLY = "STRUCTURAL_CDX_DATA_ONLY"
@@ -93,6 +133,7 @@ class PreflightCode:
 _ERROR_CODES = frozenset(
     {
         PreflightCode.PATH_OVERLAP,
+        PreflightCode.PATH_INSPECTION_UNAVAILABLE,
         PreflightCode.SOURCE_UNAVAILABLE,
         PreflightCode.SOURCE_FINGERPRINT_MISMATCH,
         PreflightCode.DESTINATION_CONFLICT,
@@ -107,6 +148,7 @@ _ERROR_CODES = frozenset(
         PreflightCode.STORAGE_ESTIMATE_UNAVAILABLE,
         PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED,
         PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT,
+        PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN,
     }
 )
 _WARNING_CODES = frozenset(
@@ -138,33 +180,98 @@ def _default_disk_usage(path: Path) -> tuple[int, int, int]:
     return int(usage.total), int(usage.used), int(usage.free)
 
 
+def _default_stat_dev(path: Path) -> int:
+    """Return the st_dev of *path* (used to compare filesystems)."""
+    return os.stat(path).st_dev
+
+
+def _default_path_exists(path: Path) -> bool:
+    return path.exists()
+
+
+def _default_path_is_file(path: Path) -> bool:
+    return path.is_file()
+
+
+def _default_path_is_dir(path: Path) -> bool:
+    return path.is_dir()
+
+
+def _default_iterdir(path: Path) -> list[Path]:
+    return list(path.iterdir())
+
+
 _resolve_path: Callable[[Path], Path] = _default_resolve_path
 _disk_usage: Callable[[Path], tuple[int, int, int]] = _default_disk_usage
+_stat_dev: Callable[[Path], int] = _default_stat_dev
+_path_exists: Callable[[Path], bool] = _default_path_exists
+_path_is_file: Callable[[Path], bool] = _default_path_is_file
+_path_is_dir: Callable[[Path], bool] = _default_path_is_dir
+_iterdir: Callable[[Path], list[Path]] = _default_iterdir
 
-#: Conservative protected-vault reserve (bytes) used when reversible transforms
-#: are planned. Documented constant; not a benchmark figure.
-_VAULT_RESERVE_BYTES = 1024 * 1024
+# ---------------------------------------------------------------------------
+# Conservative storage-risk constants (documented risk bounds, NOT benchmark
+# figures and NOT exact future-size predictions)
+# ---------------------------------------------------------------------------
+#: Peak exposure of the fresh output footprint: the published output plus one
+#: full staged/temporary copy of the same data that may coexist before commit.
+#: The fresh DBF/FPT output never exceeds the in-scope source footprint, so the
+#: source footprint bounds the published output; doubling it covers the
+#: staged/temporary copy that coexists until the write commits.
+_STAGING_FACTOR = 2
 
 #: Conservative dbfbridge writer/spool reserve (bytes) for temporary/spill
 #: state created while a table is written. Documented constant; not a
 #: benchmark figure.
 _WRITER_SPOOL_RESERVE_BYTES = 16 * 1024 * 1024
 
-#: Peak exposure of the fresh output footprint: the published output plus one
-#: full staged/temporary copy of the same data that may coexist before commit.
-_STAGING_FACTOR = 2
+#: Conservative source-size multiplier for the recovery-vault risk reserve.
+#: Rationale (risk bound, not an exact SQLite size prediction): when reversible
+#: transforms are planned, the vault stores the global mapping domain (every
+#: distinct original plus its pseudonym and per-occurrence references) and the
+#: masked memo volumes; together these can approach the full in-scope source
+#: text volume, and SQLite b-tree/overflow-page layout can roughly double the
+#: raw stored content. A multiplier of 2 therefore over-covers the realistic
+#: recovery material for any dataset instead of under-estimating it.
+_VAULT_SOURCE_FACTOR = 2
 
-#: Upper bound on exact distinct values retained per width class during the
-#: capacity scan. Tight classes keep at most ``tokens(width) + 1`` values;
-#: reaching a bound fails closed instead of growing unbounded.
-_MAX_TRACKED_DISTINCT = 65536
+#: Conservative fixed vault overhead floor (bytes). Rationale: SQLite main
+#: database header/schema/page bookkeeping plus transient journal/WAL/rollback
+#: exposure that does not scale with content on small datasets. Documented
+#: constant; not a benchmark figure.
+_VAULT_FIXED_RESERVE_BYTES = 32 * 1024 * 1024
+
+#: Hard, enforced integer ceiling on exact source originals retained by the
+#: capacity scan (PHASE B). Reaching the ceiling fails closed with
+#: ``PSEUDONYM_CAPACITY_UNPROVEN``; it is never treated as capacity data.
+_MAX_EXACT_VALUES = 65536
+
+#: Bounded-state instrumentation of the last capacity scan. Counts and codes
+#: only — never source values. Tests may inspect it to prove the memory
+#: ceiling is actually enforced; it is not part of the public result.
+_LAST_CAPACITY_SCAN_STATS: dict[str, int | str] | None = None
+
+_CAPACITY_OK = "OK"
+_CAPACITY_INSUFFICIENT = "INSUFFICIENT"
+_CAPACITY_UNPROVEN = "UNPROVEN"
+
+
+def _vault_reserve_bytes(source_footprint: int) -> int:
+    """Conservative recovery-vault storage RISK RESERVE for a dataset.
+
+    Scales with the source footprint (see ``_VAULT_SOURCE_FACTOR`` and
+    ``_VAULT_FIXED_RESERVE_BYTES`` for the documented bound). This is an
+    explicitly conservative provisional bound, not an exact prediction of the
+    future SQLite vault size.
+    """
+    return _VAULT_SOURCE_FACTOR * max(0, source_footprint) + _VAULT_FIXED_RESERVE_BYTES
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
     """Return the nearest existing ancestor of *path* (for disk usage)."""
     candidate = path
     while True:
-        if candidate.exists():
+        if _path_exists(candidate):
             return candidate
         parent = candidate.parent
         if parent == candidate:  # reached filesystem root
@@ -206,33 +313,28 @@ class _Findings:
 
 
 # ---------------------------------------------------------------------------
-# Source artifact enumeration (read-only)
+# Source artifact enumeration (read-only, STRICT traversal)
 # ---------------------------------------------------------------------------
-def _enumerate_in_scope(source_root: Path) -> dict[str, Path]:
-    """Map relative posix path -> absolute path for in-scope source artifacts."""
-    result: dict[str, Path] = {}
-    if not source_root.is_dir():
-        return result
-    for dirpath, _dirnames, filenames in os.walk(source_root):
-        for name in filenames:
-            suffix = Path(name).suffix.lower()
-            if suffix not in discovery.IN_SCOPE_EXTENSIONS:
-                continue
-            full = Path(dirpath) / name
-            result[full.relative_to(source_root).as_posix()] = full
-    return result
+def _enumerate_in_scope_strict(source_root: Path) -> dict[str, Path]:
+    """Strict in-scope enumeration: traversal errors raise ``OSError``.
+
+    Source verification in preflight must never treat an incomplete traversal
+    as complete: an unreadable directory or disappeared entry fails closed
+    (``SOURCE_UNAVAILABLE``) instead of being silently skipped.
+    """
+    return discovery.enumerate_in_scope_paths(source_root, strict=True)
 
 
-def _source_footprint_bytes(source_root: Path) -> int | None:
+def _source_footprint_bytes(source_files: dict[str, Path] | None) -> int | None:
     """In-scope source DBF/FPT byte footprint, or None if not defensible.
 
-    A missing source root or any stat failure makes the footprint unknown;
-    the storage risk model then fails closed rather than under-estimate.
+    Any stat failure makes the footprint unknown; the storage risk model then
+    fails closed rather than under-estimate.
     """
-    if not source_root.is_dir():
+    if source_files is None:
         return None
     total = 0
-    for rel, full in _enumerate_in_scope(source_root).items():
+    for rel, full in sorted(source_files.items()):
         if rel.lower().endswith((".dbf", ".fpt")):
             try:
                 total += full.stat().st_size
@@ -241,14 +343,16 @@ def _source_footprint_bytes(source_root: Path) -> int | None:
     return total
 
 
-def _standalone_idx_present(source_root: Path) -> bool:
-    return any(rel.lower().endswith(".idx") for rel in _enumerate_in_scope(source_root))
-
-
 def _recompute_source_fingerprint(source_root: Path) -> str | None:
-    """Recompute the current source fingerprint using the P1-005/P0-004 logic."""
+    """Recompute the current source fingerprint using the P1-005/P0-004 logic.
+
+    STRICT traversal: an incomplete enumeration (unreadable directory, racing
+    deletion) raises ``OSError`` and the caller reports ``SOURCE_UNAVAILABLE``
+    instead of treating a partial fingerprint as complete. The fingerprint
+    payload format itself is unchanged.
+    """
     try:
-        entries = discovery.collect_fingerprint_entries(source_root)
+        entries = discovery.collect_fingerprint_entries(source_root, strict=True)
     except OSError:
         return None
     return discovery.compute_source_fingerprint(entries)
@@ -295,7 +399,7 @@ def _ancestor_is_file(path: Path) -> bool:
     """
     ancestor = path.parent
     while True:
-        if ancestor.is_file():
+        if _path_is_file(ancestor):
             return True
         parent = ancestor.parent
         if parent == ancestor:  # reached filesystem root
@@ -309,18 +413,20 @@ def _destination_conflict(output: Path, vault: Path) -> bool:
     Vault reuse is intentionally NOT implemented here (future REQ-P2-010); an
     existing vault file therefore fails closed as a conflict. The ancestor
     chains of BOTH targets are checked: a file anywhere in the hierarchy
-    makes the destination uncreatable.
+    makes the destination uncreatable. Raises ``OSError`` when existing state
+    cannot be inspected; the caller converts that into the deterministic
+    ``PATH_INSPECTION_UNAVAILABLE`` finding (never a raw OS error/path).
     """
     # Output is a directory target.
-    if output.exists():
-        if output.is_file():
+    if _path_exists(output):
+        if _path_is_file(output):
             return True  # type conflict: cannot publish a directory over a file
-        if output.is_dir() and any(output.iterdir()):
+        if _path_is_dir(output) and any(_iterdir(output)):
             return True  # non-empty directory would overwrite existing state
 
     # Vault is a file target.
-    if vault.exists():
-        if vault.is_dir():
+    if _path_exists(vault):
+        if _path_is_dir(vault):
             return True  # type conflict: cannot place a file where a dir is
         return True  # existing vault file: reuse unimplemented -> fail closed
 
@@ -419,10 +525,12 @@ def _check_index_conditions(plan: Plan, findings: _Findings) -> None:
             findings.warn(PreflightCode.DBC_BOUND_REDUCED)
 
 
-def _check_standalone_idx(source_root: Path, plan: Plan, findings: _Findings) -> None:
+def _check_standalone_idx(
+    source_files: dict[str, Path] | None, plan: Plan, findings: _Findings
+) -> None:
     if plan.output_profile is not TransferProfile.DATA_ONLY:
         return
-    if _standalone_idx_present(source_root):
+    if source_files and any(rel.lower().endswith(".idx") for rel in source_files):
         findings.warn(PreflightCode.STANDALONE_IDX_DATA_ONLY)
 
 
@@ -455,52 +563,74 @@ def _candidate_alphabet(participating_encodings: frozenset[str]) -> str:
     return "".join(keep)
 
 
-def _tokens_up_to_width(max_width: int, base: int, limit: int | None = None) -> int:
-    """Sum base^1..base^max_width, optionally stopping once *limit* is reached."""
+def _token_space_at_least(max_width: int, base: int, needed: int) -> bool:
+    """True when base^1 + ... + base^max_width >= needed.
+
+    Streams the geometric terms and stops as soon as *needed* is reached, so
+    wide field lengths never build astronomically large integers.
+    """
     if max_width < 1 or base < 1:
-        return 0
+        return needed <= 0
     total = 0
     term = 1
     for _ in range(1, max_width + 1):
         term *= base
         total += term
-        if limit is not None and total >= limit:
-            return total
-    return total
+        if total >= needed:
+            return True
+    return False
 
 
-def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
+def _capacity_sufficient(source_files: dict[str, Path], plan: Plan) -> str:
     """Conservative, deterministic GLOBAL_TEXT C/V capacity feasibility check.
 
     Reads only the C/V character fields that participate in the global text
     domain (deleted records included, because they are transformed later).
     NULL and empty values are preserved and therefore do not consume capacity.
+    Varchar significant trailing spaces are part of the exact value, so
+    ``"AB"`` and ``"AB "`` are distinct originals.
 
-    Feasibility is decided on EXACT distinct values (never on digests) against
-    the mathematical token-space upper bound per width class: the number of
-    distinct values of width <= w must not exceed base^1 + ... + base^w.
-    Self-exclusion (a value must never map to itself) is only infeasible in
-    the single-token edge case; it never removes a token per value.
+    The GLOBAL domain holds ONE representation per exact non-empty decoded
+    original, mapped to its ONE strictest width: the minimum logical
+    byte-width constraint encountered across every occurrence of that original
+    in any participating table/field. The same original is never counted twice
+    (cross-width or cross-table).
 
-    Memory is bounded: each width class retains at most
-    ``min(tokens(width), _MAX_TRACKED_DISTINCT) + 1`` exact values; reaching a
-    bound fails closed instead of tracking the whole dataset.
-    No source value is ever logged or serialized.
+    Feasibility is Hall's condition over the nested token pools: for every
+    field width ``w`` (ascending), the number of distinct originals whose
+    strictest width is ``<= w`` must not exceed the token space
+    ``base^1 + ... + base^w`` (exact-value equality, never digests;
+    self-exclusion is only infeasible in the single-token edge case).
+
+    PHASE A proves width constraints mathematically from
+    ``schema.record_count`` and the participating field lengths without
+    retaining any source value. PHASE B tracks exact originals only for tight
+    widths, under the hard enforced ceiling ``_MAX_EXACT_VALUES``; exceeding
+    it fails closed with ``_CAPACITY_UNPROVEN``.
+
+    Returns ``_CAPACITY_OK``, ``_CAPACITY_INSUFFICIENT`` or
+    ``_CAPACITY_UNPROVEN``. No source value is ever logged or serialized.
     """
-    if "PSEUDONYMIZE_REVERSIBLE" not in plan.policy.transformation_classes:
-        return True
+    global _LAST_CAPACITY_SCAN_STATS
+    _LAST_CAPACITY_SCAN_STATS = {
+        "retained_distinct": 0,
+        "exact_ceiling": _MAX_EXACT_VALUES,
+        "phase_a_proven_widths": 0,
+        "tight_widths": 0,
+        "outcome": _CAPACITY_OK,
+    }
 
-    tables = _enumerate_in_scope(source_root)
-    dbf_paths = sorted(
-        rel for rel in tables if rel.lower().endswith(".dbf")
-    )
-    if not dbf_paths:
-        return True
+    if "PSEUDONYMIZE_REVERSIBLE" not in plan.policy.transformation_classes:
+        return _CAPACITY_OK
+
+    dbf_rels = sorted(rel for rel in source_files if rel.lower().endswith(".dbf"))
+    if not dbf_rels:
+        return _CAPACITY_OK
 
     participating: set[str] = set()
-    sensitive: list[tuple[str, Path, list[tuple[str, int]]]] = []
-    for rel in dbf_paths:
-        full = tables[rel]
+    sensitive: list[tuple[str, Path, int, list[tuple[str, int]]]] = []
+    for rel in dbf_rels:
+        full = source_files[rel]
         try:
             schema = dbfbridge.read_schema(full)  # type: ignore[attr-defined]
         except Exception as exc:  # unexpected dependency failure
@@ -524,46 +654,101 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
         if fields:
             if schema.encoding:
                 participating.add(schema.encoding)
-            sensitive.append((rel, full, fields))
+            sensitive.append((rel, full, schema.record_count, fields))
 
     if not sensitive:
-        return True
+        return _CAPACITY_OK
 
     alphabet = _candidate_alphabet(frozenset(participating))
     if not alphabet:
-        return False  # no safe common alphabet -> fail closed
+        _LAST_CAPACITY_SCAN_STATS["outcome"] = _CAPACITY_INSUFFICIENT
+        return _CAPACITY_INSUFFICIENT  # no safe common alphabet -> fail closed
 
     base = len(alphabet)
-    widths = sorted({length for _rel, _full, fields in sensitive for _n, length in fields})
-    class_cap = {
-        width: _tokens_up_to_width(width, base, _MAX_TRACKED_DISTINCT) + 1
-        for width in widths
-    }
-    class_sets: dict[int, set[str]] = {width: set() for width in widths}
+    widths = sorted({length for _rel, _full, _rc, fields in sensitive for _n, length in fields})
 
-    for rel, full, fields in sensitive:
-        names = [name for name, _length in fields]
-        length_by_name = dict(fields)
+    # PHASE A — cheap mathematical upper bounds per width constraint.
+    tight: list[int] = []
+    proven = 0
+    for width in widths:
+        occurrence_upper_bound = 0
+        for _rel, _full, record_count, table_fields in sensitive:
+            participating_narrow = sum(1 for _n, length in table_fields if length <= width)
+            occurrence_upper_bound += record_count * participating_narrow
+        if _token_space_at_least(width, base, occurrence_upper_bound):
+            proven += 1
+        else:
+            tight.append(width)
+    if base == 1 and widths and 1 not in tight:
+        # With a one-token space the self-exclusion rule can genuinely fail,
+        # so width 1 always requires the exact value proof.
+        tight = [1] + tight
+    _LAST_CAPACITY_SCAN_STATS["phase_a_proven_widths"] = proven
+    _LAST_CAPACITY_SCAN_STATS["tight_widths"] = len(tight)
+
+    if not tight:
+        return _CAPACITY_OK  # every width constraint proven without exact values
+
+    # PHASE B — exact tracking only for tight widths (strictest width per
+    # original, one global entry per original, hard enforced ceiling).
+    max_tight = tight[-1]
+    tracker: dict[str, int] = {}
+    counts: dict[int, int] = {width: 0 for width in tight}
+    outcome = _CAPACITY_OK
+
+    def _note_strictest(previous: int | None, strictest: int) -> bool:
+        """Update per-width distinct counts for one original; True when a
+        Hall condition is violated.
+
+        ``previous=None`` marks a newly tracked original (it must count toward
+        every tight width >= its strictest width); otherwise the original's
+        strictest width decreased from *previous* to *strictest* and it gains
+        the tight widths in ``[strictest, previous)``.
+        """
+        for width in tight:
+            if width >= strictest and (previous is None or width < previous):
+                counts[width] += 1
+                if not _token_space_at_least(width, base, counts[width]):
+                    return True
+        return False
+
+    for rel, full, _record_count, table_fields in sensitive:
+        selected = [(name, length) for name, length in table_fields if length <= max_tight]
+        if not selected:
+            continue
+        names = [name for name, _length in selected]
         try:
             for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
                 full, include_deleted=True, fields=names, memo="lazy"
             ):
-                for name in names:
+                for name, length in selected:
                     value = record.values.get(name)
                     if value is None or value == "":
                         continue
                     if not isinstance(value, str):
                         continue
-                    width = length_by_name[name]
-                    members = class_sets[width]
-                    if len(members) < class_cap[width]:
-                        members.add(value)
-                    else:
-                        # Distinct count exceeded the class bound: either the
-                        # token budget is exhausted (infeasible) or the width
-                        # class is pathological (huge token space). Both fail
-                        # closed; never an unbounded in-memory scan.
-                        return False
+                    strictest = tracker.get(value)
+                    if strictest is None:
+                        if len(tracker) >= _MAX_EXACT_VALUES:
+                            # Hard memory ceiling: the exact proof cannot be
+                            # completed within the bounded state -> fail
+                            # closed without claiming mathematical
+                            # insufficiency. Membership was already tested.
+                            outcome = _CAPACITY_UNPROVEN
+                            break
+                        tracker[value] = length
+                        if _note_strictest(None, length):
+                            outcome = _CAPACITY_INSUFFICIENT
+                            break
+                    elif length < strictest:
+                        tracker[value] = length
+                        if _note_strictest(strictest, length):
+                            outcome = _CAPACITY_INSUFFICIENT
+                            break
+                if outcome is not _CAPACITY_OK:
+                    break
+            if outcome is not _CAPACITY_OK:
+                break
         except Exception as exc:  # unexpected dependency failure
             raise DBFBridgeError.from_exception(
                 exc,
@@ -574,34 +759,28 @@ def _capacity_sufficient(source_root: Path, plan: Plan) -> bool:
                 ),
             ) from None
 
-    # Feasibility: exact distinct counts vs the token-space upper bound, in
-    # ascending width order (narrow classes bind first).
-    smaller = 0
-    total_distinct = 0
-    for width in widths:
-        count = len(class_sets[width])
-        total_distinct += count
-        if count + smaller > _tokens_up_to_width(width, base):
-            return False
-        smaller += count
-    if total_distinct == 0:
-        return True
+    _LAST_CAPACITY_SCAN_STATS["retained_distinct"] = len(tracker)
+    _LAST_CAPACITY_SCAN_STATS["outcome"] = outcome
 
-    # Single-token edge case: with one value and a one-token space, that value
-    # must not be the only token (it could not receive a different pseudonym).
-    if total_distinct == 1 and base == 1:
-        only_width = next(width for width in widths if class_sets[width])
-        only_value = next(iter(class_sets[only_width]))
-        if only_width == 1 and only_value == alphabet[0]:
-            return False
-    return True
+    if outcome is not _CAPACITY_OK:
+        return outcome
+
+    # Single-token edge case: with a one-character alphabet the only token is
+    # that character itself; a single original equal to it could not receive a
+    # different pseudonym.
+    if base == 1 and counts.get(1, 0) == 1:
+        only_value = next(value for value, strictest in tracker.items() if strictest == 1)
+        if only_value == alphabet:
+            _LAST_CAPACITY_SCAN_STATS["outcome"] = _CAPACITY_INSUFFICIENT
+            return _CAPACITY_INSUFFICIENT
+    return _CAPACITY_OK
 
 
 # ---------------------------------------------------------------------------
 # Storage-space risk
 # ---------------------------------------------------------------------------
 def _storage_ok(
-    source_root: Path,
+    source_files: dict[str, Path] | None,
     output: Path,
     vault: Path,
     recovery_enabled: bool,
@@ -611,14 +790,15 @@ def _storage_ok(
     The risk model accounts for the fresh output footprint, the peak staged
     exposure (output plus one full temporary copy), the dbfbridge
     writer/spool reserve and, when reversible transforms are planned, the
-    protected recovery-state reserve. If any input needed for a defensible
-    estimate is unknown, None is returned and the caller fails closed.
+    source-scaled recovery-vault reserve (:func:`_vault_reserve_bytes`). If
+    any input needed for a defensible estimate is unknown, None is returned
+    and the caller fails closed.
     """
-    footprint = _source_footprint_bytes(source_root)
+    footprint = _source_footprint_bytes(source_files)
     if footprint is None:
         return None
     required_output = footprint * _STAGING_FACTOR + _WRITER_SPOOL_RESERVE_BYTES
-    required_vault = _VAULT_RESERVE_BYTES if recovery_enabled else 0
+    required_vault = _vault_reserve_bytes(footprint) if recovery_enabled else 0
 
     try:
         out_total, _out_used, out_free = _disk_usage(output)
@@ -630,8 +810,8 @@ def _storage_ok(
         return None
 
     try:
-        out_dev = os.stat(_nearest_existing_ancestor(output)).st_dev
-        vault_dev = os.stat(_nearest_existing_ancestor(vault)).st_dev
+        out_dev = _stat_dev(_nearest_existing_ancestor(output))
+        vault_dev = _stat_dev(_nearest_existing_ancestor(vault))
     except OSError:
         return None
 
@@ -668,22 +848,51 @@ def preflight(plan: Plan) -> PreflightResult:
     vault_path = Path(context.vault_path)
 
     # 1. Source/output/vault overlap (resolved aliases where practical).
-    if _paths_overlap(source_root, output_root, vault_path):
+    #    Unresolvable/unsafe path inspection fails closed deterministically.
+    try:
+        overlap = _paths_overlap(source_root, output_root, vault_path)
+    except OSError:
+        overlap = False
+        findings.error(PreflightCode.PATH_INSPECTION_UNAVAILABLE)
+    if overlap:
         findings.error(PreflightCode.PATH_OVERLAP)
 
-    # 2. Source availability + freshness: a missing or unreadable source
-    #    fails closed; a changed source is a fingerprint mismatch.
-    if not source_root.is_dir():
+    # 2. Source availability + freshness, under STRICT traversal: a missing or
+    #    unreadable source fails closed as SOURCE_UNAVAILABLE (an incomplete
+    #    enumeration is never treated as complete); a changed source is a
+    #    fingerprint mismatch. Downstream source-consuming checks (standalone
+    #    IDX inventory, capacity scan) only run on verified source state.
+    source_files: dict[str, Path] | None = None
+    source_verified = False
+    try:
+        root_available = _path_is_dir(source_root)
+    except OSError:
+        root_available = False
+    if not root_available:
         findings.error(PreflightCode.SOURCE_UNAVAILABLE)
     else:
-        current_fp = _recompute_source_fingerprint(source_root)
-        if current_fp is None:
+        try:
+            source_files = _enumerate_in_scope_strict(source_root)
+        except OSError:
+            source_files = None
             findings.error(PreflightCode.SOURCE_UNAVAILABLE)
-        elif current_fp != plan.dataset.source_fingerprint:
-            findings.error(PreflightCode.SOURCE_FINGERPRINT_MISMATCH)
+        if source_files is not None:
+            current_fp = _recompute_source_fingerprint(source_root)
+            if current_fp is None:
+                findings.error(PreflightCode.SOURCE_UNAVAILABLE)
+            elif current_fp != plan.dataset.source_fingerprint:
+                findings.error(PreflightCode.SOURCE_FINGERPRINT_MISMATCH)
+            else:
+                source_verified = True
 
     # 3. Destination conflicts (type conflicts / unsafe existing state).
-    if _destination_conflict(output_root, vault_path):
+    #    Uninspectable existing state fails closed deterministically.
+    try:
+        conflict = _destination_conflict(output_root, vault_path)
+    except OSError:
+        conflict = False
+        findings.error(PreflightCode.PATH_INSPECTION_UNAVAILABLE)
+    if conflict:
         findings.error(PreflightCode.DESTINATION_CONFLICT)
 
     # 4. Table-level field/companion findings (unsupported/unsafe/memo/cdx).
@@ -702,19 +911,28 @@ def preflight(plan: Plan) -> PreflightResult:
     _check_index_conditions(plan, findings)
 
     # 9. Standalone IDX presence (dataset-level, no ownership inference).
-    if source_root.is_dir():
-        _check_standalone_idx(source_root, plan, findings)
+    if source_files is not None:
+        _check_standalone_idx(source_files, plan, findings)
 
     # 10. Pseudonym capacity feasibility (read-only, GLOBAL_TEXT C/V only).
-    if source_root.is_dir() and "PSEUDONYMIZE_REVERSIBLE" in plan.policy.transformation_classes:
-        if not _capacity_sufficient(source_root, plan):
+    #     Requires verified source state AND the direct-read capability
+    #     (schema + record streaming): a missing capability is reported as
+    #     CAPABILITY_MISSING and the capacity scan is not entered at all.
+    if (
+        source_verified
+        and source_files is not None
+        and caps.direct_read
+        and "PSEUDONYMIZE_REVERSIBLE" in plan.policy.transformation_classes
+    ):
+        outcome = _capacity_sufficient(source_files, plan)
+        if outcome == _CAPACITY_INSUFFICIENT:
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
+        elif outcome == _CAPACITY_UNPROVEN:
+            findings.error(PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN)
 
     # 11. Storage-space risk (side-effect-free; fail closed if the estimate
     #     cannot be made defensibly).
-    storage = _storage_ok(
-        source_root, output_root, vault_path, plan.policy.recovery_enabled
-    )
+    storage = _storage_ok(source_files, output_root, vault_path, plan.policy.recovery_enabled)
     if storage is None:
         findings.error(PreflightCode.STORAGE_ESTIMATE_UNAVAILABLE)
     elif not storage:
