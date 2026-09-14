@@ -1,0 +1,521 @@
+"""REQ-P2-003 — vault constraint/transaction consistency (foundation evidence).
+
+Covers: real SQLite enforcement of both bijection directions per mapping
+domain (text and numeric-key), independence of different domains, the
+deterministic ``BEGIN IMMEDIATE`` transaction unit with proven before/after
+rollback state, deterministic failure/crash injection at transaction-safe
+seams, reopen-after-interruption integrity, the no-hidden-autocommit contract
+and the authoritative writer lease that gates all ordinary mutations.
+
+Mapping values are synthetic canaries; originals live ONLY inside the
+protected vault and never appear in public errors.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from dbf_anonymizer import ErrorCode, MappingError, VaultError
+from dbf_anonymizer.vault import (
+    VAULT_DATABASE_FILENAME,
+    VaultDatabase,
+    mappings,
+    new_writer_token,
+)
+from support.vault_sessions import (
+    error_boundary_payload,
+    install_failing_execute,
+    writer_session,
+)
+
+SOURCE_FP = "src-" + "7" * 60
+POLICY_FP = "pol-" + "8" * 60
+RELATIONSHIP_FP = "rel-" + "9" * 60
+DBFBRIDGE_VERSION = "1.1.0"
+
+ORIGINAL_A = "CANARY_ORIGINAL_ALPHA"
+ORIGINAL_B = "CANARY_ORIGINAL_BETA"
+PSEUDONYM_A = "PSEUDO_ALPHA"
+PSEUDONYM_B = "PSEUDO_BETA"
+
+
+def _create(tmp_path: Path) -> VaultDatabase:
+    return VaultDatabase.open(
+        tmp_path / "vault" / VAULT_DATABASE_FILENAME,
+        create=True,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+        dbfbridge_version=DBFBRIDGE_VERSION,
+    )
+
+
+def _reopen(tmp_path: Path) -> VaultDatabase:
+    return VaultDatabase.open(
+        tmp_path / "vault" / VAULT_DATABASE_FILENAME,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Database-enforced bijection (independent of any future allocator)
+# ---------------------------------------------------------------------------
+def test_duplicate_original_with_conflicting_pseudonym_is_rejected(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            # Same original -> conflicting pseudonym: UNIQUE(domain, original).
+            with pytest.raises(MappingError) as excinfo:
+                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+            assert excinfo.value.code is ErrorCode.MAPPING_CONFLICT
+            assert excinfo.value.context.detail_code == "MAPPING_BIJECTION_REJECTED"
+            # Duplicate pseudonym -> conflicting original: UNIQUE(domain, pseudonym).
+            with pytest.raises(MappingError):
+                mappings.add_text_mapping(vault, domain, ORIGINAL_B, PSEUDONYM_A, logical_byte_length=17)
+            # The identical duplicate pair is likewise a database conflict.
+            with pytest.raises(MappingError):
+                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=19)
+
+
+def test_identical_pairs_in_different_domains_are_independent(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain_one = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            domain_two = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            mappings.add_text_mapping(vault, domain_one, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            # The same original in a DIFFERENT domain is a separate mapping.
+            mappings.add_text_mapping(vault, domain_two, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=22)
+        vault.verify()
+        assert mappings.get_text_pseudonym(vault, domain_one, ORIGINAL_A) == PSEUDONYM_A
+        assert mappings.get_text_pseudonym(vault, domain_two, ORIGINAL_A) == PSEUDONYM_B
+
+
+def test_numeric_key_bijection_is_bidirectionally_unique(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY
+            )
+            mappings.add_numeric_key_mapping(vault, domain, "101", "90001")
+            mappings.add_numeric_key_mapping(vault, domain, "102", "90002")
+            # Duplicate original (different pseudonym) -> rejected.
+            with pytest.raises(MappingError):
+                mappings.add_numeric_key_mapping(vault, domain, "101", "90002")
+            # Duplicate pseudonym (different original) -> rejected.
+            with pytest.raises(MappingError):
+                mappings.add_numeric_key_mapping(vault, domain, "102", "90001")
+        vault.verify()
+        assert mappings.numeric_mapping_rows(vault, domain) == (
+            ("101", "90001"),
+            ("102", "90002"),
+        )
+
+
+def test_reverse_lookup_roundtrip_is_exact(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+        assert mappings.get_text_pseudonym(vault, domain, ORIGINAL_A) == PSEUDONYM_A
+        assert mappings.get_text_original(vault, domain, PSEUDONYM_A) == ORIGINAL_A
+        assert mappings.get_text_pseudonym(vault, domain, "absent") is None
+        assert mappings.get_text_original(vault, domain, "absent") is None
+
+
+def test_memo_and_temporal_rows_are_stored_in_the_protected_zone(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            table_id = vault.register_table("memo/table.dbf", schema_fingerprint="fp-memo")
+            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            field_id = vault.register_field(
+                table_id, "NOTES", dbf_type="M", width=10, mapping_domain_id=domain
+            )
+            mappings.add_memo_recovery(
+                vault, table_id, 3, field_id, "CANARY_MEMO_PAYLOAD",
+                payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
+            )
+            temporal = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.set_temporal_parameter(vault, temporal, offset_days=-7)
+        vault.verify()
+        rows = mappings.memo_recovery_rows(vault, table_id)
+        assert len(rows) == 1
+        assert rows[0]["physical_record_index"] == 3
+        assert rows[0]["payload_kind"] == "TEXT"
+        assert mappings.temporal_parameter(vault, temporal) == -7
+        # Duplicated memo identity is refused.
+        with pytest.raises(VaultError):
+            with writer_session(vault), vault.transaction():
+                mappings.add_memo_recovery(
+                    vault, table_id, 3, field_id, "again",
+                    payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic transaction boundary / crash injection
+# ---------------------------------------------------------------------------
+def test_transaction_rollback_leaves_no_partial_rows(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        # BEFORE: the domain/mapping state is empty.
+        assert mappings.mapping_domains(vault) == ()
+        with pytest.raises(ValueError):
+            with writer_session(vault), vault.transaction():
+                domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+                # Dependent second insert fails mid-transaction (duplicate
+                # original in the same domain) -> the WHOLE unit must roll back.
+                with pytest.raises(MappingError):
+                    mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+                raise ValueError("injected failure before commit")
+        # AFTER the rollback: no domain, no mapping row (proven, not implied).
+        assert mappings.mapping_domains(vault) == ()
+        assert vault._internal_connection().execute("SELECT COUNT(*) FROM text_mappings").fetchone()[0] == 0
+        vault.verify()
+
+    with _reopen(tmp_path) as reopened:
+        assert reopened.verify() is None
+        assert mappings.mapping_domains(reopened) == ()
+        assert mappings.text_mapping_rows(reopened, "dom-none") == ()
+
+
+def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with pytest.raises(RuntimeError):
+            with writer_session(vault), vault.transaction():
+                table_id = vault.register_table("orders/data.dbf", schema_fingerprint="fp-x")
+                domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+                field_id = vault.register_field(
+                    table_id, "NAME", dbf_type="C", width=10, mapping_domain_id=domain
+                )
+                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+                assert mappings.get_text_pseudonym(vault, domain, ORIGINAL_A) == PSEUDONYM_A
+                raise RuntimeError("crash injection between inserts and commit")
+        # Uncommitted dependent inserts are all gone.
+        assert vault.tables() == ()
+        assert mappings.mapping_domains(vault) == ()
+        assert vault._internal_connection().execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 0
+
+    # Reopening after the simulated interruption passes integrity and shows
+    # only committed state.
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.tables() == ()
+        assert reopened.operations() == ()
+
+
+def test_committed_transaction_survives_reopen(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert mappings.text_mapping_rows(reopened, domain) == ((ORIGINAL_A, PSEUDONYM_A, 22),)
+
+
+def test_multi_step_mutation_cannot_autocommit_outside_a_transaction(
+    tmp_path: Path,
+) -> None:
+    # No hidden autocommit: vault mutations require the explicit AUTHORIZED
+    # transaction unit; calling them outside one (or without the lease) is a
+    # refused programmer/caller error and writes nothing.
+    with _create(tmp_path) as vault:
+        with pytest.raises(ValueError, match="requires an active"):
+            vault.begin_operation()
+        with pytest.raises(ValueError, match="requires an active"):
+            mappings.add_text_mapping(vault, "dom-x", "o", "p", logical_byte_length=1)
+        # Nothing was written by the refused calls.
+        assert vault.tables() == ()
+        assert mappings.mapping_domains(vault) == ()
+
+
+def test_mutation_transaction_without_lease_is_rejected_first(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+        assert excinfo.value.code is ErrorCode.VAULT_WRITER_CONFLICT
+        assert excinfo.value.context.detail_code == "WRITER_LEASE_REQUIRED"
+        assert mappings.mapping_domains(vault) == ()
+
+
+def test_nested_transaction_use_is_refused(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            with pytest.raises(ValueError):
+                with vault.transaction():
+                    pass
+
+
+def test_failed_mutation_never_exposes_mapping_values(tmp_path: Path) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            with pytest.raises(MappingError) as excinfo:
+                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+            error = excinfo.value
+            blob = error_boundary_payload(error)
+            assert ORIGINAL_A not in blob
+            assert ORIGINAL_B not in blob
+            assert PSEUDONYM_A not in blob
+            assert PSEUDONYM_B not in blob
+            assert "UNIQUE" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Typed, fail-closed transaction-control failures
+# ---------------------------------------------------------------------------
+def test_begin_failure_is_typed_and_leaves_no_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(
+            vault, lambda sql: "BEGIN IMMEDIATE" in sql, monkeypatch
+        )
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+        assert excinfo.value.context.detail_code == "TRANSACTION_BEGIN_FAILED"
+        payload = error_boundary_payload(excinfo.value)
+        assert "injected storage failure" not in payload
+        assert str(tmp_path) not in payload
+        # BEGIN failed -> no transaction open, connection still trusted.
+        assert vault.poisoned is None
+        assert mappings.mapping_domains(vault) == ()
+        monkeypatch.undo()
+        vault.release_writer_lease(token)
+        vault.verify()
+
+
+def test_commit_failure_is_typed_fails_closed_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+        assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+        assert excinfo.value.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        payload = error_boundary_payload(excinfo.value)
+        assert "injected storage failure" not in payload
+        # FAIL CLOSED: the uncertain connection refuses further operations.
+        assert vault.poisoned is not None
+        assert vault.poisoned.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        with pytest.raises(VaultError) as excinfo_poisoned:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo_poisoned.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_read:
+            vault.operations()
+        assert excinfo_read.value.context.detail_code == "CONNECTION_POISONED"
+
+    # Reopen after the fault: integrity passes and only committed state is
+    # visible — the commit was discarded, no partial logical object exists.
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_poisoned_connection_refuses_verify_until_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail-closed verification: a connection poisoned by a failed COMMIT
+    # refuses verify() in BOTH modes BEFORE any verification SQL runs —
+    # verification can never rehabilitate the untrusted state.
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo.value.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        assert vault.poisoned is not None
+        with pytest.raises(VaultError) as quick:
+            vault.verify()
+        assert quick.value.code is ErrorCode.VAULT_STATE_INVALID
+        assert quick.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as full:
+            vault.verify(full=True)
+        assert full.value.code is ErrorCode.VAULT_STATE_INVALID
+        assert full.value.context.detail_code == "CONNECTION_POISONED"
+        # Ordinary readers and lease operations are refused as well.
+        with pytest.raises(VaultError) as excinfo_read:
+            vault.operations()
+        assert excinfo_read.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_lease:
+            vault.acquire_writer_lease(new_writer_token())
+        assert excinfo_lease.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_release:
+            vault.release_writer_lease(token)
+        assert excinfo_release.value.context.detail_code == "CONNECTION_POISONED"
+    # ONLY close() + reopen (full revalidation) restores trust: verify passes
+    # and only known committed state is visible (the commit was discarded).
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_rollback_failure_poison_refuses_verify_until_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed ROLLBACK poisons the connection as well: the same fail-closed
+    # verification refusal applies until the deterministic close/reopen.
+    vault = _create(tmp_path)
+    try:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "ROLLBACK" in sql, monkeypatch)
+        with pytest.raises(ValueError, match="original failure"):
+            with vault.transaction():
+                vault.begin_operation()
+                raise ValueError("original failure")
+        assert vault.poisoned is not None
+        assert vault.poisoned.context.detail_code == "TRANSACTION_ROLLBACK_FAILED"
+        with pytest.raises(VaultError) as quick:
+            vault.verify()
+        assert quick.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as full:
+            vault.verify(full=True)
+        assert full.value.context.detail_code == "CONNECTION_POISONED"
+        monkeypatch.undo()
+        # The injected rollback failure left the physical transaction open, so
+        # the real rollback is issued through the raw seam before the
+        # deterministic close (the poisoned instance can only be closed).
+        vault._connection.execute("ROLLBACK")  # noqa: SLF001 - test seam
+        vault.close()
+    finally:
+        if not vault.closed:
+            vault.close()
+
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+
+
+def test_rollback_failure_with_operation_exception_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deterministic Python-3.10-compatible policy: the ORIGINAL operation
+    # exception keeps propagating, and the rollback failure is not silently
+    # lost — the connection is poisoned and the reason is inspectable.
+    vault = _create(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="original failure"):
+            token = new_writer_token()
+            vault.acquire_writer_lease(token)
+            install_failing_execute(vault, lambda sql: "ROLLBACK" in sql, monkeypatch)
+            try:
+                with vault.transaction():
+                    vault.begin_operation()
+                    raise ValueError("original failure")
+            finally:
+                assert vault.poisoned is not None
+                assert vault.poisoned.code is ErrorCode.VAULT_STATE_INVALID
+                assert (
+                    vault.poisoned.context.detail_code
+                    == "TRANSACTION_ROLLBACK_FAILED"
+                )
+        # Subsequent ordinary operations are refused on the poisoned instance.
+        with pytest.raises(VaultError) as excinfo:
+            vault.operations()
+        assert excinfo.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_lease:
+            vault.acquire_writer_lease(new_writer_token())
+        assert excinfo_lease.value.context.detail_code == "CONNECTION_POISONED"
+        monkeypatch.undo()
+        # The poisoned instance can only be closed. The injected rollback
+        # failure left the physical transaction open, so the real rollback is
+        # issued through the raw seam before the deterministic close.
+        vault._connection.execute("ROLLBACK")  # noqa: SLF001 - test seam
+        vault.close()
+    finally:
+        if not vault.closed:
+            vault.close()
+
+    with _reopen(tmp_path) as reopened:
+        # SQLite discarded the uncommitted work when the poisoned connection
+        # closed: the reopened vault passes integrity with only committed
+        # (empty) state.
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+
+
+def test_commit_failure_discards_partial_logical_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mid-transaction sequence of dependent inserts followed by a COMMIT
+    # failure must leave NO partially committed logical object.
+    with _create(tmp_path) as vault:
+        with pytest.raises(VaultError):
+            token = new_writer_token()
+            vault.acquire_writer_lease(token)
+            install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+            with vault.transaction():
+                vault.begin_operation()
+                vault.register_table("orders/data.dbf", schema_fingerprint="fp-x")
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert reopened.tables() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_authority_check_failure_leaves_no_open_transaction(tmp_path: Path) -> None:
+    dictionary = tmp_path / "vault" / VAULT_DATABASE_FILENAME
+    with _create(tmp_path) as creator:
+        creator.close()
+    holder = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    successor = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    try:
+        stale_token = new_writer_token()
+        holder.acquire_writer_lease(stale_token)
+        successor.release_writer_lease(stale_token)
+        successor.acquire_writer_lease(new_writer_token())
+        # The in-lock authority check fails and rolls itself back...
+        with pytest.raises(VaultError) as excinfo:
+            with holder.transaction():
+                holder.begin_operation()
+        assert excinfo.value.context.detail_code == "WRITER_LEASE_REQUIRED"
+        # ...and NO transaction remains open and nothing is poisoned: after
+        # the explicit reclaim of the current durable authority the holder
+        # runs the deterministic transaction unit cleanly.
+        current = holder.stale_writer_lease()
+        assert current is not None
+        holder.release_writer_lease(current)
+        with writer_session(holder), holder.transaction():
+            holder.begin_operation()
+        assert len(holder.operations()) == 1
+        assert holder.poisoned is None
+    finally:
+        holder.close()
+        successor.close()

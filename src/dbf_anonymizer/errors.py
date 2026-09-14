@@ -21,7 +21,7 @@ from typing import ClassVar
 from .models import JsonDict
 
 ERROR_SCHEMA_VERSION = "1.0"
-ERROR_REGISTRY_VERSION = "1.1"
+ERROR_REGISTRY_VERSION = "1.2"
 
 
 class ErrorCategory(str, Enum):
@@ -56,6 +56,10 @@ class ErrorCode(str, Enum):
     VAULT_UNAVAILABLE = "VAULT_UNAVAILABLE"
     VAULT_CORRUPT = "VAULT_CORRUPT"
     VAULT_ACCESS_DENIED = "VAULT_ACCESS_DENIED"
+    VAULT_SCHEMA_UNSUPPORTED = "VAULT_SCHEMA_UNSUPPORTED"
+    VAULT_IDENTITY_MISMATCH = "VAULT_IDENTITY_MISMATCH"
+    VAULT_STATE_INVALID = "VAULT_STATE_INVALID"
+    VAULT_WRITER_CONFLICT = "VAULT_WRITER_CONFLICT"
 
     MAPPING_CAPACITY_EXHAUSTED = "MAPPING_CAPACITY_EXHAUSTED"
     MAPPING_CONFLICT = "MAPPING_CONFLICT"
@@ -131,6 +135,26 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCode.VAULT_ACCESS_DENIED,
         ErrorCategory.VAULT,
         "Access to the protected recovery vault is not permitted.",
+    ),
+    ErrorDefinition(
+        ErrorCode.VAULT_SCHEMA_UNSUPPORTED,
+        ErrorCategory.VAULT,
+        "The protected recovery vault schema version is not supported.",
+    ),
+    ErrorDefinition(
+        ErrorCode.VAULT_IDENTITY_MISMATCH,
+        ErrorCategory.VAULT,
+        "The protected recovery vault is bound to a different dataset identity.",
+    ),
+    ErrorDefinition(
+        ErrorCode.VAULT_STATE_INVALID,
+        ErrorCategory.VAULT,
+        "The protected recovery vault rejected an inconsistent state transition.",
+    ),
+    ErrorDefinition(
+        ErrorCode.VAULT_WRITER_CONFLICT,
+        ErrorCategory.VAULT,
+        "Another writer holds the single logical write authority of the vault.",
     ),
     ErrorDefinition(
         ErrorCode.MAPPING_CAPACITY_EXHAUSTED,
