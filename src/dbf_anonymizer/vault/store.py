@@ -232,6 +232,7 @@ class VaultDatabase:
         self._transaction_authorized = False
         self._writer_token: str | None = None
         self._cleanup_failure: VaultError | None = None
+        self._poisoned: VaultError | None = None
         self._closed = False
 
     # -- lifecycle -----------------------------------------------------------
@@ -481,6 +482,11 @@ class VaultDatabase:
             raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_NOT_A_FILE")
         cls._ensure_parent_directory(path)
 
+        # ATOMIC creator reservation: exactly one competing creator can create
+        # the dictionary file (``O_CREAT | O_EXCL``). A losing creator never
+        # opens, truncates, converts or unlinks the winner's dictionary.
+        reserved_identity = cls._reserve_dictionary_file(path)
+
         connection = cls._connect(path)
         try:
             applied = cls._apply_journal_mode(connection)
@@ -489,7 +495,7 @@ class VaultDatabase:
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
         if applied.lower() != VAULT_JOURNAL_MODE.lower():
             connection.close()
-            cls._remove_partial_dictionary(path)
+            cls._remove_partial_dictionary(path, reserved_identity)
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE")
         vault_id = _new_hex_id(VAULT_ID_PREFIX)
         try:
@@ -520,8 +526,10 @@ class VaultDatabase:
             connection.close()
             # The partially created file was never a valid vault; remove it so
             # a retry starts deterministically from a clean slate. A cleanup
-            # failure SURFACES (it must never disappear silently).
-            cls._remove_partial_dictionary(path)
+            # failure SURFACES (it must never disappear silently), and the
+            # ownership identity guarantees we never delete a file that a
+            # competing creator may have replaced our reservation with.
+            cls._remove_partial_dictionary(path, reserved_identity)
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_FAILED") from None
         return cls(
             connection,
@@ -534,8 +542,59 @@ class VaultDatabase:
         )
 
     @staticmethod
-    def _remove_partial_dictionary(path: Path) -> None:
-        """Remove a partially created dictionary; cleanup failures SURFACE."""
+    def _reserve_dictionary_file(path: Path) -> tuple[int, int]:
+        """Atomically reserve the dictionary file for THIS creator.
+
+        ``os.open(O_CREAT | O_EXCL)`` makes the create-vs-create race
+        impossible: exactly one competing creator obtains the reservation; a
+        loser receives the typed ``VAULT_STATE_INVALID`` (``ALREADY_EXISTS``)
+        classification and never touches the winner's file. The fstat identity
+        (device + inode) is returned so failed-creation cleanup can prove it
+        is deleting its OWN reservation — never a file that replaced it.
+        """
+        try:
+            descriptor = os.open(
+                path,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                0o600,
+            )
+        except FileExistsError:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "ALREADY_EXISTS") from None
+        except PermissionError:
+            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "RESERVATION_DENIED") from None
+        except OSError:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "RESERVATION_FAILED") from None
+        try:
+            status = os.fstat(descriptor)
+            return (status.st_dev, status.st_ino)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _remove_partial_dictionary(
+        path: Path, reserved_identity: tuple[int, int] | None
+    ) -> None:
+        """Remove OUR partially created dictionary; cleanup failures SURFACE.
+
+        Ownership guard: when the file's current identity no longer matches
+        the reservation captured at creation, the file was replaced and is
+        NEVER unlinked — a different creator's (or operator's) file cannot be
+        destroyed by this failed creation. No secure-deletion claim is made.
+        """
+        if reserved_identity is not None:
+            try:
+                status = os.stat(path)
+                current_identity = (status.st_dev, status.st_ino)
+            except FileNotFoundError:
+                return  # the reservation is already gone: nothing of ours left
+            except OSError:
+                raise _vault_failure(
+                    ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
+                ) from None
+            if current_identity != reserved_identity:
+                raise _vault_failure(
+                    ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
+                ) from None
         try:
             path.unlink()
         except OSError:
@@ -690,11 +749,32 @@ class VaultDatabase:
         return self._cleanup_failure
 
     @property
-    def connection(self) -> sqlite3.Connection:
-        """The raw connection (internal seam; readers and the test suite)."""
+    def poisoned(self) -> VaultError | None:
+        """The typed poison reason, or None while the connection is trusted.
+
+        A poisoned connection has uncertain transactional state (failed
+        COMMIT/ROLLBACK). It refuses every further ordinary operation until it
+        is closed and reopened — reopening revalidates the whole vault.
+        """
+        return self._poisoned
+
+    def _internal_connection(self) -> sqlite3.Connection:
+        """PRIVATE connection seam for the vault subsystem and its tests.
+
+        The normal VaultDatabase interface intentionally exposes NO writable
+        raw connection: every mutation funnels through the authorized
+        transaction path guarded by the writer lease. A poisoned or closed
+        vault refuses even this internal seam.
+        """
         if self._closed:
             raise RuntimeError("vault database is closed")
+        if self._poisoned is not None:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "CONNECTION_POISONED")
         return self._connection
+
+    def _poison(self, reason: VaultError) -> None:
+        """Fail closed: mark this connection's transaction state untrusted."""
+        self._poisoned = reason
 
     @property
     def closed(self) -> bool:
@@ -702,11 +782,13 @@ class VaultDatabase:
 
     def foreign_keys_enabled(self) -> bool:
         """True when the enforced per-connection FK pragma is active."""
-        return int(self.connection.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+        return int(
+            self._internal_connection().execute("PRAGMA foreign_keys").fetchone()[0]
+        ) == 1
 
     def journal_mode(self) -> str:
         """The active SQLite journal mode (the explicit WAL policy)."""
-        row = self.connection.execute("PRAGMA journal_mode").fetchone()
+        row = self._internal_connection().execute("PRAGMA journal_mode").fetchone()
         return str(row[0]) if row is not None else ""
 
     # -- transaction boundary --------------------------------------------------
@@ -717,16 +799,19 @@ class VaultDatabase:
         refused BEFORE any database access when no lease is bound to this
         instance, and the durable ownership is re-verified INSIDE the
         ``BEGIN IMMEDIATE`` lock (an authority handoff can never be raced).
-        Exactly one transaction may be active per connection.
+        Exactly one transaction may be active per connection. Transaction
+        control failures poison this instance (fail-closed) — a poisoned
+        connection refuses further ordinary operations until reopened.
         """
-        if self._closed:
-            raise RuntimeError("vault database is closed")
+        self._require_trusted_connection()
         if self._transaction is not None and self._transaction.active:
             raise ValueError("vault transaction already active")
         if self._writer_token is None:
             raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_REQUIRED")
         transaction = VaultTransaction(
-            self._connection, on_begin=self._verify_writer_ownership
+            self._connection,
+            on_begin=self._verify_writer_ownership,
+            on_poison=self._poison,
         )
         self._transaction = transaction
         self._transaction_authorized = True
@@ -739,14 +824,19 @@ class VaultDatabase:
         lease, because it IS the mechanism that establishes or transfers the
         authority. It must never be exposed for ordinary vault mutations.
         """
-        if self._closed:
-            raise RuntimeError("vault database is closed")
+        self._require_trusted_connection()
         if self._transaction is not None and self._transaction.active:
             raise ValueError("vault transaction already active")
-        transaction = VaultTransaction(self._connection)
+        transaction = VaultTransaction(self._connection, on_poison=self._poison)
         self._transaction = transaction
         self._transaction_authorized = False
         return transaction
+
+    def _require_trusted_connection(self) -> None:
+        if self._closed:
+            raise RuntimeError("vault database is closed")
+        if self._poisoned is not None:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "CONNECTION_POISONED")
 
     def _verify_writer_ownership(self) -> None:
         """Durable authority check, executed inside BEGIN IMMEDIATE."""
@@ -814,6 +904,8 @@ class VaultDatabase:
         _validate_token(owner_token, field_name="owner_token")
         if self._closed:
             raise RuntimeError("vault database is closed")
+        if self._poisoned is not None:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "CONNECTION_POISONED")
         if self._transaction is not None and self._transaction.active:
             raise ValueError("writer lease acquisition requires no active transaction")
         try:
@@ -846,6 +938,8 @@ class VaultDatabase:
         _validate_token(owner_token, field_name="owner_token")
         if self._closed:
             raise RuntimeError("vault database is closed")
+        if self._poisoned is not None:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "CONNECTION_POISONED")
         try:
             with self._system_transaction():
                 cursor = self._connection.execute(
@@ -866,7 +960,7 @@ class VaultDatabase:
 
     def stale_writer_lease(self) -> str | None:
         """The currently stored lease token (explicit crash-state evidence)."""
-        row = self.connection.execute(
+        row = self._internal_connection().execute(
             "SELECT owner_token FROM writer_authority WHERE singleton = 1"
         ).fetchone()
         if row is None or row[0] is None:
@@ -874,7 +968,7 @@ class VaultDatabase:
         return str(row[0])
 
     def writer_acquire_tick(self) -> int:
-        row = self.connection.execute(
+        row = self._internal_connection().execute(
             "SELECT acquire_tick FROM writer_authority WHERE singleton = 1"
         ).fetchone()
         return int(row[0]) if row is not None and row[0] is not None else 0
@@ -892,7 +986,7 @@ class VaultDatabase:
             operation_id = _new_hex_id(VAULT_OPERATION_ID_PREFIX)
         else:
             _validate_token(operation_id, field_name="operation_id")
-            existing = self.connection.execute(
+            existing = self._internal_connection().execute(
                 "SELECT 1 FROM operations WHERE operation_id = ?", (operation_id,)
             ).fetchone()
             if existing is not None:
@@ -933,7 +1027,7 @@ class VaultDatabase:
 
     def operations(self) -> tuple[dict[str, str | None], ...]:
         """All persisted operations in stable operation-id order."""
-        rows = self.connection.execute(
+        rows = self._internal_connection().execute(
             "SELECT operation_id, state, source_fingerprint, output_fingerprint, "
             "started_at, completed_at FROM operations ORDER BY operation_id"
         ).fetchall()
@@ -1040,7 +1134,7 @@ class VaultDatabase:
         return field_id
 
     def tables(self) -> tuple[dict[str, str | None], ...]:
-        rows = self.connection.execute(
+        rows = self._internal_connection().execute(
             "SELECT table_id, relative_path, schema_fingerprint, source_fingerprint "
             "FROM tables ORDER BY relative_path"
         ).fetchall()
@@ -1056,18 +1150,38 @@ class VaultDatabase:
 
     # -- close -----------------------------------------------------------------
     def _checkpoint_wal(self) -> None:
-        """The clean-close WAL checkpoint (test seam for cleanup failures)."""
-        self._connection.execute(f"PRAGMA wal_checkpoint({VAULT_CLOSE_CHECKPOINT})")
+        """Truncate-checkpoint the WAL and VERIFY the structured result.
+
+        ``PRAGMA wal_checkpoint(TRUNCATE)`` returns a status row
+        ``(busy, log_pages, checkpointed_pages)``; a BUSY/incomplete
+        checkpoint does NOT raise. The full row is inspected and an
+        incomplete checkpoint raises the typed lifecycle failure
+        ``VAULT_UNAVAILABLE`` / ``CLOSE_CHECKPOINT_INCOMPLETE`` — no
+        human-readable SQLite text is involved and success is never claimed
+        for an incomplete checkpoint.
+        """
+        row = self._connection.execute(
+            f"PRAGMA wal_checkpoint({VAULT_CLOSE_CHECKPOINT})"
+        ).fetchone()
+        if row is None or row[0] is None or len(row) < 1:
+            raise _vault_failure(
+                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE"
+            )
+        if int(row[0]) != 0:
+            raise _vault_failure(
+                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE"
+            )
 
     def close(self) -> None:
         """Clean close: truncate-checkpoint the WAL, then close the connection.
 
         A normal clean close leaves NO persistent ``-wal``/``-shm`` sidecars
-        (SQLite removes them with the last connection). A checkpoint or close
-        failure SURFACES as a typed, privacy-safe ``VaultError`` — it is never
-        silently absorbed (the P2-009 protected-artifact policy builds on
-        this). Deterministic policy for a ``with``-block exit that already
-        carries an operation exception: the cleanup failure is RECORDED on
+        (SQLite removes them with the last connection). A checkpoint status
+        failure (BUSY/incomplete), a raising checkpoint or a failing close
+        SURFACE as a typed, privacy-safe ``VaultError`` — never silently
+        absorbed (the P2-009 protected-artifact policy builds on this).
+        Deterministic policy for a ``with``-block exit that already carries an
+        operation exception: the cleanup failure is RECORDED on
         :attr:`cleanup_failure` instead of replacing the original exception.
         """
         self._close(record_failure_only=False)
@@ -1079,6 +1193,8 @@ class VaultDatabase:
         failure: VaultError | None = None
         try:
             self._checkpoint_wal()
+        except VaultError as error:
+            failure = error  # typed checkpoint status/execution failure
         except sqlite3.Error:
             failure = _vault_failure(
                 ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_FAILED"

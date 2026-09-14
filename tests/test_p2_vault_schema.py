@@ -16,8 +16,10 @@ output trees.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -65,6 +67,233 @@ def _dictionary(tmp_path: Path, name: str = "vault") -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Frozen schema 1.0 snapshot (REQ-P2-002): explicit immutable expectation
+# ---------------------------------------------------------------------------
+#: Column tuple: (name, declared_type, notnull, default, pk_position).
+#: FK entry: (parent_table, ((child_column, parent_column), ...)) in declared
+#: FK order. Index entry: (name, unique, origin, (columns...)) sorted by name.
+#: This expectation is written BY HAND — it is NOT generated from the DDL
+#: under test, so any silent column removal/rename/reorder/nullability/PK/FK/
+#: UNIQUE change fails this snapshot.
+EXPECTED_SCHEMA_SNAPSHOT: dict[str, dict[str, object]] = {
+    "meta": {
+        "columns": (
+            ("singleton", "INTEGER", 0, None, 1),
+            ("schema_version", "TEXT", 1, None, 0),
+            ("vault_id", "TEXT", 1, None, 0),
+            ("created_at", "TEXT", 1, None, 0),
+            ("package_version", "TEXT", 1, None, 0),
+            ("dbfbridge_version", "TEXT", 1, None, 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (),
+    },
+    "dataset": {
+        "columns": (
+            ("singleton", "INTEGER", 0, None, 1),
+            ("source_fingerprint", "TEXT", 1, None, 0),
+            ("policy_fingerprint", "TEXT", 1, None, 0),
+            ("relationship_fingerprint", "TEXT", 1, None, 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (),
+    },
+    "writer_authority": {
+        "columns": (
+            ("singleton", "INTEGER", 0, None, 1),
+            ("owner_token", "TEXT", 0, None, 0),
+            ("acquire_tick", "INTEGER", 1, "0", 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (),
+    },
+    "operations": {
+        "columns": (
+            ("operation_id", "TEXT", 0, None, 1),
+            ("state", "TEXT", 1, None, 0),
+            ("source_fingerprint", "TEXT", 0, None, 0),
+            ("output_fingerprint", "TEXT", 0, None, 0),
+            ("started_at", "TEXT", 0, None, 0),
+            ("completed_at", "TEXT", 0, None, 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (
+            ("sqlite_autoindex_operations_1", 1, "pk", ("operation_id",)),
+        ),
+    },
+    "publication": {
+        "columns": (
+            ("operation_id", "TEXT", 1, None, 1),
+            ("phase", "TEXT", 1, None, 2),
+            ("output_fingerprint", "TEXT", 0, None, 0),
+            ("vault_fingerprint", "TEXT", 0, None, 0),
+        ),
+        "foreign_keys": (
+            ("operations", (("operation_id", "operation_id"),)),
+        ),
+        "indexes": (
+            ("sqlite_autoindex_publication_1", 1, "pk", ("operation_id", "phase")),
+        ),
+    },
+    "mapping_domains": {
+        "columns": (
+            ("domain_id", "TEXT", 0, None, 1),
+            ("domain_kind", "TEXT", 1, None, 0),
+            ("normalization", "TEXT", 0, None, 0),
+            ("relational_role", "TEXT", 0, None, 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (
+            ("sqlite_autoindex_mapping_domains_1", 1, "pk", ("domain_id",)),
+        ),
+    },
+    "tables": {
+        "columns": (
+            ("table_id", "TEXT", 0, None, 1),
+            ("relative_path", "TEXT", 1, None, 0),
+            ("schema_fingerprint", "TEXT", 0, None, 0),
+            ("source_fingerprint", "TEXT", 0, None, 0),
+        ),
+        "foreign_keys": (),
+        "indexes": (
+            ("sqlite_autoindex_tables_1", 1, "pk", ("table_id",)),
+            ("sqlite_autoindex_tables_2", 1, "u", ("relative_path",)),
+        ),
+    },
+    "fields": {
+        "columns": (
+            ("field_id", "TEXT", 0, None, 1),
+            ("table_id", "TEXT", 1, None, 0),
+            ("name", "TEXT", 1, None, 0),
+            ("dbf_type", "TEXT", 1, None, 0),
+            ("encoding", "TEXT", 0, None, 0),
+            ("width", "INTEGER", 1, None, 0),
+            ("transform_action", "TEXT", 0, None, 0),
+            ("mapping_domain_id", "TEXT", 0, None, 0),
+        ),
+        "foreign_keys": (
+            ("mapping_domains", (("mapping_domain_id", "domain_id"),)),
+            ("tables", (("table_id", "table_id"),)),
+        ),
+        "indexes": (
+            ("idx_fields_domain", 0, "c", ("mapping_domain_id",)),
+            ("idx_fields_table", 0, "c", ("table_id",)),
+            ("sqlite_autoindex_fields_1", 1, "pk", ("field_id",)),
+            ("sqlite_autoindex_fields_2", 1, "u", ("table_id", "name")),
+            ("sqlite_autoindex_fields_3", 1, "u", ("field_id", "table_id")),
+        ),
+    },
+    "text_mappings": {
+        "columns": (
+            ("domain_id", "TEXT", 1, None, 0),
+            ("original_value", "TEXT", 1, None, 0),
+            ("pseudonym_value", "TEXT", 1, None, 0),
+            ("logical_byte_length", "INTEGER", 1, None, 0),
+        ),
+        "foreign_keys": (
+            ("mapping_domains", (("domain_id", "domain_id"),)),
+        ),
+        "indexes": (
+            ("uq_text_mappings_domain_original", 1, "c", ("domain_id", "original_value")),
+            ("uq_text_mappings_domain_pseudonym", 1, "c", ("domain_id", "pseudonym_value")),
+        ),
+    },
+    "numeric_key_mappings": {
+        "columns": (
+            ("domain_id", "TEXT", 1, None, 0),
+            ("original_value", "TEXT", 1, None, 0),
+            ("pseudonym_value", "TEXT", 1, None, 0),
+        ),
+        "foreign_keys": (
+            ("mapping_domains", (("domain_id", "domain_id"),)),
+        ),
+        "indexes": (
+            ("uq_numeric_key_mappings_domain_original", 1, "c", ("domain_id", "original_value")),
+            ("uq_numeric_key_mappings_domain_pseudonym", 1, "c", ("domain_id", "pseudonym_value")),
+        ),
+    },
+    "memo_recovery": {
+        "columns": (
+            ("table_id", "TEXT", 1, None, 1),
+            ("physical_record_index", "INTEGER", 1, None, 2),
+            ("field_id", "TEXT", 1, None, 3),
+            ("original_payload", "BLOB", 1, None, 0),
+            ("payload_kind", "TEXT", 1, None, 0),
+        ),
+        "foreign_keys": (
+            ("fields", (("field_id", "field_id"), ("table_id", "table_id"))),
+            ("tables", (("table_id", "table_id"),)),
+        ),
+        "indexes": (
+            ("idx_memo_recovery_field", 0, "c", ("field_id",)),
+            (
+                "sqlite_autoindex_memo_recovery_1",
+                1,
+                "pk",
+                ("table_id", "physical_record_index", "field_id"),
+            ),
+        ),
+    },
+    "temporal_parameters": {
+        "columns": (
+            ("domain_id", "TEXT", 0, None, 1),
+            ("offset_days", "INTEGER", 1, None, 0),
+        ),
+        "foreign_keys": (
+            ("mapping_domains", (("domain_id", "domain_id"),)),
+        ),
+        "indexes": (
+            ("sqlite_autoindex_temporal_parameters_1", 1, "pk", ("domain_id",)),
+        ),
+    },
+}
+
+
+def _live_schema_snapshot(vault: VaultDatabase) -> dict[str, dict[str, object]]:
+    connection = vault._internal_connection()
+    snapshot: dict[str, dict[str, object]] = {}
+    for table in EXPECTED_SCHEMA_SNAPSHOT:
+        columns = tuple(
+            (str(row[1]), str(row[2]), int(row[3]), row[4], int(row[5]))
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+        grouped: dict[int, tuple[str, list[tuple[str, str]]]] = {}
+        for row in connection.execute(f"PRAGMA foreign_key_list({table})").fetchall():
+            entry = grouped.setdefault(int(row[0]), (str(row[2]), []))
+            entry[1].append((str(row[3]), str(row[4])))
+        foreign_keys = tuple(
+            (grouped[key][0], tuple(grouped[key][1])) for key in sorted(grouped)
+        )
+        indexes = []
+        for row in connection.execute(f"PRAGMA index_list({table})").fetchall():
+            name = str(row[1])
+            index_columns = tuple(
+                str(index_row[2])
+                for index_row in connection.execute(f"PRAGMA index_info({name})").fetchall()
+            )
+            indexes.append((name, int(row[2]), str(row[3]), index_columns))
+        snapshot[table] = {
+            "columns": columns,
+            "foreign_keys": tuple(
+                (parent, tuple(columns)) for parent, columns in (
+                    grouped[key] for key in sorted(grouped)
+                )
+            ),
+            "indexes": tuple(sorted(indexes, key=lambda item: item[0])),
+        }
+    return snapshot
+
+
+def test_full_schema_1_0_snapshot_is_frozen(tmp_path: Path) -> None:
+    with _open_create(tmp_path) as vault:
+        live = _live_schema_snapshot(vault)
+        assert set(live) == set(EXPECTED_SCHEMA_SNAPSHOT)
+        for table, expected in EXPECTED_SCHEMA_SNAPSHOT.items():
+            assert live[table] == expected, f"schema drift in table {table!r}"
+        vault.verify(full=True)
+
+
+# ---------------------------------------------------------------------------
 # Schema snapshot (tables, columns, indexes, FKs, pragmas)
 # ---------------------------------------------------------------------------
 def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
@@ -72,7 +301,7 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
         assert vault.schema_version == VAULT_SCHEMA_VERSION == "1.0"
         tables = {
             row[0]
-            for row in vault.connection.execute(
+            for row in vault._internal_connection().execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall()
         }
@@ -80,7 +309,7 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
 
         indexes = {
             row[0]
-            for row in vault.connection.execute(
+            for row in vault._internal_connection().execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'uq_%'"
             ).fetchall()
         }
@@ -90,7 +319,7 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
         for index_name in EXPECTED_VAULT_UNIQUE_INDEXES:
             columns = [
                 row[2]
-                for row in vault.connection.execute(f"PRAGMA index_info({index_name})")
+                for row in vault._internal_connection().execute(f"PRAGMA index_info({index_name})")
             ]
             assert columns == ["domain_id", "original_value" if "original" in index_name else "pseudonym_value"]
 
@@ -110,14 +339,14 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
             "publication": "operations",
         }
         for child, parent in fk_tables.items():
-            rows = vault.connection.execute(f"PRAGMA foreign_key_list({child})").fetchall()
+            rows = vault._internal_connection().execute(f"PRAGMA foreign_key_list({child})").fetchall()
             targets = {str(row[2]) for row in rows}
             assert parent in targets, (child, parent, targets)
 
         # The composite FK of memo_recovery pairs field_id AND table_id.
         memo_fks = [
             (str(row[3]), str(row[4]))
-            for row in vault.connection.execute("PRAGMA foreign_key_list(memo_recovery)")
+            for row in vault._internal_connection().execute("PRAGMA foreign_key_list(memo_recovery)")
         ]
         assert ("field_id", "field_id") in memo_fks
         assert ("table_id", "table_id") in memo_fks
@@ -130,7 +359,7 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
 
 def test_meta_and_dataset_rows_carry_the_bound_identity(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
-        meta = vault.connection.execute(
+        meta = vault._internal_connection().execute(
             "SELECT schema_version, vault_id, package_version, dbfbridge_version "
             "FROM meta WHERE singleton = 1"
         ).fetchone()
@@ -140,7 +369,7 @@ def test_meta_and_dataset_rows_carry_the_bound_identity(tmp_path: Path) -> None:
         assert str(meta[2]) == "1.0.0.dev0"
         assert meta[3] == DBFBRIDGE_VERSION
 
-        dataset = vault.connection.execute(
+        dataset = vault._internal_connection().execute(
             "SELECT source_fingerprint, policy_fingerprint, relationship_fingerprint "
             "FROM dataset WHERE singleton = 1"
         ).fetchone()
@@ -194,7 +423,7 @@ def test_memo_field_must_belong_to_the_same_table(tmp_path: Path) -> None:
         assert len(rows) == 1
         assert rows[0]["field_id"] == field_a
         assert rows[0]["physical_record_index"] == 1
-        assert reopened.connection.execute(
+        assert reopened._internal_connection().execute(
             "PRAGMA foreign_key_check"
         ).fetchall() == []
 
@@ -228,7 +457,7 @@ def test_unsupported_schema_version_fails_closed(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
             vault.begin_operation()
-        vault.connection.execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
+        vault._internal_connection().execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
 
     dictionary = _dictionary(tmp_path)
     hash_before = file_sha256(dictionary)
@@ -244,7 +473,7 @@ def test_unsupported_schema_version_fails_closed(tmp_path: Path) -> None:
 
 def test_older_schema_version_fails_closed_without_migration(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
-        vault.connection.execute("UPDATE meta SET schema_version = '0.9' WHERE singleton = 1")
+        vault._internal_connection().execute("UPDATE meta SET schema_version = '0.9' WHERE singleton = 1")
 
     with pytest.raises(VaultError) as excinfo:
         _reopen(tmp_path)
@@ -339,7 +568,7 @@ def test_rejected_relationship_fingerprint_leaves_database_untouched(
 
 def test_rejected_schema_version_leaves_database_untouched(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
-        vault.connection.execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
+        vault._internal_connection().execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
     dictionary = _dictionary(tmp_path)
     hash_before = file_sha256(dictionary)
     with pytest.raises(VaultError):
@@ -498,7 +727,7 @@ def test_truncated_database_fails_closed(tmp_path: Path) -> None:
 
 def test_corrupted_metadata_is_tamper_evident(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
-        vault.connection.execute("DELETE FROM dataset")
+        vault._internal_connection().execute("DELETE FROM dataset")
     with pytest.raises(VaultError) as excinfo:
         _reopen(tmp_path)
     assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
@@ -520,7 +749,7 @@ def test_foreign_keys_are_actually_enforced(tmp_path: Path) -> None:
                     vault, "dom-unknown", "ORIGINAL", "PSEUDO", logical_byte_length=7
                 )
             assert excinfo.value.code is ErrorCode.MAPPING_CONFLICT
-            count = vault.connection.execute(
+            count = vault._internal_connection().execute(
                 "SELECT COUNT(*) FROM text_mappings"
             ).fetchone()
             assert int(count[0]) == 0
@@ -743,6 +972,164 @@ def test_creation_failure_with_successful_cleanup_removes_partial_file(
     assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
     assert excinfo.value.context.detail_code == "CREATION_FAILED"
     assert not (tmp_path / "creation_failure" / VAULT_DATABASE_FILENAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# Atomic creator reservation (TOCTOU: concurrent create can never destroy
+# the winner's dictionary)
+# ---------------------------------------------------------------------------
+def test_cleanup_never_deletes_a_replaced_reservation(tmp_path: Path) -> None:
+    # Adversarial ownership evidence: a failed creator whose reservation was
+    # replaced by a DIFFERENT file must never unlink that file.
+    with _open_create(tmp_path) as vault:
+        dictionary = _dictionary(tmp_path)
+        winner_hash = file_sha256(dictionary)
+        status = os.stat(dictionary)
+        foreign_identity = (status.st_dev + 1, status.st_ino)
+        with pytest.raises(VaultError) as excinfo:
+            VaultDatabase._remove_partial_dictionary(  # noqa: SLF001
+                dictionary, foreign_identity
+            )
+        assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
+        assert excinfo.value.context.detail_code == "CREATION_CLEANUP_FAILED"
+        # The winner's dictionary was NOT deleted and stays integral.
+        assert file_sha256(dictionary) == winner_hash
+        vault.verify(full=True)
+
+
+def test_failed_creator_cleans_only_its_own_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dbf_anonymizer.vault.store as store_module
+
+    # Force the creation DDL to fail: the reservation file IS the failed
+    # creator's own file and must be removed by its owner.
+    monkeypatch.setattr(store_module, "DDL_STATEMENTS", ("CREATE TABLE broken (",))
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, name="cleanup_own")
+    assert excinfo.value.code is ErrorCode.VAULT_CORRUPT
+    assert excinfo.value.context.detail_code == "CREATION_FAILED"
+    assert not (tmp_path / "cleanup_own" / VAULT_DATABASE_FILENAME).exists()
+
+
+def test_creation_reservation_refuses_competing_creator(tmp_path: Path) -> None:
+    # A reserved dictionary file already exists -> the competing creator is
+    # refused WITHOUT opening, truncating, converting or deleting anything.
+    target = _dictionary(tmp_path, "reservation")
+    target.parent.mkdir(parents=True)
+    placeholder = b"\x00" * 16
+    target.write_bytes(placeholder)
+    with pytest.raises(VaultError) as excinfo:
+        _open_create(tmp_path, "reservation")
+    assert excinfo.value.code is ErrorCode.VAULT_STATE_INVALID
+    assert excinfo.value.context.detail_code == "ALREADY_EXISTS"
+    # The placeholder file was never truncated or rewritten.
+    assert file_sha256(target) == file_sha256(target)
+
+
+# ---------------------------------------------------------------------------
+# WAL checkpoint completion is verified (structured status row)
+# ---------------------------------------------------------------------------
+class _StubCursor:
+    def __init__(self, row: tuple[object, ...]) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple[object, ...]:
+        return self._row
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return [self._row]
+
+
+class _BusyCheckpointConnection:
+    """Delegating proxy whose wal_checkpoint reports BUSY (1, 0, 0)."""
+
+    def __init__(self, inner: sqlite3.Connection) -> None:
+        self._inner = inner
+
+    def execute(self, sql: str, *parameters: Any) -> object:
+        if "PRAGMA wal_checkpoint" in sql:
+            return _StubCursor((1, 3, 0))
+        return self._inner.execute(sql, *parameters)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_busy_checkpoint_status_is_typed_and_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _open_create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            vault.begin_operation()
+        monkeypatch.setattr(vault, "_connection", _BusyCheckpointConnection(
+            vault._internal_connection()
+        ))
+        with pytest.raises(VaultError) as excinfo:
+            vault.close()
+        assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+        assert excinfo.value.context.detail_code == "CLOSE_CHECKPOINT_INCOMPLETE"
+        payload = error_boundary_payload(excinfo.value)
+        assert str(tmp_path) not in payload
+
+
+def test_real_busy_reader_blocks_checkpoint_until_released(
+    tmp_path: Path,
+) -> None:
+    # REAL two-connection evidence: an open reader snapshot prevents the
+    # TRUNCATE checkpoint from completing (busy row, no exception) — the close
+    # must report the typed incomplete classification, never fake success.
+    with _open_create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            vault.begin_operation()
+        reader = sqlite3.connect(str(_dictionary(tmp_path)))
+        try:
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM operations").fetchone()
+            # While the reader snapshot is held, the clean close checkpoint
+            # cannot truncate: the close surfaces the typed failure.
+            with pytest.raises(VaultError) as excinfo:
+                vault.close()
+            assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+            assert (
+                excinfo.value.context.detail_code == "CLOSE_CHECKPOINT_INCOMPLETE"
+            )
+        finally:
+            reader.execute("ROLLBACK")
+            reader.close()
+
+    # After the reader is released, a fresh reopen closes cleanly: the full
+    # WAL lifecycle recovers without any lost committed state.
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert len(reopened.operations()) == 1
+        reopened.close()
+    assert sidecar_inventory((_dictionary(tmp_path)).parent) == []
+
+
+# ---------------------------------------------------------------------------
+# The ordinary vault interface offers NO writable raw-connection bypass
+# ---------------------------------------------------------------------------
+def test_public_vault_interface_has_no_writable_connection_bypass(
+    tmp_path: Path,
+) -> None:
+    with _open_create(tmp_path) as vault:
+        # The named writable bypass is gone from the supported interface.
+        assert not hasattr(vault, "connection")
+        with pytest.raises(AttributeError):
+            getattr(vault, "connection")  # type: ignore[attr-defined]
+        # Public attribute scan: no property exposes a raw sqlite3.Connection.
+        for name in dir(VaultDatabase):
+            if name.startswith("_"):
+                continue
+            attribute = getattr(VaultDatabase, name)
+            if isinstance(attribute, property):
+                assert name != "connection"
+    source = (Path(__file__).resolve().parents[1] / "src" / "dbf_anonymizer" / "vault" / "store.py").read_text(encoding="utf-8")
+    assert "def connection(" not in source
 
 
 # ---------------------------------------------------------------------------

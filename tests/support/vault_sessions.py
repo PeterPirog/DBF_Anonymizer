@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Callable, Iterator
 
+from dbf_anonymizer.errors import AnonymizerError
 from dbf_anonymizer.vault import VaultDatabase, new_writer_token
 
 
@@ -28,8 +31,6 @@ def writer_session(vault: VaultDatabase) -> Iterator[str]:
 
 
 def file_sha256(path: Path) -> str:
-    import hashlib
-
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -42,19 +43,56 @@ def sidecar_inventory(directory: Path) -> list[str]:
     )
 
 
-def vault_file_sha256(vault: VaultDatabase) -> str:
-    """SHA-256 of the dictionary file behind *vault* (non-mutating check)."""
-    import hashlib
-
-    return hashlib.sha256(vault.path.read_bytes()).hexdigest()
-
-
 def error_boundary_payload(error: BaseException) -> str:
     """The full public error boundary: str + repr + to_dict serialization."""
-    from dbf_anonymizer.errors import AnonymizerError
-
     if isinstance(error, AnonymizerError):
         serialized = json.dumps(error.to_dict(), sort_keys=True)
     else:
         serialized = ""
     return f"{str(error)}|{repr(error)}|{serialized}"
+
+
+class FailingExecuteConnection:
+    """Delegating connection proxy that injects sqlite3.Error on demand.
+
+    Used as a deterministic failure-injection seam: replace
+    ``vault._connection`` with this proxy; ``execute`` raises the configured
+    exception when *fail_when* matches the SQL text; everything else is
+    delegated to the real connection.
+    """
+
+    def __init__(
+        self,
+        inner: sqlite3.Connection,
+        fail_when: Callable[[str], bool],
+        exception: type[Exception] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._fail_when = fail_when
+        self._exception = exception or sqlite3.OperationalError
+
+    def execute(self, sql: str, *parameters: Any) -> object:
+        if self._fail_when(sql):
+            raise self._exception("injected storage failure")
+        return self._inner.execute(sql, *parameters)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def install_failing_execute(
+    vault: VaultDatabase,
+    fail_when: Callable[[str], bool],
+    monkeypatch: Any = None,
+    exception: type[Exception] | None = None,
+) -> FailingExecuteConnection:
+    """Wrap the vault's connection so matching statements fail (test seam)."""
+    proxy = FailingExecuteConnection(
+        vault._internal_connection(), fail_when, exception
+    )
+    if monkeypatch is not None:
+        monkeypatch.setattr(vault, "_connection", proxy)
+    return proxy

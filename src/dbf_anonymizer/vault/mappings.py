@@ -89,7 +89,7 @@ def create_domain(
         if optional is not None:
             _validate_token(optional, field_name="domain descriptor")
     try:
-        database.connection.execute(
+        database._internal_connection().execute(
             "INSERT INTO mapping_domains (domain_id, domain_kind, normalization, "
             "relational_role) VALUES (?, ?, ?, ?)",
             (domain_id, domain_kind, normalization, relational_role),
@@ -100,7 +100,7 @@ def create_domain(
 
 
 def mapping_domains(database: VaultDatabase) -> tuple[dict[str, str | None], ...]:
-    rows = database.connection.execute(
+    rows = database._internal_connection().execute(
         "SELECT domain_id, domain_kind, normalization, relational_role "
         "FROM mapping_domains ORDER BY domain_id"
     ).fetchall()
@@ -134,7 +134,7 @@ def add_text_mapping(
     if logical_byte_length < 0:
         raise ValueError("logical_byte_length must be non-negative")
     try:
-        database.connection.execute(
+        database._internal_connection().execute(
             "INSERT INTO text_mappings (domain_id, original_value, pseudonym_value, "
             "logical_byte_length) VALUES (?, ?, ?, ?)",
             (domain_id, original_value, pseudonym_value, logical_byte_length),
@@ -144,7 +144,7 @@ def add_text_mapping(
 
 
 def get_text_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
-    row = database.connection.execute(
+    row = database._internal_connection().execute(
         "SELECT pseudonym_value FROM text_mappings WHERE domain_id = ? AND original_value = ?",
         (domain_id, original_value),
     ).fetchone()
@@ -152,7 +152,7 @@ def get_text_pseudonym(database: VaultDatabase, domain_id: str, original_value: 
 
 
 def get_text_original(database: VaultDatabase, domain_id: str, pseudonym_value: str) -> str | None:
-    row = database.connection.execute(
+    row = database._internal_connection().execute(
         "SELECT original_value FROM text_mappings WHERE domain_id = ? AND pseudonym_value = ?",
         (domain_id, pseudonym_value),
     ).fetchone()
@@ -160,7 +160,7 @@ def get_text_original(database: VaultDatabase, domain_id: str, pseudonym_value: 
 
 
 def text_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple[str, str, int], ...]:
-    rows = database.connection.execute(
+    rows = database._internal_connection().execute(
         "SELECT original_value, pseudonym_value, logical_byte_length FROM text_mappings "
         "WHERE domain_id = ? ORDER BY original_value",
         (domain_id,),
@@ -182,7 +182,7 @@ def add_numeric_key_mapping(
     database._require_active_transaction("add_numeric_key_mapping")
     _validate_token(domain_id, field_name="domain_id")
     try:
-        database.connection.execute(
+        database._internal_connection().execute(
             "INSERT INTO numeric_key_mappings (domain_id, original_value, "
             "pseudonym_value) VALUES (?, ?, ?)",
             (domain_id, original_value, pseudonym_value),
@@ -192,7 +192,7 @@ def add_numeric_key_mapping(
 
 
 def get_numeric_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
-    row = database.connection.execute(
+    row = database._internal_connection().execute(
         "SELECT pseudonym_value FROM numeric_key_mappings WHERE domain_id = ? AND original_value = ?",
         (domain_id, original_value),
     ).fetchone()
@@ -200,7 +200,7 @@ def get_numeric_pseudonym(database: VaultDatabase, domain_id: str, original_valu
 
 
 def numeric_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple[str, str], ...]:
-    rows = database.connection.execute(
+    rows = database._internal_connection().execute(
         "SELECT original_value, pseudonym_value FROM numeric_key_mappings "
         "WHERE domain_id = ? ORDER BY original_value",
         (domain_id,),
@@ -227,7 +227,7 @@ def add_memo_recovery(
         raise ValueError("physical_record_index must be non-negative")
     blob: bytes = payload.encode("utf-8") if isinstance(payload, str) else payload
     try:
-        database.connection.execute(
+        database._internal_connection().execute(
             "INSERT INTO memo_recovery (table_id, physical_record_index, field_id, "
             "original_payload, payload_kind) VALUES (?, ?, ?, ?, ?)",
             (table_id, physical_record_index, field_id, blob, payload_kind),
@@ -237,7 +237,7 @@ def add_memo_recovery(
 
 
 def memo_recovery_rows(database: VaultDatabase, table_id: str) -> tuple[dict[str, Any], ...]:
-    rows = database.connection.execute(
+    rows = database._internal_connection().execute(
         "SELECT physical_record_index, field_id, original_payload, payload_kind "
         "FROM memo_recovery WHERE table_id = ? ORDER BY physical_record_index",
         (table_id,),
@@ -260,7 +260,7 @@ def set_temporal_parameter(
     database._require_active_transaction("set_temporal_parameter")
     _validate_token(domain_id, field_name="domain_id")
     try:
-        database.connection.execute(
+        database._internal_connection().execute(
             "INSERT INTO temporal_parameters (domain_id, offset_days) VALUES (?, ?)",
             (domain_id, offset_days),
         )
@@ -269,7 +269,7 @@ def set_temporal_parameter(
 
 
 def temporal_parameter(database: VaultDatabase, domain_id: str) -> int | None:
-    row = database.connection.execute(
+    row = database._internal_connection().execute(
         "SELECT offset_days FROM temporal_parameters WHERE domain_id = ?", (domain_id,)
     ).fetchone()
     return None if row is None else int(row[0])

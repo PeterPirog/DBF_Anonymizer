@@ -24,8 +24,13 @@ from dbf_anonymizer.vault import (
     VaultDatabase,
     new_writer_token,
 )
-from support.vault_process_worker import attempt_acquire
-from support.vault_sessions import error_boundary_payload, writer_session
+from support.vault_process_worker import attempt_acquire, attempt_create
+from support.vault_sessions import (
+    error_boundary_payload,
+    file_sha256,
+    sidecar_inventory,
+    writer_session,
+)
 
 SOURCE_FP = "src-" + "4" * 60
 POLICY_FP = "pol-" + "5" * 60
@@ -262,6 +267,138 @@ def test_process_level_second_writer_is_rejected(tmp_path: Path) -> None:
     assert second_result["outcome"] == "ACQUIRED", second_result
 
 
+# ---------------------------------------------------------------------------
+# Concurrent vault CREATION is atomic (TOCTOU: the loser can never delete,
+# truncate, convert or replace the winner's dictionary)
+# ---------------------------------------------------------------------------
+def test_concurrent_thread_creation_admits_exactly_one(
+    tmp_path: Path,
+) -> None:
+    dictionary = tmp_path / "vault" / "dictionary.sqlite3"
+    contenders = 4
+    barrier = threading.Barrier(contenders)
+    results: list[tuple[str, str]] = []
+    results_lock = threading.Lock()
+
+    def _contend() -> None:
+        outcome = "UNEXPECTED"
+        try:
+            barrier.wait()  # deterministic overlap point
+            try:
+                vault = VaultDatabase.open(
+                    dictionary,
+                    create=True,
+                    expected_source_fingerprint=SOURCE_FP,
+                    expected_policy_fingerprint=POLICY_FP,
+                    expected_relationship_fingerprint=RELATIONSHIP_FP,
+                    dbfbridge_version=DBFBRIDGE_VERSION,
+                )
+            except VaultError as error:
+                outcome = (
+                    "CONFLICT"
+                    if error.code is ErrorCode.VAULT_STATE_INVALID
+                    else f"UNEXPECTED:{error.code.value}"
+                )
+            else:
+                winner_id = vault.vault_id
+                vault.close()
+                outcome = f"CREATED:{winner_id}"
+        except BaseException:  # barrier/thread failure must not hang the suite
+            outcome = "UNEXPECTED:BARRIER"
+        with results_lock:
+            results.append(("winner", outcome))
+
+    threads = [threading.Thread(target=_contend) for _index in range(contenders)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+
+    created = [outcome for _t, outcome in results if outcome.startswith("CREATED")]
+    conflicts = [outcome for _t, outcome in results if outcome == "CONFLICT"]
+    unexpected = [outcome for _t, outcome in results if outcome.startswith("UNEXPECTED")]
+    assert not unexpected, results
+    assert len(created) == 1, results
+    assert len(conflicts) == contenders - 1, results
+
+    # The winner's dictionary exists, is reopenable, integral and stable.
+    winner_vault_id = created[0].split(":", 1)[1]
+    reopened = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    try:
+        assert reopened.vault_id == winner_vault_id
+        reopened.verify(full=True)
+    finally:
+        reopened.close()
+    # No stray databases or sidecars remain.
+    assert _sqlite_files(tmp_path) == ["vault/dictionary.sqlite3"]
+    assert sidecar_inventory(dictionary.parent) == []
+
+
+def test_concurrent_process_creation_admits_exactly_one(
+    tmp_path: Path,
+) -> None:
+    dictionary = tmp_path / "vault" / "dictionary.sqlite3"
+    context = multiprocessing.get_context("spawn")
+    creation_payload = {
+        "dictionary": str(dictionary),
+        "source_fingerprint": SOURCE_FP,
+        "policy_fingerprint": POLICY_FP,
+        "relationship_fingerprint": RELATIONSHIP_FP,
+        "dbfbridge_version": DBFBRIDGE_VERSION,
+    }
+    result_queue = context.Queue()
+    processes = [
+        context.Process(target=attempt_create, args=(creation_payload, result_queue))
+        for _index in range(3)
+    ]
+    for process in processes:
+        process.start()
+    outcomes: list[dict[str, str]] = []
+    for process in processes:
+        process.join(timeout=180)
+        assert process.exitcode == 0
+        outcomes.append(result_queue.get(timeout=60))
+
+    created = [entry for entry in outcomes if entry["outcome"] == "CREATED"]
+    conflicts = [entry for entry in outcomes if entry["outcome"] == "CONFLICT"]
+    errors = [entry for entry in outcomes if entry["outcome"] == "ERROR"]
+    assert not errors, outcomes
+    assert len(created) == 1, outcomes
+    assert len(conflicts) == len(processes) - 1, outcomes
+    assert conflicts[0]["detail"] == "VAULT_STATE_INVALID", outcomes
+
+    # The losing processes never deleted or replaced the winner's file: the
+    # dictionary is intact, integral and reopenable with a stable vault_id.
+    winner_hash = file_sha256(dictionary)
+    reopened = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    try:
+        assert reopened.vault_id == created[0]["detail"]
+        reopened.verify(full=True)
+    finally:
+        reopened.close()
+    assert file_sha256(dictionary) == winner_hash
+    assert _sqlite_files(tmp_path) == ["vault/dictionary.sqlite3"]
+    assert sidecar_inventory(dictionary.parent) == []
+
+
+def _sqlite_files(root: Path) -> list[str]:
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix in {".sqlite", ".sqlite3"}
+    )
+
+
 def test_readers_coexist_without_the_writer_lease(tmp_path: Path) -> None:
     with _open(tmp_path, create=True) as creator:
         with writer_session(creator), creator.transaction():
@@ -320,7 +457,7 @@ def test_operational_error_is_not_a_writer_conflict(
         creator.close()
     vault = _reopen_existing(tmp_path)
     proxy = _FailingExecuteConnection(
-        vault.connection, lambda sql: "UPDATE writer_authority" in sql
+        vault._internal_connection(), lambda sql: "UPDATE writer_authority" in sql
     )
     monkeypatch.setattr(vault, "_connection", proxy)
     try:
@@ -346,7 +483,7 @@ def test_release_operational_error_is_not_a_writer_conflict(
         vault.acquire_writer_lease(token)
 
         proxy = _FailingExecuteConnection(
-            vault.connection,
+            vault._internal_connection(),
             lambda sql: "UPDATE writer_authority" in sql and "owner_token = NULL" in sql,
         )
         monkeypatch.setattr(vault, "_connection", proxy)

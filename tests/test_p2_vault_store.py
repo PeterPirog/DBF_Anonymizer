@@ -209,7 +209,7 @@ def test_publication_rows_bind_to_persisted_operations(tmp_path: Path) -> None:
             with writer_session(vault), vault.transaction():
                 vault.record_publication("vop-absent", "PUBLISH")
     with _reopen(tmp_path) as reopened:
-        publication = reopened.connection.execute(
+        publication = reopened._internal_connection().execute(
             "SELECT operation_id, phase, output_fingerprint FROM publication"
         ).fetchone()
         assert tuple(publication) == (operation_id, "PUBLISH", "out-" + "0" * 16)
@@ -271,7 +271,7 @@ def test_lease_holder_can_perform_every_mutation_class(tmp_path: Path) -> None:
         assert len(mappings.mapping_domains(reopened)) == 2
         assert len(mappings.memo_recovery_rows(reopened, table_id)) == 1
         assert mappings.temporal_parameter(reopened, domain_text) == -5
-        publication = reopened.connection.execute(
+        publication = reopened._internal_connection().execute(
             "SELECT phase FROM publication"
         ).fetchone()
         assert tuple(publication) == ("PUBLISH",)

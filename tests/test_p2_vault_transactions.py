@@ -23,8 +23,13 @@ from dbf_anonymizer.vault import (
     VAULT_DATABASE_FILENAME,
     VaultDatabase,
     mappings,
+    new_writer_token,
 )
-from support.vault_sessions import error_boundary_payload, writer_session
+from support.vault_sessions import (
+    error_boundary_payload,
+    install_failing_execute,
+    writer_session,
+)
 
 SOURCE_FP = "src-" + "7" * 60
 POLICY_FP = "pol-" + "8" * 60
@@ -172,7 +177,7 @@ def test_transaction_rollback_leaves_no_partial_rows(tmp_path: Path) -> None:
                 raise ValueError("injected failure before commit")
         # AFTER the rollback: no domain, no mapping row (proven, not implied).
         assert mappings.mapping_domains(vault) == ()
-        assert vault.connection.execute("SELECT COUNT(*) FROM text_mappings").fetchone()[0] == 0
+        assert vault._internal_connection().execute("SELECT COUNT(*) FROM text_mappings").fetchone()[0] == 0
         vault.verify()
 
     with _reopen(tmp_path) as reopened:
@@ -196,7 +201,7 @@ def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -
         # Uncommitted dependent inserts are all gone.
         assert vault.tables() == ()
         assert mappings.mapping_domains(vault) == ()
-        assert vault.connection.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 0
+        assert vault._internal_connection().execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 0
 
     # Reopening after the simulated interruption passes integrity and shows
     # only committed state.
@@ -264,3 +269,175 @@ def test_failed_mutation_never_exposes_mapping_values(tmp_path: Path) -> None:
             assert PSEUDONYM_A not in blob
             assert PSEUDONYM_B not in blob
             assert "UNIQUE" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Typed, fail-closed transaction-control failures
+# ---------------------------------------------------------------------------
+def test_begin_failure_is_typed_and_leaves_no_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(
+            vault, lambda sql: "BEGIN IMMEDIATE" in sql, monkeypatch
+        )
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+        assert excinfo.value.context.detail_code == "TRANSACTION_BEGIN_FAILED"
+        payload = error_boundary_payload(excinfo.value)
+        assert "injected storage failure" not in payload
+        assert str(tmp_path) not in payload
+        # BEGIN failed -> no transaction open, connection still trusted.
+        assert vault.poisoned is None
+        assert mappings.mapping_domains(vault) == ()
+        monkeypatch.undo()
+        vault.release_writer_lease(token)
+        vault.verify()
+
+
+def test_commit_failure_is_typed_fails_closed_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _create(tmp_path) as vault:
+        token = new_writer_token()
+        vault.acquire_writer_lease(token)
+        install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+        with pytest.raises(VaultError) as excinfo:
+            with vault.transaction():
+                vault.begin_operation()
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+        assert excinfo.value.code is ErrorCode.VAULT_UNAVAILABLE
+        assert excinfo.value.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        payload = error_boundary_payload(excinfo.value)
+        assert "injected storage failure" not in payload
+        # FAIL CLOSED: the uncertain connection refuses further operations.
+        assert vault.poisoned is not None
+        assert vault.poisoned.context.detail_code == "TRANSACTION_COMMIT_FAILED"
+        with pytest.raises(VaultError) as excinfo_poisoned:
+            with vault.transaction():
+                vault.begin_operation()
+        assert excinfo_poisoned.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_read:
+            vault.operations()
+        assert excinfo_read.value.context.detail_code == "CONNECTION_POISONED"
+
+    # Reopen after the fault: integrity passes and only committed state is
+    # visible — the commit was discarded, no partial logical object exists.
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_rollback_failure_with_operation_exception_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deterministic Python-3.10-compatible policy: the ORIGINAL operation
+    # exception keeps propagating, and the rollback failure is not silently
+    # lost — the connection is poisoned and the reason is inspectable.
+    vault = _create(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="original failure"):
+            token = new_writer_token()
+            vault.acquire_writer_lease(token)
+            install_failing_execute(vault, lambda sql: "ROLLBACK" in sql, monkeypatch)
+            try:
+                with vault.transaction():
+                    vault.begin_operation()
+                    raise ValueError("original failure")
+            finally:
+                assert vault.poisoned is not None
+                assert vault.poisoned.code is ErrorCode.VAULT_STATE_INVALID
+                assert (
+                    vault.poisoned.context.detail_code
+                    == "TRANSACTION_ROLLBACK_FAILED"
+                )
+        # Subsequent ordinary operations are refused on the poisoned instance.
+        with pytest.raises(VaultError) as excinfo:
+            vault.operations()
+        assert excinfo.value.context.detail_code == "CONNECTION_POISONED"
+        with pytest.raises(VaultError) as excinfo_lease:
+            vault.acquire_writer_lease(new_writer_token())
+        assert excinfo_lease.value.context.detail_code == "CONNECTION_POISONED"
+        monkeypatch.undo()
+        # The poisoned instance can only be closed. The injected rollback
+        # failure left the physical transaction open, so the real rollback is
+        # issued through the raw seam before the deterministic close.
+        vault._connection.execute("ROLLBACK")  # noqa: SLF001 - test seam
+        vault.close()
+    finally:
+        if not vault.closed:
+            vault.close()
+
+    with _reopen(tmp_path) as reopened:
+        # SQLite discarded the uncommitted work when the poisoned connection
+        # closed: the reopened vault passes integrity with only committed
+        # (empty) state.
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+
+
+def test_commit_failure_discards_partial_logical_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mid-transaction sequence of dependent inserts followed by a COMMIT
+    # failure must leave NO partially committed logical object.
+    with _create(tmp_path) as vault:
+        with pytest.raises(VaultError):
+            token = new_writer_token()
+            vault.acquire_writer_lease(token)
+            install_failing_execute(vault, lambda sql: "COMMIT" in sql, monkeypatch)
+            with vault.transaction():
+                vault.begin_operation()
+                vault.register_table("orders/data.dbf", schema_fingerprint="fp-x")
+                mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+    with _reopen(tmp_path) as reopened:
+        reopened.verify(full=True)
+        assert reopened.operations() == ()
+        assert reopened.tables() == ()
+        assert mappings.mapping_domains(reopened) == ()
+
+
+def test_authority_check_failure_leaves_no_open_transaction(tmp_path: Path) -> None:
+    dictionary = tmp_path / "vault" / VAULT_DATABASE_FILENAME
+    with _create(tmp_path) as creator:
+        creator.close()
+    holder = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    successor = VaultDatabase.open(
+        dictionary,
+        expected_source_fingerprint=SOURCE_FP,
+        expected_policy_fingerprint=POLICY_FP,
+        expected_relationship_fingerprint=RELATIONSHIP_FP,
+    )
+    try:
+        stale_token = new_writer_token()
+        holder.acquire_writer_lease(stale_token)
+        successor.release_writer_lease(stale_token)
+        successor.acquire_writer_lease(new_writer_token())
+        # The in-lock authority check fails and rolls itself back...
+        with pytest.raises(VaultError) as excinfo:
+            with holder.transaction():
+                holder.begin_operation()
+        assert excinfo.value.context.detail_code == "WRITER_LEASE_REQUIRED"
+        # ...and NO transaction remains open and nothing is poisoned: after
+        # the explicit reclaim of the current durable authority the holder
+        # runs the deterministic transaction unit cleanly.
+        current = holder.stale_writer_lease()
+        assert current is not None
+        holder.release_writer_lease(current)
+        with writer_session(holder), holder.transaction():
+            holder.begin_operation()
+        assert len(holder.operations()) == 1
+        assert holder.poisoned is None
+    finally:
+        holder.close()
+        successor.close()
