@@ -8,6 +8,28 @@ installs filesystem/DBF/network/subprocess/COM sentinels BEFORE importing
 ``dbf_anonymizer`` and then either imports the package or calls
 ``capabilities()``.
 
+The COM/optional-VFP evidence is a *real runtime import-attempt sentinel*: a
+``sys.meta_path`` finder installed at the FRONT of the child's import
+machinery fails fast on any attempt to *resolve or import* a forbidden root
+(``win32com``, ``pythoncom``, ``comtypes``, ``pywintypes`` and the
+architecture's external VFP toolchain provider) — including dynamic
+``importlib.import_module``/``__import__`` attempts that an optional-import
+fallback could hide while leaving ``sys.modules`` clean.  It raises
+``SentinelViolation``, never ``ImportError``, so the forbidden attempt cannot
+be swallowed as harmless absence; the recorded violations list stays
+authoritative even if the code under test catches a broad exception.  On
+Windows the child additionally replaces the direct COM/OLE activation entry
+points (``ctypes.oledll``/``ctypes.windll`` loader access and
+``ctypes.OleDLL``/``ctypes.WinDLL`` instantiation) with fail-fast sentinels
+before the code under test runs, so no COM object can be instantiated; on
+other platforms nothing is replaced and they keep running normally.
+
+Negative-control scenarios prove the sentinels themselves fire: the child
+deliberately attempts a forbidden dynamic import and an ordinary COM/OLE
+activation route, and the negative-control test passes only because the
+sentinel intercepts the action.  Post-operation ``sys.modules`` observation
+remains as secondary evidence.
+
 The pytest harness itself spawns the child interpreter (an allowed harness
 action); the code under test inside the child must not spawn any process,
 which the child's own subprocess sentinels prove.
@@ -39,10 +61,11 @@ from dbf_anonymizer import Capabilities
 
 VERDICT_PREFIX = "DBF_PURITY_VERDICT:"
 
-#: Optional backend modules that must never be loaded by import/discovery.
-#: The COM/ole set plus the architecture's external VFP toolchain provider
-#: (REQ-P6-006: accepted as injected metadata, never imported). The active
-#: repository contains no VFP/COM backend implementation module.
+#: Optional backend modules that must never be *resolved or loaded* by
+#: import/discovery.  The COM/ole set plus the architecture's external VFP
+#: toolchain provider (REQ-P6-006: accepted as injected metadata, never
+#: imported). The active repository contains no VFP/COM backend implementation
+#: module.
 FORBIDDEN_BACKEND_MODULES = (
     "win32com,pythoncom,comtypes,pywintypes,mcp_vfp9sp2_toolchain"
 )
@@ -69,9 +92,12 @@ _EXPECTED_CAPABILITY_KEYS = {
 
 # The child is a self-contained script executed with ``-I`` (isolated mode).
 # It installs every sentinel BEFORE importing dbf_anonymizer, then performs
-# exactly one scenario: a bare package import or a capability discovery call.
+# exactly one scenario: a bare package import, a capability discovery call or
+# one of the sentinel negative-control probes.
 CHILD_SCRIPT = r'''
 import builtins
+import ctypes
+import importlib
 import io
 import json
 import os
@@ -234,6 +260,84 @@ for low_level_name in ("_winapi", "_posixsubprocess"):
                                                    "subprocess"))
 
 
+# --- forbidden-import sentinel ----------------------------------------------
+# A real runtime import-attempt sentinel: a meta-path finder at the FRONT of
+# sys.meta_path, installed BEFORE the code under test runs.  Any attempt to
+# resolve/import a forbidden root (ordinary ``import``, ``__import__``,
+# ``importlib.import_module`` or ``importlib.util.find_spec``) records a
+# privacy-safe violation and raises SentinelViolation -- NOT ImportError, so
+# optional-import fallbacks cannot swallow it as harmless absence.  The
+# violations list stays authoritative even if the code under test catches a
+# broad exception.
+class _ForbiddenImportFinder:
+    def __init__(self, forbidden_roots):
+        self._forbidden_roots = frozenset(forbidden_roots)
+
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.split(".")[0]
+        if root in self._forbidden_roots:
+            _fail("forbidden-import", root)
+        return None
+
+
+sys.meta_path.insert(0, _ForbiddenImportFinder(FORBIDDEN_MODULES))
+
+# --- COM/OLE activation sentinel (Windows; harmless no-op elsewhere) ---------
+class _BlockedComLoader:
+    """Fail-fast sentinel object replacing a COM/OLE activation entry point.
+
+    Any attribute access, item access or call records a ``com-activation``
+    violation and raises SentinelViolation BEFORE any real library load or
+    COM object instantiation can happen.
+    """
+
+    def __init__(self, label):
+        self.__dict__["_label"] = label
+
+    def __getattr__(self, name):
+        _fail("com-activation", "%s.%s" % (self.__dict__["_label"], name))
+
+    def __getitem__(self, key):
+        _fail("com-activation", "%s[%r]" % (self.__dict__["_label"], key))
+
+    def __call__(self, *args, **kwargs):
+        _fail("com-activation", self.__dict__["_label"])
+
+
+def _install_com_activation_sentinel():
+    """Replace the available Windows COM/OLE activation entry points.
+
+    ``ctypes.oledll``/``ctypes.windll`` loader access and
+    ``ctypes.OleDLL``/``ctypes.WinDLL`` instantiation are the common direct
+    COM-loading/activation paths on Windows.  Those entry points exist only
+    on Windows; on other platforms nothing is replaced and the platform keeps
+    running normally (no Windows-only library is required, and the product
+    package must not import ``ctypes`` merely to satisfy this test).
+    """
+    guarded = []
+    if sys.platform == "win32":
+        for loader_name in ("oledll", "windll"):
+            if getattr(ctypes, loader_name, None) is not None:
+                setattr(
+                    ctypes,
+                    loader_name,
+                    _BlockedComLoader("ctypes." + loader_name),
+                )
+                guarded.append("ctypes." + loader_name)
+        for factory_name in ("OleDLL", "WinDLL"):
+            if getattr(ctypes, factory_name, None) is not None:
+                setattr(
+                    ctypes,
+                    factory_name,
+                    _BlockedComLoader("ctypes." + factory_name),
+                )
+                guarded.append("ctypes." + factory_name)
+    return guarded
+
+
+COM_GUARDED = _install_com_activation_sentinel()
+
+
 # --- observation helpers ----------------------------------------------------
 def forbidden_loaded():
     loaded = []
@@ -252,6 +356,8 @@ def finish(code):
         "scenario": SCENARIO,
         "ok": code == 0,
         "violations": violations,
+        "sentinel_fired": SENTINEL_FIRED,
+        "com_guarded": COM_GUARDED,
         "forbidden_loaded": forbidden_loaded(),
         "cwd_before": CWD_BEFORE,
         "cwd_after": snapshot_cwd(),
@@ -265,58 +371,121 @@ def finish(code):
 CWD_BEFORE = snapshot_cwd()
 CAPS = None
 UNEXPECTED = None
+SENTINEL_FIRED = False
+NEGATIVE_SCENARIOS = ("forbidden-import-negative", "com-activation-negative")
 
 try:
-    if SCENARIO == "capabilities":
-        import dbfbridge
-
-        for data_operation in (
-            "inspect_table",
-            "read_schema",
-            "iter_records",
-            "iter_raw_records",
-            "write_table",
-        ):
-            setattr(dbfbridge, data_operation, _blocked(data_operation,
-                                                        "dbfbridge-data-op"))
-
-    import dbf_anonymizer
-
-    if SCENARIO == "capabilities":
-        from dbf_anonymizer import capabilities as capabilities_function
-
-        result = capabilities_function()
-        payload = result.to_dict()
-        payload_again = dbf_anonymizer.capabilities().to_dict()
-        dumped = json.dumps(payload)
-        reparsed = json.loads(dumped)
-        CAPS = {
-            "direct_read": result.direct_read,
-            "direct_write": result.direct_write,
-            "recovery": result.recovery,
-            "transfer_bundle": result.transfer_bundle,
-            "vfp_index_backend": result.vfp_index_backend,
-            "dbfbridge_version": result.dbfbridge_version,
-            "dict_keys": sorted(payload),
-            "deterministic": payload == payload_again,
-            "json_safe": isinstance(reparsed, dict) and reparsed == payload,
-            "path_like_values": [
-                value
-                for value in payload.values()
-                if isinstance(value, str)
-                and (
-                    "/" in value
-                    or "\\" in value
-                    or (len(value) > 1 and value[1] == ":")
+    if SCENARIO == "forbidden-import-negative":
+        # NEGATIVE CONTROL: deliberately attempt a forbidden dynamic
+        # resolution/import (the exact shape an optional-import fallback could
+        # hide while leaving sys.modules clean).  The sentinel must intercept
+        # the attempt, record the violation and prevent the module load.
+        try:
+            importlib.import_module("win32com")
+        except SentinelViolation:
+            SENTINEL_FIRED = True
+        else:
+            UNEXPECTED = "forbidden import was not intercepted"
+    elif SCENARIO == "com-activation-negative":
+        # NEGATIVE CONTROL: deliberately invoke the guarded COM/OLE activation
+        # entry points.  The sentinel must fire BEFORE any real library load
+        # or COM object instantiation.  Windows exercises the real loader and
+        # factory routes; other platforms exercise the deterministic sentinel
+        # abstraction (no real COM/OLE entry points exist to guard there).
+        if sys.platform == "win32":
+            probes = (
+                ("loader-access", lambda: ctypes.windll.probe_com_object),
+                ("factory-call", lambda: ctypes.OleDLL("probe.dll")),
+            )
+        else:
+            probes = (
+                ("attribute-access",
+                 lambda: _BlockedComLoader("sentinel.com-probe").probe),
+                ("factory-call",
+                 lambda: _BlockedComLoader("sentinel.com-probe")("probe.dll")),
+            )
+        for probe_label, trigger in probes:
+            try:
+                trigger()
+            except SentinelViolation:
+                SENTINEL_FIRED = True
+            else:
+                UNEXPECTED = (
+                    "COM/OLE activation was not intercepted (%s)" % probe_label
                 )
-            ],
-        }
+    else:
+        if SCENARIO == "capabilities":
+            import dbfbridge
+
+            for data_operation in (
+                "inspect_table",
+                "read_schema",
+                "iter_records",
+                "iter_raw_records",
+                "write_table",
+            ):
+                setattr(dbfbridge, data_operation, _blocked(data_operation,
+                                                            "dbfbridge-data-op"))
+
+        import dbf_anonymizer
+
+        if SCENARIO == "capabilities":
+            from dbf_anonymizer import capabilities as capabilities_function
+
+            result = capabilities_function()
+            payload = result.to_dict()
+            payload_again = dbf_anonymizer.capabilities().to_dict()
+            dumped = json.dumps(payload)
+            reparsed = json.loads(dumped)
+            CAPS = {
+                "direct_read": result.direct_read,
+                "direct_write": result.direct_write,
+                "recovery": result.recovery,
+                "transfer_bundle": result.transfer_bundle,
+                "vfp_index_backend": result.vfp_index_backend,
+                "dbfbridge_version": result.dbfbridge_version,
+                "dict_keys": sorted(payload),
+                "deterministic": payload == payload_again,
+                "json_safe": isinstance(reparsed, dict) and reparsed == payload,
+                "path_like_values": [
+                    value
+                    for value in payload.values()
+                    if isinstance(value, str)
+                    and (
+                        "/" in value
+                        or "\\" in value
+                        or (len(value) > 1 and value[1] == ":")
+                    )
+                ],
+            }
 except SentinelViolation:
     finish(3)
 except BaseException as exc:
     UNEXPECTED = "%s: %s" % (type(exc).__name__, exc)
     finish(4)
 
+if SCENARIO in NEGATIVE_SCENARIOS:
+    negative_ok = (
+        SENTINEL_FIRED
+        and UNEXPECTED is None
+        and not forbidden_loaded()
+        and CWD_BEFORE == snapshot_cwd()
+    )
+    if SCENARIO == "forbidden-import-negative":
+        negative_ok = negative_ok and violations == [
+            "forbidden-import: win32com"
+        ]
+        negative_ok = negative_ok and "win32com" not in sys.modules
+    else:
+        negative_ok = (
+            negative_ok
+            and len(violations) == 2
+            and all(item.startswith("com-activation") for item in violations)
+        )
+    finish(0 if negative_ok else 3)
+
+if violations:  # authoritative even if the code under test swallowed the raise
+    finish(3)
 if forbidden_loaded():
     finish(3)
 if CWD_BEFORE != snapshot_cwd():
@@ -330,7 +499,9 @@ def _run_isolated_purity_child(tmp_path: Path, scenario: str) -> tuple[dict, sub
     """Run one isolated purity scenario in a fresh ``-I`` Python interpreter.
 
     The harness (this pytest process) creates the child script and the empty
-    watched directory; the child itself must not create anything.
+    watched directory; the child itself must not create anything.  The
+    scenario is a bare package import, a capability discovery call or one of
+    the sentinel negative-control probes.
     """
     script_path = tmp_path / "_p1_007_purity_child.py"
     script_path.write_text(CHILD_SCRIPT, encoding="utf-8")
@@ -371,10 +542,21 @@ def _assert_clean(verdict: dict, completed: subprocess.CompletedProcess[str]) ->
     )
     assert verdict["ok"] is True, verdict
     assert verdict["violations"] == [], verdict
+    assert verdict["sentinel_fired"] is False, verdict
     assert verdict["forbidden_loaded"] == [], verdict
     assert verdict["unexpected"] is None, verdict
     assert verdict["cwd_before"] == [], verdict
     assert verdict["cwd_after"] == [], verdict
+    # The Windows COM/OLE activation sentinel must have been live inside the
+    # child before the code under test ran; other platforms have no COM/OLE
+    # loader entry points to guard.
+    if sys.platform == "win32":
+        assert "ctypes.windll" in verdict["com_guarded"], verdict
+        assert "ctypes.oledll" in verdict["com_guarded"], verdict
+        assert "ctypes.OleDLL" in verdict["com_guarded"], verdict
+        assert "ctypes.WinDLL" in verdict["com_guarded"], verdict
+    else:
+        assert verdict["com_guarded"] == [], verdict
 
 
 def test_req_p1_007_isolated_import_purity(tmp_path: Path) -> None:
@@ -408,6 +590,61 @@ def test_req_p1_007_isolated_capability_purity(tmp_path: Path) -> None:
     assert caps["direct_read"] == reference.direct_read
     assert caps["direct_write"] == reference.direct_write
     assert caps["dbfbridge_version"] == reference.dbfbridge_version
+
+
+def test_req_p1_007_forbidden_import_sentinel_negative_control(
+    tmp_path: Path,
+) -> None:
+    """NEGATIVE CONTROL — the forbidden-import sentinel is live.
+
+    The isolated child deliberately attempts a dynamic resolution/import of
+    the forbidden COM root ``win32com`` (``importlib.import_module``; the
+    exact shape an optional-import fallback could hide while leaving
+    ``sys.modules`` clean).  This test passes only because the runtime
+    sentinel intercepts the attempt, records the violation and prevents the
+    module from actually loading.
+    """
+    verdict, completed = _run_isolated_purity_child(
+        tmp_path, "forbidden-import-negative"
+    )
+    assert completed.returncode == 0, (
+        f"forbidden-import negative control failed\nverdict={verdict!r}\n"
+        f"stderr={completed.stderr!r}"
+    )
+    assert verdict["ok"] is True
+    assert verdict["sentinel_fired"] is True
+    assert verdict["violations"] == ["forbidden-import: win32com"]
+    assert verdict["forbidden_loaded"] == []
+    assert verdict["unexpected"] is None
+
+
+def test_req_p1_007_com_activation_sentinel_negative_control(
+    tmp_path: Path,
+) -> None:
+    """NEGATIVE CONTROL — the COM/OLE activation sentinel is live.
+
+    The isolated child deliberately invokes the guarded COM/OLE activation
+    entry points (on Windows the real ``ctypes.windll`` loader-access and
+    ``ctypes.OleDLL`` factory routes; on other platforms the deterministic
+    sentinel abstraction).  The sentinel must fire BEFORE any real library
+    load or COM object instantiation; no real COM object is ever created.
+    """
+    verdict, completed = _run_isolated_purity_child(
+        tmp_path, "com-activation-negative"
+    )
+    assert completed.returncode == 0, (
+        f"COM activation negative control failed\nverdict={verdict!r}\n"
+        f"stderr={completed.stderr!r}"
+    )
+    assert verdict["ok"] is True
+    assert verdict["sentinel_fired"] is True
+    assert len(verdict["violations"]) == 2
+    assert all(
+        violation.startswith("com-activation")
+        for violation in verdict["violations"]
+    )
+    assert verdict["forbidden_loaded"] == []
+    assert verdict["unexpected"] is None
 
 
 # ---------------------------------------------------------------------------
