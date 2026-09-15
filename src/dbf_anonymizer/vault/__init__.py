@@ -35,6 +35,7 @@ from dbf_anonymizer.vault.schema import (
     VAULT_PAYLOAD_KIND_TEXT,
     VAULT_SCHEMA_VERSION,
     VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
+    VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
     VAULT_TABLE_DOMAIN_KIND_TEXT,
     VAULT_WRITER_TOKEN_PREFIX,
 )
@@ -47,6 +48,7 @@ from dbf_anonymizer.vault.store import (
     default_dictionary_path,
     new_writer_token,
 )
+from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
 from dbf_anonymizer.vault.transactions import VaultTransaction
 from dbf_anonymizer.vault.text_allocation import (
     GLOBAL_TEXT_DOMAIN_ID,
@@ -62,6 +64,7 @@ __all__ = [
     "VAULT_WRITER_TOKEN_PREFIX",
     "VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY",
     "VAULT_TABLE_DOMAIN_KIND_TEXT",
+    "VAULT_TABLE_DOMAIN_KIND_TEMPORAL",
     "VAULT_PAYLOAD_KIND_BINARY",
     "VAULT_PAYLOAD_KIND_TEXT",
     "VAULT_JOURNAL_MODE",
@@ -78,4 +81,5 @@ __all__ = [
     "GlobalTextDomainMapping",
     "persist_memo_recovery",
     "recover_memo_value",
+    "TemporalShiftDomain",
 ]

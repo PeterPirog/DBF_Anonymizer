@@ -35,6 +35,7 @@ __all__ = [
     "VAULT_WRITER_TOKEN_PREFIX",
     "VAULT_TABLE_DOMAIN_KIND_TEXT",
     "VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY",
+    "VAULT_TABLE_DOMAIN_KIND_TEMPORAL",
     "VAULT_OPERATION_STATE_STARTED",
     "VAULT_OPERATION_STATE_COMPLETED",
     "VAULT_PAYLOAD_KIND_TEXT",
@@ -59,9 +60,12 @@ VAULT_OPERATION_ID_PREFIX = "vop-"
 VAULT_WRITER_TOKEN_PREFIX = "wauth-"
 
 #: Bounded mapping-domain kind vocabulary (structural only; the allocation
-#: policy for pseudonyms is REQ-P2-004 and is NOT implemented here).
+#: policy for pseudonyms is REQ-P2-004 and is NOT implemented here).  The
+#: TEMPORAL kind is the additive P2-008 vocabulary: the domain_kind column
+#: already supports bounded string values, so NO schema change is required.
 VAULT_TABLE_DOMAIN_KIND_TEXT = "TEXT"
 VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY = "NUMERIC_KEY"
+VAULT_TABLE_DOMAIN_KIND_TEMPORAL = "TEMPORAL"
 
 #: Bounded operation-state vocabulary (REQ-P2-002 operations table).
 VAULT_OPERATION_STATE_STARTED = "STARTED"

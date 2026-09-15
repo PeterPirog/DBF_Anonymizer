@@ -788,6 +788,7 @@ VAULT_MODULES = (
     "vault/transactions.py",
     "vault/text_allocation.py",
     "vault/memo_allocation.py",
+    "vault/temporal_allocation.py",
 )
 
 #: The source-read-only public operations must never reach the vault layer:
@@ -921,8 +922,15 @@ MEMO_RECOVERY_MODULES = frozenset(
     }
 )
 
-#: The memo transformation modules must stay pure logical-value boundaries.
-MEMO_PURE_MODULES = ("transforms/memo.py", "vault/memo_allocation.py")
+#: The value-typed transform/vault boundary modules must stay free of any
+#: dependency-namespace or file-I/O behaviour (memo REQ-P2-007 + temporal
+#: REQ-P2-008 foundations).
+PURE_VALUE_BOUNDARY_MODULES = (
+    "transforms/memo.py",
+    "vault/memo_allocation.py",
+    "transforms/temporal.py",
+    "vault/temporal_allocation.py",
+)
 
 
 def test_memo_recovery_is_the_single_payload_store() -> None:
@@ -951,8 +959,8 @@ def test_no_second_memo_or_payload_table_in_the_schema() -> None:
             assert "CREATE TABLE" not in path.read_text(encoding="utf-8"), path
 
 
-def test_memo_modules_are_pure_value_boundaries() -> None:
-    for module_name in MEMO_PURE_MODULES:
+def test_value_boundary_modules_are_pure() -> None:
+    for module_name in PURE_VALUE_BOUNDARY_MODULES:
         source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -977,6 +985,17 @@ def test_public_models_carry_no_memo_payload_field() -> None:
     models_source = (SRC_ROOT / "models.py").read_text(encoding="utf-8")
     assert "original_payload" not in models_source
     assert "memo_payload" not in models_source
+
+
+def test_public_models_carry_no_secret_temporal_offset_field() -> None:
+    # REQ-P2-008: transferable/public metadata may expose only the FACT of a
+    # reversible shift, never the secret offset.  Static regression: no
+    # public model/schema gains an offset_days-style secret field.
+    for public_name in ("models.py", "errors.py"):
+        source = (SRC_ROOT / public_name).read_text(encoding="utf-8")
+        assert "offset_days" not in source, public_name
+        assert "temporal_offset" not in source, public_name
+        assert "secret_offset" not in source, public_name
 
 
 def test_no_logging_in_production_sources() -> None:
