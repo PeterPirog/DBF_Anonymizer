@@ -292,7 +292,8 @@ def test_bounded_probe_budget_never_raises_exhaustion(tmp_path: Path) -> None:
         with writer_session(vault):
             # A full budget of collisions is a PERFORMANCE event, never an
             # exhaustion claim: the exact completion phase then allocates
-            # with certainty from the remaining free tokens.
+            # with certainty from the remaining free tokens of the planned
+            # class (the width-1 pool minus the occupied "A" = 35 tokens).
             collisions = [0] * GLOBAL_TEXT_PROBE_BUDGET
             stream = _ScriptedRandom(*collisions, 0)
             allocator = _allocator(vault, stream)
@@ -301,7 +302,7 @@ def test_bounded_probe_budget_never_raises_exhaustion(tmp_path: Path) -> None:
             pseudonym = allocator.pseudonym_for("BUDGET-EDGE")
             assert pseudonym == "B"  # first free token (blocked = {"A"} -> 0)
             assert len(stream.calls) == GLOBAL_TEXT_PROBE_BUDGET + 1
-            assert stream.calls[-1] == 36 + 36 * 36 - 1  # the free-token count
+            assert stream.calls[-1] == 36 - 1  # the class's free token count
 
 
 def test_exact_full_exhaustion_is_typed_and_creates_no_row(tmp_path: Path) -> None:
@@ -561,18 +562,24 @@ def test_strictest_width_is_order_independent(tmp_path: Path) -> None:
 
 def test_stricter_later_constraint_fails_closed_without_remap(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
+        # The whole width-1 pool is already occupied: the global plan must
+        # route the width-10 original into a longer class, producing a
+        # deliberately LONG persisted pseudonym (a full width-2 token).
+        rows = [
+            (f"SEED-{index:02d}", ch, 1)
+            for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
+        ]
+        _seed_global_domain_rows(vault, rows)
         with writer_session(vault):
-            # A deliberately LONG persisted pseudonym (full width-10 token)
-            # becomes incompatible with the later stricter width-2 field.
-            allocator = _allocator(vault, _ScriptedRandom(text_kernels.token_space(9, 36)))
+            allocator = _allocator(vault, _ScriptedRandom(0))
             allocator.observe("WIDENED-KEY", encoding="cp1250", byte_width=10)
             allocator.finalize()
             first = allocator.pseudonym_for("WIDENED-KEY")
-            assert len(first) == 10
+            assert len(first) == 2
     with _reopen(tmp_path) as reopened:
         with writer_session(reopened):
             allocator = _allocator(reopened)
-            allocator.observe("WIDENED-KEY", encoding="cp1250", byte_width=2)
+            allocator.observe("WIDENED-KEY", encoding="cp1250", byte_width=1)
             with pytest.raises(MappingError) as excinfo:
                 allocator.finalize()
             assert excinfo.value.code is ErrorCode.MAPPING_CONFLICT
@@ -580,7 +587,7 @@ def test_stricter_later_constraint_fails_closed_without_remap(tmp_path: Path) ->
             assert "WIDENED-KEY" not in payload and first not in payload
             # The persisted mapping is NEVER silently remapped.
             assert get_text_pseudonym_of(reopened, "WIDENED-KEY") == first
-            assert len(_global_rows(reopened)) == 1
+            assert len(_global_rows(reopened)) == 36 + 1  # seeds + the mapping
 
 
 def test_compatible_later_constraints_reuse_persisted_mapping(tmp_path: Path) -> None:
@@ -749,18 +756,29 @@ def test_zero_width_constraint_is_infeasible(tmp_path: Path) -> None:
 
 def test_width1_full_capacity_through_the_allocator(tmp_path: Path) -> None:
     originals = [f"TOKEN-USER-{index:02d}" for index in range(36)]
-    with _create(tmp_path) as vault:
+    with _create(tmp_path / "exact") as vault:
+        with writer_session(vault):
+            allocator = _allocator(vault)
+            for original in originals:
+                allocator.observe(original, encoding="cp1250", byte_width=1)
+            allocator.finalize()
+            pseudonyms = [allocator.pseudonym_for(o) for o in originals]
+            assert sorted(pseudonyms) == sorted(text_kernels.SAFE_TEXT_ALPHABET)
+    # One additional finalized original makes the COMPLETE residual problem
+    # genuinely infeasible: the global plan fails closed at the first
+    # allocation, BEFORE any irreversible partial commitment could create a
+    # dead-end for the remaining originals.
+    with _create(tmp_path / "overfull") as vault:
         with writer_session(vault):
             allocator = _allocator(vault)
             for original in originals:
                 allocator.observe(original, encoding="cp1250", byte_width=1)
             allocator.observe("ONE-TOO-MANY", encoding="cp1250", byte_width=1)
             allocator.finalize()
-            pseudonyms = [allocator.pseudonym_for(o) for o in originals]
-            assert sorted(pseudonyms) == sorted(text_kernels.SAFE_TEXT_ALPHABET)
             with pytest.raises(MappingError) as excinfo:
-                allocator.pseudonym_for("ONE-TOO-MANY")
+                allocator.pseudonym_for(originals[0])
             assert excinfo.value.code is ErrorCode.MAPPING_CAPACITY_EXHAUSTED
+            assert _global_rows(vault) == ()  # nothing was persisted
 
 
 def test_width2_capacity_boundary_is_exact(tmp_path: Path) -> None:

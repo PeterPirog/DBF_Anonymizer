@@ -20,10 +20,22 @@ reuse):
   for the union of participating encodings, and every persisted mapping of
   the domain is validated against the finalized constraints. Allocation
   before finalization is impossible, and later observation is refused.
-* ALLOCATE/PERSIST — :meth:`GlobalTextDomainMapping.pseudonym_for` allocates
-  one CSPRNG pseudonym per unallocated original and persists it inside one
-  authorized :class:`~dbf_anonymizer.vault.transactions.VaultTransaction`
-  (the durable single-writer lease is verified inside ``BEGIN IMMEDIATE``).
+* PLAN — before any irreversible persistence, the allocator solves the
+  COMPLETE unpersisted residual problem EXACTLY (a maximum flow over a
+  compressed graph that scales with the observed originals and persisted
+  mappings and never materializes the token universes of wide fields): every
+  unpersisted original receives a plan entry against all fixed persisted
+  mappings, every strictest width, the participating encodings, the bijection
+  and every self-exclusion. Persisting any subset of the plan keeps the rest
+  feasible, so ``pseudonym_for`` request order can never create a dead-end
+  for a later stricter original and exhaustion is raised only when the
+  remaining problem is genuinely infeasible with the fixed persisted set.
+* ALLOCATE/PERSIST — :meth:`GlobalTextDomainMapping.pseudonym_for` follows
+  the plan: a committed named token is taken exactly; a generic class slot
+  receives a CSPRNG-chosen free token of that class (bounded probe phase,
+  exact j-th-free completion), persisted inside one authorized
+  :class:`~dbf_anonymizer.vault.transactions.VaultTransaction` (the durable
+  single-writer lease is verified inside ``BEGIN IMMEDIATE``).
 * REUSE — the same original always reuses its persisted mapping (same vault
   reopen, same field, same table, any directory); a reused mapping is
   revalidated against the finalized constraints and is NEVER silently
@@ -38,11 +50,12 @@ Security properties (proven by the dedicated evidence tests):
 * pseudonyms are never predictably derived from the original value, a public
   salt, a sequence counter, ``random.Random`` or any reversible arithmetic;
 * collision handling is TRUTHFUL: the admissible token space, the occupied
-  tokens and the self-excluded token are known exactly, so a random
-  collision is separated from true domain exhaustion; a bounded CSPRNG probe
-  phase is followed by an exact uniform completion strategy over the
-  remaining free tokens — the loop is finite by construction, no arbitrary
-  attempt budget raises exhaustion and no unbounded retry loop exists;
+  tokens and the self-excluded token are known EXACTLY, and the plan keeps
+  the COMPLETE residual problem feasible, so a random collision is separated
+  from true domain exhaustion; a bounded CSPRNG probe phase is followed by
+  an exact uniform completion over the remaining free tokens of the planned
+  class — the loop is finite by construction, no arbitrary attempt budget
+  raises exhaustion and no unbounded retry loop exists;
 * a candidate equal to the sensitive original is forbidden and counts
   against the effective available capacity;
 * failures are stable typed application errors; public errors, logs and
@@ -54,7 +67,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Literal, TypeAlias
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError
 from dbf_anonymizer.transforms.text import (
@@ -90,6 +103,7 @@ GLOBAL_TEXT_PROBE_BUDGET = 64
 _DETAIL_NO_SAFE_ALPHABET = "GLOBAL_TEXT_NO_SAFE_ALPHABET"
 _DETAIL_WIDTH_INFEASIBLE = "GLOBAL_TEXT_WIDTH_INFEASIBLE"
 _DETAIL_DOMAIN_EXHAUSTED = "GLOBAL_TEXT_DOMAIN_EXHAUSTED"
+_DETAIL_NO_COMPLETION = "GLOBAL_TEXT_NO_COMPLETION"
 _DETAIL_PERSISTED_PREFIX = "GLOBAL_TEXT_PERSISTED"
 _DETAIL_REUSED_PREFIX = "GLOBAL_TEXT_REUSED"
 
@@ -120,16 +134,24 @@ def _mapping_failure(code: ErrorCode, detail_code: str) -> MappingError:
     )
 
 
-def _jth_free_index(total: int, blocked: Iterable[int], j: int) -> int:
-    """The index of the ``j``-th free token in ``[0, total)`` (exact, finite).
+#: One planned assignment: a fungible slot in one length class, or an exact
+#: committed (reserved) token planned for this original.
+_PlanEntry: TypeAlias = tuple[Literal["generic"], int] | tuple[Literal["named"], str]
 
-    ``blocked`` must hold unique indices below *total*. Walking the sorted
-    blocked indices costs ``O(len(blocked))`` — the exact completion
-    strategy of the allocation algorithm when random probes become
-    inefficient; it never scans the (possibly astronomically large) free
-    token space itself and is finite by construction.
+
+def _jth_free_in_class(
+    class_low: int, class_size: int, blocked: Iterable[int], j: int
+) -> int:
+    """The absolute index of the ``j``-th free token of one length class.
+
+    ``blocked`` holds unique absolute indices inside the class block
+    ``[class_low, class_low + class_size)``. Walking the sorted blocked
+    indices costs ``O(len(blocked))`` — the exact completion strategy of the
+    selection when random probes become inefficient; it never scans the
+    (possibly astronomically large) class token space itself and is finite
+    by construction.
     """
-    previous = -1
+    previous = class_low - 1
     remaining = j
     for index in sorted(blocked):
         gap = index - previous - 1
@@ -138,6 +160,102 @@ def _jth_free_index(total: int, blocked: Iterable[int], j: int) -> int:
         remaining -= gap
         previous = index
     return previous + 1 + remaining
+
+
+class _ResidualFlow:
+    """Compact Dinic maximum flow over the compressed assignment graph.
+
+    Pure structure: integer nodes, unit source capacities and (possibly
+    astronomically large, but never enumerated) class capacities. The flow
+    is exact, so ``max_flow`` equal to the demand proves that the complete
+    residual assignment problem has a bijective solution.
+    """
+
+    __slots__ = ("_graph", "_levels", "_iter")
+
+    def __init__(self, node_count: int) -> None:
+        self._graph: list[list[list[int]]] = [[] for _ in range(node_count)]
+        self._levels: list[int] = []
+        self._iter: list[int] = []
+
+    def add_edge(self, u: int, v: int, cap: int) -> None:
+        forward_index = len(self._graph[u])
+        backward_index = len(self._graph[v])
+        self._graph[u].append([v, cap, backward_index])
+        self._graph[v].append([u, 0, forward_index])
+
+    def max_flow(self, source: int, sink: int, demand: int) -> int:
+        """Maximum flow value, stopping early once *demand* is reached."""
+        flow = 0
+        while flow < demand and self._bfs(source, sink):
+            self._iter = [0] * len(self._graph)
+            flow += self._blocking_push(source, sink, demand - flow)
+        return flow
+
+    def routed_target(self, node: int) -> int | None:
+        """The unique downstream node carrying this node's unit of flow.
+
+        Valid after :meth:`max_flow` for source-adjacent originals with unit
+        capacity: their single fully-consumed forward edge.
+        """
+        for edge in self._graph[node]:
+            if edge[1] == 0:
+                return edge[0]
+        return None
+
+    def _bfs(self, source: int, sink: int) -> bool:
+        levels = [-1] * len(self._graph)
+        levels[source] = 0
+        queue = [source]
+        while queue and levels[sink] == -1:
+            next_queue: list[int] = []
+            for node in queue:
+                for edge in self._graph[node]:
+                    target, cap = edge[0], edge[1]
+                    if cap > 0 and levels[target] == -1:
+                        levels[target] = levels[node] + 1
+                        next_queue.append(target)
+            queue = next_queue
+        self._levels = levels
+        return levels[sink] != -1
+
+    def _blocking_push(self, source: int, sink: int, limit: int) -> int:
+        graph = self._graph
+        levels = self._levels
+        iterator = self._iter
+        total = 0
+        path: list[list[int]] = []  # forward edge objects along the path
+        node = source
+        while True:
+            if node == sink:
+                bottleneck = min(edge[1] for edge in path)
+                bottleneck = min(bottleneck, limit - total)
+                for edge in path:
+                    edge[1] -= bottleneck
+                    graph[edge[0]][edge[2]][1] += bottleneck
+                total += bottleneck
+                if total >= limit:
+                    return total
+                node = source
+                path.clear()
+                continue
+            edges = graph[node]
+            index = iterator[node]
+            while index < len(edges):
+                edge = edges[index]
+                if edge[1] > 0 and self._levels[edge[0]] == self._levels[node] + 1:
+                    break
+                index += 1
+            iterator[node] = index
+            if index < len(edges):
+                path.append(edges[index])
+                node = edges[index][0]
+                continue
+            if node == source:
+                return total
+            self._levels[node] = -1  # dead branch: pruned for this phase
+            failed = path.pop()
+            node = graph[failed[0]][failed[2]][0]  # retreat via the reverse edge
 
 
 class GlobalTextDomainMapping:
@@ -175,6 +293,32 @@ class GlobalTextDomainMapping:
         #: mapped to their character length (equal to their encoded byte
         #: length under every participating encoding for safe tokens).
         self._used: dict[str, int] = {}
+        #: The originals of the persisted mapping rows (fixed assignments).
+        self._persisted_originals: set[str] = set()
+        #: The GLOBAL assignment plan for the complete unpersisted residual
+        #: problem: original -> ("generic", class length) for a slot in the
+        #: fungible token pool of one length class, or ("named", token) for a
+        #: reserved specific token (another unpersisted original's own value).
+        #: The plan is a complete feasible witness computed from the WHOLE
+        #: finalized constraint set, so persisting any subset of it keeps the
+        #: remaining entries feasible — greedy per-call choices can never
+        #: create a dead-end for a later stricter original.
+        self._plan: dict[str, _PlanEntry] | None = None
+        #: Reserved (named) tokens: every unpersisted original that is itself
+        #: a free safe token within its own strictest width, mapped to its
+        #: owner. Reserved tokens are excluded from generic selection.
+        self._plan_reserved: dict[str, str] = {}
+        #: Tokens committed by the current plan to a named-planned original;
+        #: they stay excluded from generic selection until their consumer is
+        #: persisted (a committed token can never be stolen by the pool).
+        self._plan_promised: set[str] = set()
+        #: Number of persisted rows NOT allocated by this instance when the
+        #: current plan was built; a change means the fixed set changed and
+        #: the residual must be replanned around it.
+        self._plan_signature: int | None = None
+        #: Originals allocated by THIS instance (excluded from replan
+        #: triggers; their rows are the plan's own committed prefix).
+        self._own_persisted: set[str] = set()
 
     # -- state -----------------------------------------------------------------
     @property
@@ -288,7 +432,8 @@ class GlobalTextDomainMapping:
         A persisted mapping whose pseudonym is not a safe token, equals its
         original, or no longer fits the strictest width of an original that
         participates in this dataset run fails CLOSED with a stable typed
-        error. A persisted original is NEVER silently remapped.
+        error. A persisted original is NEVER silently remapped. Persisted
+        mappings are FIXED: every later allocation is planned around them.
         """
         for original, pseudonym, _stored_length in text_mapping_rows(
             self._database, self._domain_id
@@ -297,6 +442,7 @@ class GlobalTextDomainMapping:
                 original, pseudonym, self._strictest.get(original), _DETAIL_PERSISTED_PREFIX
             )
             self._used[pseudonym] = len(pseudonym)
+            self._persisted_originals.add(original)
 
     # -- ALLOCATE / REUSE -----------------------------------------------------------
     def pseudonym_for(self, original: str) -> str:
@@ -340,17 +486,30 @@ class GlobalTextDomainMapping:
         with self._database.transaction():
             # Occupancy is reconciled with the PERSISTED vault state inside
             # the commit boundary: rows committed by a previous operation of
-            # the same writer (crash resume, seed completion) are part of the
-            # exact occupied-token bookkeeping — exhaustion accounting is
-            # never computed from stale state.
+            # the same writer (crash resume, seed completion) are FIXED state
+            # that every plan is built around — the global planning is never
+            # computed from stale state.
             self._sync_used()
+            self._ensure_plan()
             fresh = get_text_pseudonym(self._database, self._domain_id, original)
             if fresh is not None:
                 self._validate_pseudonym(
                     original, fresh, width, _DETAIL_REUSED_PREFIX
                 )
                 return fresh
-            candidate = self._select_candidate(original, width)
+            entry = self._plan.get(original) if self._plan is not None else None
+            if entry is None:
+                # Defensive: replan once around the current fixed state.
+                self._build_plan()
+                entry = self._plan.get(original) if self._plan is not None else None
+            if entry is None:
+                # The complete residual problem (this original plus every
+                # other finalized unpersisted original, against all fixed
+                # persisted mappings) has no feasible bijective completion.
+                raise _mapping_failure(
+                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
+                )
+            candidate = self._select_candidate(original, entry)
             length = max_encoded_byte_length(candidate, self._encodings)
             if length is None:  # pragma: no cover - safe tokens are provable
                 raise _mapping_failure(
@@ -364,6 +523,17 @@ class GlobalTextDomainMapping:
                 logical_byte_length=length,
             )
             self._used[candidate] = len(candidate)
+            self._persisted_originals.add(original)
+            self._own_persisted.add(original)
+            # Maintain the plan bookkeeping: a committed named token leaves
+            # the promise set; this original leaves the unpersisted set, so
+            # its own value stops being a reserved token for itself (unless
+            # another planned original is committed to it) and becomes
+            # generic-eligible.
+            if entry[0] == "named":
+                self._plan_promised.discard(str(entry[1]))
+            else:
+                self._plan_reserved.pop(original, None)
             return candidate
 
     def _sync_used(self) -> None:
@@ -371,9 +541,9 @@ class GlobalTextDomainMapping:
 
         Every persisted mapping of the domain is revalidated against the
         finalized constraints and registered as occupied. This makes the
-        exact exhaustion accounting truthful even when rows were persisted
-        outside this instance's own allocation stream (e.g. a previous
-        operation of the same writer).
+        global planning truthful even when rows were persisted outside this
+        instance's own allocation stream (e.g. a previous operation of the
+        same writer).
         """
         for original, pseudonym, _stored_length in text_mapping_rows(
             self._database, self._domain_id
@@ -382,44 +552,221 @@ class GlobalTextDomainMapping:
                 original, pseudonym, self._strictest.get(original), _DETAIL_PERSISTED_PREFIX
             )
             self._used[pseudonym] = len(pseudonym)
+            self._persisted_originals.add(original)
 
-    def _select_candidate(self, original: str, width: int) -> str:
-        """Truthful collision-safe CSPRNG selection of one free token.
+    def _ensure_plan(self) -> None:
+        """Keep the global assignment plan current (rebuild when state moved).
 
-        The admissible token space (lengths ``1..width``), the occupied
-        tokens and the self-excluded token are known EXACTLY, so true domain
-        exhaustion is distinguished from a random collision: exhaustion is
-        raised only when no admissible unused candidate actually exists.
-        PHASE R probes the CSPRNG within a documented budget (a performance
-        bound, never an exhaustion decision); PHASE C completes
-        deterministically by exact uniform choice among the remaining free
-        tokens, which guarantees finite completion without sequence/counter
-        semantics and without deriving anything from the original.
+        The plan is a complete feasible witness for the WHOLE unpersisted
+        residual problem against the FIXED persisted mappings. It is rebuilt
+        when it does not exist yet or when the fixed set changed (persisted
+        rows committed outside this instance's own allocation stream). This
+        instance's own committed allocations never invalidate the plan: the
+        plan was a completion, so persisting any subset of it keeps the rest
+        feasible — request order can never create a dead-end.
+        """
+        rows = text_mapping_rows(self._database, self._domain_id)
+        signature = len(rows) - len(self._own_persisted)
+        if self._plan is not None and signature == self._plan_signature:
+            return
+        self._build_plan()
+
+    def _build_plan(self) -> None:
+        """Plan the complete finalized residual problem (exact, finite).
+
+        The assignment problem is solved EXACTLY as a maximum flow on a
+        compressed graph whose size scales with the number of observed
+        originals and persisted mappings — the (astronomically large) token
+        universes of wide fields are never materialized:
+
+        * nodes: source, sink, one node per unpersisted original, one node
+          per participating length class (fungible free token pool), and one
+          node per RESERVED token — the free self-value of an unpersisted
+          original, which that original itself may never receive;
+        * edges: source -> original (1); original -> class ``l`` for every
+          ``l <= strictest width``; original -> reserved token of another
+          original when its length fits; class -> sink with capacity equal
+          to the free NON-reserved tokens of that class; reserved -> sink
+          with capacity 1.
+        * the owner of a reserved token is never adjacent to it, so the
+          self-exclusion is structural; fungible class capacity keeps the
+          Hall-style feasibility of the shared preflight model.
         """
         assert self._alphabet is not None
-        total = token_space(width, self._base)
-        blocked: set[int] = set()
-        for pseudonym, length in self._used.items():
-            if length <= width:
-                blocked.add(token_index(pseudonym, self._alphabet))
-        if is_safe_token(original, self._alphabet) and len(original) <= width:
-            # Self-exclusion counts against the effective available capacity.
-            blocked.add(token_index(original, self._alphabet))
-        available = total - len(blocked)
-        if available <= 0:
+        unpersisted = [
+            original
+            for original in self._strictest
+            if original not in self._persisted_originals
+        ]
+        if not unpersisted:
+            self._plan = {}
+            self._plan_reserved = {}
+            self._plan_signature = len(self._used)
+            return
+        max_width = max(self._strictest[original] for original in unpersisted)
+        free_of_length = self._free_count_by_length()
+        reserved = self._reserved_tokens(unpersisted)
+        reserved_by_length: dict[int, int] = {}
+        for token in reserved:
+            reserved_by_length[len(token)] = reserved_by_length.get(len(token), 0) + 1
+
+        network = _ResidualFlow(2 + len(unpersisted) + max_width + len(reserved))
+        source, sink = 0, 1
+        original_node = {
+            original: 2 + index for index, original in enumerate(unpersisted)
+        }
+        class_node_of_length: dict[int, int] = {}
+        token_node_of: dict[str, int] = {}
+        offset = 2 + len(unpersisted)
+        for length in range(1, max_width + 1):
+            class_node_of_length[length] = offset
+            offset += 1
+        for token in sorted(reserved):
+            token_node_of[token] = offset
+            offset += 1
+        for original in unpersisted:
+            network.add_edge(source, original_node[original], 1)
+            width = self._strictest[original]
+            for length in range(1, width + 1):
+                network.add_edge(original_node[original], class_node_of_length[length], 1)
+            for token in sorted(reserved):
+                if len(token) <= width and token != original:
+                    network.add_edge(
+                        original_node[original], token_node_of[token], 1
+                    )
+        for length in range(1, max_width + 1):
+            generic = free_of_length[length] - reserved_by_length.get(length, 0)
+            if generic > 0:
+                network.add_edge(class_node_of_length[length], sink, generic)
+        for node in token_node_of.values():
+            network.add_edge(node, sink, 1)
+
+        flow = network.max_flow(source, sink, len(unpersisted))
+        if flow < len(unpersisted):
+            # The remaining finalized problem is genuinely infeasible with
+            # the already-fixed persisted mappings: no ordering of
+            # ``pseudonym_for`` could ever complete it.
+            self._plan = {}
+            self._plan_reserved = {}
+            self._plan_signature = len(self._used)
             raise _mapping_failure(
-                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_DOMAIN_EXHAUSTED
+                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
+            )
+        class_length_of_node = {
+            node: length for length, node in class_node_of_length.items()
+        }
+        token_of_node = {node: token for token, node in token_node_of.items()}
+        plan: dict[str, _PlanEntry] = {}
+        for original in unpersisted:
+            target = network.routed_target(original_node[original])
+            if target is None:  # pragma: no cover - flow == demand guarantees
+                raise _mapping_failure(
+                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
+                )
+            assigned_class = class_length_of_node.get(target)
+            if assigned_class is not None:
+                plan[original] = ("generic", assigned_class)
+            else:
+                plan[original] = ("named", token_of_node[target])
+        self._plan = plan
+        self._plan_reserved = dict(reserved)
+        self._plan_promised = {
+            str(entry[1]) for entry in plan.values() if entry[0] == "named"
+        }
+        self._plan_signature = len(self._used)
+
+    def _free_count_by_length(self) -> dict[int, int]:
+        """Free tokens per length class: ``base^l`` minus occupied tokens."""
+        assert self._alphabet is not None
+        occupied_of_length: dict[int, int] = {}
+        for pseudonym, length in self._used.items():
+            occupied_of_length[length] = occupied_of_length.get(length, 0) + 1
+        widest_observed = max(self._strictest.values(), default=0)
+        widest_occupied = max(occupied_of_length, default=0)
+        return {
+            length: self._base**length - occupied_of_length.get(length, 0)
+            for length in range(1, max(widest_observed, widest_occupied) + 1)
+        }
+
+    def _reserved_tokens(self, unpersisted: list[str]) -> dict[str, str]:
+        """The free self-values of *unpersisted* originals (reserved tokens).
+
+        The reserved token of an original is its own value: the original may
+        never receive it as its pseudonym, while every OTHER original with a
+        fitting width may. Reserved tokens are fungible for everyone else.
+        """
+        assert self._alphabet is not None
+        reserved: dict[str, str] = {}
+        for original in unpersisted:
+            width = self._strictest[original]
+            if (
+                is_safe_token(original, self._alphabet)
+                and 1 <= len(original) <= width
+                and original not in self._used
+            ):
+                reserved[original] = original
+        return reserved
+
+    # -- plan-driven candidate selection ------------------------------------------
+    def _select_candidate(self, original: str, entry: _PlanEntry) -> str:
+        """One safe pseudonym for *original* under its planned assignment.
+
+        A named entry is a reserved token planned for this original — a
+        fixed, exact token. A generic entry reserves a slot in the fungible
+        free pool of ONE length class; the CSPRNG chooses the actual token
+        among that class's free non-reserved tokens (PHASE R, bounded by the
+        documented probe budget), and the exact completion phase picks the
+        ``j``-th such token by walking the blocked indices of the class —
+        finite by construction, no sequence/counter semantics and nothing
+        derived from the original value. Every admissible choice preserves
+        the plan's global feasibility, so no random collision can create a
+        dead-end for a later stricter original.
+        """
+        assert self._alphabet is not None
+        if entry[0] == "named":
+            token = entry[1]
+            if token in self._used:  # pragma: no cover - plan reserved it free
+                raise _mapping_failure(
+                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
+                )
+            return token
+        length = entry[1]
+        class_low = token_space(length - 1, self._base)
+        class_size = self._base**length
+        blocked: set[str] = set()
+        for pseudonym, pseudonym_length in self._used.items():
+            if pseudonym_length == length:
+                blocked.add(pseudonym)
+        blocked.update(
+            token
+            for token in self._plan_reserved
+            if len(token) == length
+        )
+        blocked.update(
+            token
+            for token in self._plan_promised
+            if len(token) == length
+        )
+        free_non_reserved = class_size - len(blocked)
+        if free_non_reserved <= 0:  # pragma: no cover - plan guarantees supply
+            raise _mapping_failure(
+                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
             )
         for _ in range(GLOBAL_TEXT_PROBE_BUDGET):
-            candidate = token_at(self._random_below(total), width, self._alphabet)
-            if candidate == original or candidate in self._used:
-                continue  # random collision or forbidden self-candidate
+            candidate = token_at(
+                class_low + self._random_below(class_size), length, self._alphabet
+            )
+            if candidate == original or candidate in blocked:
+                continue  # random collision or forbidden candidate
             return candidate
-        return token_at(
-            _jth_free_index(total, blocked, self._random_below(available)),
-            width,
-            self._alphabet,
+        # Exact completion: the j-th free non-reserved token of the class.
+        blocked_indices = sorted(
+            token_index(token, self._alphabet) for token in blocked
         )
+        chosen = _jth_free_in_class(
+            class_low, class_size, blocked_indices, self._random_below(free_non_reserved)
+        )
+        return token_at(chosen, length, self._alphabet)
 
     # -- persisted/reused validation ---------------------------------------------------
     def _validate_pseudonym(
