@@ -69,12 +69,17 @@ def _recovery_invalid() -> VaultError:
 def _mask_for(dbf_type: str, value: object) -> str | bytes | None:
     """The safe mask of *value* under its field kind (fail closed).
 
-    ``M`` fields carry TEXT or BINARY payloads (the value type decides,
-    exactly like the public writer's binary-memo discriminator).  ``G`` and
-    ``P`` fields are binary-only: a text value there is an unsupported
-    representation.  Every other field kind — including the opaque/raw-only
-    ``W``/``Q`` classes — has NO proven safe memo transformation and must
-    never pass: the typed refusal is raised before anything is stored.
+    Mask SELECTION is delegated to the ONE authoritative kernel
+    (:func:`dbf_anonymizer.transforms.memo.memo_safe_mask` with its
+    deterministic self-exclusion), so the vault allocation service never
+    duplicates selection logic.  This boundary only enforces the field-kind
+    constraint: ``M`` fields carry TEXT or BINARY payloads (the value type
+    decides, exactly like the public writer's binary-memo discriminator);
+    ``G``/``P`` fields are binary-only — a text value there is an
+    unsupported representation; every other field kind — including the
+    opaque/raw-only ``W``/``Q`` classes — has NO proven safe memo
+    transformation and must never pass: the typed refusal is raised before
+    anything is stored.
     """
     if dbf_type not in memo_kernels.MEMO_FIELD_TYPES:
         raise _unsupported()
@@ -83,9 +88,9 @@ def _mask_for(dbf_type: str, value: object) -> str | bytes | None:
     if isinstance(value, str):
         if dbf_type in {"G", "P"}:
             raise _unsupported()  # a binary-only class never carries text
-        return memo_kernels.MEMO_TEXT_MASK
+        return memo_kernels.memo_safe_mask(value)
     if isinstance(value, (bytes, bytearray)):
-        return memo_kernels.MEMO_BINARY_MASK
+        return memo_kernels.memo_safe_mask(value)
     raise _unsupported()
 
 

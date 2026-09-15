@@ -29,24 +29,40 @@ def _unsupported_value_error(value: object) -> MappingError:
 
 
 def test_mask_policy_version_and_constants() -> None:
-    assert memo_kernels.MEMO_MASK_POLICY_VERSION == "1.0"
+    assert memo_kernels.MEMO_MASK_POLICY_VERSION == "1.1"
+    # The fixed bounded synthetic mask vocabulary: TWO members per type.
     assert memo_kernels.MEMO_TEXT_MASK == "[MASKED-MEMO]"
     assert memo_kernels.MEMO_BINARY_MASK == b"[MASKED-MEMO]"
-    # Both masks are constant, obviously synthetic, bounded ASCII tokens.
+    assert memo_kernels.MEMO_TEXT_MASK_ALT == "[MASKED-MEMO-ALT]"
+    assert memo_kernels.MEMO_BINARY_MASK_ALT == b"[MASKED-MEMO-ALT]"
+    # Both mask vocabularies are constant, obviously synthetic, bounded ASCII.
     assert memo_kernels.MEMO_TEXT_MASK.isascii()
     assert memo_kernels.MEMO_BINARY_MASK.isascii()
+    assert memo_kernels.MEMO_TEXT_MASK_ALT.isascii()
+    assert memo_kernels.MEMO_BINARY_MASK_ALT.isascii()
     assert len(memo_kernels.MEMO_TEXT_MASK) == len(memo_kernels.MEMO_BINARY_MASK)
+    assert (
+        len(memo_kernels.MEMO_TEXT_MASK_ALT) == len(memo_kernels.MEMO_BINARY_MASK_ALT)
+    )
     # The payload-kind vocabulary is exactly the vault schema vocabulary.
     assert memo_kernels.MEMO_PAYLOAD_KIND_TEXT == VAULT_PAYLOAD_KIND_TEXT
     assert memo_kernels.MEMO_PAYLOAD_KIND_BINARY == VAULT_PAYLOAD_KIND_BINARY
     assert memo_kernels.MEMO_FIELD_TYPES == frozenset({"M", "G", "P"})
 
 
-def test_masks_cannot_contain_original_values_by_construction() -> None:
-    # The masks are fixed literals: no original payload (text or binary)
-    # can ever leak through them, for ANY input whatsoever.
-    assert CANARY_TEXT not in memo_kernels.MEMO_TEXT_MASK
-    assert CANARY_BYTES not in memo_kernels.MEMO_BINARY_MASK
+def test_mask_vocabulary_is_bounded_and_complete_value_never_emitted() -> None:
+    # The PRECISE invariant (replaces the mathematically false universal
+    # substring claim of the original design): the COMPLETE supported
+    # non-NULL logical source payload is never emitted unchanged, and the
+    # emitted mask is always one of the four bounded vocabulary members.
+    vocabulary = (
+        memo_kernels.MEMO_TEXT_MASK,
+        memo_kernels.MEMO_BINARY_MASK,
+        memo_kernels.MEMO_TEXT_MASK_ALT,
+        memo_kernels.MEMO_BINARY_MASK_ALT,
+    )
+    assert CANARY_TEXT not in vocabulary
+    assert CANARY_BYTES not in vocabulary
     for value in (
         CANARY_TEXT,
         CANARY_BYTES,
@@ -54,21 +70,25 @@ def test_masks_cannot_contain_original_values_by_construction() -> None:
         b"",
         "\x00\x01\x02",
         "Zażółć gęślą jaźń",
+        memo_kernels.MEMO_TEXT_MASK,
+        memo_kernels.MEMO_BINARY_MASK,
+        memo_kernels.MEMO_TEXT_MASK_ALT,
+        memo_kernels.MEMO_BINARY_MASK_ALT,
     ):
         mask = memo_kernels.memo_safe_mask(value)
-        assert mask in (memo_kernels.MEMO_TEXT_MASK, memo_kernels.MEMO_BINARY_MASK)
+        assert mask in vocabulary
         if isinstance(value, bytes):
             assert isinstance(mask, bytes)
-            original_bytes = bytes(value)
         else:
             assert isinstance(mask, str)
-            original_bytes = value.encode("utf-8")
-        # No non-empty byte sequence of the original payload can appear
-        # inside the (constant) mask.
-        if original_bytes:
-            assert original_bytes not in (
-                mask.encode("utf-8") if isinstance(mask, str) else mask
-            )
+        # THE invariant: the complete original is never emitted unchanged.
+        assert mask != value
+    # Canary tests may still scan COMPLETE distinctive source payloads: the
+    # canaries differ from every vocabulary member, so their full text can
+    # legitimately be asserted absent from the fixed masks.
+    for member in vocabulary:
+        member_bytes = member if isinstance(member, bytes) else member.encode("utf-8")
+        assert CANARY_TEXT.encode("utf-8") not in member_bytes
 
 
 def test_is_memo_logical_value_is_the_exact_vocabulary() -> None:
