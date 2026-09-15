@@ -554,6 +554,19 @@ class GlobalTextDomainMapping:
             self._used[pseudonym] = len(pseudonym)
             self._persisted_originals.add(original)
 
+    def _current_plan_signature(self) -> int:
+        """The fixed-set measure the plan keeper compares against.
+
+        The number of persisted rows NOT allocated by this instance: a change
+        means the fixed set changed and the residual must be replanned around
+        it. The builder records the SAME measure so a rebuild triggered by an
+        external prefix keeps the plan instead of rebuilding it on every later
+        allocation.
+        """
+        return len(text_mapping_rows(self._database, self._domain_id)) - len(
+            self._own_persisted
+        )
+
     def _ensure_plan(self) -> None:
         """Keep the global assignment plan current (rebuild when state moved).
 
@@ -565,8 +578,7 @@ class GlobalTextDomainMapping:
         plan was a completion, so persisting any subset of it keeps the rest
         feasible — request order can never create a dead-end.
         """
-        rows = text_mapping_rows(self._database, self._domain_id)
-        signature = len(rows) - len(self._own_persisted)
+        signature = self._current_plan_signature()
         if self._plan is not None and signature == self._plan_signature:
             return
         self._build_plan()
@@ -601,7 +613,7 @@ class GlobalTextDomainMapping:
         if not unpersisted:
             self._plan = {}
             self._plan_reserved = {}
-            self._plan_signature = len(self._used)
+            self._plan_signature = self._current_plan_signature()
             return
         max_width = max(self._strictest[original] for original in unpersisted)
         free_of_length = self._free_count_by_length()
@@ -648,7 +660,7 @@ class GlobalTextDomainMapping:
             # ``pseudonym_for`` could ever complete it.
             self._plan = {}
             self._plan_reserved = {}
-            self._plan_signature = len(self._used)
+            self._plan_signature = self._current_plan_signature()
             raise _mapping_failure(
                 ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
             )
@@ -673,7 +685,7 @@ class GlobalTextDomainMapping:
         self._plan_promised = {
             str(entry[1]) for entry in plan.values() if entry[0] == "named"
         }
-        self._plan_signature = len(self._used)
+        self._plan_signature = self._current_plan_signature()
 
     def _free_count_by_length(self) -> dict[int, int]:
         """Free tokens per length class: ``base^l`` minus occupied tokens."""
