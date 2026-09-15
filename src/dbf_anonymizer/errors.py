@@ -21,7 +21,7 @@ from typing import ClassVar
 from .models import JsonDict
 
 ERROR_SCHEMA_VERSION = "1.0"
-ERROR_REGISTRY_VERSION = "1.2"
+ERROR_REGISTRY_VERSION = "1.3"
 
 
 class ErrorCategory(str, Enum):
@@ -62,6 +62,7 @@ class ErrorCode(str, Enum):
     VAULT_WRITER_CONFLICT = "VAULT_WRITER_CONFLICT"
 
     MAPPING_CAPACITY_EXHAUSTED = "MAPPING_CAPACITY_EXHAUSTED"
+    MAPPING_CONSTRAINT_INFEASIBLE = "MAPPING_CONSTRAINT_INFEASIBLE"
     MAPPING_CONFLICT = "MAPPING_CONFLICT"
 
     RELATIONSHIP_INVALID = "RELATIONSHIP_INVALID"
@@ -160,6 +161,11 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCode.MAPPING_CAPACITY_EXHAUSTED,
         ErrorCategory.MAPPING,
         "A pseudonymization domain has insufficient representable capacity.",
+    ),
+    ErrorDefinition(
+        ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
+        ErrorCategory.MAPPING,
+        "The finalized pseudonymization mapping constraints cannot be satisfied.",
     ),
     ErrorDefinition(
         ErrorCode.MAPPING_CONFLICT,
