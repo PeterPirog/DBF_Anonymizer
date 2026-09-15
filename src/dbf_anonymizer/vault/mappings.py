@@ -25,6 +25,7 @@ from dbf_anonymizer.vault.schema import (
     VAULT_PAYLOAD_KIND_BINARY,
     VAULT_PAYLOAD_KIND_TEXT,
     VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
+    VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
     VAULT_TABLE_DOMAIN_KIND_TEXT,
 )
 from dbf_anonymizer.vault.store import VaultDatabase, _validate_token
@@ -80,7 +81,11 @@ def create_domain(
     ``domain_id`` is omitted a privacy-safe random identifier is generated.
     """
     database._require_active_transaction("create_domain")
-    if domain_kind not in (VAULT_TABLE_DOMAIN_KIND_TEXT, VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY):
+    if domain_kind not in (
+        VAULT_TABLE_DOMAIN_KIND_TEXT,
+        VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
+        VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
+    ):
         raise ValueError(f"unsupported domain_kind: {domain_kind!r}")
     if domain_id is None:
         domain_id = "dom-" + uuid.uuid4().hex
