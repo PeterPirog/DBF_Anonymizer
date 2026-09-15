@@ -120,10 +120,12 @@ def _persisted_temporal_state(database: VaultDatabase, domain_id: str) -> int | 
     returns ``None`` when no state exists at all (a fresh domain), the
     persisted offset when the state is valid, and FAILS CLOSED on any
     corrupt state — a mapping-domain row whose kind is not ``TEMPORAL``, or
-    a persisted ``offset_days`` of zero.  Values never reach errors.
+    a persisted ``offset_days`` that is not an INTEGER storage class
+    (SQLite dynamic typing admits hostile TEXT/REAL/BLOB rows) or is zero.
+    Values never reach errors.
     """
     row = database._internal_connection().execute(
-        "SELECT d.domain_kind, t.offset_days FROM mapping_domains d "
+        "SELECT d.domain_kind, t.offset_days, typeof(t.offset_days) FROM mapping_domains d "
         "LEFT JOIN temporal_parameters t ON t.domain_id = d.domain_id "
         "WHERE d.domain_id = ?",
         (domain_id,),
@@ -134,8 +136,8 @@ def _persisted_temporal_state(database: VaultDatabase, domain_id: str) -> int | 
     if kind != VAULT_TABLE_DOMAIN_KIND_TEMPORAL:
         # A temporal identity under TEXT/NUMERIC_KEY/... is corrupt state.
         raise _corrupt_state()
-    if offset is None:
-        raise _corrupt_state()  # a marked domain without its parameter
+    if offset is None or row[2] != "integer":
+        raise _corrupt_state()  # a marked domain without a valid parameter
     if int(offset) == 0:
         raise _corrupt_state()  # zero is never a valid reversible shift
     return int(offset)

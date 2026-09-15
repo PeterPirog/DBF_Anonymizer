@@ -789,6 +789,7 @@ VAULT_MODULES = (
     "vault/text_allocation.py",
     "vault/memo_allocation.py",
     "vault/temporal_allocation.py",
+    "vault/protection.py",
 )
 
 #: The source-read-only public operations must never reach the vault layer:
@@ -996,6 +997,45 @@ def test_public_models_carry_no_secret_temporal_offset_field() -> None:
         assert "offset_days" not in source, public_name
         assert "temporal_offset" not in source, public_name
         assert "secret_offset" not in source, public_name
+
+
+def test_public_models_carry_no_reverse_mappings() -> None:
+    # Recovery direction (original from pseudonym) stays exclusively inside
+    # the protected vault; no public model ever gains a reverse-mapping
+    # field or a decrypted/recovered value field.
+    models_source = (SRC_ROOT / "models.py").read_text(encoding="utf-8")
+    assert "reverse_mapping" not in models_source
+    assert "recovered_value" not in models_source
+    assert "original_payload" not in models_source
+
+
+def test_vault_layer_has_no_recovery_sidecar_or_network_surface() -> None:
+    """REQ-P2-009 static guards for the protected-vault boundary."""
+    for path in (SRC_ROOT / "vault").glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        # No recovery JSON/JSONL sidecar writes from the vault layer.
+        assert "json.dump" not in source, path
+        assert ".jsonl" not in source, path
+        # No network surface.
+        assert "import socket" not in source, path
+        assert "urllib" not in source, path
+        assert "requests" not in source, path
+        # No MCP/COM/runtime-install surface.
+        assert "import mcp" not in source, path
+        assert "win32com" not in source, path
+        assert "subprocess" not in source, path
+    # The protection module is stdlib-only and never touches the
+    # dependency or logging namespaces.
+    protection = (SRC_ROOT / "vault" / "protection.py").read_text(encoding="utf-8")
+    tree = ast.parse(protection)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith(("dbfbridge", "dbf_bridge", "dbf.")), node.module
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith(("dbfbridge", "dbf_bridge")), node
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("logging"), node
 
 
 def test_no_logging_in_production_sources() -> None:

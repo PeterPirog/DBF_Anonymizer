@@ -60,6 +60,7 @@ from pathlib import Path
 from types import TracebackType
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, VaultError
+from dbf_anonymizer.vault.protection import harden_vault_directory
 from dbf_anonymizer.vault.schema import (
     CREATE_META_SEED,
     DDL_STATEMENTS,
@@ -507,6 +508,13 @@ class VaultDatabase:
         # converted into vault errors.
         connection: sqlite3.Connection | None = None
         try:
+            # EARLY best-effort hardening of the protected vault boundary:
+            # the dictionary was reserved with owner-only modes (0o600); the
+            # vault directory receives its protected modes here (POSIX;
+            # Windows is truthfully classified as limited best-effort).  A
+            # real hardening failure is typed and aborts the creation with
+            # owner-scoped cleanup.
+            harden_vault_directory(path.parent)
             connection = cls._connect(path)
             try:
                 applied = cls._apply_journal_mode(connection)

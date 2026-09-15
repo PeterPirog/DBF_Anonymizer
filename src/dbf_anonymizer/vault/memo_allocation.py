@@ -66,6 +66,18 @@ def _recovery_invalid() -> VaultError:
     )
 
 
+def _identity_conflict() -> VaultError:
+    """Stable typed refusal for a conflicting recovery payload re-run.
+
+    The same stable identity with a DIFFERENT original payload or payload
+    kind must never overwrite the protected recovery row.
+    """
+    return VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="vault", detail_code="MEMO_IDENTITY_CONFLICT"),
+    )
+
+
 def _mask_for(dbf_type: str, value: object) -> str | bytes | None:
     """The safe mask of *value* under its field kind (fail closed).
 
@@ -131,16 +143,36 @@ def persist_memo_recovery(
         else VAULT_PAYLOAD_KIND_BINARY
     )
     with database.transaction():
-        # The vault row API owns the exact storage image (UTF-8 for TEXT,
-        # byte-for-byte for BINARY); the service passes the logical value.
-        add_memo_recovery(
-            database,
-            table_id,
-            physical_record_index,
-            field_id,
-            value,
-            payload_kind=kind,
-        )
+        # IDEMPOTENT RERUN SEMANTICS (REQ-P2-010): the exact same stable
+        # identity with the SAME original payload and kind reuses the
+        # existing recovery row (never overwritten); a CONFLICTING payload
+        # or kind under the same identity fails closed.
+        existing = get_memo_recovery(database, table_id, physical_record_index, field_id)
+        if existing is not None:
+            stored_payload, stored_kind = existing
+            if isinstance(value, str):
+                same = (
+                    stored_kind == VAULT_PAYLOAD_KIND_TEXT
+                    and stored_payload == value.encode("utf-8")
+                )
+            else:
+                same = (
+                    stored_kind == VAULT_PAYLOAD_KIND_BINARY
+                    and stored_payload == bytes(value)
+                )
+            if not same:
+                raise _identity_conflict()
+        else:
+            # The vault row API owns the exact storage image (UTF-8 for TEXT,
+            # byte-for-byte for BINARY); the service passes the logical value.
+            add_memo_recovery(
+                database,
+                table_id,
+                physical_record_index,
+                field_id,
+                value,
+                payload_kind=kind,
+            )
     return mask
 
 

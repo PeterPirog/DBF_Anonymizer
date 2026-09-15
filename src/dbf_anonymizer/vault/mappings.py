@@ -149,28 +149,54 @@ def add_text_mapping(
         raise _mapping_failure("MAPPING_BIJECTION_REJECTED") from None
 
 
+def _corrupt_recovery_state(detail_code: str) -> VaultError:
+    """Typed, privacy-safe refusal for hostile/corrupt recovery storage."""
+    return VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="vault", detail_code=detail_code),
+    )
+
+
 def get_text_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
     row = database._internal_connection().execute(
-        "SELECT pseudonym_value FROM text_mappings WHERE domain_id = ? AND original_value = ?",
+        "SELECT pseudonym_value, typeof(pseudonym_value) FROM text_mappings "
+        "WHERE domain_id = ? AND original_value = ?",
         (domain_id, original_value),
     ).fetchone()
-    return None if row is None else str(row[0])
+    if row is None:
+        return None
+    # Adversarial corruption hardening: SQLite dynamic typing means a hostile
+    # or corrupt row may hold an unexpected storage class; refuse it instead
+    # of coercively accepting it.
+    if row[1] != "text":
+        raise _corrupt_recovery_state("TEXT_MAPPING_CORRUPT")
+    return str(row[0])
 
 
 def get_text_original(database: VaultDatabase, domain_id: str, pseudonym_value: str) -> str | None:
     row = database._internal_connection().execute(
-        "SELECT original_value FROM text_mappings WHERE domain_id = ? AND pseudonym_value = ?",
+        "SELECT original_value, typeof(original_value) FROM text_mappings "
+        "WHERE domain_id = ? AND pseudonym_value = ?",
         (domain_id, pseudonym_value),
     ).fetchone()
-    return None if row is None else str(row[0])
+    if row is None:
+        return None
+    if row[1] != "text":
+        raise _corrupt_recovery_state("TEXT_MAPPING_CORRUPT")
+    return str(row[0])
 
 
 def text_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple[str, str, int], ...]:
     rows = database._internal_connection().execute(
-        "SELECT original_value, pseudonym_value, logical_byte_length FROM text_mappings "
+        "SELECT original_value, pseudonym_value, logical_byte_length, "
+        "typeof(original_value), typeof(pseudonym_value), "
+        "typeof(logical_byte_length) FROM text_mappings "
         "WHERE domain_id = ? ORDER BY original_value",
         (domain_id,),
     ).fetchall()
+    for row in rows:
+        if row[3] != "text" or row[4] != "text" or row[5] != "integer":
+            raise _corrupt_recovery_state("TEXT_MAPPING_CORRUPT")
     return tuple((str(row[0]), str(row[1]), int(row[2])) for row in rows)
 
 
@@ -283,6 +309,7 @@ def get_memo_recovery(
     stable ``table_id + physical_record_index + field_id`` identity — the
     narrow, unambiguous retrieval the later recovery pipeline consumes.  A
     missing identity is ``None``; no row payload ever reaches an error.
+    Hostile/corrupt storage classes (SQLite dynamic typing) fail closed.
     """
     _validate_token(table_id, field_name="table_id")
     _validate_token(field_id, field_name="field_id")
@@ -293,12 +320,15 @@ def get_memo_recovery(
     if physical_record_index < 0:
         raise ValueError("physical_record_index must be non-negative")
     row = database._internal_connection().execute(
-        "SELECT original_payload, payload_kind FROM memo_recovery "
+        "SELECT original_payload, payload_kind, typeof(original_payload), "
+        "typeof(payload_kind) FROM memo_recovery "
         "WHERE table_id = ? AND physical_record_index = ? AND field_id = ?",
         (table_id, physical_record_index, field_id),
     ).fetchone()
     if row is None:
         return None
+    if row[2] != "blob" or row[3] != "text":
+        raise _corrupt_recovery_state("MEMO_ROW_CORRUPT")
     return (bytes(row[0]), str(row[1]))
 
 
@@ -345,6 +375,14 @@ def set_temporal_parameter(
 
 def temporal_parameter(database: VaultDatabase, domain_id: str) -> int | None:
     row = database._internal_connection().execute(
-        "SELECT offset_days FROM temporal_parameters WHERE domain_id = ?", (domain_id,)
+        "SELECT offset_days, typeof(offset_days) FROM temporal_parameters "
+        "WHERE domain_id = ?",
+        (domain_id,),
     ).fetchone()
-    return None if row is None else int(row[0])
+    if row is None:
+        return None
+    # Adversarial corruption hardening: only an INTEGER storage class is a
+    # valid persisted temporal offset (never a coercible TEXT/REAL/BLOB).
+    if row[1] != "integer":
+        raise _corrupt_recovery_state("TEMPORAL_STATE_INVALID")
+    return int(row[0])
