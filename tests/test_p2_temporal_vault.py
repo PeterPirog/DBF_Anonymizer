@@ -25,6 +25,7 @@ from dbf_anonymizer.vault import (
 )
 from dbf_anonymizer.vault.mappings import (
     VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
+    VAULT_TABLE_DOMAIN_KIND_TEXT,
     create_domain,
     mapping_domains,
     set_temporal_parameter,
@@ -418,3 +419,180 @@ def test_recovery_of_missing_state_fails_closed_privacy_safe(
         )
         assert str(date(2020, 1, 1)) not in boundary
         assert "TEMPORAL_RECOVERY_INVALID" in boundary
+
+
+# ---------------------------------------------------------------------------
+# PR #27 repair regressions (fail on fb4df11, pass after the repair)
+# ---------------------------------------------------------------------------
+def test_all_null_domain_is_a_valid_finalized_domain(tmp_path: Path) -> None:
+    """An all-NULL temporal domain MUST finalize as a valid EMPTY domain.
+
+    Pre-repair behavior: finalize substituted the artificial date.min/
+    date.max constraints, derived interval [0, 0] and raised
+    TEMPORAL_ONLY_ZERO_FEASIBLE — a false constraint for a completely valid
+    all-NULL dataset.
+    """
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault)
+            for _record in range(3):
+                domain.observe(None)  # every D/T occurrence is NULL
+            assert domain.finalize() is None  # no offset, valid domain
+            assert domain.shifted(None) is None
+        # NULL recovery stays possible; no temporal parameter exists.
+        assert temporal_parameter(vault, domain.domain_id) is None
+        assert domain.recover(None) is None
+
+
+def test_empty_collector_finalizes_without_inventing_extrema(
+    tmp_path: Path,
+) -> None:
+    """An empty collector is the same EMPTY domain state as an all-NULL one."""
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault)
+            assert domain.finalize() is None  # no artificial constraints
+            assert temporal_parameter(vault, domain.domain_id) is None
+            assert domain.shifted(None) is None
+            # A NON-NULL value that was never part of the finalized
+            # constraints must fail closed.
+            with pytest.raises(MappingError) as excinfo:
+                domain.shifted(date(2020, 1, 1))
+            assert excinfo.value.code is ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE
+
+
+def test_null_recovery_needs_no_temporal_state(tmp_path: Path) -> None:
+    """recover(None) is identity WITHOUT any persisted offset."""
+    with _create(tmp_path) as vault:
+        domain = TemporalShiftDomain(vault, domain_name="never-finalized")
+        # No temporal parameter row exists for this domain at all.
+        assert temporal_parameter(vault, domain.domain_id) is None
+        assert domain.recover(None) is None
+
+
+def test_dataset_and_named_domain_identities_do_not_collide(
+    tmp_path: Path,
+) -> None:
+    """Dataset-level and explicitly named identities use separate namespaces."""
+    identities: dict[str | None, str] = {}
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            for name in (None, "DATASET", "DEFAULT", "billing", "temporal"):
+                domain = (
+                    TemporalShiftDomain(vault)
+                    if name is None
+                    else TemporalShiftDomain(vault, domain_name=name)
+                )
+                identities[name] = domain.domain_id
+    distinct = list(identities.values())
+    assert len(set(distinct)) == len(distinct)  # ALL five differ
+    # Stability across reopen (value-independent identity material).
+    with _reopen(tmp_path) as vault:
+        for name, identity in identities.items():
+            domain = (
+                TemporalShiftDomain(vault)
+                if name is None
+                else TemporalShiftDomain(vault, domain_name=name)
+            )
+            assert domain.domain_id == identity
+
+
+def test_persisted_zero_offset_fails_closed(tmp_path: Path) -> None:
+    """A persisted offset_days=0 is corrupt state and must be refused."""
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault)
+            with vault.transaction():
+                create_domain(
+                    vault,
+                    domain_kind=VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
+                    domain_id=domain.domain_id,
+                )
+                vault._internal_connection().execute(
+                    "INSERT INTO temporal_parameters (domain_id, offset_days) "
+                    "VALUES (?, ?)",
+                    (domain.domain_id, 0),
+                )
+        domain.observe(date(2020, 1, 1))
+        domain.observe(date(2020, 12, 31))
+        with writer_session(vault), pytest.raises(VaultError) as excinfo:
+            domain.finalize()
+        assert excinfo.value.code is ErrorCode.VAULT_STATE_INVALID
+        # The corrupt state was never used for shifting either.
+        with pytest.raises((VaultError, MappingError)):
+            domain.recover(date(2020, 1, 1))
+
+
+def test_set_temporal_parameter_refuses_logically_invalid_offsets(
+    tmp_path: Path,
+) -> None:
+    with _create(tmp_path) as vault:
+        with writer_session(vault), vault.transaction():
+            create_domain(
+                vault,
+                domain_kind=VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
+                domain_id="dom-temporal-hardening",
+            )
+            with pytest.raises(ValueError):
+                set_temporal_parameter(vault, "dom-temporal-hardening", offset_days=0)
+            with pytest.raises(TypeError):
+                set_temporal_parameter(vault, "dom-temporal-hardening", offset_days=True)
+            with pytest.raises(TypeError):
+                set_temporal_parameter(  # type: ignore[arg-type]
+                    vault, "dom-temporal-hardening", offset_days="7"
+                )
+            set_temporal_parameter(vault, "dom-temporal-hardening", offset_days=7)
+        assert temporal_parameter(vault, "dom-temporal-hardening") == 7
+
+
+def test_non_temporal_domain_kind_state_is_refused(tmp_path: Path) -> None:
+    """A temporal identity under a non-TEMPORAL kind is corrupt state."""
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault, domain_name="kindprobe")
+            with vault.transaction():
+                create_domain(
+                    vault,
+                    domain_kind=VAULT_TABLE_DOMAIN_KIND_TEXT,
+                    domain_id=domain.domain_id,
+                )
+                set_temporal_parameter(vault, domain.domain_id, offset_days=5)
+        domain.observe(date(2020, 1, 1))
+        domain.observe(date(2020, 12, 31))
+        with writer_session(vault), pytest.raises(VaultError) as excinfo:
+            domain.finalize()
+        assert excinfo.value.code is ErrorCode.VAULT_STATE_INVALID
+        # Recovery must refuse the same corrupt state.
+        with _reopen(tmp_path) as vault:
+            with pytest.raises(VaultError) as recovery:
+                TemporalShiftDomain(vault, domain_name="kindprobe").recover(
+                    date(2020, 5, 1)
+                )
+            assert recovery.value.code is ErrorCode.VAULT_STATE_INVALID
+
+
+def test_reuse_never_calls_the_csprng(tmp_path: Path) -> None:
+    """Reuse of a compatible persisted offset must not touch the CSPRNG."""
+
+    def refuse(*_args: object) -> int:
+        raise AssertionError("CSPRNG must not be called on REUSE")
+
+    with _create(tmp_path) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault)
+            domain.observe(date(2020, 1, 1))
+            domain.observe(date(2020, 12, 31))
+            offset = domain.finalize()
+            second = TemporalShiftDomain(vault, _random_below=refuse)
+            second.observe(date(2020, 3, 1))
+            second.observe(date(2020, 9, 1))
+            assert second.finalize() == offset  # REUSED without any CSPRNG call
+        vault.close()
+    with _reopen(tmp_path) as vault:
+        third = TemporalShiftDomain(vault, _random_below=refuse)
+        third.observe(date(2020, 7, 1))
+        with writer_session(vault):
+            assert third.finalize() == offset
+        shifted = third.shifted(date(2020, 1, 1))
+        assert shifted != date(2020, 1, 1)
+        assert third.recover(shifted) == date(2020, 1, 1)

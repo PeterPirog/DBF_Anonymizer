@@ -322,9 +322,18 @@ def memo_recovery_rows(database: VaultDatabase, table_id: str) -> tuple[dict[str
 def set_temporal_parameter(
     database: VaultDatabase, domain_id: str, *, offset_days: int
 ) -> None:
-    """Persist the Date/DateTime recovery parameter of one temporal domain."""
+    """Persist the Date/DateTime recovery parameter of one temporal domain.
+
+    The internal write boundary refuses logically invalid temporal state:
+    the offset must be a genuine ``int`` (never ``bool``) and a NON-ZERO
+    reversible shift — offset 0 is never a valid temporal parameter.
+    """
     database._require_active_transaction("set_temporal_parameter")
     _validate_token(domain_id, field_name="domain_id")
+    if isinstance(offset_days, bool) or not isinstance(offset_days, int):
+        raise TypeError("offset_days must be an int")
+    if offset_days == 0:
+        raise ValueError("offset_days must be a non-zero reversible shift")
     try:
         database._internal_connection().execute(
             "INSERT INTO temporal_parameters (domain_id, offset_days) VALUES (?, ?)",

@@ -82,6 +82,65 @@ def _offset_incompatible() -> VaultError:
     )
 
 
+def _corrupt_state() -> VaultError:
+    """Stable typed failure for corrupt persisted temporal state."""
+    return VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="vault", detail_code="TEMPORAL_STATE_INVALID"),
+    )
+
+
+def _temporal_identity_material(domain_name: str | None) -> str:
+    """The bounded identity material of one temporal domain (REQ-P2-008).
+
+    Dataset-level and explicitly named temporal domains are DIFFERENT
+    identity namespaces, so a named domain can never collide with the
+    dataset-level default — not even when its name is ``DATASET`` or
+    ``DEFAULT``.  The material is value-independent, never contains source
+    values or private paths, is stable across reopen and deterministically
+    distinct for distinct names BEFORE any hashing.
+    """
+    if domain_name is None:
+        return "TEMPORAL\x00DEFAULT\x00V1"
+    return "TEMPORAL\x00NAMED\x00" + domain_name
+
+
+def _empty_domain() -> MappingError:
+    """Stable typed failure for shifting a value outside an EMPTY domain."""
+    return MappingError(
+        ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
+        context=ErrorContext(operation="transform", detail_code="TEMPORAL_EMPTY_DOMAIN"),
+    )
+
+
+def _persisted_temporal_state(database: VaultDatabase, domain_id: str) -> int | None:
+    """The authoritative persisted temporal-state inspector.
+
+    ONE validation point for every consumer (allocation AND recovery):
+    returns ``None`` when no state exists at all (a fresh domain), the
+    persisted offset when the state is valid, and FAILS CLOSED on any
+    corrupt state — a mapping-domain row whose kind is not ``TEMPORAL``, or
+    a persisted ``offset_days`` of zero.  Values never reach errors.
+    """
+    row = database._internal_connection().execute(
+        "SELECT d.domain_kind, t.offset_days FROM mapping_domains d "
+        "LEFT JOIN temporal_parameters t ON t.domain_id = d.domain_id "
+        "WHERE d.domain_id = ?",
+        (domain_id,),
+    ).fetchone()
+    if row is None:
+        return None  # no state at all: a fresh domain
+    kind, offset = str(row[0]), row[1]
+    if kind != VAULT_TABLE_DOMAIN_KIND_TEMPORAL:
+        # A temporal identity under TEXT/NUMERIC_KEY/... is corrupt state.
+        raise _corrupt_state()
+    if offset is None:
+        raise _corrupt_state()  # a marked domain without its parameter
+    if int(offset) == 0:
+        raise _corrupt_state()  # zero is never a valid reversible shift
+    return int(offset)
+
+
 def _recovery_invalid() -> VaultError:
     """Stable typed failure for missing/corrupt temporal recovery state."""
     return VaultError(
@@ -113,14 +172,13 @@ class TemporalShiftDomain:
         if domain_name is not None:
             _validate_token(domain_name, field_name="temporal domain name")
         self._database = database
-        self._domain_id = "dom-" + _sha16(
-            "TEMPORAL\x00" + (domain_name if domain_name is not None else "DATASET")
-        )
+        self._domain_id = "dom-" + _sha16(_temporal_identity_material(domain_name))
         self._random_below = _random_below if _random_below is not None else secrets.randbelow
         self._min_ordinal: int | None = None
         self._max_ordinal: int = 0
         self._offset: int | None = None
         self._finalized = False
+        self._empty = False
 
     @property
     def domain_id(self) -> str:
@@ -149,39 +207,47 @@ class TemporalShiftDomain:
         if ordinal > self._max_ordinal:
             self._max_ordinal = ordinal
 
-    def finalize(self) -> int:
-        """Allocate (or validate the persisted) domain offset; returns it.
+    def finalize(self) -> int | None:
+        """Allocate (or reuse the persisted) domain offset; returns it.
 
-        The domain-wide feasible interval is derived from the collected
-        extrema; a fresh offset is selected uniformly from the feasible
-        NON-ZERO set (an all-zero-feasible domain fails closed) and is
-        persisted in ONE authorized transaction.  The returned offset is
-        authoritative only after that unit has COMMITTED; a compatible
-        persisted offset from an earlier operation is REUSED unchanged, an
-        incompatible one fails closed.
+        Lifecycle order (REUSE BEFORE RANDOMNESS): the persisted temporal
+        state is inspected FIRST — a valid compatible persisted offset is
+        REUSED exactly without touching the CSPRNG; otherwise a fresh offset
+        is selected uniformly from the feasible NON-ZERO set and persisted in
+        ONE authorized transaction.  The returned offset is authoritative
+        only after that unit has COMMITTED.
+
+        An EMPTY domain (every observed D/T occurrence was NULL, or nothing
+        was observed at all) is a VALID finalized domain: no artificial
+        ``date.min``/``date.max`` constraint is invented and no secret offset
+        is needed or created for NULL values — ``finalize`` returns ``None``
+        and no temporal parameter exists.
         """
-        min_observed = self._min_ordinal
-        if min_observed is None:
-            # A domain with no non-NULL temporal occurrence still receives a
-            # valid non-zero offset over the FULL logical calendar range.
-            min_observed = temporal_kernels.LOGICAL_MIN_ORDINAL
-            max_observed = temporal_kernels.LOGICAL_MAX_ORDINAL
-        else:
-            max_observed = self._max_ordinal
+        if self._min_ordinal is None:
+            # EMPTY domain: NULL-only or no occurrences at all.  There is no
+            # non-NULL value to pseudonymize and therefore no calendar
+            # constraint requiring a secret shift.
+            self._finalized = True
+            self._empty = True
+            self._offset = None
+            return None
         lower, upper = temporal_kernels.temporal_feasible_interval(
-            min_observed, max_observed
+            self._min_ordinal, self._max_ordinal
         )
         count = temporal_kernels.temporal_nonzero_count(lower, upper)
         if count <= 0:
-            # Adversarial domain spanning both calendar extremes: the only
-            # domain-wide feasible offset would be 0 — never silently used.
+            # Adversarial NON-EMPTY domain spanning both calendar extremes:
+            # the only domain-wide feasible offset would be 0 — this is a
+            # DIFFERENT constraint set from an EMPTY domain and fails closed.
             raise _only_zero_feasible()
-        fresh_offset = temporal_kernels.temporal_offset_at(
-            lower, upper, self._random_below(count)
-        )
         with self._database.transaction():
-            existing = temporal_parameter(self._database, self._domain_id)
-            if existing is None:
+            persisted = _persisted_temporal_state(self._database, self._domain_id)
+            if persisted is not None:
+                offset = persisted  # REUSE: the CSPRNG is never consulted
+            else:
+                fresh_offset = temporal_kernels.temporal_offset_at(
+                    lower, upper, self._random_below(count)
+                )
                 create_domain(
                     self._database,
                     domain_kind=VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
@@ -189,19 +255,24 @@ class TemporalShiftDomain:
                 )
                 set_temporal_parameter(self._database, self._domain_id, offset_days=fresh_offset)
                 offset = fresh_offset
-            else:
-                offset = int(existing)
         if not lower <= offset <= upper:
             raise _offset_incompatible()
         self._offset = offset
         self._finalized = True
         return offset
+
     def shifted(self, value: object) -> date | datetime | None:
         """The shifted logical value of one occurrence (COLLECT is closed).
 
-        Requires a finalized (committed and persisted) domain offset; NULL
-        stays NULL; DateTime time-of-day is never touched.
+        Requires a finalized domain.  NULL stays NULL.  After an EMPTY
+        (all-NULL) finalization any NON-NULL temporal value was never part of
+        the finalized constraints and fails closed.  DateTime time-of-day is
+        never touched.
         """
+        if self._empty:
+            if value is None:
+                return None
+            raise _empty_domain()
         if not self._finalized or self._offset is None:
             raise _not_finalized()
         return temporal_kernels.temporal_shift(value, self._offset)
@@ -209,13 +280,16 @@ class TemporalShiftDomain:
     def recover(self, value: object) -> date | datetime | None:
         """The original logical value of one shifted value (INTERNAL).
 
-        The recovery always uses the PERSISTED vault offset of the domain
-        (deterministic reuse across reopen); missing recovery state fails
-        closed.  ``None`` needs no recovery row and stays ``None``.
+        ``recover(None) -> None`` unconditionally: a NULL needs no recovery
+        state and no secret offset.  Non-NULL recovery uses the PERSISTED
+        vault offset of the domain (deterministic reuse across reopen);
+        missing, zero, wrong-kind or otherwise corrupt state fails closed.
         """
+        if value is None:
+            return None  # the NULL invariant never requires recovery state
         if self._offset is None:
-            persisted = temporal_parameter(self._database, self._domain_id)
+            persisted = _persisted_temporal_state(self._database, self._domain_id)
             if persisted is None:
                 raise _recovery_invalid()
-            self._offset = int(persisted)
+            self._offset = persisted
         return temporal_kernels.temporal_recover(value, self._offset)

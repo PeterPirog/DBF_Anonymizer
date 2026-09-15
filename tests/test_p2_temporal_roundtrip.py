@@ -27,6 +27,7 @@ from dbf_anonymizer.vault import (
     VaultDatabase,
     TemporalShiftDomain,
 )
+from dbf_anonymizer.vault.mappings import temporal_parameter
 from support.memo_tables import field, schema as schema_of
 from support.vault_sessions import writer_session
 
@@ -206,4 +207,72 @@ def test_temporal_boundary_domains_through_real_artifacts(tmp_path: Path) -> Non
             domain = TemporalShiftDomain(vault, domain_name=stem)
             for original_value, shifted_value in zip(values, shifted):
                 assert domain.recover(shifted_value) == original_value
-        assert _hashes(source) == _hashes(source) == _hashes(source)
+        # The source stayed byte-identical through the whole cycle
+        # (real comparison against the captured pre-repair state).
+        assert _hashes(source) == hashes_before
+
+
+def test_all_null_temporal_dbf_completes_the_real_flow(tmp_path: Path) -> None:
+    """A real DBF whose every D/T cell is NULL is a valid EMPTY domain."""
+    source = tmp_path / "src" / "allnull.dbf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    write_table(
+        source,
+        schema=schema_of(TEMPORAL_FIELDS),
+        records=[
+            DirectRecord(
+                physical_index=index, deleted=False, values=dict(record)
+            )
+            for index, record in enumerate(
+                (
+                    {"CODE": "N-1", "WHEN": None, "MOMENT": None},
+                    {"CODE": "N-2", "WHEN": None, "MOMENT": None},
+                    {"CODE": "N-3", "WHEN": None, "MOMENT": None},
+                )
+            )
+        ],
+    )
+    hashes_before = _hashes(source)
+    originals = _records(source)
+    assert all(
+        record.values["WHEN"] is None and record.values["MOMENT"] is None
+        for record in originals
+    )
+
+    with _vault(tmp_path, create=True) as vault:
+        with writer_session(vault):
+            domain = TemporalShiftDomain(vault)
+            for record in originals:
+                domain.observe(record.values["WHEN"])
+                domain.observe(record.values["MOMENT"])
+            assert domain.finalize() is None  # EMPTY domain: no offset
+            shifted_records = [
+                DirectRecord(
+                    physical_index=record.physical_index,
+                    deleted=record.deleted,
+                    values={
+                        "CODE": record.values["CODE"],
+                        "WHEN": domain.shifted(record.values["WHEN"]),
+                        "MOMENT": domain.shifted(record.values["MOMENT"]),
+                    },
+                )
+                for record in originals
+            ]
+
+    shifted_path = _write_destination(
+        tmp_path / "shifted", "allnull.dbf", source, shifted_records
+    )
+    shifted_read = _records(shifted_path)
+    for shifted in shifted_read:
+        # Every output D/T remains NULL through the public contract.
+        assert shifted.values["WHEN"] is None and shifted.values["MOMENT"] is None
+    # Recovery of NULL is NULL without any temporal recovery value.
+    with _vault(tmp_path, create=False) as vault:
+        reopened_domain = TemporalShiftDomain(vault)
+        assert reopened_domain.domain_id == domain.domain_id
+        for shifted in shifted_read:
+            assert reopened_domain.recover(shifted.values["WHEN"]) is None
+            assert reopened_domain.recover(shifted.values["MOMENT"]) is None
+        assert temporal_parameter(vault, domain.domain_id) is None
+    # The source stayed byte-identical through the whole cycle.
+    assert _hashes(source) == hashes_before
