@@ -787,6 +787,7 @@ VAULT_MODULES = (
     "vault/mappings.py",
     "vault/transactions.py",
     "vault/text_allocation.py",
+    "vault/memo_allocation.py",
 )
 
 #: The source-read-only public operations must never reach the vault layer:
@@ -901,3 +902,90 @@ def test_no_sqlite_database_files_in_package_or_fixtures() -> None:
             ):
                 offending.append(str(path.relative_to(repo_root)))
     assert not offending, f"committed SQLite vault artifacts: {offending}"
+
+
+# ---------------------------------------------------------------------------
+# REQ-P2-007 memo payload containment (static regressions)
+# ---------------------------------------------------------------------------
+#: The single authoritative memo recovery store of the one vault: the
+#: ``memo_recovery`` concept may be referenced only by the schema, the row
+#: recorder and the allocation boundary — never by planning/preflight, the
+#: public API or a second store.
+MEMO_RECOVERY_MODULES = frozenset(
+    {
+        "vault/__init__.py",
+        "vault/schema.py",
+        "vault/store.py",
+        "vault/mappings.py",
+        "vault/memo_allocation.py",
+    }
+)
+
+#: The memo transformation modules must stay pure logical-value boundaries.
+MEMO_PURE_MODULES = ("transforms/memo.py", "vault/memo_allocation.py")
+
+
+def test_memo_recovery_is_the_single_payload_store() -> None:
+    offending: list[str] = []
+    for path in _production_sources():
+        source = path.read_text(encoding="utf-8")
+        if "memo_recovery" in source:
+            relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
+            if relative.replace("dbf_anonymizer/", "") not in MEMO_RECOVERY_MODULES:
+                offending.append(str(path.relative_to(SRC_ROOT)))
+    assert not offending, f"memo payload store referenced outside the vault: {offending}"
+
+
+def test_no_second_memo_or_payload_table_in_the_schema() -> None:
+    schema_source = (SRC_ROOT / "vault" / "schema.py").read_text(encoding="utf-8")
+    # The frozen schema 1.0 keeps exactly ONE payload store; a second
+    # memo/payload table can never be introduced silently.
+    payload_tables = [
+        name
+        for name in EXPECTED_VAULT_TABLE_SCAN_PATTERN.findall(schema_source)
+        if "payload" in name or name in {"memo_recovery"}
+    ]
+    assert payload_tables == ["memo_recovery"]
+    for path in _production_sources():
+        if path.name != "schema.py":
+            assert "CREATE TABLE" not in path.read_text(encoding="utf-8"), path
+
+
+def test_memo_modules_are_pure_value_boundaries() -> None:
+    for module_name in MEMO_PURE_MODULES:
+        source = (SRC_ROOT / module_name).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(node, ast.ImportFrom):
+                if node.level:
+                    continue  # intra-package relative import
+                full = node.module or ""
+            else:
+                full = node.names[0].name if node.names else ""
+            if full == "dbf" or full.startswith(("dbf.", "dbfbridge", "dbf_bridge")):
+                raise AssertionError(f"{module_name}: dependency import: {full!r}")
+            if module_name.startswith("transforms/"):
+                assert not full.startswith("vault"), module_name
+        assert "open(" not in source, module_name
+        assert "tempfile" not in source, module_name
+        assert "spool" not in source, module_name
+
+
+def test_public_models_carry_no_memo_payload_field() -> None:
+    models_source = (SRC_ROOT / "models.py").read_text(encoding="utf-8")
+    assert "original_payload" not in models_source
+    assert "memo_payload" not in models_source
+
+
+def test_no_logging_in_production_sources() -> None:
+    for path in _production_sources():
+        source = path.read_text(encoding="utf-8")
+        assert "import logging" not in source, path
+        assert "getLogger" not in source, path
+
+
+EXPECTED_VAULT_TABLE_SCAN_PATTERN = re.compile(
+    r"CREATE TABLE (\w+)", re.IGNORECASE
+)

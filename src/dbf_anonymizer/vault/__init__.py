@@ -13,9 +13,10 @@ This internal package implements the REQ-P2-001/002/003 storage foundation:
 The vault is an internal subsystem for the execution engine: it is NOT
 exported through the public package root and NOT reachable from
 ``build_plan``/``preflight`` (which stay source-read-only), never parses or
-writes DBF/FPT files and never imports the ``dbfbridge`` namespace. Secure
-pseudonym ALLOCATION for the one global text domain (REQ-P2-004/005/006)
-lives in :mod:`dbf_anonymizer.vault.text_allocation` on top of this storage
+writes DBF/FPT files and never imports the ``dbfbridge`` namespace. Secure pseudonym ALLOCATION for the one global text domain (REQ-P2-004/005/006)
+lives in :mod:`dbf_anonymizer.vault.text_allocation` and the reversible
+Memo/General/Picture allocation (REQ-P2-007) in
+:mod:`dbf_anonymizer.vault.memo_allocation`, both on top of this storage
 foundation.
 """
 
@@ -36,6 +37,10 @@ from dbf_anonymizer.vault.schema import (
     VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
     VAULT_TABLE_DOMAIN_KIND_TEXT,
     VAULT_WRITER_TOKEN_PREFIX,
+)
+from dbf_anonymizer.vault.memo_allocation import (
+    persist_memo_recovery,
+    recover_memo_value,
 )
 from dbf_anonymizer.vault.store import (
     VaultDatabase,
@@ -71,4 +76,6 @@ __all__ = [
     "GLOBAL_TEXT_DOMAIN_ID",
     "GLOBAL_TEXT_PROBE_BUDGET",
     "GlobalTextDomainMapping",
+    "persist_memo_recovery",
+    "recover_memo_value",
 ]
