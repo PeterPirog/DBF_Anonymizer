@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -65,6 +66,22 @@ def _reopen(tmp_path: Path, name: str = "vault", **kwargs: str) -> VaultDatabase
 
 def _dictionary(tmp_path: Path, name: str = "vault") -> Path:
     return tmp_path / name / VAULT_DATABASE_FILENAME
+
+
+@contextmanager
+def _raw_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a RAW sqlite3 probe connection that is explicitly CLOSED.
+
+    The sqlite3 connection context manager commits/rolls back transactions;
+    it does NOT close the connection. Foreign-database probes must own their
+    closure so no test-side ``ResourceWarning`` (unclosed database) can leak
+    out of the vault evidence suite.
+    """
+    connection = sqlite3.connect(str(path))
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +499,7 @@ def test_older_schema_version_fails_closed_without_migration(tmp_path: Path) -> 
 
     # The unknown database was NOT dropped, recreated or migrated: a raw
     # sqlite3 reader (not the vault) still sees the original tampered meta.
-    with sqlite3.connect(str(_dictionary(tmp_path))) as raw:
+    with _raw_sqlite(_dictionary(tmp_path)) as raw:
         version = raw.execute(
             "SELECT schema_version FROM meta WHERE singleton = 1"
         ).fetchone()
@@ -676,27 +693,29 @@ def test_foreign_sqlite_database_is_rejected_byte_identical(
     foreign_dir = tmp_path / "foreign"
     foreign_dir.mkdir()
     foreign = foreign_dir / VAULT_DATABASE_FILENAME
-    with sqlite3.connect(str(foreign)) as raw:
+    with _raw_sqlite(foreign) as raw:
         raw.execute("CREATE TABLE sentinel_secret_marker (value TEXT NOT NULL)")
         raw.execute("INSERT INTO sentinel_secret_marker VALUES ('KEEP_ME')")
         raw.commit()
     assert file_sha256(foreign) != ""
     hash_before = file_sha256(foreign)
-    mode_before = sqlite3.connect(str(foreign)).execute(
-        "PRAGMA journal_mode"
-    ).fetchone()[0]
+    with _raw_sqlite(foreign) as probe:
+        mode_before = probe.execute(
+            "PRAGMA journal_mode"
+        ).fetchone()[0]
 
     with pytest.raises(VaultError):
         VaultDatabase.open(foreign)
 
     assert file_sha256(foreign) == hash_before
     assert sidecar_inventory(foreign_dir) == []
-    mode_after = sqlite3.connect(str(foreign)).execute(
-        "PRAGMA journal_mode"
-    ).fetchone()[0]
+    with _raw_sqlite(foreign) as probe:
+        mode_after = probe.execute(
+            "PRAGMA journal_mode"
+        ).fetchone()[0]
     assert mode_after == mode_before
     # The sentinel data is intact (no reconstruction/overwrite happened).
-    with sqlite3.connect(str(foreign)) as raw:
+    with _raw_sqlite(foreign) as raw:
         kept = raw.execute(
             "SELECT value FROM sentinel_secret_marker"
         ).fetchone()
