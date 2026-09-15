@@ -10,11 +10,13 @@ This internal package implements the REQ-P2-001/002/003 storage foundation:
   ``BEGIN IMMEDIATE`` transaction units and a durable single logical writer
   authority (``writer_authority`` lease row).
 
-The vault is an internal subsystem for the future execution engine: it is
-NOT exported through the public package root, NOT reachable from
+The vault is an internal subsystem for the execution engine: it is NOT
+exported through the public package root and NOT reachable from
 ``build_plan``/``preflight`` (which stay source-read-only), never parses or
-writes DBF/FPT files and never imports the ``dbfbridge`` namespace.
-Pseudonym ALLOCATION (REQ-P2-004) is explicitly out of scope here.
+writes DBF/FPT files and never imports the ``dbfbridge`` namespace. Secure
+pseudonym ALLOCATION for the one global text domain (REQ-P2-004/005/006)
+lives in :mod:`dbf_anonymizer.vault.text_allocation` on top of this storage
+foundation.
 """
 
 from __future__ import annotations
@@ -41,6 +43,11 @@ from dbf_anonymizer.vault.store import (
     new_writer_token,
 )
 from dbf_anonymizer.vault.transactions import VaultTransaction
+from dbf_anonymizer.vault.text_allocation import (
+    GLOBAL_TEXT_DOMAIN_ID,
+    GLOBAL_TEXT_PROBE_BUDGET,
+    GlobalTextDomainMapping,
+)
 
 __all__ = [
     "VAULT_SCHEMA_VERSION",
@@ -61,4 +68,7 @@ __all__ = [
     "VaultTransaction",
     "default_dictionary_path",
     "new_writer_token",
+    "GLOBAL_TEXT_DOMAIN_ID",
+    "GLOBAL_TEXT_PROBE_BUDGET",
+    "GlobalTextDomainMapping",
 ]

@@ -687,6 +687,8 @@ IMPORT_PATH_MODULES = (
     "preflight.py",
     "planning.py",
     "discovery.py",
+    "transforms/__init__.py",
+    "transforms/text.py",
 )
 
 #: COM/ole-automation and VFP integration modules: importing any of them from
@@ -784,6 +786,7 @@ VAULT_MODULES = (
     "vault/store.py",
     "vault/mappings.py",
     "vault/transactions.py",
+    "vault/text_allocation.py",
 )
 
 #: The source-read-only public operations must never reach the vault layer:
@@ -832,6 +835,39 @@ def test_vault_layer_avoids_weak_random_generators() -> None:
             elif isinstance(node, ast.ImportFrom):
                 full = _import_full_name(node)
                 assert not full.startswith("random"), module_name
+
+
+def test_production_sources_exclude_weak_random_generators() -> None:
+    # REQ-P2-004: the production mapping path must never import, seed or
+    # instantiate the ``random`` module in any form. Production pseudonym
+    # randomness comes exclusively from an OS-backed CSPRNG (the allocation
+    # module binds ``secrets.randbelow``); a static import ban makes the
+    # weak-generator family (``random.Random``/``random.seed``/...) structurally
+    # unreachable. ``secrets``/``uuid``/``hashlib`` stay allowed: the vault
+    # uses them for identifiers/fingerprints, never for token derivation.
+    for path in _production_sources():
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] != "random", str(path)
+            elif isinstance(node, ast.ImportFrom):
+                full = _import_full_name(node)
+                assert full.split(".")[0] != "random", str(path)
+
+
+def test_allocation_module_binds_the_os_csprng_only() -> None:
+    # The production allocation seam defaults to the ``secrets`` CSPRNG; the
+    # private deterministic injection seam stays a private constructor
+    # keyword and is never serialized or exported. The structural exclusion
+    # of the whole ``random`` module is proven by the import ban above.
+    source = (SRC_ROOT / "vault" / "text_allocation.py").read_text(encoding="utf-8")
+    assert "import secrets" in source
+    assert "secrets.randbelow" in source
+    root = (SRC_ROOT / "__init__.py").read_text(encoding="utf-8")
+    for forbidden in ("_random_below", "GLOBAL_TEXT_PROBE_BUDGET"):
+        assert forbidden not in root
 
 
 def test_source_read_only_operations_never_instantiate_the_vault() -> None:

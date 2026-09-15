@@ -32,6 +32,12 @@ produce exactly equal ``to_dict()`` output.
 
 Pseudonym capacity model (GLOBAL_TEXT C/V domain)
 -------------------------------------------------
+The text-domain mathematical model (safe alphabet, encoded byte
+feasibility, finite token space, strictest-width reduction) is owned by the
+pure shared module :mod:`dbf_anonymizer.transforms.text`; this read-only
+proof and the vault allocation service (REQ-P2-004/005/006) are two
+consumers of that ONE authoritative model.
+
 For every exact non-empty decoded original across the WHOLE dataset there is
 ONE global strictest width: ``strictest_width(original)`` is the minimum
 logical byte-width constraint encountered across every occurrence of that
@@ -105,6 +111,12 @@ from dbf_anonymizer.progress import (
     ProgressCallback,
     ProgressController,
     ProgressPhase,
+)
+from dbf_anonymizer.transforms.text import (
+    SAFE_TEXT_ALPHABET,
+    candidate_alphabet,
+    reduced_strictest,
+    token_space_at_least,
 )
 
 __all__ = ["preflight", "PREFLIGHT_CODE_VERSION", "PreflightCode"]
@@ -597,48 +609,17 @@ def _check_standalone_idx(
 # ---------------------------------------------------------------------------
 # Pseudonym capacity feasibility (GLOBAL_TEXT C/V domain) — read-only
 # ---------------------------------------------------------------------------
-_CANDIDATE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+# The text-domain mathematical model is OWNED by the pure shared module
+# ``dbf_anonymizer.transforms.text`` (REQ-P2-004/005/006); the preflight
+# capacity proof and the vault allocation service are two consumers of that
+# ONE authoritative model (safe alphabet, encoded byte feasibility, token
+# space, strictest-width reduction). The aliases below keep the historical
+# private names of this module pointing at the shared kernels.
+_CANDIDATE_ALPHABET = SAFE_TEXT_ALPHABET
 
+_candidate_alphabet = candidate_alphabet
 
-def _candidate_alphabet(participating_encodings: frozenset[str]) -> str:
-    """Intersect the conservative alphabet with single-byte codepoints.
-
-    Keeps only characters that encode to exactly one byte under every
-    participating source encoding. A single case form is used so that
-    case-insensitive collision ambiguity is not introduced.
-    """
-    keep: list[str] = []
-    for ch in _CANDIDATE_ALPHABET:
-        accepted = True
-        for encoding in participating_encodings:
-            try:
-                if len(ch.encode(encoding, "strict")) != 1:
-                    accepted = False
-                    break
-            except (LookupError, UnicodeEncodeError, ValueError):
-                accepted = False
-                break
-        if accepted:
-            keep.append(ch)
-    return "".join(keep)
-
-
-def _token_space_at_least(max_width: int, base: int, needed: int) -> bool:
-    """True when base^1 + ... + base^max_width >= needed.
-
-    Streams the geometric terms and stops as soon as *needed* is reached, so
-    wide field lengths never build astronomically large integers.
-    """
-    if max_width < 1 or base < 1:
-        return needed <= 0
-    total = 0
-    term = 1
-    for _ in range(1, max_width + 1):
-        term *= base
-        total += term
-        if total >= needed:
-            return True
-    return False
+_token_space_at_least = token_space_at_least
 
 
 def _capacity_sufficient(
@@ -833,12 +814,12 @@ def _capacity_sufficient(
                             # insufficiency. Membership was already tested.
                             outcome = _CAPACITY_UNPROVEN
                             break
-                        tracker[value] = length
+                        tracker[value] = reduced_strictest(None, length)
                         if _note_strictest(None, length):
                             outcome = _CAPACITY_INSUFFICIENT
                             break
                     elif length < strictest:
-                        tracker[value] = length
+                        tracker[value] = reduced_strictest(strictest, length)
                         if _note_strictest(strictest, length):
                             outcome = _CAPACITY_INSUFFICIENT
                             break
