@@ -44,6 +44,7 @@ __all__ = [
     "get_numeric_pseudonym",
     "numeric_mapping_rows",
     "add_memo_recovery",
+    "get_memo_recovery",
     "memo_recovery_rows",
     "set_temporal_parameter",
     "temporal_parameter",
@@ -213,19 +214,48 @@ def add_memo_recovery(
     table_id: str,
     physical_record_index: int,
     field_id: str,
-    payload: bytes | str,
+    payload: bytes | bytearray | str,
     *,
     payload_kind: str,
 ) -> None:
-    """Store one original memo payload row inside the protected vault."""
+    """Store one reversible memo recovery row (REQ-P2-007).
+
+    The row is keyed by the stable ``table_id + physical_record_index +
+    field_id`` identity (the primary key makes a duplicate identity a typed
+    fail-closed rejection) and the enforced foreign key proves that the
+    field belongs to the table.  The payload kind is exactly bounded:
+
+    * ``TEXT``  — the payload must be a ``str``; it is stored as its exact
+      UTF-8 image (encoding-independent and lossless);
+    * ``BINARY`` — the payload must be ``bytes``/``bytearray`` and is stored
+      byte-for-byte (normalized to immutable ``bytes``).
+
+    A type/kind mismatch is refused (fail closed) before any database
+    access.  Conflicting values never appear in the typed failure.
+    """
     database._require_active_transaction("add_memo_recovery")
     _validate_token(table_id, field_name="table_id")
     _validate_token(field_id, field_name="field_id")
     if payload_kind not in (VAULT_PAYLOAD_KIND_TEXT, VAULT_PAYLOAD_KIND_BINARY):
-        raise ValueError(f"unsupported payload_kind: {payload_kind!r}")
+        raise ValueError(
+            "payload_kind must be exactly VAULT_PAYLOAD_KIND_TEXT or "
+            "VAULT_PAYLOAD_KIND_BINARY"
+        )
+    if isinstance(physical_record_index, bool) or not isinstance(
+        physical_record_index, int
+    ):
+        raise TypeError("physical_record_index must be an int")
     if physical_record_index < 0:
         raise ValueError("physical_record_index must be non-negative")
-    blob: bytes = payload.encode("utf-8") if isinstance(payload, str) else payload
+    if payload_kind == VAULT_PAYLOAD_KIND_TEXT:
+        if not isinstance(payload, str):
+            raise ValueError("a TEXT memo recovery payload must be a str")
+        blob: bytes = payload.encode("utf-8")
+    else:
+        if isinstance(payload, (bytes, bytearray)):
+            blob = bytes(payload)
+        else:
+            raise ValueError("a BINARY memo recovery payload must be bytes")
     try:
         database._internal_connection().execute(
             "INSERT INTO memo_recovery (table_id, physical_record_index, field_id, "
@@ -234,6 +264,37 @@ def add_memo_recovery(
         )
     except sqlite3.IntegrityError:
         raise _vault_state_failure("MEMO_ROW_REJECTED") from None
+
+
+def get_memo_recovery(
+    database: VaultDatabase,
+    table_id: str,
+    physical_record_index: int,
+    field_id: str,
+) -> tuple[bytes, str] | None:
+    """The exact recovery row of one stable memo identity, or ``None``.
+
+    Returns ``(original_payload, payload_kind)`` for the unique row of the
+    stable ``table_id + physical_record_index + field_id`` identity — the
+    narrow, unambiguous retrieval the later recovery pipeline consumes.  A
+    missing identity is ``None``; no row payload ever reaches an error.
+    """
+    _validate_token(table_id, field_name="table_id")
+    _validate_token(field_id, field_name="field_id")
+    if isinstance(physical_record_index, bool) or not isinstance(
+        physical_record_index, int
+    ):
+        raise TypeError("physical_record_index must be an int")
+    if physical_record_index < 0:
+        raise ValueError("physical_record_index must be non-negative")
+    row = database._internal_connection().execute(
+        "SELECT original_payload, payload_kind FROM memo_recovery "
+        "WHERE table_id = ? AND physical_record_index = ? AND field_id = ?",
+        (table_id, physical_record_index, field_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return (bytes(row[0]), str(row[1]))
 
 
 def memo_recovery_rows(database: VaultDatabase, table_id: str) -> tuple[dict[str, Any], ...]:
