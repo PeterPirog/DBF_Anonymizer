@@ -16,13 +16,14 @@ Responsibilities:
   Windows case-insensitive equivalence.  Failures are typed, fail closed and
   never expose absolute sensitive paths.
 
-* **Sensitive-artifact containment** — the bounded vocabulary of sensitive
-  vault artifacts (the dictionary database, its WAL/SHM/rollback-journal
-  sidecars and the reserved future vocabulary for private manifests and
-  original-bearing spools) is derived ONLY from the dictionary filename, so
-  every such artifact stays rooted beside ``dictionary.sqlite3`` inside the
-  protected vault tree.  There is NO recovery JSON sidecar, NO second SQLite
-  recovery database and NO ordinary output copy of the vault.
+* **Sensitive-artifact containment** — the authoritative vocabulary of
+  sensitive vault artifacts consists of DICTIONARY-DERIVED SQLite artifacts
+  (the dictionary database plus its WAL/SHM/rollback-journal sidecars) plus
+  FIXED reserved private-vault artifact names (future private recovery
+  manifests and original-bearing spools).  Every such artifact stays rooted
+  beside ``dictionary.sqlite3`` inside the protected vault tree.  There is
+  NO recovery JSON sidecar, NO second SQLite recovery database and NO
+  ordinary output copy of the vault.
 
 * **Best-effort filesystem hardening** — POSIX: owner-only directory modes
   (``0700``) and owner read/write dictionary modes (``0600``) applied as
@@ -50,7 +51,10 @@ from dbf_anonymizer.errors import ErrorCode, ErrorContext, VaultError
 
 __all__ = [
     "VAULT_PROTECTION_POLICY_VERSION",
-    "SENSITIVE_ARTIFACT_SUFFIXES",
+    "SENSITIVE_VAULT_ARTIFACT_SUFFIXES",
+    "RESERVED_PRIVATE_VAULT_VOCABULARY",
+    "HARDENING_OWNER_MODES_APPLIED",
+    "HARDENING_WINDOWS_LIMITED",
     "sensitive_artifact_names",
     "validate_protected_vault_root",
     "harden_vault_directory",
@@ -67,10 +71,10 @@ SENSITIVE_VAULT_ARTIFACT_SUFFIXES: tuple[str, ...] = (
     "-journal",
 )
 
-#: Reserved future sensitive-artifact kinds (REQ-P2-009 vocabulary).  No
-#: producer exists yet; the vocabulary is authoritative so a future private
-#: manifest or original-bearing spool can never silently escape the vault
-#: root naming scheme.
+#: Fixed reserved private-vault artifact names (REQ-P2-009 vocabulary).  No
+#: producer exists yet; the names are FIXED (NOT derived from the dictionary
+#: filename) so a future private manifest or original-bearing spool can never
+#: silently escape the vault root naming scheme.
 RESERVED_PRIVATE_VAULT_VOCABULARY: tuple[str, ...] = (
     "recovery-manifest.private",
     "recovery-spool.private",
@@ -81,16 +85,42 @@ HARDENING_OWNER_MODES_APPLIED = "OWNER_MODES_APPLIED"
 HARDENING_WINDOWS_LIMITED = "WINDOWS_LIMITED_BEST_EFFORT"
 
 
-def sensitive_artifact_names(dictionary_filename: str) -> tuple[str, ...]:
-    """The bounded sensitive-artifact names of one vault dictionary.
+def _vocabulary_invalid() -> VaultError:
+    """Stable typed refusal for a non-basename dictionary filename."""
+    return VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="vault", detail_code="SENSITIVE_VOCABULARY_INVALID"),
+    )
 
-    Every SQLite journal artifact is DERIVED from the dictionary filename and
-    therefore can only appear beside it in the vault root; the reserved
-    vocabulary keeps future private manifests/spools inside the same boundary.
+
+def sensitive_artifact_names(dictionary_filename: str) -> tuple[str, ...]:
+    """The COMPLETE authoritative sensitive-artifact vocabulary of one vault.
+
+    The authoritative vocabulary consists of DICTIONARY-DERIVED SQLite
+    artifacts (the dictionary database plus its ``-wal``/``-shm``/
+    ``-journal`` sidecars, which only ever appear beside it) PLUS the fixed
+    reserved private-vault artifact names (future private recovery manifests
+    and original-bearing spools — fixed names, NOT derived from the
+    dictionary filename).  No producer for the private artifacts exists yet.
+
+    The helper is a basename vocabulary helper: a caller-supplied filename
+    carrying path separators or absolute form is refused (fail closed,
+    typed, privacy-safe) — every returned name is a plain basename, so the
+    complete vocabulary stays rooted under whatever vault root it is joined
+    with.
     """
+    if (
+        not isinstance(dictionary_filename, str)
+        or not dictionary_filename
+        or "/" in dictionary_filename
+        or "\\" in dictionary_filename
+        or Path(dictionary_filename).name != dictionary_filename
+    ):
+        raise _vocabulary_invalid()
     return (
         dictionary_filename,
         *(dictionary_filename + suffix for suffix in SENSITIVE_VAULT_ARTIFACT_SUFFIXES),
+        *RESERVED_PRIVATE_VAULT_VOCABULARY,
     )
 
 

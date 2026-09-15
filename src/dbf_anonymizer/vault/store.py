@@ -494,9 +494,6 @@ class VaultDatabase:
         # ATOMIC creator reservation: exactly one competing creator can create
         # the dictionary file (``O_CREAT | O_EXCL``). A losing creator never
         # opens, truncates, converts or unlinks the winner's dictionary.
-        # ATOMIC creator reservation: exactly one competing creator can create
-        # the dictionary file (``O_CREAT | O_EXCL``). A losing creator never
-        # opens, truncates, converts or unlinks the winner's dictionary.
         reserved_identity = cls._reserve_dictionary_file(path)
 
         # OWNER-SCOPED CREATION LIFECYCLE: from the successful reservation

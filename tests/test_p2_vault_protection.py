@@ -28,6 +28,7 @@ from dbf_anonymizer.vault import (
 from dbf_anonymizer.vault.protection import (
     HARDENING_OWNER_MODES_APPLIED,
     HARDENING_WINDOWS_LIMITED,
+    RESERVED_PRIVATE_VAULT_VOCABULARY,
     SENSITIVE_VAULT_ARTIFACT_SUFFIXES,
     harden_vault_directory,
     sensitive_artifact_names,
@@ -159,17 +160,23 @@ def test_refusals_expose_no_absolute_paths(tmp_path: Path) -> None:
 # sensitive artifact containment
 # ---------------------------------------------------------------------------
 def test_artifact_vocabulary_is_bounded_and_dictionary_derived() -> None:
+    # The SQLite SIDEcars are dictionary-derived; the authoritative
+    # vocabulary additionally carries the fixed reserved private names
+    # (see the complete-set evidence in the repair regressions below).
     names = sensitive_artifact_names(VAULT_DATABASE_FILENAME)
-    assert names == (
+    assert names[:4] == (
         VAULT_DATABASE_FILENAME,
         VAULT_DATABASE_FILENAME + "-wal",
         VAULT_DATABASE_FILENAME + "-shm",
         VAULT_DATABASE_FILENAME + "-journal",
     )
     assert set(SENSITIVE_VAULT_ARTIFACT_SUFFIXES) == {"-wal", "-shm", "-journal"}
-    # All derived artifacts stay beside the dictionary (name derivation only).
-    for name in names:
+    # All dictionary-derived artifacts stay beside the dictionary (name
+    # derivation only); the reserved private names are fixed basenames.
+    for name in names[:4]:
         assert name.startswith(VAULT_DATABASE_FILENAME)
+    for name in names[4:]:
+        assert name in RESERVED_PRIVATE_VAULT_VOCABULARY
 
 
 def test_vault_artifacts_stay_inside_the_vault_root(tmp_path: Path) -> None:
@@ -434,3 +441,78 @@ def test_no_secure_deletion_overclaim_in_documentation() -> None:
     assert "backups are equally sensitive" in text
     assert "not anonymous" in text
     assert "never" in text and "transfer bundle" in text
+
+
+# ---------------------------------------------------------------------------
+# PR #28 repair regressions (fail on 425a907, pass after the repair)
+# ---------------------------------------------------------------------------
+def test_protection_module_export_contract_resolves() -> None:
+    """EVERY name declared in ``__all__`` must exist on the module.
+
+    Pre-repair behavior: ``__all__`` declared ``SENSITIVE_ARTIFACT_SUFFIXES``
+    while the real constant is ``SENSITIVE_VAULT_ARTIFACT_SUFFIXES`` — the
+    star-import surface referenced a nonexistent symbol.
+    """
+    import dbf_anonymizer.vault.protection as protection
+
+    for name in protection.__all__:
+        assert hasattr(protection, name), f"missing export: {name}"
+    # A REAL star import in an isolated namespace must succeed completely.
+    namespace: dict[str, object] = {}
+    exec("from dbf_anonymizer.vault.protection import *", namespace)
+    star_names = set(namespace) - {"__builtins__", "__annotations__"}
+    assert star_names == set(protection.__all__)
+
+
+def test_sensitive_artifact_vocabulary_is_complete() -> None:
+    """ONE helper must represent ALL currently defined sensitive artifacts.
+
+    Pre-repair behavior: the reserved private artifacts
+    (``recovery-manifest.private`` / ``recovery-spool.private``) were
+    silently omitted from ``sensitive_artifact_names``.
+    """
+    names = sensitive_artifact_names(VAULT_DATABASE_FILENAME)
+    assert names == (
+        VAULT_DATABASE_FILENAME,
+        VAULT_DATABASE_FILENAME + "-wal",
+        VAULT_DATABASE_FILENAME + "-shm",
+        VAULT_DATABASE_FILENAME + "-journal",
+        "recovery-manifest.private",
+        "recovery-spool.private",
+    )
+    assert len(names) == len(set(names))  # unique
+
+
+def test_artifact_vocabulary_safety_invariants() -> None:
+    """Deterministic vocabulary safety invariants (REQ-P2-009 boundary)."""
+    names = sensitive_artifact_names(VAULT_DATABASE_FILENAME)
+    vault_root = Path("D:\\") if os.name == "nt" else Path("/")
+    for name in names:
+        # Basename only: never absolute, never carrying path separators.
+        assert Path(name).name == name
+        assert not Path(name).is_absolute()
+        assert "/" not in name and "\\" not in name
+        # The complete vocabulary stays rooted under a supplied vault root.
+        joined = vault_root / name
+        assert joined.name == name
+    # The SQLite sidecars are derived from VAULT_DATABASE_FILENAME.
+    assert names[0] == VAULT_DATABASE_FILENAME
+    assert all(
+        names[index] == VAULT_DATABASE_FILENAME + suffix
+        for index, suffix in enumerate(SENSITIVE_VAULT_ARTIFACT_SUFFIXES, start=1)
+    )
+    # The reserved private artifacts are included, exactly once.
+    for reserved in RESERVED_PRIVATE_VAULT_VOCABULARY:
+        assert names.count(reserved) == 1
+    # No JSON recovery sidecar is introduced by the authoritative vocabulary.
+    assert not any(name.endswith(".json") or name.endswith(".jsonl") for name in names)
+
+
+def test_dictionary_filename_must_be_a_basename() -> None:
+    """The vocabulary helper refuses caller-controlled path separators."""
+    for hostile in ("dir/dictionary.sqlite3", "..\\dictionary.sqlite3", "/etc/passwd"):
+        with pytest.raises(VaultError) as excinfo:
+            sensitive_artifact_names(hostile)
+        assert excinfo.value.code is ErrorCode.VAULT_STATE_INVALID
+        boundary = str(excinfo.value) + "|" + str(excinfo.value.to_dict())
+        assert "SENSITIVE_VOCABULARY_INVALID" in boundary
