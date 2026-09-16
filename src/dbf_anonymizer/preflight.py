@@ -577,12 +577,60 @@ def _check_output_profile_and_capabilities(
 
 
 def _check_relationships(plan: Plan, findings: _Findings) -> None:
-    # REQ-P3-001 member/role semantics are not implemented in this iteration.
-    # relation_count == 0: ordinary P1 preflight may continue.
-    # relation_count > 0: member-domain compatibility cannot be proven from the
-    # summary metadata, so we fail closed (no DECLARED_RELATIONS_VERIFIED claim).
-    if plan.relationships.relation_count > 0:
+    """REQ-P3-001/003 relationship-domain validation.
+
+    When the plan carries a parsed typed relationship document (from the
+    real ``build_plan`` ingestion), the authoritative P3 compatibility
+    validation runs against the retained document and the source-schema
+    binding facts.  A VALID declared C/V relationship is accepted.
+
+    A plan whose relationship metadata is only a SUMMARY (relation_count > 0)
+    with no member semantics available CANNOT be verified from the count
+    alone and still fails closed as ``RELATIONSHIP_DOMAIN_UNVERIFIED`` —
+    verification is never faked from relation_count.
+    """
+    relationships = (
+        getattr(plan.execution_context, "relationship_document", None)
+        if plan.execution_context is not None
+        else None
+    )
+    if relationships is None:
+        if plan.relationships.relation_count > 0:
+            findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
+        return
+    from dbf_anonymizer.relationships.compatibility import (
+        validate_document_compatibility,
+    )
+
+    # The REAL P3 compatibility validation (typed, fail closed, privacy-safe):
+    # a compatible document produces NO finding here; an incompatible one
+    # FAILS CLOSED.  The typed PolicyError propagates as a preflight failure.
+    from dbf_anonymizer.errors import PolicyError as _PolicyError
+
+    try:
+        validate_document_compatibility(relationships)
+    except _PolicyError:
         findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
+        return
+    bindings = (
+        getattr(plan.execution_context, "relationship_bindings", None)
+        if plan.execution_context is not None
+        else None
+    )
+    if bindings is not None:
+        # Re-verify every declared member against the retained source-schema
+        # binding facts (defence in depth; the build_plan binding already
+        # refused mismatches before any plan existed).
+        for group in relationships.groups:
+            for member in group.members:
+                fact = bindings.get((member.table_path, member.field_name))
+                if (
+                    fact is None
+                    or member.dbf_type != fact[0]
+                    or member.byte_width != fact[1]
+                ):
+                    findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
+                    return
 
 
 def _check_index_conditions(plan: Plan, findings: _Findings) -> None:

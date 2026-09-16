@@ -182,20 +182,33 @@ class RelationGroup:
             if member.identity in seen:
                 raise _invalid("RELATIONSHIP_MEMBER_DUPLICATE")
             seen.add(member.identity)
+        roles = {member.key_role for member in self.members}
+        # STRUCTURAL CONTRACT (1.0): a usable declared relation group carries
+        # exactly ONE parent-side key family (PRIMARY xor CANDIDATE) and at
+        # least one FOREIGN side with EQUAL composite arity.  A group with
+        # only-foreign, only-parent or both parent families is not a key
+        # relationship and fails closed.
+        if KEY_ROLE_PRIMARY in roles and KEY_ROLE_CANDIDATE in roles:
+            raise _invalid("RELATIONSHIP_PARENT_SIDE_AMBIGUOUS")
+        if not (roles & {KEY_ROLE_PRIMARY, KEY_ROLE_CANDIDATE}):
+            raise _invalid("RELATIONSHIP_PARENT_SIDE_MISSING")
+        if KEY_ROLE_FOREIGN not in roles:
+            raise _invalid("RELATIONSHIP_FOREIGN_SIDE_MISSING")
         # Composite ordering: per key role, ordinals must be exactly 1..N
         # without duplicates or gaps (consistent arity per side).
-        roles = {member.key_role for member in self.members}
         for role in sorted(roles):
             ordinals = sorted(
                 m.composite_ordinal for m in self.members if m.key_role == role
             )
             if ordinals != list(range(1, len(ordinals) + 1)):
                 raise _invalid("RELATIONSHIP_ORDINAL_SEQUENCE_INVALID")
-        # A PRIMARY side and a FOREIGN side must carry equal arity so the
-        # composite tuple semantics are defined.
-        primary_count = sum(1 for m in self.members if m.key_role == KEY_ROLE_PRIMARY)
+        # The parent side (PRIMARY or CANDIDATE) and the FOREIGN side must
+        # carry equal arity so the composite tuple semantics are defined.
+        parent_count = sum(
+            1 for m in self.members if m.key_role in {KEY_ROLE_PRIMARY, KEY_ROLE_CANDIDATE}
+        )
         foreign_count = sum(1 for m in self.members if m.key_role == KEY_ROLE_FOREIGN)
-        if {KEY_ROLE_PRIMARY, KEY_ROLE_FOREIGN} <= roles and primary_count != foreign_count:
+        if parent_count != foreign_count:
             raise _invalid("RELATIONSHIP_ARITY_MISMATCH")
 
     def members_for_role(self, role: str) -> tuple[RelationMember, ...]:
@@ -239,6 +252,10 @@ class RelationshipDocument:
 
     groups: tuple[RelationGroup, ...]
 
+    def canonical_groups(self) -> tuple[RelationGroup, ...]:
+        """Groups in canonical order (stable relation_id; order-irrelevant)."""
+        return tuple(sorted(self.groups, key=lambda group: group.relation_id))
+
     def __post_init__(self) -> None:
         if not isinstance(self.groups, tuple):
             raise _invalid("RELATIONSHIP_DOCUMENT_INVALID")
@@ -249,5 +266,5 @@ class RelationshipDocument:
     def to_dict(self) -> dict[str, Any]:
         return {
             "metadata_schema_version": RELATIONSHIP_METADATA_SCHEMA_VERSION,
-            "relations": [group.to_dict() for group in self.groups],
+            "relations": [group.to_dict() for group in self.canonical_groups()],
         }

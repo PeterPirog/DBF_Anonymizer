@@ -30,6 +30,7 @@ from dbf_anonymizer.errors import (
     PathError,
     ErrorCode,
     ErrorContext,
+    PolicyError,
 )
 from dbf_anonymizer.models import (
     DatasetIdentity,
@@ -87,6 +88,14 @@ def _assure_target(relationships: RelationshipMetadata) -> RelationalAssuranceLe
     return RelationalAssuranceLevel.INCOMPLETE
 
 
+def _relationship_binding_error(detail_code: str) -> PolicyError:
+    """Typed, privacy-safe refusal for a declared-member schema mismatch."""
+    return PolicyError(
+        ErrorCode.POLICY_INVALID,
+        context=ErrorContext(operation="build_plan", detail_code=detail_code),
+    )
+
+
 def build_plan(
     source: str | os.PathLike[str],
     output: str | os.PathLike[str],
@@ -94,6 +103,7 @@ def build_plan(
     policy: Mapping[str, Any] | None = None,
     relationships: RelationshipMetadata | None = None,
     *,
+    relationship_document: Mapping[str, Any] | None = None,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
 ) -> Plan:
@@ -102,6 +112,16 @@ def build_plan(
     This function only reads the source filesystem (bounded reads for
     schema and fingerprint computation). It creates no files, directories,
     locks, logs, vaults or staging areas.
+
+    REQ-P3-001: the optional keyword-only ``relationship_document`` accepts
+    the real versioned relationship metadata as a source-neutral in-memory
+    mapping — content loaded from a policy file or emitted by
+    ``mcp-vfp9sp2-toolchain`` (adapter boundary only; no transport exists).
+    It is parsed through the ONE authoritative P3 document parser, its
+    canonical fingerprint becomes the dataset's relationship fingerprint and
+    the parsed document is bound to the DISCOVERED DBF schema facts
+    (fail-closed, before any plan) and retained only inside the non-public
+    execution context for the preflight relationship-domain validation.
 
     REQ-P1-008: the optional keyword-only ``progress`` callback receives
     bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
@@ -176,7 +196,25 @@ def build_plan(
     merged_policy, policy_fp = resolve_policy(policy)
 
     # 4. Resolve relationships
-    if relationships is None:
+    parsed_relationship_document = None
+    relationship_bindings: dict[tuple[str, str], tuple[str, int, str]] = {}
+    field_facts: dict[tuple[str, str], tuple[str, int, str]] = {}
+    if relationship_document is not None:
+        from dbf_anonymizer.relationships.document import (
+            parse_relationship_document,
+            relationship_metadata_from_document,
+        )
+
+        # ONE authoritative parser: the typed document is parsed, its
+        # canonical fingerprint becomes the dataset identity and the parsed
+        # document is retained for the preflight compatibility validation.
+        # The SEMANTIC compatibility validation runs in PREFLIGHT (before any
+        # transformation-equivalent action) — see _check_relationships.
+        parsed_relationship_document = parse_relationship_document(
+            relationship_document
+        )
+        rel_meta = relationship_metadata_from_document(parsed_relationship_document)
+    elif relationships is None:
         rel_meta = _default_relationships()
     else:
         rel_meta = relationships
@@ -221,6 +259,13 @@ def build_plan(
         system_count = 0
 
         for field_info in schema.fields:
+            # REQ-P3-003 source-schema facts: collect the authoritative field
+            # facts (public dbfbridge schema) for the relationship binding.
+            field_facts[(table.relative_path, str(field_info.name))] = (
+                str(field_info.dbf_type),
+                int(field_info.length),
+                str(schema.encoding),
+            )
             action, is_unsafe, is_system = classify_field_capability(
                 field_info.dbf_type,
                 field_info.name,
@@ -266,6 +311,54 @@ def build_plan(
 
     tables.sort(key=lambda t: t.table_path)
 
+    # 6b. REQ-P3-003 schema binding: every declared member is verified
+    # against the DISCOVERED public dbfbridge schema facts — table exists,
+    # field exists, logical type matches C/V, byte width matches reality and
+    # the declared encoding admits the proven safe shared alphabet together
+    # with the table encoding.  Mismatch FAILS CLOSED before any plan; the
+    # binding runs BEFORE the semantic compatibility validation so a
+    # member-level source mismatch is reported with its MEMBER detail code.
+    if parsed_relationship_document is not None:
+        from dbf_anonymizer.transforms.text import candidate_alphabet
+        from dbf_anonymizer.relationships.compatibility import (
+            validate_document_compatibility,
+        )
+
+        discovered_paths = {table.relative_path for table in discovered}
+        for group in parsed_relationship_document.groups:
+            for member in group.members:
+                if member.table_path not in discovered_paths:
+                    raise _relationship_binding_error(
+                        "RELATIONSHIP_MEMBER_TABLE_UNKNOWN"
+                    )
+                fact = field_facts.get((member.table_path, member.field_name))
+                if fact is None:
+                    raise _relationship_binding_error(
+                        "RELATIONSHIP_MEMBER_FIELD_UNKNOWN"
+                    )
+                actual_type, actual_length, actual_encoding = fact
+                if member.dbf_type != actual_type:
+                    raise _relationship_binding_error(
+                        "RELATIONSHIP_MEMBER_TYPE_MISMATCH"
+                    )
+                if member.byte_width != actual_length:
+                    raise _relationship_binding_error(
+                        "RELATIONSHIP_MEMBER_WIDTH_MISMATCH"
+                    )
+                if not candidate_alphabet(
+                    [member.encoding, actual_encoding]
+                ):
+                    raise _relationship_binding_error(
+                        "RELATIONSHIP_MEMBER_ENCODING_INCOMPATIBLE"
+                    )
+                relationship_bindings[(member.table_path, member.field_name)] = fact
+        # A NULL-policy binding fact is NOT exposed by the public dbfbridge
+        # schema; the declared NULL policy stays relationship semantics
+        # (truthfully documented, not invented from source bytes).
+        # Semantic compatibility is validated by the preflight gate.
+
+    tables.sort(key=lambda t: t.table_path)
+
     # 7. Recovery enabled if any reversible transformation is planned
     recovery_enabled = bool(transformation_classes_set)
 
@@ -307,6 +400,10 @@ def build_plan(
         source_root=str(source_root),
         output_root=str(output_root),
         vault_path=str(vault_path),
+        relationship_document=parsed_relationship_document,
+        relationship_bindings=(
+            dict(relationship_bindings) if relationship_bindings else None
+        ),
     )
 
     plan = Plan(

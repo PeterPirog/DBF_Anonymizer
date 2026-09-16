@@ -66,6 +66,9 @@ def _parse_member(payload: object) -> RelationMember:
     unknown = set(payload) - _MEMBER_KEYS
     if unknown:
         raise _document_invalid("RELATIONSHIP_MEMBER_KEY_UNKNOWN")
+    missing = _MEMBER_KEYS - set(payload)
+    if missing:
+        raise _document_invalid("RELATIONSHIP_MEMBER_KEY_MISSING")
     role = payload.get("role")
     if role not in KEY_ROLES:
         raise _document_invalid("RELATIONSHIP_KEY_ROLE_INVALID")
@@ -99,6 +102,9 @@ def _parse_group(payload: object) -> RelationGroup:
     }
     if unknown:
         raise _document_invalid("RELATIONSHIP_GROUP_KEY_UNKNOWN")
+    missing = {"relation_id", "provenance", "comparison", "members"} - set(group_payload)
+    if missing:
+        raise _document_invalid("RELATIONSHIP_GROUP_KEY_MISSING")
     comparison = group_payload.get("comparison")
     if comparison not in COMPARISON_SEMANTICS:
         raise _document_invalid("RELATIONSHIP_COMPARISON_INVALID")
@@ -112,11 +118,17 @@ def _parse_group(payload: object) -> RelationGroup:
     source_digest = group_payload.get("source_digest")
     if source_digest is not None:
         _validate_bounded_token(source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
+    # The required scalar values are validated WITHOUT coercion: the raw
+    # values pass through the typed model, which refuses nulls and wrong
+    # types (no str(None)-style conversion as validation).
+    raw_relation_id: Any = group_payload.get("relation_id")
+    raw_comparison: Any = comparison
+    raw_provenance: Any = provenance
     return RelationGroup(
-        relation_id=str(group_payload.get("relation_id")),
+        relation_id=raw_relation_id,
         members=members,
-        comparison=str(comparison),
-        provenance=str(provenance),
+        comparison=raw_comparison,
+        provenance=raw_provenance,
         source_digest=None if source_digest is None else str(source_digest),
     )
 
@@ -127,12 +139,20 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
     Supported schema: exactly ``metadata_schema_version == "1.0"``.  Any
     other version, shape, role, semantics, provenance, type, ordinal
     sequence or path form fails closed; malformed semantic structures are
-    never normalized into valid ones.
+    never normalized into valid ones.  REQUIRED keys (document:
+    ``metadata_schema_version``/``relations``; group:
+    ``relation_id``/``provenance``/``comparison``/``members``; member: all
+    eight member keys) must be PRESENT — a missing required key is a typed
+    refusal, never a silent ``None`` coercion; ``source_digest`` remains
+    the one optional bounded non-secret source identifier.
     """
     document = _require_mapping(payload, "RELATIONSHIP_DOCUMENT_INVALID")
     unknown_top = set(document) - {"metadata_schema_version", "relations"}
     if unknown_top:
         raise _document_invalid("RELATIONSHIP_DOCUMENT_KEY_UNKNOWN")
+    missing_top = {"metadata_schema_version", "relations"} - set(document)
+    if missing_top:
+        raise _document_invalid("RELATIONSHIP_DOCUMENT_KEY_MISSING")
     if document.get("metadata_schema_version") != RELATIONSHIP_METADATA_SCHEMA_VERSION:
         raise _document_invalid("RELATIONSHIP_METADATA_VERSION_UNSUPPORTED")
     raw_relations = document.get("relations")
@@ -145,9 +165,11 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
 def canonical_relationship_bytes(document: RelationshipDocument) -> bytes:
     """The deterministic canonical bytes of one relationship document.
 
-    Independent of JSON key order, whitespace and input member-list order;
-    the semantically significant (role, composite ordinal, member identity)
-    ordering is preserved by the model's canonical member ordering.
+    Independent of JSON key order, whitespace, input member-list order AND
+    input relation-group order (groups are canonicalized by their stable
+    ``relation_id`` — document order carries no semantics); the semantically
+    significant (role, composite ordinal, member identity) ordering is
+    preserved, so composite keys keep (A,B) != (B,A).
     """
     canonical = json.dumps(
         document.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True

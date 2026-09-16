@@ -46,6 +46,7 @@ def _single_document(
     pk_nullable: bool = False,
     fk_nullable: bool = False,
     comparison: str = "EXACT_VALUE",
+    dbf_type: str = "C",
 ) -> dict[str, object]:
     return {
         "metadata_schema_version": "1.0",
@@ -60,7 +61,7 @@ def _single_document(
                         "field": "customer_id",
                         "role": "PRIMARY",
                         "ordinal": 1,
-                        "dbf_type": "C",
+                        "dbf_type": dbf_type,
                         "byte_width": pk_width,
                         "encoding": encoding,
                         "nullable": pk_nullable,
@@ -70,7 +71,7 @@ def _single_document(
                         "field": "customer_id",
                         "role": "FOREIGN",
                         "ordinal": 1,
-                        "dbf_type": "C",
+                        "dbf_type": dbf_type,
                         "byte_width": fk_width,
                         "encoding": encoding,
                         "nullable": fk_nullable,
@@ -128,10 +129,77 @@ def test_single_c_relation_resolves_to_the_global_domain() -> None:
 
 def test_single_v_relation_compatible() -> None:
     document = parse_relationship_document(
-        _single_document(encoding="cp852", pk_width=10, fk_width=12)
+        _single_document(encoding="cp852", pk_width=10, fk_width=12, dbf_type="V")
     )
     validate_document_compatibility(document)
-    assert document.groups[0].members_for_role("PRIMARY")[0].dbf_type == "C"
+    # A GENUINE V PRIMARY -> V FOREIGN single-column relation.
+    assert document.groups[0].members_for_role("PRIMARY")[0].dbf_type == "V"
+    assert document.groups[0].members_for_role("FOREIGN")[0].dbf_type == "V"
+
+
+def test_real_vv_relation_preserves_trailing_space_distinction(
+    tmp_path: Path,
+) -> None:
+    """V PRIMARY -> V FOREIGN through the REAL P2 path; trailing spaces.
+
+    ``"KEY"`` and ``"KEY "`` are DISTINCT logical values (Varchar significant
+    trailing-space semantics): the exact-value bijection must never collapse
+    them after pseudonymization.
+    """
+    document = parse_relationship_document(
+        _single_document(dbf_type="V", pk_width=4, fk_width=4)
+    )
+    validate_document_compatibility(document)
+    assert resolved_relation_domain(document.groups[0]).startswith("dom-")
+    from dbf_anonymizer.vault import (
+        VAULT_DATABASE_FILENAME,
+        VAULT_TABLE_DOMAIN_KIND_TEXT,
+        VaultDatabase,
+    )
+    from dbf_anonymizer.vault.text_allocation import GlobalTextDomainMapping
+    from support.vault_sessions import writer_session
+
+    with VaultDatabase.open(
+        tmp_path / "vault" / VAULT_DATABASE_FILENAME,
+        create=True,
+        expected_source_fingerprint="src-" + "1" * 60,
+        expected_policy_fingerprint="pol-" + "2" * 60,
+        expected_relationship_fingerprint="rel-" + "3" * 60,
+        dbfbridge_version="1.1.0",
+    ) as vault:
+        with writer_session(vault):
+            with vault.transaction():
+                from dbf_anonymizer.vault.mappings import create_domain
+                from dbf_anonymizer.vault.text_allocation import (
+                    GLOBAL_TEXT_DOMAIN_ID,
+                )
+
+                create_domain(
+                    vault,
+                    domain_kind=VAULT_TABLE_DOMAIN_KIND_TEXT,
+                    domain_id=GLOBAL_TEXT_DOMAIN_ID,
+                )
+            allocator = GlobalTextDomainMapping(vault)
+            for original in ("KEY", "KEY ", "OTHER"):
+                allocator.observe(original, encoding="cp1250", byte_width=4)
+            allocator.finalize()
+            key_no_space = allocator.pseudonym_for("KEY")
+            key_with_space = allocator.pseudonym_for("KEY ")
+            # The trailing space is IDENTITY-significant: two distinct
+            # originals receive two distinct pseudonyms (never collapsed).
+            assert key_no_space != key_with_space
+            assert key_no_space != "KEY"
+            assert key_with_space != "KEY "
+            # The before/after metrics (including the distinction) are equal.
+            primary = ["KEY", "KEY "]
+            foreign = ["KEY ", "KEY", "KEY"]
+            primary_after = [key_no_space, key_with_space]
+            foreign_after = [key_with_space, key_no_space, key_no_space]
+            before = relation_metrics([(v,) for v in primary], [(v,) for v in foreign])
+            after = relation_metrics(
+                [(v,) for v in primary_after], [(v,) for v in foreign_after]
+            )
+            assert before.to_dict() == after.to_dict()
 
 
 def test_compatible_differing_widths_binding_width_is_the_minimum() -> None:
@@ -162,6 +230,94 @@ def test_composite_c_v_relation_ordered_tuple_semantics() -> None:
     assert relation_metrics(pk_tuples, [("S1", "DEV-A")]).orphan_count == 0
     # The swapped component order no longer matches: ordering is semantic.
     assert relation_metrics(pk_tuples, [("DEV-A", "S1")]).orphan_count == 1
+
+
+def test_foreign_multiplicity_profile_identical_before_and_after(
+    tmp_path: Path,
+) -> None:
+    """REAL FK duplicate multiplicity evidence (BLOCKER-5).
+
+    FKs: A, A, A, B, B, C, ORPHAN, NULL — the complete counts-only
+    multiplicity profile must be identical before/after pseudonymization,
+    including the repeated COMPOSITE FK tuple case.
+    """
+    from dbf_anonymizer.vault import (
+        VAULT_DATABASE_FILENAME,
+        VAULT_TABLE_DOMAIN_KIND_TEXT,
+        VaultDatabase,
+    )
+    from dbf_anonymizer.vault.text_allocation import (
+        GLOBAL_TEXT_DOMAIN_ID,
+        GlobalTextDomainMapping,
+    )
+    from support.vault_sessions import writer_session
+
+    primary = ["A", "B", "C", "P1", "Q1"]
+    foreign = ["A", "A", "A", "B", "B", "C", "ORPHAN", None]
+    composite_foreign = [
+        ("S1", "D1"),
+        ("S1", "D1"),
+        ("S1", "D1"),
+        ("S2", "D2"),
+        ("S2", "D2"),
+        ("X", "Y"),
+    ]
+    with VaultDatabase.open(
+        tmp_path / "vault" / VAULT_DATABASE_FILENAME,
+        create=True,
+        expected_source_fingerprint="src-" + "1" * 60,
+        expected_policy_fingerprint="pol-" + "2" * 60,
+        expected_relationship_fingerprint="rel-" + "3" * 60,
+        dbfbridge_version="1.1.0",
+    ) as vault:
+        with writer_session(vault):
+            with vault.transaction():
+                from dbf_anonymizer.vault.mappings import create_domain
+
+                create_domain(
+                    vault,
+                    domain_kind=VAULT_TABLE_DOMAIN_KIND_TEXT,
+                    domain_id=GLOBAL_TEXT_DOMAIN_ID,
+                )
+            allocator = GlobalTextDomainMapping(vault)
+            observed = sorted(
+                set(primary + [v for v in foreign if v])
+                | {v for pair in composite_foreign for v in pair}
+            )
+            for original in observed:
+                allocator.observe(original, encoding="cp1250", byte_width=8)
+            allocator.finalize()
+            shift = allocator.pseudonym_for
+            foreign_keys = [v for v in foreign if v is not None]
+            before = relation_metrics(
+                [(v,) for v in primary],
+                [(v,) for v in foreign_keys],
+            )
+            after = relation_metrics(
+                [(shift(v),) for v in primary],
+                [(shift(v),) for v in foreign_keys],
+            )
+        # The FK multiplicity PROFILE (counts-only) is identical:
+        # distinct FK keys A(3), B(2), C(1), ORPHAN(1) -> (3, 2, 1, 1).
+        assert before.foreign_multiplicity_profile == (3, 2, 1, 1)
+        assert after.foreign_multiplicity_profile == (3, 2, 1, 1)
+        assert before.to_dict() == after.to_dict()
+        # Repeated COMPOSITE FK tuple: (S1, D1) appears three times.
+        with writer_session(vault):
+            composite_before = relation_metrics(
+                [("S1", "D1"), ("S2", "D2")],
+                composite_foreign,
+            )
+            composite_after = relation_metrics(
+                [(shift("S1"), shift("D1")), (shift("S2"), shift("D2"))],
+                [(shift(pair[0]), shift(pair[1])) for pair in composite_foreign],
+            )
+        assert composite_before.foreign_multiplicity_profile == (3, 2, 1)
+        assert (
+            composite_before.foreign_multiplicity_profile
+            == composite_after.foreign_multiplicity_profile
+        )
+        assert composite_before.to_dict() == composite_after.to_dict()
 
 
 def test_compatible_code_pages_cp1250_and_cp852() -> None:

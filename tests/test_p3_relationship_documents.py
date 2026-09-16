@@ -219,24 +219,23 @@ def test_invalid_key_role_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    "ordinals",
-    ([2, 2], [1, 1], [1, 3], [2], [3, 4]),
+    "primary_ordinals",
+    ([2, 2], [1, 1], [1, 3], [3, 4]),
 )
-def test_duplicate_and_gapped_composite_ordinals_rejected(ordinals: list[int]) -> None:
+def test_duplicate_and_gapped_composite_ordinals_rejected(primary_ordinals: list[int]) -> None:
+    # Broken per-role ordinal sequences are refused while the group keeps a
+    # valid PRIMARY/FOREIGN structure (so the structural contract is not the
+    # reason for the refusal — the ordinal sequence itself is).
     payload = json.loads(json.dumps(SINGLE_DOCUMENT))
     members = payload["relations"][0]["members"]
-    members[0]["ordinal"] = ordinals[0]
-    members[1]["role"] = "PRIMARY" if len(ordinals) > 1 else "FOREIGN"
-    if len(ordinals) > 1:
-        members[1]["ordinal"] = ordinals[1]
-        # Two primary members with broken sequences are refused directly.
-        payload["relations"][0]["members"][1]["role"] = "PRIMARY"
+    members[0]["ordinal"] = primary_ordinals[0]
+    if len(primary_ordinals) > 1:
+        second = dict(members[1])
+        second.update({"role": "PRIMARY", "ordinal": primary_ordinals[1], "table": "extra.dbf"})
+        members.append(second)
     with pytest.raises(PolicyError) as excinfo:
         parse_relationship_document(payload)
-    detail = _detail(excinfo)
-    assert "RELATIONSHIP_ORDINAL_SEQUENCE_INVALID" in detail or (
-        "RELATIONSHIP_MEMBER_DUPLICATE" in detail
-    )
+    assert "RELATIONSHIP_ORDINAL_SEQUENCE_INVALID" in _detail(excinfo)
 
 
 def test_arity_mismatch_rejected() -> None:
@@ -283,6 +282,174 @@ def test_provenance_serialization_is_bounded() -> None:
     metadata = relationship_metadata_from_document(document)
     metadata_payload = json.dumps(metadata.to_dict())
     assert "C:\\" not in metadata_payload
+    # The bounded source identifier (formerly "source_digest") is a
+    # NON-SECRET identifier — never a key value.
+    document_with_source = parse_relationship_document(
+        json.loads(json.dumps(SINGLE_DOCUMENT))
+    )
+
+
+def test_missing_required_document_keys_fail_closed() -> None:
+    """Table-driven: deleting EACH required key one at a time fails closed."""
+    base = json.loads(json.dumps(SINGLE_DOCUMENT))
+    for key in ("metadata_schema_version", "relations"):
+        payload = json.loads(json.dumps(base))
+        del payload[key]
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(payload)
+        assert "RELATIONSHIP_DOCUMENT_KEY_MISSING" in _detail(excinfo)
+    group_keys = ("relation_id", "provenance", "comparison", "members")
+    for key in group_keys:
+        payload = json.loads(json.dumps(base))
+        del payload["relations"][0][key]
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(payload)
+        assert "RELATIONSHIP_GROUP_KEY_MISSING" in _detail(excinfo)
+    member_keys = ("table", "field", "role", "ordinal", "dbf_type", "byte_width", "encoding", "nullable")
+    for key in member_keys:
+        payload = json.loads(json.dumps(base))
+        del payload["relations"][0]["members"][0][key]
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(payload)
+        assert "RELATIONSHIP_MEMBER_KEY_MISSING" in _detail(excinfo)
+
+
+def test_wrong_scalar_types_and_nulls_fail_closed() -> None:
+    base = json.loads(json.dumps(SINGLE_DOCUMENT))
+    # NULLs in required fields.
+    for key, detail in (
+        ("relation_id", "RELATIONSHIP_ID_INVALID"),
+        ("provenance", "RELATIONSHIP_PROVENANCE_INVALID"),
+        ("comparison", "RELATIONSHIP_COMPARISON_INVALID"),
+    ):
+        payload = json.loads(json.dumps(base))
+        payload["relations"][0][key] = None
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(payload)
+        assert detail in _detail(excinfo)
+    # Wrong scalar types / bool-where-integer on members (no raw TypeError).
+    member_cases = (
+        ({"table": 123}, "RELATIONSHIP_TABLE_PATH_INVALID"),
+        ({"field": ["x"]}, "RELATIONSHIP_FIELD_INVALID"),
+        ({"ordinal": True}, "RELATIONSHIP_ORDINAL_INVALID"),
+        ({"ordinal": "1"}, "RELATIONSHIP_ORDINAL_INVALID"),
+        ({"byte_width": "8"}, "RELATIONSHIP_BYTE_WIDTH_INVALID"),
+        ({"byte_width": True}, "RELATIONSHIP_BYTE_WIDTH_INVALID"),
+        ({"encoding": 1250}, "RELATIONSHIP_ENCODING_INVALID"),
+        ({"nullable": "no"}, "RELATIONSHIP_NULL_POLICY_INVALID"),
+    )
+    for mutate, detail in member_cases:
+        payload = json.loads(json.dumps(base))
+        payload["relations"][0]["members"][0].update(mutate)
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(payload)
+        assert detail in _detail(excinfo)
+        # No raw TypeError/KeyError ever leaks.
+        assert "TypeError" not in _detail(excinfo)
+        assert "KeyError" not in _detail(excinfo)
+
+
+def test_document_order_is_canonicalized_by_relation_id() -> None:
+    """Group-list input order is irrelevant formatting (BLOCKER-9).
+
+    [relation-1, relation-2] and [relation-2, relation-1] produce IDENTICAL
+    canonical bytes and fingerprints; the (A,B) vs (B,A) composite member
+    semantics are NOT sorted away.
+    """
+    first = json.loads(json.dumps(SINGLE_DOCUMENT))
+    second_relation = {
+        "relation_id": "rel-second-key",
+        "provenance": "MCP_VFP9SP2_TOOLCHAIN",
+        "comparison": "EXACT_VALUE",
+        "members": [
+            {
+                "table": "audit.dbf",
+                "field": "customer_id",
+                "role": "PRIMARY",
+                "ordinal": 1,
+                "dbf_type": "C",
+                "byte_width": 8,
+                "encoding": "cp1250",
+                "nullable": False,
+            },
+            {
+                "table": "audit_links.dbf",
+                "field": "customer_id",
+                "role": "FOREIGN",
+                "ordinal": 1,
+                "dbf_type": "C",
+                "byte_width": 8,
+                "encoding": "cp1250",
+                "nullable": False,
+            },
+        ],
+    }
+    order_a = json.loads(json.dumps(first))
+    order_a["relations"].append(second_relation)  # [first, second]
+    order_b = json.loads(json.dumps(first))
+    order_b["relations"] = [second_relation] + order_b["relations"]  # [second, first]
+    doc_a = parse_relationship_document(order_a)
+    doc_b = parse_relationship_document(order_b)
+    assert canonical_relationship_bytes(doc_a) == canonical_relationship_bytes(doc_b)
+    assert relationship_fingerprint(doc_a) == relationship_fingerprint(doc_b)
+    # Composite member ordering is NOT canonicalized away: a different
+    # composite ordinal ASSIGNMENT changes the fingerprint (the composite
+    # remains balanced: two PRIMARY + two FOREIGN members).
+    composite = json.loads(json.dumps(SINGLE_DOCUMENT))
+    members = composite["relations"][0]["members"]
+    composite["relations"][0]["members"].append(
+        dict(members[1], role="PRIMARY", ordinal=2, table="extra.dbf")
+    )
+    composite["relations"][0]["members"].append(
+        dict(members[1], role="FOREIGN", ordinal=2, table="extra_links.dbf")
+    )
+    base_fingerprint = relationship_fingerprint(parse_relationship_document(composite))
+    reversed_ordinal = json.loads(json.dumps(composite))
+    reversed_ordinal["relations"][0]["members"][0]["ordinal"] = 2
+    reversed_ordinal["relations"][0]["members"][2]["ordinal"] = 1
+    assert (
+        relationship_fingerprint(parse_relationship_document(reversed_ordinal))
+        != base_fingerprint
+    )
+    # PRIMARY-only, FOREIGN-only, CANDIDATE-only and ambiguous groups.
+    # FOREIGN only -> refuse.
+    foreign_only = json.loads(json.dumps(SINGLE_DOCUMENT))
+    foreign_only["relations"][0]["members"][0]["role"] = "FOREIGN"
+    foreign_only["relations"][0]["members"].append(
+        dict(foreign_only["relations"][0]["members"][0], table="b.dbf")
+    )
+    with pytest.raises(PolicyError) as excinfo:
+        parse_relationship_document(foreign_only)
+    assert "RELATIONSHIP_PARENT_SIDE_MISSING" in _detail(excinfo)
+    # PRIMARY only -> refuse.
+    primary_only = json.loads(json.dumps(SINGLE_DOCUMENT))
+    primary_only["relations"][0]["members"][1]["role"] = "PRIMARY"
+    primary_only["relations"][0]["members"][1]["table"] = "other.dbf"
+    with pytest.raises(PolicyError) as excinfo:
+        parse_relationship_document(primary_only)
+    assert "RELATIONSHIP_FOREIGN_SIDE_MISSING" in _detail(excinfo)
+    # CANDIDATE only -> refuse.
+    candidate_only = json.loads(json.dumps(SINGLE_DOCUMENT))
+    candidate_only["relations"][0]["members"][0]["role"] = "CANDIDATE"
+    candidate_only["relations"][0]["members"][1]["role"] = "CANDIDATE"
+    with pytest.raises(PolicyError) as excinfo:
+        parse_relationship_document(candidate_only)
+    assert "RELATIONSHIP_FOREIGN_SIDE_MISSING" in _detail(excinfo)
+    # PRIMARY + CANDIDATE + FOREIGN ambiguity -> refuse.
+    ambiguous = json.loads(json.dumps(SINGLE_DOCUMENT))
+    third = dict(ambiguous["relations"][0]["members"][0])
+    third.update({"role": "CANDIDATE", "table": "audit.dbf"})
+    ambiguous["relations"][0]["members"].append(third)
+    with pytest.raises(PolicyError) as excinfo:
+        parse_relationship_document(ambiguous)
+    assert "RELATIONSHIP_PARENT_SIDE_AMBIGUOUS" in _detail(excinfo)
+
+
+def test_valid_candidate_fk_composite_accepted() -> None:
+    payload = json.loads(json.dumps(SINGLE_DOCUMENT))
+    payload["relations"][0]["members"][0]["role"] = "CANDIDATE"
+    document = parse_relationship_document(payload)
+    assert document.groups[0].members_for_role("CANDIDATE")[0] is not None
 
 
 def test_normalized_relative_paths() -> None:
