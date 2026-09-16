@@ -866,9 +866,10 @@ def test_allocation_module_binds_the_os_csprng_only() -> None:
     # private deterministic injection seam stays a private constructor
     # keyword and is never serialized or exported. The structural exclusion
     # of the whole ``random`` module is proven by the import ban above.
-    source = (SRC_ROOT / "vault" / "text_allocation.py").read_text(encoding="utf-8")
-    assert "import secrets" in source
-    assert "secrets.randbelow" in source
+    for allocation_module in ("vault/text_allocation.py", "vault/numeric_allocation.py"):
+        source = (SRC_ROOT / allocation_module).read_text(encoding="utf-8")
+        assert "import secrets" in source, allocation_module
+        assert "secrets.randbelow" in source, allocation_module
     root = (SRC_ROOT / "__init__.py").read_text(encoding="utf-8")
     for forbidden in ("_random_below", "GLOBAL_TEXT_PROBE_BUDGET"):
         assert forbidden not in root

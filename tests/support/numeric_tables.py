@@ -134,14 +134,41 @@ def write_numeric_table(
     records: Iterable[Mapping[str, Any]],
 ) -> Path:
     """Write one synthetic numeric table through the public writer."""
+    return _write_numeric_entries(
+        directory, relative_path, fields, [(dict(record), False) for record in records]
+    )
+
+
+def write_numeric_table_with_deleted(
+    directory: Path,
+    relative_path: str,
+    fields: Sequence[FieldInfo],
+    entries: Iterable[tuple[Mapping[str, Any], bool]],
+) -> Path:
+    """Write one synthetic numeric table with active AND deleted records.
+
+    The physical record order is the input order; the deleted marker is
+    preserved by the public writer.
+    """
+    return _write_numeric_entries(
+        directory, relative_path, fields, [(dict(values), deleted) for values, deleted in entries]
+    )
+
+
+def _write_numeric_entries(
+    directory: Path,
+    relative_path: str,
+    fields: Sequence[FieldInfo],
+    entries: Iterable[tuple[dict[str, Any], bool]],
+) -> Path:
     destination = directory / relative_path
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_table(
         destination,
         schema=schema(fields),
         records=[
-            DirectRecord(physical_index=0, deleted=False, values=dict(record))
-            for record in records
+            DirectRecord(physical_index=0, deleted=deleted, values=values)
+            for values, deleted in entries
         ],
     )
     return destination
@@ -168,6 +195,7 @@ __all__ = [
     "numeric_field",
     "with_nullflags",
     "write_numeric_table",
+    "write_numeric_table_with_deleted",
     "schema",
     "read_numeric_records",
     "field_values",

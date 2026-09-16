@@ -90,6 +90,9 @@ _DETAIL_NOT_FINALIZED = "NUMERIC_KEY_NOT_FINALIZED"
 _DETAIL_DOMAIN_KIND_CONFLICT = "NUMERIC_KEY_DOMAIN_KIND_CONFLICT"
 _DETAIL_UNKNOWN_ORIGINAL = "NUMERIC_KEY_ORIGINAL_UNOBSERVED"
 _DETAIL_CORRUPT = "NUMERIC_MAPPING_CORRUPT"
+#: A readable original that the pinned public Direct Write boundary could
+#: never reconstruct during recovery (the int32 extremes) fails closed.
+_DETAIL_RECOVERY_UNWRITABLE = "NUMERIC_KEY_RECOVERY_UNWRITABLE"
 
 
 def _mapping_failure(code: ErrorCode, detail_code: str) -> MappingError:
@@ -180,28 +183,42 @@ class NumericKeyDomainMapping:
         Constraint collection is closed after :meth:`finalize`.  NULL is
         never observed and never mapped (it stays a preserved identity);
         booleans are rejected as integers.  When the caller supplies the
-        originating member's verified readable range, the value must fit it;
-        every original must in any case fit at least one participating
-        member's readable range.
+        originating member's verified range, the value must fit it.  Every
+        original must in any case fit at least one participating member's
+        REVERSIBLE representation range; a value that its member could
+        READ but the public Direct Write boundary could never reconstruct
+        during recovery (the readable-but-unwritable Integer extremes) fails
+        closed with the stable ``NUMERIC_KEY_RECOVERY_UNWRITABLE`` detail
+        BEFORE any allocation or publication.
         """
         if self._finalized:
             raise ValueError("original collection is closed after finalize")
         if isinstance(original, bool) or not isinstance(original, int):
             raise TypeError("an original numeric key value must be an exact int")
+        supplied_range: tuple[int, int] | None = None
         if original_range is not None:
             low, high = original_range
             if not (isinstance(low, int) and isinstance(high, int)) or low > high:
                 raise ValueError("the member original range must be a non-empty closed range")
             if not low <= original <= high:
                 raise ValueError("the original does not fit its member's representable range")
-        if not any(
+            supplied_range = (low, high)
+        if any(
             low <= original <= high for low, high in self._domain.member_original_ranges
         ):
-            raise ValueError(
-                "the original does not fit any participating member's "
-                "representable range"
+            self._originals.add(original)
+            return
+        if supplied_range is not None:
+            # Readable by the member's field type, but the pinned public
+            # Direct Write boundary can never reconstruct it during recovery:
+            # fail closed before publication (never silently truncated).
+            raise _mapping_failure(
+                ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE, _DETAIL_RECOVERY_UNWRITABLE
             )
-        self._originals.add(original)
+        raise ValueError(
+            "the original does not fit any participating member's "
+            "representable range"
+        )
 
     # -- FINALIZE --------------------------------------------------------------------
     def finalize(self) -> None:
@@ -371,9 +388,14 @@ class NumericKeyDomainMapping:
         Occupancy is re-verified against the persisted vault state inside
         every allocation transaction.  The candidate is a CSPRNG-chosen free
         token of the frozen domain (bounded probe phase, then an exact
-        uniform completion over the remaining free tokens — every walk is
-        bounded by the number of blocked tokens, never by the domain size),
-        never the original itself and never an occupied token.
+        deterministic completion — every walk is bounded by the number of
+        blocked tokens, never by the domain size), never the original itself,
+        never an occupied token and always residual-feasibility-preserving.
+
+        The in-memory occupancy bookkeeping is updated ONLY after the
+        transaction has COMMITTED: a rolled-back or poisoned allocation can
+        never claim a token it did not persist, so a retry is always safe and
+        previously committed mappings are never invalidated.
         """
         with self._database.transaction():
             self._sync_used()
@@ -394,10 +416,11 @@ class NumericKeyDomainMapping:
                 canonical_integer_text(original),
                 canonical_integer_text(candidate),
             )
-            self._used.add(candidate)
-            self._persisted_originals.add(original)
-            self._originals.add(original)
-            return candidate
+        # The commit succeeded: the persisted row now owns this assignment.
+        self._used.add(candidate)
+        self._persisted_originals.add(original)
+        self._originals.add(original)
+        return candidate
 
     def _sync_used(self) -> None:
         """Reconcile occupancy bookkeeping with the persisted vault rows."""
@@ -413,31 +436,83 @@ class NumericKeyDomainMapping:
             self._used.add(pseudonym)
             self._persisted_originals.add(original)
 
-    def _select_candidate(self, original: int) -> int:
-        """One CSPRNG-chosen free pseudonym token for *original*.
+    def _unallocated_originals(self, original: int) -> list[int]:
+        """The still-unallocated observed originals after *original*'s turn."""
+        return [
+            value
+            for value in sorted(self._originals)
+            if value not in self._persisted_originals and value != original
+        ]
 
-        A bounded probe phase draws uniform random indices over the free
-        token space (the drawn token is rejected when it equals the
-        sensitive original); when the probe budget runs out, an exact
-        uniform completion selects the ``j``-th free token OTHER than the
-        original — finite by construction, no sequence/counter semantics and
-        nothing derived from the original value.
+    def _residual_feasible(self, candidate: int, occupied: list[int], original: int) -> bool:
+        """Whether committing ``original -> candidate`` keeps the residual
+        assignment problem feasible (the authoritative numeric kernel)."""
+        remaining = self._unallocated_originals(original)
+        return plan_numeric_bijection(
+            self._domain, remaining, [*occupied, candidate]
+        )
+
+    def _select_candidate(self, original: int) -> int:
+        """One feasible free pseudonym token for *original*.
+
+        Invariants enforced on EVERY allocation path (probe and exact
+        completion alike):
+
+        * ``pseudonym != original`` — the sensitive original itself is part
+          of the BLOCKED selection set, never removed from it (an occupied
+          original value can therefore never be "unblocked" either);
+        * the candidate is never a persisted occupied pseudonym;
+        * the candidate is inside the shared domain; and
+        * the RESIDUAL assignment problem (every still-unallocated observed
+          original) remains feasible after the commitment — a candidate is
+          committed ONLY when the authoritative kernel proves it, so a
+          successful finalize implies every allocation order can complete
+          (the greedy derangement trap is structurally impossible) and
+          ``MAPPING_CAPACITY_EXHAUSTED`` is never reported merely because of
+          previous random choices.
+
+        PHASE R — bounded CSPRNG probes: uniform random indices over the
+        blocked selection space, each candidate verified against the residual
+        feasibility kernel before it can be accepted.
+        PHASE E — exact deterministic completion: the ascending walk over the
+        free selectable tokens (``j``-th free token), each candidate verified
+        by the same kernel; the walk is COMPLETE (it finds a feasible
+        candidate whenever the finalized residual problem has a solution) and
+        provably short — with more than one spare token EVERY candidate
+        preserves feasibility, so the first candidate is already acceptable;
+        in the critical low-capacity window the walk is bounded by the tiny
+        number of remaining originals.  No sequence/counter semantics and
+        nothing derived from the original value selects the token.
         """
         occupied = sorted(self._used)
-        free = free_token_count(self._domain, occupied)
-        for _ in range(NUMERIC_KEY_PROBE_BUDGET):
-            candidate = jth_free_token(self._domain, occupied, self._random_below(free))
-            if candidate != original:
-                return candidate
-        # Exact completion: the j-th free token other than the original.
-        blocked = sorted(token for token in occupied if token != original)
-        free_excluding = free_token_count(self._domain, blocked)
-        if free_excluding < 1:
+        blocked_selection = sorted(
+            set(occupied)
+            | ({original} if self._domain.contains_pseudonym(original) else set())
+        )
+        free_selection = free_token_count(self._domain, blocked_selection)
+        if free_selection < 1:
             raise _mapping_failure(
                 ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_DOMAIN_EXHAUSTED
             )
-        return jth_free_token(
-            self._domain, blocked, self._random_below(free_excluding)
+        for _ in range(NUMERIC_KEY_PROBE_BUDGET):
+            candidate = jth_free_token(
+                self._domain, blocked_selection, self._random_below(free_selection)
+            )
+            if self._residual_feasible(candidate, occupied, original):
+                return candidate
+        # Exact completion: ascending free tokens, first feasible candidate.
+        # Complete and finite by construction (see the structural proof in
+        # the docstring); the walk bound keeps it deterministic.
+        walk_limit = min(free_selection, len(self._originals) + 2)
+        for index in range(walk_limit):
+            candidate = jth_free_token(self._domain, blocked_selection, index)
+            if self._residual_feasible(candidate, occupied, original):
+                return candidate
+        # The finalized residual problem became genuinely unsolvable only
+        # through persisted fixed state committed outside this instance's
+        # plan — fail closed (never a random-corner artifact).
+        raise _mapping_failure(
+            ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
         )
 
 

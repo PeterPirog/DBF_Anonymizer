@@ -44,6 +44,7 @@ __all__ = [
     "canonical_integer_text",
     "parse_canonical_integer_text",
     "integer_original_range",
+    "integer_readable_original_range",
     "integer_writable_pseudonym_range",
     "integral_numeric_range",
     "intersect_ranges",
@@ -54,6 +55,7 @@ __all__ = [
     "integral_numeric_member",
     "numeric_key_domain_for",
     "free_token_count",
+    "selectable_token_count",
     "jth_free_token",
     "plan_numeric_bijection",
 ]
@@ -210,18 +212,38 @@ class NumericKeyDomain:
 
 
 def integer_member() -> NumericKeyMemberRange:
-    """The verified member representation facts of a signed VFP Integer key.
+    """The verified member representation facts of a reversible VFP Integer key.
 
-    The original range is the full readable int32; the pseudonym range is the
-    verified WRITABLE int32 sub-range (both extremes are refused by the
-    public Direct Write boundary).
+    Recovery truthfulness (REQ-P3-005): a REVERSIBLE mapping must be able to
+    write the pseudonymized value back through the public Direct Write
+    boundary, and the SAME public writer must later be able to reconstruct
+    the ORIGINAL during recovery.  The pinned ``dbfbridge[write]==1.1.0``
+    boundary refuses both int32 extremes (typed write failure), so a
+    reversible Integer member's ORIGINAL range is the verified WRITABLE
+    sub-range: an original Integer value outside it (readable, but not
+    reconstructable by the only architecture-permitted writer) must fail
+    closed BEFORE publication
+    (``NUMERIC_KEY_RECOVERY_UNWRITABLE``).  The full readable int32 facts
+    remain :data:`INTEGER_KEY_ORIGINAL_LOW`/:data:`INTEGER_KEY_ORIGINAL_HIGH`
+    and :func:`integer_original_range` for the identity path and diagnostics.
     """
     return NumericKeyMemberRange(
-        original_low=INTEGER_KEY_ORIGINAL_LOW,
-        original_high=INTEGER_KEY_ORIGINAL_HIGH,
+        original_low=INTEGER_KEY_WRITABLE_LOW,
+        original_high=INTEGER_KEY_WRITABLE_HIGH,
         pseudonym_low=INTEGER_KEY_WRITABLE_LOW,
         pseudonym_high=INTEGER_KEY_WRITABLE_HIGH,
     )
+
+
+def integer_readable_original_range() -> tuple[int, int]:
+    """The verified READABLE original range of a signed VFP Integer field.
+
+    This is the full signed 32-bit decoding range of the public direct read.
+    It is NOT the reversible-mapping member range: the two int32 extremes are
+    readable but not reconstructable through the pinned public Direct Write
+    boundary (see :func:`integer_member`).
+    """
+    return (INTEGER_KEY_ORIGINAL_LOW, INTEGER_KEY_ORIGINAL_HIGH)
 
 
 def integral_numeric_member(width: int) -> NumericKeyMemberRange:
@@ -263,8 +285,26 @@ def numeric_key_domain_for(
 
 
 def free_token_count(domain: NumericKeyDomain, occupied: Sequence[int]) -> int:
-    """The exact number of free tokens of *domain* (bounded arithmetic only)."""
-    return domain.size - len(set(occupied))
+    """The exact number of free tokens of *domain* (bounded arithmetic only).
+
+    Consistency contract with :func:`jth_free_token`: only UNIQUE occupied
+    token values INSIDE the domain consume capacity; blocked values below or
+    above ``pseudonym_low..pseudonym_high`` never consume capacity and
+    duplicates never double-count.
+    """
+    in_domain = {
+        value for value in occupied if domain.contains_pseudonym(value)
+    }
+    return domain.size - len(in_domain)
+
+
+def selectable_token_count(domain: NumericKeyDomain, blocked: Sequence[int]) -> int:
+    """The exact number of selectable free tokens of *domain*.
+
+    Identical to :func:`free_token_count` — the two kernels agree on the
+    number of selectable tokens by construction.
+    """
+    return free_token_count(domain, blocked)
 
 
 def jth_free_token(domain: NumericKeyDomain, blocked: Sequence[int], j: int) -> int:
@@ -318,7 +358,9 @@ def plan_numeric_bijection(
     feasible through the swap.  The result is deterministic, needs no
     materialization of the token universe and reports capacity truthfully.
     """
-    blocked = set(occupied_pseudonyms)
+    blocked = {
+        value for value in occupied_pseudonyms if domain.contains_pseudonym(value)
+    }
     originals = list(unpersisted_originals)
     distinct = set(originals)
     if len(distinct) != len(originals):

@@ -230,10 +230,19 @@ def build_plan(
     field_facts: dict[tuple[str, str], tuple[str, int, str, int, bool, bool]] = {}
     numeric_identity_review: list[NumericIdentityReview] = []
     reviewed_identities: set[tuple[str, str]] = set()
+    #: REQ-P3-005 planning truthfulness: the explicitly declared reversible
+    #: numeric key member fields.  They ARE reversible pseudonymization
+    #: targets (they consume vault mappings), so they count as transformed
+    #: fields and make the plan recovery-enabled — unrelated numeric fields
+    #: are never marked.
+    numeric_reversible_fields: set[tuple[str, str]] = set()
     if relationship_document is not None:
         from dbf_anonymizer.relationships.document import (
             parse_relationship_document,
             relationship_metadata_from_document,
+        )
+        from dbf_anonymizer.relationships.models import (
+            NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
         )
 
         # ONE authoritative parser: the typed document is parsed, its
@@ -245,6 +254,13 @@ def build_plan(
             relationship_document
         )
         rel_meta = relationship_metadata_from_document(parsed_relationship_document)
+        for group in parsed_relationship_document.groups:
+            if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
+                for member in group.members:
+                    if member.is_numeric_member:
+                        numeric_reversible_fields.add(
+                            (member.table_path, member.field_name)
+                        )
     elif relationships is None:
         rel_meta = _default_relationships()
     else:
@@ -328,6 +344,15 @@ def build_plan(
                 transformation_classes_set.add(action)
             elif is_unsafe:
                 unsafe_count += 1
+            elif (table.relative_path, str(field_info.name)) in numeric_reversible_fields:
+                # REQ-P3-005 planning truthfulness: an explicitly declared
+                # reversible numeric key member IS a reversible pseudonymization
+                # target even though the ordinary capability matrix keeps the
+                # numeric/logical classes identity by default.  Only the
+                # DECLARED reversible numeric members count — unrelated
+                # N/F/I/Y/B/L fields are never marked transformed.
+                transform_count += 1
+                transformation_classes_set.add("PSEUDONYMIZE_REVERSIBLE")
             if is_system:
                 system_count += 1
             # Unsupported user fields are unsafe; the trusted bitmap is system state.

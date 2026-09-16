@@ -22,6 +22,7 @@ from dbf_anonymizer.transforms.numeric_keys import (
     free_token_count,
     integer_member,
     integer_original_range,
+    integer_readable_original_range,
     integer_writable_pseudonym_range,
     integral_numeric_member,
     integral_numeric_range,
@@ -30,6 +31,7 @@ from dbf_anonymizer.transforms.numeric_keys import (
     numeric_key_domain_for,
     parse_canonical_integer_text,
     plan_numeric_bijection,
+    selectable_token_count,
 )
 
 
@@ -95,11 +97,15 @@ def test_canonical_representation_rejects_bools_and_floats() -> None:
 # verified representable ranges (public dbfbridge 1.1.0 facts)
 # ---------------------------------------------------------------------------
 def test_integer_member_ranges_match_the_verified_public_boundary() -> None:
-    assert integer_original_range() == (-(2**31), 2**31 - 1)
+    assert integer_readable_original_range() == (-(2**31), 2**31 - 1)
     assert integer_writable_pseudonym_range() == (-(2**31) + 1, 2**31 - 2)
     member = integer_member()
-    assert member.original_range == integer_original_range()
+    # Recovery truthfulness: a REVERSIBLE Integer member's original range is
+    # the verified WRITABLE range — a readable-but-unwritable int32 extreme
+    # fails closed before publication (NUMERIC_KEY_RECOVERY_UNWRITABLE).
+    assert member.original_range == integer_writable_pseudonym_range()
     assert member.pseudonym_range == integer_writable_pseudonym_range()
+    assert integer_original_range() == (-(2**31), 2**31 - 1)
 
 
 @pytest.mark.parametrize(
@@ -130,7 +136,7 @@ def test_numeric_domain_is_the_intersection_of_member_writable_ranges() -> None:
     )
     assert domain.member_ranges == ((-(2**31) + 1, 2**31 - 2), (-9999, 99999))
     assert domain.pseudonym_range == (-9999, 99999)
-    assert domain.member_original_ranges == ((-(2**31), 2**31 - 1), (-9999, 99999))
+    assert domain.member_original_ranges == ((-(2**31) + 1, 2**31 - 2), (-9999, 99999))
     # Differing compatible widths across tables: N(8) and N(5) intersect.
     narrowed = numeric_key_domain_for(
         [integral_numeric_member(8), integral_numeric_member(5)]
@@ -274,3 +280,66 @@ def test_domain_rejects_bool_and_float_originals() -> None:
         plan_numeric_bijection(domain, [1.0], [])  # type: ignore[list-item]
     with pytest.raises(ValueError):
         plan_numeric_bijection(domain, [5, 5], [])
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 3 — free-token kernel consistency
+# ---------------------------------------------------------------------------
+def test_blocked_below_the_domain_does_not_reduce_capacity() -> None:
+    domain = numeric_key_domain_for([integral_numeric_member(2)])  # -9..99
+    assert free_token_count(domain, [-100, -9999]) == 109
+    assert plan_numeric_bijection(domain, [-9, 0, 99], [-100, -9999]) is True
+
+
+def test_blocked_above_the_domain_does_not_reduce_capacity() -> None:
+    domain = numeric_key_domain_for([integral_numeric_member(2)])  # -9..99
+    assert free_token_count(domain, [100, 10**30]) == 109
+    assert plan_numeric_bijection(domain, [-9, 0, 99], [100, 10**30]) is True
+
+
+def test_duplicate_blocked_values_do_not_double_count() -> None:
+    domain = numeric_key_domain_for([integral_numeric_member(2)])
+    assert free_token_count(domain, [7, 7, 7]) == 108
+    assert plan_numeric_bijection(domain, [-9, 0], [7, 7, 7]) is True
+
+
+def test_in_domain_blocked_values_reduce_capacity_exactly() -> None:
+    domain = numeric_key_domain_for([integral_numeric_member(2)])  # -9..99
+    assert free_token_count(domain, [-9, 0, 99]) == 106
+    # Originals whose own value is occupied are not self-excluded from the
+    # remaining tokens; feasibility reflects the exact accounting.
+    assert plan_numeric_bijection(domain, [-9, 0, 99], [-9, 0, 99]) is True
+    # With a single free token left and only one original whose own value IS
+    # that token, the self-exclusion makes the residual infeasible.
+    occupied = [value for value in range(-9, 100) if value != 7]
+    assert free_token_count(domain, occupied) == 1
+    assert plan_numeric_bijection(domain, [7], occupied) is False
+
+
+def test_free_token_count_and_jth_free_token_agree() -> None:
+    """The two kernels agree on the number of selectable tokens."""
+    domain = numeric_key_domain_for([integral_numeric_member(3)])  # -99..999
+    blocked = [-100, 0, 5, 1000, 5]
+    assert free_token_count(domain, blocked) == selectable_token_count(domain, blocked)
+    # Every selectable token is walkable, and the count matches the walk.
+    selectable = free_token_count(domain, blocked)
+    walked = [jth_free_token(domain, blocked, j) for j in range(selectable)]
+    assert len(walked) == selectable
+    assert len(set(walked)) == selectable
+    with pytest.raises(ValueError):
+        jth_free_token(domain, blocked, selectable)
+
+
+def test_plan_feasibility_ignores_out_of_domain_occupied_values() -> None:
+    domain = numeric_key_domain_for([integral_numeric_member(2)])  # -9..99
+    # 109 out-of-domain occupied values consume NOTHING; the full capacity
+    # stays available for the originals.
+    out_of_domain = [value for value in range(-50, -9)]
+    assert len(out_of_domain) == 41
+    assert plan_numeric_bijection(domain, [-9, 0, 99], out_of_domain) is True
+
+
+def test_integer_domain_selection_matches_writable_universe() -> None:
+    domain = numeric_key_domain_for([integer_member()])
+    assert domain.size == 2**32 - 2
+    assert domain.member_original_ranges == ((INTEGER_KEY_WRITABLE_LOW, INTEGER_KEY_WRITABLE_HIGH),)
