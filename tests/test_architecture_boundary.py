@@ -1045,6 +1045,35 @@ def test_no_logging_in_production_sources() -> None:
         assert "getLogger" not in source, path
 
 
+def test_relationships_package_is_independent_from_dbf_parsing() -> None:
+    """REQ-P3-001 static guard: the relationship package is DBF-free.
+
+    The typed relationship metadata never depends on the dependency's
+    record/parser objects, never imports the dependency namespace, and never
+    gains a network/MCP/COM/logging surface.
+    """
+    package_root = SRC_ROOT / "relationships"
+    for path in package_root.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith(
+                    ("dbfbridge", "dbf_bridge", "dbf.")
+                ), (path, node.module)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith(
+                        ("dbfbridge", "dbf_bridge", "dbf.")
+                    ), (path, alias.name)
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith("logging"), path
+        assert "import socket" not in source, path
+        assert "urllib" not in source, path
+        assert "import mcp" not in source, path
+        assert "win32com" not in source, path
+
+
 EXPECTED_VAULT_TABLE_SCAN_PATTERN = re.compile(
     r"CREATE TABLE (\w+)", re.IGNORECASE
 )

@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import ClassVar, TypeAlias
+from typing import Any, ClassVar, TypeAlias
 
 MODEL_SCHEMA_VERSION = "1.1"
 
@@ -316,11 +316,20 @@ class _PlanExecutionContext:
     comparisons. It stores the absolute filesystem roots that a future
     ``pseudonymize(plan)`` call needs to locate source, write output and
     manage the vault, without leaking them into any public JSON boundary.
+
+    ``relationship_document`` and ``relationship_bindings`` carry the parsed
+    REQ-P3-001 typed relationship document and its source-schema binding
+    facts for the preflight relationship-domain validation.  They are typed
+    as ``Any`` because the relationship package consumes models (this module)
+    — importing it here would create an import cycle — and BOTH stay
+    strictly outside every public serialization.
     """
 
     source_root: str
     output_root: str
     vault_path: str
+    relationship_document: Any = None
+    relationship_bindings: Any = None
 
     def __repr__(self) -> str:
         return "<_PlanExecutionContext>"
