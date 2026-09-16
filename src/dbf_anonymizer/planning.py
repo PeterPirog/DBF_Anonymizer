@@ -33,7 +33,9 @@ from dbf_anonymizer.errors import (
     PolicyError,
 )
 from dbf_anonymizer.models import (
+    IDENTITY_PRIVACY_REVIEW_REQUIRED,
     DatasetIdentity,
+    NumericIdentityReview,
     Plan,
     PolicySummary,
     RelationalAssuranceLevel,
@@ -93,6 +95,33 @@ def _relationship_binding_error(detail_code: str) -> PolicyError:
     return PolicyError(
         ErrorCode.POLICY_INVALID,
         context=ErrorContext(operation="build_plan", detail_code=detail_code),
+    )
+
+
+def _record_identity_review(
+    review: list[NumericIdentityReview],
+    reviewed_identities: set[tuple[str, str]],
+    table_path: str,
+    field_name: str,
+    dbf_type: str,
+) -> None:
+    """Record one unchanged numeric identifier for privacy review (P3-004).
+
+    Bounded structural facts only — table path, field name, logical DBF type
+    and the fixed review status token.  The collection is deduplicated and
+    deterministically ordered before it enters the public Plan.
+    """
+    identity = (table_path, field_name)
+    if identity in reviewed_identities:
+        return
+    reviewed_identities.add(identity)
+    review.append(
+        NumericIdentityReview(
+            table_path=table_path,
+            field_name=field_name,
+            dbf_type=dbf_type,
+            status=IDENTITY_PRIVACY_REVIEW_REQUIRED,
+        )
     )
 
 
@@ -197,8 +226,10 @@ def build_plan(
 
     # 4. Resolve relationships
     parsed_relationship_document = None
-    relationship_bindings: dict[tuple[str, str], tuple[str, int, str]] = {}
-    field_facts: dict[tuple[str, str], tuple[str, int, str]] = {}
+    relationship_bindings: dict[tuple[str, str], tuple[str, int, str, int, bool, bool]] = {}
+    field_facts: dict[tuple[str, str], tuple[str, int, str, int, bool, bool]] = {}
+    numeric_identity_review: list[NumericIdentityReview] = []
+    reviewed_identities: set[tuple[str, str]] = set()
     if relationship_document is not None:
         from dbf_anonymizer.relationships.document import (
             parse_relationship_document,
@@ -259,13 +290,30 @@ def build_plan(
         system_count = 0
 
         for field_info in schema.fields:
-            # REQ-P3-003 source-schema facts: collect the authoritative field
-            # facts (public dbfbridge schema) for the relationship binding.
-            field_facts[(table.relative_path, str(field_info.name))] = (
+            # REQ-P3-003/REQ-P3-005 source-schema facts: collect the
+            # authoritative field facts (public dbfbridge schema) for the
+            # relationship binding — including the numeric representation
+            # facts (decimal count/scale, autoincrement status and the
+            # NULLable descriptor bit).
+            fact: tuple[str, int, str, int, bool, bool] = (
                 str(field_info.dbf_type),
                 int(field_info.length),
                 str(schema.encoding),
+                int(field_info.decimal_count),
+                bool(field_info.is_autoincrement),
+                bool(field_info.nullable),
             )
+            field_facts[(table.relative_path, str(field_info.name))] = fact
+            # REQ-P3-004: a VFP autoincrement identifier stays value-identical
+            # by default and is truthfully marked for privacy review.
+            if field_info.is_autoincrement:
+                _record_identity_review(
+                    numeric_identity_review,
+                    reviewed_identities,
+                    table.relative_path,
+                    str(field_info.name),
+                    "I",
+                )
             action, is_unsafe, is_system = classify_field_capability(
                 field_info.dbf_type,
                 field_info.name,
@@ -311,17 +359,27 @@ def build_plan(
 
     tables.sort(key=lambda t: t.table_path)
 
-    # 6b. REQ-P3-003 schema binding: every declared member is verified
-    # against the DISCOVERED public dbfbridge schema facts — table exists,
-    # field exists, logical type matches C/V, byte width matches reality and
+    # 6b. REQ-P3-003/REQ-P3-005 schema binding: every declared member is
+    # verified against the DISCOVERED public dbfbridge schema facts — table
+    # exists, field exists, logical type matches the declared C/V or I/N
+    # member vocabulary, byte width matches reality and (for text members)
     # the declared encoding admits the proven safe shared alphabet together
-    # with the table encoding.  Mismatch FAILS CLOSED before any plan; the
+    # with the table encoding.  Numeric key members are additionally bound
+    # to their verified representation facts: an integral Numeric domain
+    # (decimal count/scale zero) and a NON-autoincrement field are required
+    # for explicit reversible numeric pseudonymization, and the declared
+    # NULL policy must match the actual descriptor bit.  A required safety
+    # fact that public dbfbridge cannot provide FAILS CLOSED for explicit
+    # numeric pseudonymization.  Mismatch FAILS CLOSED before any plan; the
     # binding runs BEFORE the semantic compatibility validation so a
     # member-level source mismatch is reported with its MEMBER detail code.
     if parsed_relationship_document is not None:
         from dbf_anonymizer.transforms.text import candidate_alphabet
         from dbf_anonymizer.relationships.compatibility import (
             validate_document_compatibility,
+        )
+        from dbf_anonymizer.relationships.models import (
+            NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
         )
 
         discovered_paths = {table.relative_path for table in discovered}
@@ -331,12 +389,12 @@ def build_plan(
                     raise _relationship_binding_error(
                         "RELATIONSHIP_MEMBER_TABLE_UNKNOWN"
                     )
-                fact = field_facts.get((member.table_path, member.field_name))
-                if fact is None:
+                bound_fact = field_facts.get((member.table_path, member.field_name))
+                if bound_fact is None:
                     raise _relationship_binding_error(
                         "RELATIONSHIP_MEMBER_FIELD_UNKNOWN"
                     )
-                actual_type, actual_length, actual_encoding = fact
+                actual_type, actual_length, actual_encoding, actual_decimals, actual_autoincrement, actual_nullable = bound_fact
                 if member.dbf_type != actual_type:
                     raise _relationship_binding_error(
                         "RELATIONSHIP_MEMBER_TYPE_MISMATCH"
@@ -345,16 +403,57 @@ def build_plan(
                     raise _relationship_binding_error(
                         "RELATIONSHIP_MEMBER_WIDTH_MISMATCH"
                     )
+                if member.is_numeric_member:
+                    # REQ-P3-005 numeric binding (public schema facts only):
+                    if (
+                        group.numeric_strategy
+                        == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+                    ):
+                        if member.dbf_type == "N" and actual_decimals != 0:
+                            # A non-integral Numeric domain is never silently
+                            # rounded: fail closed before any allocation.
+                            raise _relationship_binding_error(
+                                "NUMERIC_MEMBER_DECIMALS_UNSUPPORTED"
+                            )
+                        if actual_autoincrement:
+                            # VFP autoincrement keys are never a supported
+                            # numeric-key pseudonymizer target in this
+                            # release: fail closed before allocation.
+                            raise _relationship_binding_error(
+                                "NUMERIC_MEMBER_AUTOINCREMENT_UNSUPPORTED"
+                            )
+                        if member.nullable != actual_nullable:
+                            raise _relationship_binding_error(
+                                "NUMERIC_MEMBER_NULLABILITY_MISMATCH"
+                            )
+                        relationship_bindings[
+                            (member.table_path, member.field_name)
+                        ] = bound_fact
+                        continue
+                    # REQ-P3-004: a numeric key member that stays
+                    # value-identical (IDENTITY) is truthfully marked for
+                    # privacy review.
+                    _record_identity_review(
+                        numeric_identity_review,
+                        reviewed_identities,
+                        member.table_path,
+                        member.field_name,
+                        member.dbf_type,
+                    )
+                    relationship_bindings[(member.table_path, member.field_name)] = bound_fact
+                    continue
                 if not candidate_alphabet(
                     [member.encoding, actual_encoding]
                 ):
                     raise _relationship_binding_error(
                         "RELATIONSHIP_MEMBER_ENCODING_INCOMPATIBLE"
                     )
-                relationship_bindings[(member.table_path, member.field_name)] = fact
-        # A NULL-policy binding fact is NOT exposed by the public dbfbridge
-        # schema; the declared NULL policy stays relationship semantics
-        # (truthfully documented, not invented from source bytes).
+                relationship_bindings[(member.table_path, member.field_name)] = bound_fact
+        # A C/V NULL-policy binding fact is NOT exposed by the public
+        # dbfbridge schema; the declared NULL policy stays relationship
+        # semantics (truthfully documented, not invented from source bytes).
+        # For declared numeric key members the descriptor NULL bit IS a
+        # public schema fact and is bound truthfully (see above).
         # Semantic compatibility is validated by the preflight gate.
 
     tables.sort(key=lambda t: t.table_path)
@@ -414,6 +513,7 @@ def build_plan(
         relationships=rel_meta,
         output_profile=output_profile,
         relationship_assurance_target=_assure_target(rel_meta),
+        numeric_identity_review=tuple(sorted(numeric_identity_review, key=lambda r: (r.table_path, r.field_name, r.dbf_type))),
         execution_context=execution_ctx,
     )
 

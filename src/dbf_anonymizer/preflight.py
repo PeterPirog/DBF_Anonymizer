@@ -577,12 +577,13 @@ def _check_output_profile_and_capabilities(
 
 
 def _check_relationships(plan: Plan, findings: _Findings) -> None:
-    """REQ-P3-001/003 relationship-domain validation.
+    """REQ-P3-001/003/005 relationship-domain validation.
 
     When the plan carries a parsed typed relationship document (from the
     real ``build_plan`` ingestion), the authoritative P3 compatibility
     validation runs against the retained document and the source-schema
-    binding facts.  A VALID declared C/V relationship is accepted.
+    binding facts.  A VALID declared C/V or numeric-key relationship is
+    accepted.
 
     A plan whose relationship metadata is only a SUMMARY (relation_count > 0)
     with no member semantics available CANNOT be verified from the count
@@ -620,7 +621,14 @@ def _check_relationships(plan: Plan, findings: _Findings) -> None:
     if bindings is not None:
         # Re-verify every declared member against the retained source-schema
         # binding facts (defence in depth; the build_plan binding already
-        # refused mismatches before any plan existed).
+        # refused mismatches before any plan existed).  Numeric key members
+        # are re-verified against their FULL representation facts, including
+        # the integral Numeric domain and the autoincrement refusal for
+        # explicit reversible pseudonymization.
+        from dbf_anonymizer.relationships.models import (
+            NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+        )
+
         for group in relationships.groups:
             for member in group.members:
                 fact = bindings.get((member.table_path, member.field_name))
@@ -631,6 +639,12 @@ def _check_relationships(plan: Plan, findings: _Findings) -> None:
                 ):
                     findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
                     return
+                if member.is_numeric_member and (
+                    group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+                ):
+                    if (member.dbf_type == "N" and fact[3] != 0) or fact[4]:
+                        findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
+                        return
 
 
 def _check_index_conditions(plan: Plan, findings: _Findings) -> None:

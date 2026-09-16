@@ -378,8 +378,10 @@ def test_incompatible_byte_width_constraint() -> None:
 
 def test_unsupported_member_type_in_declared_relation() -> None:
     payload = json.loads(json.dumps(_single_document()))
-    payload["relations"][0]["members"][0]["dbf_type"] = "N"
-    # The parse boundary itself refuses non-C/V member types.
+    # REQ-P3-005 extends the declared member vocabulary with I/N; floating
+    # numeric runtime types (F/Y/B/L) remain unsupported declared members.
+    payload["relations"][0]["members"][0]["dbf_type"] = "F"
+    # The parse boundary itself refuses unsupported member types.
     with pytest.raises(PolicyError) as excinfo:
         parse_relationship_document(payload)
     assert "RELATIONSHIP_DBF_TYPE_UNSUPPORTED" in _detail(excinfo)

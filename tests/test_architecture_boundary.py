@@ -788,6 +788,7 @@ VAULT_MODULES = (
     "vault/transactions.py",
     "vault/text_allocation.py",
     "vault/memo_allocation.py",
+    "vault/numeric_allocation.py",
     "vault/temporal_allocation.py",
     "vault/protection.py",
 )
@@ -924,13 +925,14 @@ MEMO_RECOVERY_MODULES = frozenset(
 )
 
 #: The value-typed transform/vault boundary modules must stay free of any
-#: dependency-namespace or file-I/O behaviour (memo REQ-P2-007 + temporal
-#: REQ-P2-008 foundations).
+#: dependency-namespace or file-I/O behaviour (memo REQ-P2-007, temporal
+#: REQ-P2-008 and numeric key REQ-P3-004/005 foundations).
 PURE_VALUE_BOUNDARY_MODULES = (
     "transforms/memo.py",
     "vault/memo_allocation.py",
     "transforms/temporal.py",
     "vault/temporal_allocation.py",
+    "transforms/numeric_keys.py",
 )
 
 

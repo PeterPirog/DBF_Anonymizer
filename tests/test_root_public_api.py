@@ -42,8 +42,10 @@ OBSOLETE_0_3_EXPORTS = (
 
 EXPECTED_PUBLIC_EXPORTS = {
     "MODEL_SCHEMA_VERSION",
+    "IDENTITY_PRIVACY_REVIEW_REQUIRED",
     "Capabilities",
     "DatasetIdentity",
+    "NumericIdentityReview",
     "Plan",
     "TablePlan",
     "PolicySummary",

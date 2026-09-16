@@ -26,6 +26,8 @@ from dbf_anonymizer.models import RelationshipMetadata
 from dbf_anonymizer.relationships.models import (
     COMPARISON_SEMANTICS,
     KEY_ROLES,
+    NUMERIC_STRATEGIES,
+    NUMERIC_STRATEGY_IDENTITY,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RELATIONSHIP_PROVENANCES,
     SUPPORTED_RELATIONSHIP_DBF_TYPES,
@@ -44,6 +46,16 @@ __all__ = [
 
 _MEMBER_KEYS = frozenset(
     {"table", "field", "role", "ordinal", "dbf_type", "byte_width", "encoding", "nullable"}
+)
+_GROUP_KEYS = frozenset(
+    {
+        "relation_id",
+        "provenance",
+        "comparison",
+        "source_digest",
+        "members",
+        "numeric_strategy",
+    }
 )
 
 
@@ -97,9 +109,7 @@ def _parse_member(payload: object) -> RelationMember:
 
 def _parse_group(payload: object) -> RelationGroup:
     group_payload = _require_mapping(payload, "RELATIONSHIP_GROUP_INVALID")
-    unknown = set(group_payload) - {
-        "relation_id", "provenance", "comparison", "source_digest", "members"
-    }
+    unknown = set(group_payload) - _GROUP_KEYS
     if unknown:
         raise _document_invalid("RELATIONSHIP_GROUP_KEY_UNKNOWN")
     missing = {"relation_id", "provenance", "comparison", "members"} - set(group_payload)
@@ -111,6 +121,10 @@ def _parse_group(payload: object) -> RelationGroup:
     provenance = group_payload.get("provenance")
     if provenance not in RELATIONSHIP_PROVENANCES:
         raise _document_invalid("RELATIONSHIP_PROVENANCE_INVALID")
+    raw_strategy = group_payload.get("numeric_strategy")
+    if raw_strategy is not None and raw_strategy not in NUMERIC_STRATEGIES:
+        # Unknown numeric strategies fail closed (no silent normalization).
+        raise _document_invalid("RELATIONSHIP_NUMERIC_STRATEGY_INVALID")
     raw_members = group_payload.get("members")
     if not isinstance(raw_members, list) or not raw_members:
         raise _document_invalid("RELATIONSHIP_MEMBERS_EMPTY")
@@ -130,6 +144,9 @@ def _parse_group(payload: object) -> RelationGroup:
         comparison=raw_comparison,
         provenance=raw_provenance,
         source_digest=None if source_digest is None else str(source_digest),
+        numeric_strategy=(
+            NUMERIC_STRATEGY_IDENTITY if raw_strategy is None else str(raw_strategy)
+        ),
     )
 
 
@@ -137,14 +154,15 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
     """Parse and validate one versioned relationship metadata document.
 
     Supported schema: exactly ``metadata_schema_version == "1.0"``.  Any
-    other version, shape, role, semantics, provenance, type, ordinal
-    sequence or path form fails closed; malformed semantic structures are
-    never normalized into valid ones.  REQUIRED keys (document:
-    ``metadata_schema_version``/``relations``; group:
+    other version, shape, role, semantics, provenance, type, numeric
+    strategy, ordinal sequence or path form fails closed; malformed semantic
+    structures are never normalized into valid ones.  REQUIRED keys
+    (document: ``metadata_schema_version``/``relations``; group:
     ``relation_id``/``provenance``/``comparison``/``members``; member: all
     eight member keys) must be PRESENT — a missing required key is a typed
-    refusal, never a silent ``None`` coercion; ``source_digest`` remains
-    the one optional bounded non-secret source identifier.
+    refusal, never a silent ``None`` coercion; ``source_digest`` and
+    ``numeric_strategy`` (REQ-P3-005, default ``IDENTITY``) remain the two
+    optional bounded group keys.
     """
     document = _require_mapping(payload, "RELATIONSHIP_DOCUMENT_INVALID")
     unknown_top = set(document) - {"metadata_schema_version", "relations"}

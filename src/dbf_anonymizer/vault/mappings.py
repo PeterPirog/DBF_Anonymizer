@@ -16,6 +16,7 @@ values.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from typing import Any
@@ -43,6 +44,7 @@ __all__ = [
     "text_mapping_rows",
     "add_numeric_key_mapping",
     "get_numeric_pseudonym",
+    "get_numeric_original",
     "numeric_mapping_rows",
     "add_memo_recovery",
     "get_memo_recovery",
@@ -206,13 +208,19 @@ def add_numeric_key_mapping(
     original_value: str,
     pseudonym_value: str,
 ) -> None:
-    """Insert one numeric-key mapping (bounded TEXT-encoded numbers).
+    """Insert one numeric-key mapping (canonical integer TEXT form).
 
     Both directions of the bijection are enforced by the named UNIQUE indexes
-    of the ``numeric_key_mappings`` table.
+    of the ``numeric_key_mappings`` table.  Both values must be the ONE
+    canonical reversible representation (canonical signed decimal integer:
+    no ``+`` sign, no leading zeros, canonical zero, no locale or float
+    involvement) — a non-canonical caller value is refused before any
+    database access.
     """
     database._require_active_transaction("add_numeric_key_mapping")
     _validate_token(domain_id, field_name="domain_id")
+    _validate_canonical_numeric_text(original_value)
+    _validate_canonical_numeric_text(pseudonym_value)
     try:
         database._internal_connection().execute(
             "INSERT INTO numeric_key_mappings (domain_id, original_value, "
@@ -223,21 +231,99 @@ def add_numeric_key_mapping(
         raise _mapping_failure("MAPPING_BIJECTION_REJECTED") from None
 
 
+_CANONICAL_NUMERIC = re.compile(r"\A(?:0|-?[1-9][0-9]*)\Z")
+
+
+def _validate_canonical_numeric_text(value: object) -> str:
+    """The bounded canonical integer TEXT contract of numeric mapping rows."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise TypeError("a numeric key mapping value must be canonical integer text")
+    if not _CANONICAL_NUMERIC.match(value):
+        raise ValueError("a numeric key mapping value must be canonical integer text")
+    return value
+
+
+def _corrupt_numeric_state(detail_code: str) -> VaultError:
+    """Typed, privacy-safe refusal for hostile numeric mapping storage."""
+    return VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="vault", detail_code=detail_code),
+    )
+
+
+def _validated_numeric_row(original: object, pseudonym: object) -> tuple[str, str]:
+    """Corruption hardening for one ``numeric_key_mappings`` row.
+
+    Adversarial SQLite dynamic typing is refused, never coercively accepted:
+    both columns must be genuine TEXT storage classes carrying the canonical
+    integer representation.  No hostile INTEGER/REAL/BLOB value, no malformed
+    text (``+5``, ``007``, ``-0``, whitespace, empty, floats, ``NaN``/
+    ``Infinity``) is ever accepted, and no raw SQLite text or value escapes.
+    """
+    if not isinstance(original, str) or not isinstance(pseudonym, str):
+        raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT")
+    try:
+        _validate_canonical_numeric_text(original)
+        _validate_canonical_numeric_text(pseudonym)
+    except (TypeError, ValueError):
+        raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT") from None
+    return (original, pseudonym)
+
+
 def get_numeric_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
+    """The persisted pseudonym of one numeric original (canonical TEXT).
+
+    Adversarial corruption hardening: a hostile row with an unexpected
+    storage class or a non-canonical value raises the typed
+    ``NUMERIC_MAPPING_CORRUPT`` vault state refusal.
+    """
     row = database._internal_connection().execute(
-        "SELECT pseudonym_value FROM numeric_key_mappings WHERE domain_id = ? AND original_value = ?",
+        "SELECT pseudonym_value, typeof(pseudonym_value) FROM numeric_key_mappings "
+        "WHERE domain_id = ? AND original_value = ?",
         (domain_id, original_value),
     ).fetchone()
-    return None if row is None else str(row[0])
+    if row is None:
+        return None
+    if row[1] != "text":
+        raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT")
+    return _validated_numeric_row(row[0], row[0])[1]
+
+
+def get_numeric_original(database: VaultDatabase, domain_id: str, pseudonym_value: str) -> str | None:
+    """The persisted original of one numeric pseudonym (reverse lookup).
+
+    The recovery-direction retrieval of the numeric key mapping path, with
+    the same corruption hardening as the forward direction.
+    """
+    row = database._internal_connection().execute(
+        "SELECT original_value, typeof(original_value) FROM numeric_key_mappings "
+        "WHERE domain_id = ? AND pseudonym_value = ?",
+        (domain_id, pseudonym_value),
+    ).fetchone()
+    if row is None:
+        return None
+    if row[1] != "text":
+        raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT")
+    return _validated_numeric_row(row[0], row[0])[0]
 
 
 def numeric_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple[str, str], ...]:
+    """All canonical mapping rows of one numeric domain (internal validation).
+
+    Every row is corruption-hardened: unexpected storage classes and
+    non-canonical values fail closed with the typed
+    ``NUMERIC_MAPPING_CORRUPT`` refusal before they can reach any consumer.
+    """
     rows = database._internal_connection().execute(
-        "SELECT original_value, pseudonym_value FROM numeric_key_mappings "
+        "SELECT original_value, pseudonym_value, "
+        "typeof(original_value), typeof(pseudonym_value) FROM numeric_key_mappings "
         "WHERE domain_id = ? ORDER BY original_value",
         (domain_id,),
     ).fetchall()
-    return tuple((str(row[0]), str(row[1])) for row in rows)
+    for row in rows:
+        if row[2] != "text" or row[3] != "text":
+            raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT")
+    return tuple(_validated_numeric_row(row[0], row[1]) for row in rows)
 
 
 def add_memo_recovery(

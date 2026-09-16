@@ -12,6 +12,7 @@ from dbf_anonymizer import (
     MODEL_SCHEMA_VERSION,
     Capabilities,
     DatasetIdentity,
+    NumericIdentityReview,
     Plan,
     PolicySummary,
     PreflightResult,
@@ -169,6 +170,12 @@ def _samples() -> tuple[object, ...]:
             verified=True,
             assurance=assurance,
         ),
+        NumericIdentityReview(
+            table_path="north\\registry.dbf",
+            field_name="REGISTRY_ID",
+            dbf_type="I",
+            status="IDENTITY_PRIVACY_REVIEW_REQUIRED",
+        ),
     )
 
 
@@ -195,6 +202,7 @@ def test_all_required_models_are_public_root_imports() -> None:
         "PolicySummary",
         "RelationshipMetadata",
         "RelationalAssurance",
+        "NumericIdentityReview",
         "ProgressEvent",
         "PreflightResult",
         "PseudonymizationResult",
@@ -349,6 +357,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         "Plan": (
             "schema_version", "model_type", "plan_id", "dataset", "tables", "policy",
             "relationships", "output_profile", "relationship_assurance_target",
+            "numeric_identity_review",
         ),
         "ProgressEvent": (
             "schema_version", "model_type", "operation_id", "phase_code", "event_code",
@@ -373,5 +382,8 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         "TransferBundleResult": (
             "schema_version", "model_type", "bundle_path", "profile", "file_count",
             "manifest_fingerprint", "verified", "assurance",
+        ),
+        "NumericIdentityReview": (
+            "schema_version", "model_type", "table_path", "field_name", "dbf_type", "status",
         ),
     }
