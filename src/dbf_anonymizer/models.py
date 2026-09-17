@@ -257,6 +257,19 @@ class PolicySummary(PublicModel):
 
 @dataclass(frozen=True, slots=True)
 class RelationshipMetadata(PublicModel):
+    """Bounded descriptive relationship-metadata facts (REQ-P1-002/P3-001).
+
+    ``metadata_schema_version`` is a validated bounded code (non-empty,
+    whitespace-free string; hostile non-string input is refused with the
+    established runtime type convention).  ``authoritative`` is a DESCRIPTIVE
+    boolean fact about the metadata the caller presents; it is a genuine
+    ``bool`` and never a truthy shortcut.  It is NOT the authority
+    credential: the in-process trust proof for ``VFP_METADATA_VERIFIED`` is
+    the internal non-public binding minted ONLY by the validated
+    authoritative ingestion adapter (REQ-P3-007), never the public boolean or
+    the provenance label.
+    """
+
     metadata_schema_version: str
     provenance: str
     relationship_fingerprint: str
@@ -265,10 +278,21 @@ class RelationshipMetadata(PublicModel):
     metadata_path: str | None = None
 
     def __post_init__(self) -> None:
-        _validated_code(self.metadata_schema_version, field_name="metadata_schema_version")
+        # REQ-P1-002: the public model is typed AND versioned — the declared
+        # metadata schema version is a validated bounded code, never silently
+        # accepted malformed public input.
+        if not isinstance(self.metadata_schema_version, str):
+            raise TypeError("metadata_schema_version must be a string")
+        _validated_code(
+            self.metadata_schema_version, field_name="metadata_schema_version"
+        )
         _validated_code(self.provenance, field_name="provenance")
         _validated_code(self.relationship_fingerprint, field_name="relationship_fingerprint")
         _non_negative(self.relation_count, field_name="relation_count")
+        if not isinstance(self.authoritative, bool):
+            # Authority is a genuine boolean FACT, never a truthy string, a
+            # number or an arbitrary object (no Python-truthiness shortcut).
+            raise ValueError("authoritative must be a genuine boolean")
         if self.metadata_path is not None:
             object.__setattr__(self, "metadata_path", _normalized_relative_path(self.metadata_path))
 
@@ -286,19 +310,57 @@ class RelationshipMetadata(PublicModel):
 
 @dataclass(frozen=True, slots=True)
 class RelationalAssurance(PublicModel):
+    """The ONE canonical public relational-assurance model (REQ-P1-002/P3-007).
+
+    Count-only, value-free and deterministic: the derived
+    :class:`RelationalAssuranceLevel`, the declared/verified/failed/incomplete
+    relation counts, the stable evidence binding (the canonical report
+    fingerprint, the relationship-document fingerprint the evidence is bound
+    to and the evidence schema version) and the stable machine scope note.
+
+    The counts always satisfy
+    ``verified + failed + incomplete <= declared``; a complete derivation
+    satisfies equality.  The scope note token is a stable constant carried by
+    every derived payload so no level can be mistaken for full database
+    relational correctness.
+    """
+
     level: RelationalAssuranceLevel
     declared_relations: int
     verified_relations: int
     failed_relations: int
-    evidence_fingerprint: str
+    incomplete_relations: int = 0
+    evidence_fingerprint: str | None = None
+    relationship_fingerprint: str | None = None
+    evidence_schema_version: str | None = None
+    scope_note: str | None = None
 
     def __post_init__(self) -> None:
         _non_negative(self.declared_relations, field_name="declared_relations")
         _non_negative(self.verified_relations, field_name="verified_relations")
         _non_negative(self.failed_relations, field_name="failed_relations")
-        if self.verified_relations + self.failed_relations > self.declared_relations:
-            raise ValueError("verified + failed relations cannot exceed declared relations")
-        _validated_code(self.evidence_fingerprint, field_name="evidence_fingerprint")
+        _non_negative(self.incomplete_relations, field_name="incomplete_relations")
+        if (
+            self.verified_relations
+            + self.failed_relations
+            + self.incomplete_relations
+            > self.declared_relations
+        ):
+            raise ValueError(
+                "verified + failed + incomplete relations cannot exceed declared relations"
+            )
+        if self.evidence_fingerprint is not None:
+            _validated_code(self.evidence_fingerprint, field_name="evidence_fingerprint")
+        if self.relationship_fingerprint is not None:
+            _validated_code(
+                self.relationship_fingerprint, field_name="relationship_fingerprint"
+            )
+        if self.evidence_schema_version is not None:
+            _validated_code(
+                self.evidence_schema_version, field_name="evidence_schema_version"
+            )
+        if self.scope_note is not None:
+            _validated_code(self.scope_note, field_name="scope_note")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -307,7 +369,11 @@ class RelationalAssurance(PublicModel):
             declared_relations=self.declared_relations,
             verified_relations=self.verified_relations,
             failed_relations=self.failed_relations,
+            incomplete_relations=self.incomplete_relations,
             evidence_fingerprint=self.evidence_fingerprint,
+            relationship_fingerprint=self.relationship_fingerprint,
+            evidence_schema_version=self.evidence_schema_version,
+            scope_note=self.scope_note,
         )
 
 

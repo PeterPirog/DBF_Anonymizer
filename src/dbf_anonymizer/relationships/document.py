@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PolicyError
@@ -28,6 +29,7 @@ from dbf_anonymizer.relationships.models import (
     KEY_ROLES,
     NUMERIC_STRATEGIES,
     NUMERIC_STRATEGY_IDENTITY,
+    PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RELATIONSHIP_PROVENANCES,
     SUPPORTED_RELATIONSHIP_DBF_TYPES,
@@ -42,6 +44,7 @@ __all__ = [
     "canonical_relationship_bytes",
     "relationship_fingerprint",
     "relationship_metadata_from_document",
+    "authoritative_vfp_metadata_from_document",
 ]
 
 _MEMBER_KEYS = frozenset(
@@ -64,6 +67,48 @@ def _document_invalid(detail_code: str) -> PolicyError:
         ErrorCode.POLICY_INVALID,
         context=ErrorContext(operation="build_plan", detail_code=detail_code),
     )
+
+
+@dataclass(frozen=True)
+class _AuthoritativeVFPBinding:
+    """The INTERNAL, non-public authority proof of the validated adapter.
+
+    Created ONLY by
+    :func:`authoritative_vfp_metadata_from_document` after its typed
+    validation, this is the in-process trust boundary object that
+    :func:`~dbf_anonymizer.relationships.assurance.derive_relational_assurance`
+    requires before it may report ``VFP_METADATA_VERIFIED``.  It carries
+    ONLY bounded structural facts — the canonical relationship fingerprint,
+    the declared relation count and the metadata schema version — and it is
+    deliberately:
+
+    * NOT a :class:`~dbf_anonymizer.models.PublicModel` and never serialized
+      into any public/transfer payload;
+    * NOT exported from ``dbf_anonymizer`` or the public relationships API;
+    * free of key values, pseudonyms, paths, secrets or reverse mappings.
+
+    This is an architectural trust boundary, not a cryptographic secret: the
+    public ``RelationshipMetadata.authoritative`` boolean stays DESCRIPTIVE
+    metadata and is never by itself sufficient to cross this boundary.
+    """
+
+    relationship_fingerprint: str
+    relation_count: int
+    metadata_schema_version: str
+
+
+@dataclass(frozen=True)
+class _AuthoritativeVFPMetadata:
+    """The internal result of the validated authoritative ingestion adapter.
+
+    Pairs the canonical descriptive public
+    :class:`~dbf_anonymizer.models.RelationshipMetadata` with the internal
+    ``_AuthoritativeVFPBinding`` minted by the SAME validated adapter call,
+    so callers pass a single coherent authority object onward.
+    """
+
+    metadata: RelationshipMetadata
+    binding: _AuthoritativeVFPBinding
 
 
 def _require_mapping(value: object, detail: str) -> Mapping[str, Any]:
@@ -209,7 +254,10 @@ def relationship_metadata_from_document(
 
     The adapter keeps the P1/P2 fingerprint mechanism intact: the canonical
     fingerprint becomes the dataset's ``relationship_fingerprint`` and the
-    provenance becomes the bounded metadata token.
+    provenance becomes the bounded metadata token.  The result is ALWAYS
+    NON-authoritative: declared planning metadata never masquerades as
+    injected authoritative VFP metadata (see
+    :func:`authoritative_vfp_metadata_from_document`).
     """
     provenances = {group.provenance for group in document.groups}
     provenance = next(iter(provenances)) if len(provenances) == 1 else "MIXED"
@@ -221,3 +269,68 @@ def relationship_metadata_from_document(
         authoritative=False,
         metadata_path=metadata_path,
     )
+
+
+def authoritative_vfp_metadata_from_document(
+    document: RelationshipDocument,
+    *,
+    metadata_path: str | None = None,
+) -> _AuthoritativeVFPMetadata:
+    """The typed adapter for ALREADY-INJECTED authoritative VFP metadata.
+
+    This is the ONE tested authoritative ingestion boundary of REQ-P3-007:
+    it accepts metadata that a host has ALREADY injected (source-neutral,
+    in-memory) and validates that it genuinely qualifies BEFORE minting the
+    internal trust binding:
+
+    * the document declares at least one relation;
+    * EVERY group provenance is exactly ``MCP_VFP9SP2_TOOLCHAIN`` — a
+      POLICY_FILE document or a MIXED-provenance document never qualifies;
+    * the canonical relationship fingerprint of THIS document becomes the
+      metadata fingerprint (authority is bound to the same document the
+      verification report must bind to);
+    * the metadata version is the supported schema (the typed parser already
+      refuses every other version);
+    * paths stay normalized-relative and no key value or absolute path is
+      added.
+
+    The adapter performs NO network, NO MCP transport, NO COM and NO VFP
+    process automation: the injection already happened; this boundary only
+    certifies the injected facts.  A document that does not qualify fails
+    closed with the stable typed ``RELATIONSHIP_AUTHORITATIVE_*`` refusals.
+
+    The result carries the canonical descriptive public
+    :class:`~dbf_anonymizer.models.RelationshipMetadata` plus the INTERNAL
+    ``_AuthoritativeVFPBinding`` — the non-public authority proof that
+    :func:`~dbf_anonymizer.relationships.assurance.derive_relational_assurance`
+    requires for the ``VFP_METADATA_VERIFIED`` level.  The public
+    ``authoritative`` boolean on ``RelationshipMetadata`` is DESCRIPTIVE
+    metadata; it is never by itself sufficient to cross the authoritative
+    assurance boundary.
+    """
+    if not document.groups:
+        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_EMPTY")
+    provenances = {group.provenance for group in document.groups}
+    if provenances != {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN}:
+        # A POLICY_FILE or MIXED-provenance document is never authoritative
+        # VFP metadata — the provenance label alone is never evidence, and
+        # mixed provenance is ambiguous by definition.
+        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
+    fingerprint = relationship_fingerprint(document)
+    metadata = RelationshipMetadata(
+        metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
+        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+        relationship_fingerprint=fingerprint,
+        relation_count=len(document.groups),
+        authoritative=True,
+        metadata_path=metadata_path,
+    )
+    # The binding is minted ONLY here, after the typed validation above: it
+    # is the in-process authority proof, not a cryptographic secret and not a
+    # public credential.
+    binding = _AuthoritativeVFPBinding(
+        relationship_fingerprint=fingerprint,
+        relation_count=len(document.groups),
+        metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
+    )
+    return _AuthoritativeVFPMetadata(metadata=metadata, binding=binding)
