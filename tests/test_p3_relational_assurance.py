@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -44,6 +45,9 @@ from tests.test_p3_relationship_verification import (
     CANARY_NUMERIC,
     CANARY_TEXT,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from dbf_anonymizer.relationships.document import _AuthoritativeVFPBinding
 
 
 def _toolchain_document() -> dict[str, object]:
@@ -281,12 +285,268 @@ def test_vfp_provenance_label_alone_never_grants_vfp_metadata_verified() -> None
 def test_authoritative_adapter_marks_a_qualifying_toolchain_document() -> None:
     payload = _toolchain_document()
     document = parse_relationship_document(payload)  # type: ignore[arg-type]
-    metadata = authoritative_vfp_metadata_from_document(document)
+    result = authoritative_vfp_metadata_from_document(document)
+    metadata = result.metadata
+    binding = result.binding
     assert metadata.authoritative is True
     assert metadata.provenance == PROVENANCE_MCP_VFP9SP2_TOOLCHAIN
     assert metadata.relationship_fingerprint == relationship_fingerprint(document)
     assert metadata.relation_count == 1
     assert metadata.metadata_schema_version == "1.0"
+    # The binding is the internal authority proof minted by THIS call: it
+    # binds the SAME canonical fingerprint and declared relation count.
+    assert binding.relationship_fingerprint == metadata.relationship_fingerprint
+    assert binding.relation_count == metadata.relation_count
+    assert binding.metadata_schema_version == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# THE TRUST BOUNDARY: the public authoritative boolean is NOT the credential
+# ---------------------------------------------------------------------------
+def test_forged_public_authoritative_metadata_cannot_reach_vfp_metadata_verified() -> None:
+    """MANDATORY adversarial regression (final trust-boundary repair).
+
+    ``public authoritative=True + toolchain provenance + matching fingerprint
+    + matching relation count + a COMPLETE verified report`` is STILL
+    insufficient: without the internal trust binding minted ONLY by the
+    validated authoritative ingestion adapter the maximum level is
+    ``DECLARED_RELATIONS_VERIFIED``.
+    """
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    report = verify_relationships(
+        document,
+        before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
+        after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
+    )
+    forged = RelationshipMetadata(
+        metadata_schema_version="1.0",
+        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+        relationship_fingerprint=relationship_fingerprint(document),
+        relation_count=len(document.groups),
+        authoritative=True,
+    )
+    assurance = derive_relational_assurance(forged, report)  # type: ignore[arg-type]
+    # NO trusted authority binding was supplied: the stronger level is
+    # unreachable no matter how complete the public facts are.
+    assert assurance.level is not RelationalAssuranceLevel.VFP_METADATA_VERIFIED
+    assert assurance.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
+    assert assurance.verified_relations == 1
+    assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
+
+
+def test_valid_binding_with_incomplete_and_failed_evidence_stays_incomplete() -> None:
+    """Binding negatives 10/11: a VALID binding never repairs bad evidence."""
+    payload = _multi_toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    authoritative = authoritative_vfp_metadata_from_document(document)
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    broken = _counts([("A",)], [("A",), ("W",), ("Z",)])
+    # Incomplete evidence (rel-b AFTER missing) + valid binding.
+    incomplete_report = verify_relationships(
+        document,
+        before={"rel-a": evidence, "rel-b": evidence},
+        after={"rel-a": evidence},
+    )
+    assert (
+        derive_relational_assurance(
+            authoritative.metadata,
+            incomplete_report,  # type: ignore[arg-type]
+            authority_binding=authoritative.binding,
+        ).level
+        is RelationalAssuranceLevel.INCOMPLETE
+    )
+    # Failed evidence (rel-b broken) + valid binding.
+    failed_report = verify_relationships(
+        document,
+        before={"rel-a": evidence, "rel-b": evidence},
+        after={"rel-a": evidence, "rel-b": broken},
+    )
+    assert (
+        derive_relational_assurance(
+            authoritative.metadata,
+            failed_report,  # type: ignore[arg-type]
+            authority_binding=authoritative.binding,
+        ).level
+        is RelationalAssuranceLevel.INCOMPLETE
+    )
+
+
+def _forged_binding(
+    *,
+    fingerprint: str,
+    relation_count: int = 1,
+    schema_version: str = "1.0",
+) -> "_AuthoritativeVFPBinding":
+    """A hostile binding construction for NEGATIVE tests only."""
+    from dbf_anonymizer.relationships.document import _AuthoritativeVFPBinding
+
+    return _AuthoritativeVFPBinding(
+        relationship_fingerprint=fingerprint,
+        relation_count=relation_count,
+        metadata_schema_version=schema_version,
+    )
+
+
+def test_binding_fingerprint_mismatch_fails_closed() -> None:
+    """Binding negatives 1/2: a SUPPLIED binding with a different canonical
+    relationship fingerprint (versus the metadata or the report) is a typed
+    structural refusal."""
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    other_payload = _toolchain_document()
+    other_payload["relations"][0]["relation_id"] = "rel-other"  # type: ignore[index,union-attr]
+    other_fingerprint = relationship_fingerprint(
+        parse_relationship_document(other_payload)  # type: ignore[arg-type]
+    )
+    metadata = authoritative_vfp_metadata_from_document(document).metadata
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        document,
+        before={"rel-numeric-key": evidence},
+        after={"rel-numeric-key": evidence},
+    )
+    hostile_binding = _forged_binding(fingerprint=other_fingerprint)
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            metadata,
+            report,  # type: ignore[arg-type]
+            authority_binding=hostile_binding,  # type: ignore[arg-type]
+        )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(excinfo.value.to_dict())
+    # The same mismatch fails even WITHOUT a report (binding vs metadata).
+    with pytest.raises(VerificationError) as metadata_only:
+        derive_relational_assurance(
+            metadata,
+            None,
+            authority_binding=hostile_binding,
+        )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(
+        metadata_only.value.to_dict()
+    )
+
+
+def test_binding_relation_count_mismatch_fails_closed() -> None:
+    """Binding negative 3: a different declared relation count refuses."""
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    metadata = authoritative_vfp_metadata_from_document(document).metadata
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        document,
+        before={"rel-numeric-key": evidence},
+        after={"rel-numeric-key": evidence},
+    )
+    hostile_binding = _forged_binding(
+        fingerprint=metadata.relationship_fingerprint, relation_count=2
+    )
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            metadata,
+            report,  # type: ignore[arg-type]
+            authority_binding=hostile_binding,
+        )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(excinfo.value.to_dict())
+
+
+def test_binding_from_document_a_with_report_from_document_b_fails_closed() -> None:
+    """Binding negative 4: cross-document binding/report pairing refuses."""
+    payload_a = _toolchain_document()
+    document_a = parse_relationship_document(payload_a)  # type: ignore[arg-type]
+    binding_a = authoritative_vfp_metadata_from_document(document_a).binding
+    payload_b = _toolchain_document()
+    payload_b["relations"][0]["relation_id"] = "rel-other"  # type: ignore[index,union-attr]
+    document_b = parse_relationship_document(payload_b)  # type: ignore[arg-type]
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report_b = verify_relationships(
+        document_b,
+        before={"rel-other": evidence},
+        after={"rel-other": evidence},
+    )
+    # The metadata claims document B; the binding was minted for document A.
+    metadata_b = RelationshipMetadata(
+        metadata_schema_version="1.0",
+        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+        relationship_fingerprint=relationship_fingerprint(document_b),
+        relation_count=len(document_b.groups),
+        authoritative=True,
+    )
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            metadata_b,
+            report_b,  # type: ignore[arg-type]
+            authority_binding=binding_a,
+        )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(excinfo.value.to_dict())
+
+
+def test_binding_with_unsupported_schema_version_fails_closed() -> None:
+    """A binding for an unsupported metadata schema version refuses."""
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    metadata = authoritative_vfp_metadata_from_document(document).metadata
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        document,
+        before={"rel-numeric-key": evidence},
+        after={"rel-numeric-key": evidence},
+    )
+    hostile_binding = _forged_binding(
+        fingerprint=metadata.relationship_fingerprint, schema_version="2.0"
+    )
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            metadata,
+            report,  # type: ignore[arg-type]
+            authority_binding=hostile_binding,
+        )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(excinfo.value.to_dict())
+
+
+def test_binding_is_the_internal_trust_boundary_not_public_api() -> None:
+    """The binding is internal: not public, not serialized, values-free."""
+    import dbf_anonymizer
+    import dbf_anonymizer.relationships as relationships_package
+    from dbf_anonymizer.models import PublicModel, PUBLIC_MODEL_TYPES
+
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    binding = authoritative_vfp_metadata_from_document(document).binding
+    # NOT a public model, never in the P1-002 registry, never root-exported,
+    # never part of the public relationships API surface.
+    assert not isinstance(binding, PublicModel)
+    assert type(binding) not in PUBLIC_MODEL_TYPES
+    assert type(binding).__name__ not in relationships_package.__all__
+    assert type(binding).__name__ not in dbf_anonymizer.__all__
+    assert not hasattr(binding, "to_dict")
+    # ONLY bounded structural facts; no values, paths or secrets.
+    assert tuple(vars(binding).keys()) == (
+        "relationship_fingerprint",
+        "relation_count",
+        "metadata_schema_version",
+    )
+
+
+def test_authority_error_boundaries_never_leak_structural_values() -> None:
+    """The typed binding refusal carries no values beyond bounded tokens."""
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    metadata = authoritative_vfp_metadata_from_document(document).metadata
+    hostile_binding = _forged_binding(fingerprint="0" * 64, relation_count=7)
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            metadata,
+            None,
+            authority_binding=hostile_binding,
+        )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(
+        excinfo.value.to_dict()
+    )
+    assert CANARY_TEXT not in boundary
+    assert str(CANARY_NUMERIC) not in boundary
+    assert "C:\\" not in boundary and "C:/" not in boundary
+    assert "0" * 64 not in boundary  # the hostile fingerprint is not echoed
+    assert "7" not in boundary
 
 
 def test_authoritative_adapter_refuses_policy_file_provenance() -> None:
@@ -327,7 +587,7 @@ def test_authoritative_adapter_refuses_zero_relations() -> None:
 # ---------------------------------------------------------------------------
 def test_authoritative_vfp_metadata_with_complete_scope_is_verified() -> None:
     payload = _toolchain_document()
-    relationships = authoritative_vfp_metadata_from_document(
+    authoritative = authoritative_vfp_metadata_from_document(
         parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     report = verify_relationships(
@@ -335,11 +595,18 @@ def test_authoritative_vfp_metadata_with_complete_scope_is_verified() -> None:
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assurance = derive_relational_assurance(
+        authoritative.metadata,
+        report,  # type: ignore[arg-type]
+        authority_binding=authoritative.binding,
+    )
     assert assurance.level is RelationalAssuranceLevel.VFP_METADATA_VERIFIED
     assert assurance.verified_relations == 1
     assert assurance.evidence_fingerprint == report.evidence_fingerprint  # type: ignore[attr-defined]
-    assert assurance.relationship_fingerprint == relationships.relationship_fingerprint
+    assert (
+        assurance.relationship_fingerprint
+        == authoritative.metadata.relationship_fingerprint
+    )
     # Even this stronger level never claims full database correctness.
     assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
 
@@ -365,7 +632,7 @@ def test_toolchain_provenance_via_ordinary_adapter_stays_declared() -> None:
 # ---------------------------------------------------------------------------
 def test_authoritative_with_one_missing_relation_is_incomplete() -> None:
     payload = _multi_toolchain_document()
-    relationships = authoritative_vfp_metadata_from_document(
+    authoritative = authoritative_vfp_metadata_from_document(
         parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     evidence = _counts([("A",)], [("A",), ("B",)])
@@ -376,7 +643,11 @@ def test_authoritative_with_one_missing_relation_is_incomplete() -> None:
     )
     statuses = [entry.status.value for entry in report.relations]
     assert statuses == ["VERIFIED", "INCOMPLETE"]
-    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assurance = derive_relational_assurance(
+        authoritative.metadata,
+        report,  # type: ignore[arg-type]
+        authority_binding=authoritative.binding,
+    )
     assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
     assert assurance.verified_relations == 1
     assert assurance.incomplete_relations == 1
@@ -387,7 +658,7 @@ def test_authoritative_with_one_missing_relation_is_incomplete() -> None:
 # ---------------------------------------------------------------------------
 def test_authoritative_with_one_failed_relation_is_incomplete() -> None:
     payload = _multi_toolchain_document()
-    relationships = authoritative_vfp_metadata_from_document(
+    authoritative = authoritative_vfp_metadata_from_document(
         parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     evidence = _counts([("A",)], [("A",), ("B",)])
@@ -399,7 +670,11 @@ def test_authoritative_with_one_failed_relation_is_incomplete() -> None:
     )
     statuses = [entry.status.value for entry in report.relations]
     assert statuses == ["VERIFIED", "FAILED"]
-    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assurance = derive_relational_assurance(
+        authoritative.metadata,
+        report,  # type: ignore[arg-type]
+        authority_binding=authoritative.binding,
+    )
     assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
     assert assurance.failed_relations == 1
 
@@ -409,7 +684,7 @@ def test_authoritative_with_one_failed_relation_is_incomplete() -> None:
 # ---------------------------------------------------------------------------
 def test_authoritative_fingerprint_mismatch_fails_closed() -> None:
     payload = _toolchain_document()
-    relationships = authoritative_vfp_metadata_from_document(
+    authoritative = authoritative_vfp_metadata_from_document(
         parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     other_payload = _toolchain_document()
@@ -422,7 +697,7 @@ def test_authoritative_fingerprint_mismatch_fails_closed() -> None:
         after={"rel-other": evidence},
     )
     with pytest.raises(VerificationError) as excinfo:
-        derive_relational_assurance(relationships, report)
+        derive_relational_assurance(authoritative.metadata, report)  # type: ignore[arg-type]
     assert "RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH" in str(
         excinfo.value.to_dict()
     )
@@ -598,7 +873,7 @@ def test_no_full_database_correctness_overclaim() -> None:
 
 def test_assurance_boundary_never_leaks_sensitive_material() -> None:
     payload = _toolchain_document()
-    relationships = authoritative_vfp_metadata_from_document(
+    authoritative = authoritative_vfp_metadata_from_document(
         parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     report = verify_relationships(
@@ -606,7 +881,11 @@ def test_assurance_boundary_never_leaks_sensitive_material() -> None:
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assurance = derive_relational_assurance(
+        authoritative.metadata,
+        report,  # type: ignore[arg-type]
+        authority_binding=authoritative.binding,
+    )
     boundary = (
         str(assurance)
         + "|"
@@ -620,7 +899,9 @@ def test_assurance_boundary_never_leaks_sensitive_material() -> None:
         + "|"
         + json.dumps(report.to_dict(), sort_keys=True)
         + "|"
-        + json.dumps(relationships.to_dict(), sort_keys=True)
+        + json.dumps(authoritative.metadata.to_dict(), sort_keys=True)
+        + "|"
+        + repr(authoritative.binding)
     )
     assert CANARY_TEXT not in boundary
     assert str(CANARY_NUMERIC) not in boundary

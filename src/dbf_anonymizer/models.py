@@ -257,6 +257,16 @@ class PolicySummary(PublicModel):
 
 @dataclass(frozen=True, slots=True)
 class RelationshipMetadata(PublicModel):
+    """Bounded descriptive relationship-metadata facts (REQ-P1-002/P3-001).
+
+    ``authoritative`` is a DESCRIPTIVE boolean fact about the metadata the
+    caller presents; it is a genuine ``bool`` and never a truthy shortcut.
+    It is NOT the authority credential: the in-process trust proof for
+    ``VFP_METADATA_VERIFIED`` is the internal non-public binding minted ONLY
+    by the validated authoritative ingestion adapter (REQ-P3-007), never the
+    public boolean or the provenance label.
+    """
+
     metadata_schema_version: str
     provenance: str
     relationship_fingerprint: str
@@ -265,7 +275,6 @@ class RelationshipMetadata(PublicModel):
     metadata_path: str | None = None
 
     def __post_init__(self) -> None:
-        _validated_code(self.metadata_schema_version, field_name="metadata_schema_version")
         _validated_code(self.provenance, field_name="provenance")
         _validated_code(self.relationship_fingerprint, field_name="relationship_fingerprint")
         _non_negative(self.relation_count, field_name="relation_count")
