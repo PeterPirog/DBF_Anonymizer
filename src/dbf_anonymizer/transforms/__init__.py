@@ -7,6 +7,6 @@ DBF/FPT parsing and writing stay exclusively inside the public ``dbfbridge``
 boundary and never move into this package.
 """
 
-from dbf_anonymizer.transforms import memo, temporal, text
+from dbf_anonymizer.transforms import memo, numeric_keys, temporal, text
 
-__all__ = ["memo", "temporal", "text"]
+__all__ = ["memo", "numeric_keys", "temporal", "text"]

@@ -10,12 +10,19 @@ Vocabularies (all bounded, fail-closed against anything else):
 
 * key roles: ``PRIMARY`` / ``CANDIDATE`` / ``FOREIGN``;
 * comparison semantics: ``EXACT_VALUE`` (the only semantics this release can
-  truthfully honor — exact decoded C/V value equality) and ``UNSPECIFIED``
+  truthfully honor — exact decoded value equality) and ``UNSPECIFIED``
   (a bounded representation of richer/unknown semantics; it can never back a
   join-preservation claim);
 * provenance: ``POLICY_FILE`` / ``MCP_VFP9SP2_TOOLCHAIN`` (the document
   boundary only — no MCP transport exists or is implemented here);
-* logical types of this cluster: ``C`` / ``V`` only.
+* logical types of this cluster: ``C`` / ``V`` for text members and ``I`` /
+  ``N`` for explicitly declared numeric key members (REQ-P3-005); any other
+  type fails closed.
+* numeric key strategies (REQ-P3-005): ``IDENTITY`` (the default — numeric
+  key members stay value-identical and are marked for privacy review) and
+  ``REVERSIBLE_BIJECTIVE`` (explicit reversible bijective pseudonymization
+  of the declared numeric key domain).  Numeric pseudonymization is NEVER
+  inferred from the member type alone; unknown strategies fail closed.
 
 Provenance serialization stays bounded: relation IDs, bounded tokens and an
 optional normalized relative/digest identifier — never absolute local paths,
@@ -36,6 +43,12 @@ __all__ = [
     "COMPARISON_SEMANTICS",
     "RELATIONSHIP_PROVENANCES",
     "SUPPORTED_RELATIONSHIP_DBF_TYPES",
+    "SUPPORTED_TEXT_RELATIONSHIP_DBF_TYPES",
+    "SUPPORTED_NUMERIC_RELATIONSHIP_DBF_TYPES",
+    "NUMERIC_STRATEGIES",
+    "NUMERIC_STRATEGY_IDENTITY",
+    "NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE",
+    "NUMERIC_MEMBER_ENCODING",
     "KEY_ROLE_PRIMARY",
     "KEY_ROLE_CANDIDATE",
     "KEY_ROLE_FOREIGN",
@@ -68,7 +81,29 @@ RELATIONSHIP_PROVENANCES: tuple[str, ...] = (
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
 )
 
-SUPPORTED_RELATIONSHIP_DBF_TYPES: tuple[str, ...] = ("C", "V")
+SUPPORTED_RELATIONSHIP_DBF_TYPES: tuple[str, ...] = ("C", "V", "I", "N")
+SUPPORTED_TEXT_RELATIONSHIP_DBF_TYPES: tuple[str, ...] = ("C", "V")
+SUPPORTED_NUMERIC_RELATIONSHIP_DBF_TYPES: tuple[str, ...] = ("I", "N")
+
+NUMERIC_STRATEGY_IDENTITY = "IDENTITY"
+NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE = "REVERSIBLE_BIJECTIVE"
+NUMERIC_STRATEGIES: tuple[str, ...] = (
+    NUMERIC_STRATEGY_IDENTITY,
+    NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+)
+
+#: The bounded encoding token of numeric key members: numeric keys carry no
+#: text code-page semantics, so a numeric member declares the explicit
+#: bounded token ``none`` instead of an encoding name (never a guessed
+#: codec).
+NUMERIC_MEMBER_ENCODING = "none"
+
+#: The format-defined byte width of a VFP Integer (``I``) field.
+INTEGER_MEMBER_BYTE_WIDTH = 4
+
+#: The bounded VFP Numeric (``N``) field width range.
+NUMERIC_MEMBER_WIDTH_MIN = 1
+NUMERIC_MEMBER_WIDTH_MAX = 20
 
 _BOUNDED_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
@@ -119,6 +154,13 @@ def _validate_member_encoding(value: object) -> str:
     return value.lower()
 
 
+def _validate_numeric_member_encoding(value: object) -> str:
+    """Numeric key members carry no text code-page semantics: exactly ``none``."""
+    if value != NUMERIC_MEMBER_ENCODING:
+        raise _invalid("RELATIONSHIP_NUMERIC_ENCODING_INVALID")
+    return NUMERIC_MEMBER_ENCODING
+
+
 @dataclass(frozen=True)
 class RelationMember:
     """One ordered member of a declared relation group (no key values)."""
@@ -144,12 +186,33 @@ class RelationMember:
         ) or self.composite_ordinal < 1:
             raise _invalid("RELATIONSHIP_ORDINAL_INVALID")
         if self.dbf_type not in SUPPORTED_RELATIONSHIP_DBF_TYPES:
+            # Declared numeric key members are exactly the bounded I/N
+            # vocabulary; floating/currency/logical numeric runtime types
+            # (F/Y/B/L) can never be reinterpreted as integer key domains.
             raise _invalid("RELATIONSHIP_DBF_TYPE_UNSUPPORTED")
         if isinstance(self.byte_width, bool) or not isinstance(self.byte_width, int) or self.byte_width < 1:
             raise _invalid("RELATIONSHIP_BYTE_WIDTH_INVALID")
-        object.__setattr__(self, "encoding", _validate_member_encoding(self.encoding))
+        if self.dbf_type in SUPPORTED_NUMERIC_RELATIONSHIP_DBF_TYPES:
+            object.__setattr__(self, "encoding", _validate_numeric_member_encoding(self.encoding))
+            self._validate_numeric_member_shape()
+        else:
+            object.__setattr__(self, "encoding", _validate_member_encoding(self.encoding))
         if not isinstance(self.nullable, bool):
             raise _invalid("RELATIONSHIP_NULL_POLICY_INVALID")
+
+    def _validate_numeric_member_shape(self) -> None:
+        """The format-truthful shape contract of a declared numeric member."""
+        if self.dbf_type == "I" and self.byte_width != INTEGER_MEMBER_BYTE_WIDTH:
+            raise _invalid("RELATIONSHIP_INTEGER_WIDTH_INVALID")
+        if self.dbf_type == "N" and not (
+            NUMERIC_MEMBER_WIDTH_MIN <= self.byte_width <= NUMERIC_MEMBER_WIDTH_MAX
+        ):
+            raise _invalid("RELATIONSHIP_NUMERIC_WIDTH_INVALID")
+
+    @property
+    def is_numeric_member(self) -> bool:
+        """Whether this member is an explicitly declared numeric key member."""
+        return self.dbf_type in SUPPORTED_NUMERIC_RELATIONSHIP_DBF_TYPES
 
     @property
     def identity(self) -> tuple[str, str, str]:
@@ -166,6 +229,7 @@ class RelationGroup:
     comparison: str
     provenance: str
     source_digest: str | None = None
+    numeric_strategy: str = NUMERIC_STRATEGY_IDENTITY
 
     def __post_init__(self) -> None:
         _validate_bounded_token(self.relation_id, "RELATIONSHIP_ID_INVALID")
@@ -175,6 +239,9 @@ class RelationGroup:
             raise _invalid("RELATIONSHIP_COMPARISON_INVALID")
         if self.provenance not in RELATIONSHIP_PROVENANCES:
             raise _invalid("RELATIONSHIP_PROVENANCE_INVALID")
+        if self.numeric_strategy not in NUMERIC_STRATEGIES:
+            # Unknown numeric strategies FAIL CLOSED (no silent inference).
+            raise _invalid("RELATIONSHIP_NUMERIC_STRATEGY_INVALID")
         if self.source_digest is not None:
             _validate_bounded_token(self.source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
         seen: set[tuple[str, str, str]] = set()
@@ -182,6 +249,15 @@ class RelationGroup:
             if member.identity in seen:
                 raise _invalid("RELATIONSHIP_MEMBER_DUPLICATE")
             seen.add(member.identity)
+        # Explicitness: reversible numeric pseudonymization can never be
+        # inferred from the member types — it must be DECLARED, and a
+        # declaration without any numeric member is meaningless (fail closed).
+        numeric_members = [m for m in self.members if m.is_numeric_member]
+        if (
+            self.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+            and not numeric_members
+        ):
+            raise _invalid("RELATIONSHIP_NUMERIC_STRATEGY_MEMBER_REQUIRED")
         roles = {member.key_role for member in self.members}
         # STRUCTURAL CONTRACT (1.0): a usable declared relation group carries
         # exactly ONE parent-side key family (PRIMARY xor CANDIDATE) and at
@@ -227,6 +303,7 @@ class RelationGroup:
             "comparison": self.comparison,
             "provenance": self.provenance,
             "source_digest": self.source_digest,
+            "numeric_strategy": self.numeric_strategy,
             "members": [
                 {
                     "table": member.table_path,

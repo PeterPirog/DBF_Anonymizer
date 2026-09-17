@@ -259,7 +259,10 @@ def test_arity_mismatch_rejected() -> None:
 
 def test_unsupported_member_type_and_unknown_keys_rejected() -> None:
     payload = json.loads(json.dumps(SINGLE_DOCUMENT))
-    payload["relations"][0]["members"][0]["dbf_type"] = "N"
+    # REQ-P3-005 legitimately extends the declared member vocabulary with the
+    # numeric key types I/N; floating/currency/logical runtime types (F/Y/B/L)
+    # remain unsupported declared members and fail closed.
+    payload["relations"][0]["members"][0]["dbf_type"] = "F"
     with pytest.raises(PolicyError) as excinfo:
         parse_relationship_document(payload)
     assert "RELATIONSHIP_DBF_TYPE_UNSUPPORTED" in _detail(excinfo)

@@ -43,6 +43,11 @@ from dbf_anonymizer.vault.memo_allocation import (
     persist_memo_recovery,
     recover_memo_value,
 )
+from dbf_anonymizer.vault.numeric_allocation import (
+    NUMERIC_KEY_PROBE_BUDGET,
+    NumericKeyDomainMapping,
+    numeric_key_domain_id,
+)
 from dbf_anonymizer.vault.store import (
     VaultDatabase,
     default_dictionary_path,
@@ -79,6 +84,9 @@ __all__ = [
     "GLOBAL_TEXT_DOMAIN_ID",
     "GLOBAL_TEXT_PROBE_BUDGET",
     "GlobalTextDomainMapping",
+    "NUMERIC_KEY_PROBE_BUDGET",
+    "NumericKeyDomainMapping",
+    "numeric_key_domain_id",
     "persist_memo_recovery",
     "recover_memo_value",
     "TemporalShiftDomain",

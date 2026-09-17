@@ -43,8 +43,10 @@ from .errors import (
 )
 from .models import (
     MODEL_SCHEMA_VERSION,
+    IDENTITY_PRIVACY_REVIEW_REQUIRED,
     Capabilities,
     DatasetIdentity,
+    NumericIdentityReview,
     Plan,
     PolicySummary,
     PreflightResult,
@@ -66,8 +68,10 @@ __version__ = "1.0.0.dev0"
 
 __all__ = [
     "MODEL_SCHEMA_VERSION",
+    "IDENTITY_PRIVACY_REVIEW_REQUIRED",
     "Capabilities",
     "DatasetIdentity",
+    "NumericIdentityReview",
     "Plan",
     "TablePlan",
     "PolicySummary",

@@ -152,6 +152,7 @@ class PreflightCode:
     RELATIONSHIP_DOMAIN_UNVERIFIED = "RELATIONSHIP_DOMAIN_UNVERIFIED"
     PSEUDONYM_CAPACITY_INSUFFICIENT = "PSEUDONYM_CAPACITY_INSUFFICIENT"
     PSEUDONYM_CAPACITY_UNPROVEN = "PSEUDONYM_CAPACITY_UNPROVEN"
+    NUMERIC_KEY_RECOVERY_UNWRITABLE = "NUMERIC_KEY_RECOVERY_UNWRITABLE"
 
     # --- advisory (warning_codes) ---
     STRUCTURAL_CDX_DATA_ONLY = "STRUCTURAL_CDX_DATA_ONLY"
@@ -182,6 +183,7 @@ _ERROR_CODES = frozenset(
         PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED,
         PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT,
         PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN,
+        PreflightCode.NUMERIC_KEY_RECOVERY_UNWRITABLE,
     }
 )
 _WARNING_CODES = frozenset(
@@ -577,12 +579,13 @@ def _check_output_profile_and_capabilities(
 
 
 def _check_relationships(plan: Plan, findings: _Findings) -> None:
-    """REQ-P3-001/003 relationship-domain validation.
+    """REQ-P3-001/003/005 relationship-domain validation.
 
     When the plan carries a parsed typed relationship document (from the
     real ``build_plan`` ingestion), the authoritative P3 compatibility
     validation runs against the retained document and the source-schema
-    binding facts.  A VALID declared C/V relationship is accepted.
+    binding facts.  A VALID declared C/V or numeric-key relationship is
+    accepted.
 
     A plan whose relationship metadata is only a SUMMARY (relation_count > 0)
     with no member semantics available CANNOT be verified from the count
@@ -620,7 +623,14 @@ def _check_relationships(plan: Plan, findings: _Findings) -> None:
     if bindings is not None:
         # Re-verify every declared member against the retained source-schema
         # binding facts (defence in depth; the build_plan binding already
-        # refused mismatches before any plan existed).
+        # refused mismatches before any plan existed).  Numeric key members
+        # are re-verified against their FULL representation facts, including
+        # the integral Numeric domain and the autoincrement refusal for
+        # explicit reversible pseudonymization.
+        from dbf_anonymizer.relationships.models import (
+            NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+        )
+
         for group in relationships.groups:
             for member in group.members:
                 fact = bindings.get((member.table_path, member.field_name))
@@ -631,6 +641,12 @@ def _check_relationships(plan: Plan, findings: _Findings) -> None:
                 ):
                     findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
                     return
+                if member.is_numeric_member and (
+                    group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+                ):
+                    if (member.dbf_type == "N" and fact[3] != 0) or fact[4]:
+                        findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
+                        return
 
 
 def _check_index_conditions(plan: Plan, findings: _Findings) -> None:
@@ -905,6 +921,171 @@ def _capacity_sufficient(
 
 
 # ---------------------------------------------------------------------------
+# Numeric key-domain capacity feasibility (REQ-P3-005) — read-only
+# ---------------------------------------------------------------------------
+#: Hard, enforced integer ceiling on the exact distinct numeric originals
+#: retained by the numeric capacity scan.  Reaching the ceiling fails closed
+#: with ``PSEUDONYM_CAPACITY_UNPROVEN``; it is never treated as capacity data.
+_MAX_NUMERIC_EXACT_VALUES = 65536
+
+_NUMERIC_CAPACITY_UNWRITABLE = "NUMERIC_KEY_RECOVERY_UNWRITABLE"
+
+
+def _numeric_relation_capacity(
+    source_files: dict[str, Path],
+    plan: Plan,
+    control: ProgressController | None = None,
+) -> tuple[str, bool]:
+    """Side-effect-free numeric key-domain capacity preflight (REQ-P3-005).
+
+    For EVERY explicitly declared ``REVERSIBLE_BIJECTIVE`` numeric key
+    relationship the scan proves, BEFORE any transformation and with ZERO
+    created output/vault state, that the shared numeric mapping domain can
+    allocate a bijection for all distinct observed originals:
+
+    * the already-parsed relationship document and the REAL source-schema
+      bindings resolve each relation's member representations through the
+      authoritative numeric domain kernel (no vault, no second database);
+    * public dbfbridge record streaming covers ACTIVE AND DELETED records
+      (both are transformed later);
+    * NULL consumes no mapping token (it stays a preserved identity);
+    * exact distinct originals are collected only as required for the proof,
+      under the hard enforced ceiling ``_MAX_NUMERIC_EXACT_VALUES``; exceeding
+      it fails closed with ``_CAPACITY_UNPROVEN`` instead of guessing;
+    * a readable Integer original that the pinned public Direct Write
+      boundary could never reconstruct during recovery (the int32 extremes)
+      is reported as ``NUMERIC_KEY_RECOVERY_UNWRITABLE``;
+    * a non-integral observed numeric value can never be represented
+      faithfully by the integral domain -> ``_CAPACITY_INSUFFICIENT``.
+
+    Returns ``(capacity_outcome, unwritable_original_found)``; the capacity
+    outcome is one of ``_CAPACITY_OK`` / ``_CAPACITY_INSUFFICIENT`` /
+    ``_CAPACITY_UNPROVEN``.  No source value is ever logged or serialized.
+
+    REQ-P1-008: the scan polls cooperative cancellation at every streamed
+    record boundary and emits bounded structured progress through the shared
+    ``CAPACITY_SCAN`` phase.
+    """
+    if control is None:
+        control = ProgressController(operation="preflight")
+    context = plan.execution_context
+    document = context.relationship_document if context is not None else None
+    if document is None:
+        return (_CAPACITY_OK, False)
+    from dbf_anonymizer.relationships.models import (
+        NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+    )
+
+    reversible_groups = [
+        group
+        for group in document.groups
+        if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+    ]
+    if not reversible_groups:
+        return (_CAPACITY_OK, False)
+    bindings = context.relationship_bindings if context is not None else None
+    if bindings is None:
+        bindings = {}
+    from dbf_anonymizer.transforms.numeric_keys import (
+        MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE,
+        MEMBER_ORIGINAL_RECOVERY_UNWRITABLE,
+        MEMBER_ORIGINAL_REVERSIBLE,
+        NumericKeyDomain,
+        NumericKeyMemberRange,
+        classify_member_original,
+        integral_numeric_member,
+        integer_member,
+        numeric_key_domain_for,
+        plan_numeric_bijection,
+    )
+
+    tasks: list[
+        tuple[str, NumericKeyDomain, list[tuple[str, str, NumericKeyMemberRange]]]
+    ] = []
+    for group in reversible_groups:
+        members: list[tuple[str, str, NumericKeyMemberRange]] = []
+        domain_members = []
+        for member in group.members:
+            if not member.is_numeric_member:
+                continue
+            fact = bindings.get((member.table_path, member.field_name))
+            if fact is None:
+                # A reversible numeric member without a REAL source-schema
+                # binding cannot be proven: fail closed without guessing.
+                return (_CAPACITY_UNPROVEN, False)
+            dbf_type, _length, _encoding, _decimals, _autoincrement, _nullable = fact
+            if dbf_type == "I":
+                kernel_member = integer_member()
+            else:
+                kernel_member = integral_numeric_member(int(member.byte_width))
+            domain_members.append(kernel_member)
+            members.append((member.table_path, member.field_name, kernel_member))
+        if not members:
+            return (_CAPACITY_UNPROVEN, False)
+        try:
+            domain = numeric_key_domain_for(domain_members)
+        except ValueError:
+            # An empty shared representable range is an impossible constraint.
+            return (_CAPACITY_INSUFFICIENT, False)
+        tasks.append((group.relation_id, domain, members))
+    if not tasks:
+        return (_CAPACITY_OK, False)
+
+    unwritable = False
+    for _relation_id, domain, members in tasks:
+        control.start_phase(ProgressPhase.CAPACITY_SCAN, total=len(members))
+        distinct: set[int] = set()
+        for table_path, field_name, kernel_member in members:
+            rel = table_path
+            full = source_files.get(rel)
+            if full is None:
+                return (_CAPACITY_UNPROVEN, unwritable)
+            control.check_cancelled()
+            names = [field_name]
+            try:
+                for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
+                    full, include_deleted=True, fields=names, memo="skip"
+                ):
+                    control.check_cancelled()
+                    value = record.values.get(field_name)
+                    if value is None:
+                        continue  # NULL consumes no mapping token
+                    if isinstance(value, bool) or not isinstance(value, int):
+                        # A non-integral observed numeric value cannot be
+                        # represented faithfully by the integral domain.
+                        return (_CAPACITY_INSUFFICIENT, unwritable)
+                    # THE SAME authoritative origin-member reversible rule the
+                    # allocator enforces: the verdict depends ONLY on the
+                    # originating member, never on the union of members.
+                    verdict = classify_member_original(kernel_member, value)
+                    if verdict == MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE:
+                        return (_CAPACITY_INSUFFICIENT, unwritable)
+                    if verdict == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE:
+                        # Readable but NOT reconstructable through the pinned
+                        # public Direct Write boundary for this member.
+                        unwritable = True
+                        continue
+                    if len(distinct) >= _MAX_NUMERIC_EXACT_VALUES and value not in distinct:
+                        return (_CAPACITY_UNPROVEN, unwritable)
+                    distinct.add(value)
+            except (CancellationError, CallbackError):
+                raise
+            except Exception as exc:
+                raise DBFBridgeError.from_exception(
+                    exc,
+                    context=ErrorContext(
+                        operation="preflight",
+                        table_path=rel,
+                        detail_code="numeric_capacity_iter_records_failed",
+                    ),
+                ) from None
+            control.bump(ProgressPhase.CAPACITY_SCAN, table_path=rel)
+        if not plan_numeric_bijection(domain, sorted(distinct), []):
+            return (_CAPACITY_INSUFFICIENT, unwritable)
+    return (_CAPACITY_OK, unwritable)
+
+
+# ---------------------------------------------------------------------------
 # Storage-space risk
 # ---------------------------------------------------------------------------
 def _storage_ok(
@@ -1098,10 +1279,12 @@ def preflight(
     if source_files is not None:
         _check_standalone_idx(source_files, plan, findings)
 
-    # 10. Pseudonym capacity feasibility (read-only, GLOBAL_TEXT C/V only).
-    #     Requires verified source state AND the direct-read capability
-    #     (schema + record streaming): a missing capability is reported as
-    #     CAPABILITY_MISSING and the capacity scan is not entered at all.
+    # 10. Pseudonym capacity feasibility (read-only, GLOBAL_TEXT C/V and
+    #     REQ-P3-005 numeric key domains).  Requires verified source state AND
+    #     the direct-read capability (schema + record streaming): a missing
+    #     capability is reported as CAPABILITY_MISSING and the capacity scans
+    #     are not entered at all.  Both scans are side-effect-free: they
+    #     create no output, no vault and no SQLite artifact.
     control.check_cancelled()
     if (
         source_verified
@@ -1113,6 +1296,15 @@ def preflight(
         if outcome == _CAPACITY_INSUFFICIENT:
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
         elif outcome == _CAPACITY_UNPROVEN:
+            findings.error(PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN)
+        numeric_outcome, unwritable = _numeric_relation_capacity(
+            source_files, plan, control
+        )
+        if unwritable:
+            findings.error(PreflightCode.NUMERIC_KEY_RECOVERY_UNWRITABLE)
+        if numeric_outcome == _CAPACITY_INSUFFICIENT:
+            findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
+        elif numeric_outcome == _CAPACITY_UNPROVEN:
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN)
 
     # 11. Storage-space risk (side-effect-free; fail closed if the estimate

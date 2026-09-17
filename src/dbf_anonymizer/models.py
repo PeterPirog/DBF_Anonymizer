@@ -54,6 +54,10 @@ class VaultStrategy(str, Enum):
     SINGLE_DATASET_SQLITE = "SINGLE_DATASET_SQLITE"
 
 
+#: The single review status of unchanged numeric identifiers (REQ-P3-004).
+IDENTITY_PRIVACY_REVIEW_REQUIRED = "IDENTITY_PRIVACY_REVIEW_REQUIRED"
+
+
 def _normalized_relative_path(value: str) -> str:
     if not value or "\x00" in value:
         raise ValueError("relative path must be a non-empty text path")
@@ -336,6 +340,38 @@ class _PlanExecutionContext:
 
 
 @dataclass(frozen=True, slots=True)
+class NumericIdentityReview(PublicModel):
+    """One unchanged numeric identifier marked for privacy review (P3-004).
+
+    Bounded, deterministic, structural facts ONLY: the normalized relative
+    table path, the field name, the logical DBF type and the review status
+    token.  It never carries an actual key value, a min/max or sampled value
+    derived from records, a vault path, a reverse mapping or an absolute
+    local path.
+    """
+
+    table_path: str
+    field_name: str
+    dbf_type: str
+    status: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        _validated_code(self.field_name, field_name="field_name")
+        _validated_code(self.dbf_type, field_name="dbf_type")
+        _validated_code(self.status, field_name="status")
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "NumericIdentityReview",
+            table_path=self.table_path,
+            field_name=self.field_name,
+            dbf_type=self.dbf_type,
+            status=self.status,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Plan(PublicModel):
     plan_id: str
     dataset: DatasetIdentity
@@ -344,6 +380,7 @@ class Plan(PublicModel):
     relationships: RelationshipMetadata
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
+    numeric_identity_review: tuple[NumericIdentityReview, ...] = ()
     execution_context: _PlanExecutionContext | None = field(
         default=None, repr=False, compare=False
     )
@@ -364,6 +401,7 @@ class Plan(PublicModel):
             relationships=self.relationships,
             output_profile=self.output_profile,
             relationship_assurance_target=self.relationship_assurance_target,
+            numeric_identity_review=self.numeric_identity_review,
         )
 
 
@@ -553,6 +591,7 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     PolicySummary,
     RelationshipMetadata,
     RelationalAssurance,
+    NumericIdentityReview,
     ProgressEvent,
     PreflightResult,
     PseudonymizationResult,
@@ -565,6 +604,7 @@ __all__ = [
     "MODEL_SCHEMA_VERSION",
     "JsonDict",
     "JsonValue",
+    "IDENTITY_PRIVACY_REVIEW_REQUIRED",
     "Capabilities",
     "DatasetIdentity",
     "Plan",
@@ -573,6 +613,7 @@ __all__ = [
     "RelationshipMetadata",
     "RelationalAssurance",
     "RelationalAssuranceLevel",
+    "NumericIdentityReview",
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",
