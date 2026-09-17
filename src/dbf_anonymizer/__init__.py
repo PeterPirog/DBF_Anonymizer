@@ -63,11 +63,6 @@ from .models import (
     VerificationResult,
 )
 from .api import build_plan, capabilities, preflight
-from .relationships import (
-    RelationalAssuranceSummary,
-    RelationshipVerificationReport,
-    VerificationStatus,
-)
 
 __version__ = "1.0.0.dev0"
 
@@ -83,9 +78,6 @@ __all__ = [
     "RelationshipMetadata",
     "RelationalAssurance",
     "RelationalAssuranceLevel",
-    "RelationalAssuranceSummary",
-    "RelationshipVerificationReport",
-    "VerificationStatus",
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",

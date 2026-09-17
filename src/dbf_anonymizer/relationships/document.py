@@ -28,6 +28,7 @@ from dbf_anonymizer.relationships.models import (
     KEY_ROLES,
     NUMERIC_STRATEGIES,
     NUMERIC_STRATEGY_IDENTITY,
+    PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RELATIONSHIP_PROVENANCES,
     SUPPORTED_RELATIONSHIP_DBF_TYPES,
@@ -42,6 +43,7 @@ __all__ = [
     "canonical_relationship_bytes",
     "relationship_fingerprint",
     "relationship_metadata_from_document",
+    "authoritative_vfp_metadata_from_document",
 ]
 
 _MEMBER_KEYS = frozenset(
@@ -209,7 +211,10 @@ def relationship_metadata_from_document(
 
     The adapter keeps the P1/P2 fingerprint mechanism intact: the canonical
     fingerprint becomes the dataset's ``relationship_fingerprint`` and the
-    provenance becomes the bounded metadata token.
+    provenance becomes the bounded metadata token.  The result is ALWAYS
+    NON-authoritative: declared planning metadata never masquerades as
+    injected authoritative VFP metadata (see
+    :func:`authoritative_vfp_metadata_from_document`).
     """
     provenances = {group.provenance for group in document.groups}
     provenance = next(iter(provenances)) if len(provenances) == 1 else "MIXED"
@@ -219,5 +224,51 @@ def relationship_metadata_from_document(
         relationship_fingerprint=relationship_fingerprint(document),
         relation_count=len(document.groups),
         authoritative=False,
+        metadata_path=metadata_path,
+    )
+
+
+def authoritative_vfp_metadata_from_document(
+    document: RelationshipDocument,
+    *,
+    metadata_path: str | None = None,
+) -> RelationshipMetadata:
+    """The typed adapter for ALREADY-INJECTED authoritative VFP metadata.
+
+    This is the ONE tested authoritative ingestion boundary of REQ-P3-007:
+    it accepts metadata that a host has ALREADY injected (source-neutral,
+    in-memory) and validates that it genuinely qualifies BEFORE marking it
+    authoritative:
+
+    * the document declares at least one relation;
+    * EVERY group provenance is exactly ``MCP_VFP9SP2_TOOLCHAIN`` — a
+      POLICY_FILE document or a MIXED-provenance document never qualifies;
+    * the canonical relationship fingerprint of THIS document becomes the
+      metadata fingerprint (authority is bound to the same document the
+      verification report must bind to);
+    * the metadata version is the supported schema (the typed parser already
+      refuses every other version);
+    * paths stay normalized-relative and no key value or absolute path is
+      added.
+
+    The adapter performs NO network, NO MCP transport, NO COM and NO VFP
+    process automation: the injection already happened; this boundary only
+    certifies the injected facts.  A document that does not qualify fails
+    closed with the stable typed ``RELATIONSHIP_AUTHORITATIVE_*`` refusals.
+    """
+    if not document.groups:
+        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_EMPTY")
+    provenances = {group.provenance for group in document.groups}
+    if provenances != {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN}:
+        # A POLICY_FILE or MIXED-provenance document is never authoritative
+        # VFP metadata — the provenance label alone is never evidence, and
+        # mixed provenance is ambiguous by definition.
+        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
+    return RelationshipMetadata(
+        metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
+        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+        relationship_fingerprint=relationship_fingerprint(document),
+        relation_count=len(document.groups),
+        authoritative=True,
         metadata_path=metadata_path,
     )

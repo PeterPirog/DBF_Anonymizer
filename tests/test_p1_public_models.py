@@ -101,7 +101,11 @@ def _samples() -> tuple[object, ...]:
         declared_relations=1,
         verified_relations=1,
         failed_relations=0,
+        incomplete_relations=0,
         evidence_fingerprint="sha256:relationship-evidence",
+        relationship_fingerprint="sha256:relationships",
+        evidence_schema_version="1.0",
+        scope_note="DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY",
     )
     plan = Plan(
         plan_id="plan-001",
@@ -298,6 +302,19 @@ def test_relational_assurance_levels_are_exact_architecture_values() -> None:
     }
 
 
+@pytest.mark.parametrize("hostile", ["true", 1, None, object()])
+def test_relationship_metadata_authoritative_is_a_genuine_bool(hostile: object) -> None:
+    """Authority is a boolean FACT: no truthy string/number/object shortcut."""
+    with pytest.raises(ValueError):
+        RelationshipMetadata(
+            metadata_schema_version="1.0",
+            provenance="declared",
+            relationship_fingerprint="sha256:relationships",
+            relation_count=1,
+            authoritative=hostile,  # type: ignore[arg-type]
+        )
+
+
 def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
     capabilities = _samples()[0]
     assert isinstance(capabilities, Capabilities)
@@ -351,8 +368,12 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
             "relationship_fingerprint", "relation_count", "authoritative", "metadata_path",
         ),
         "RelationalAssurance": (
+            # REQ-P3-007 extended the ONE canonical assurance model with the
+            # truthful evidence binding (incomplete count, relationship
+            # fingerprint, evidence schema version, machine scope note).
             "schema_version", "model_type", "level", "declared_relations", "verified_relations",
-            "failed_relations", "evidence_fingerprint",
+            "failed_relations", "incomplete_relations", "evidence_fingerprint",
+            "relationship_fingerprint", "evidence_schema_version", "scope_note",
         ),
         "Plan": (
             "schema_version", "model_type", "plan_id", "dataset", "tables", "policy",

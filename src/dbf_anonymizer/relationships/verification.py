@@ -28,11 +28,14 @@ structure, not sensitive values"):
 
 The model is designed for the future P4 production engine: the
 :class:`RelationshipEvidenceAccumulator` consumes one key tuple per
-observation (bounded by DISTINCT key tuples, never by dataset size), so P4
-can stream before/after evidence during its passes without materializing a
-dataset.  No production engine, public ``pseudonymize``/``verify_dataset``
-operation, private DBF/FPT IO, second database or persistence is introduced
-here.
+observation (streaming input, count-only public output).  Its internal state
+is proportional to the number of DISTINCT observed key tuples — which can
+approach the record count — so this is NOT the final REQ-P4-002
+bounded-memory production verification strategy; P4 will bind relationship
+evidence through its own approved bounded strategy (for example vault-backed
+evidence).  No production engine, public
+``pseudonymize``/``verify_dataset`` operation, private DBF/FPT IO, second
+database or persistence is introduced here.
 
 Every public payload serializes deterministically (canonical relation order,
 canonical invariant order, sorted count profiles) and carries the stable
@@ -295,9 +298,15 @@ class RelationVerificationEvidence(PublicModel):
         ):
             raise TypeError("invariants must be a tuple of RelationInvariantResult")
         if self.status is VerificationStatus.INCOMPLETE:
-            if self.before is None and self.after is None:
+            # INCOMPLETE is the FAIL-CLOSED state for missing evidence: a
+            # declared relation is INCOMPLETE whenever AT LEAST ONE complete
+            # side is missing — including BOTH sides missing.  Complete
+            # evidence on both sides can never be INCOMPLETE: it must resolve
+            # to VERIFIED or FAILED (constructing an INCOMPLETE relation from
+            # two complete sides is structural misuse and is refused).
+            if self.before is not None and self.after is not None:
                 raise ValueError(
-                    "an INCOMPLETE relation is missing at least one complete side"
+                    "complete before and after evidence must resolve to VERIFIED or FAILED"
                 )
             if self.invariants:
                 raise ValueError("an INCOMPLETE relation carries no invariant results")
@@ -409,17 +418,24 @@ class RelationshipVerificationReport(PublicModel):
 
 
 class RelationshipEvidenceAccumulator:
-    """The bounded streaming evidence kernel for ONE relation side pair.
+    """The streaming evidence kernel for ONE relation side pair.
 
     One instance collects the before (source) side or the after (transformed)
     side of one declared relation.  Callers feed ONE key tuple per physical
-    row (active AND deleted records); internal state is bounded by the number
-    of DISTINCT key tuples, never by dataset size.  A NULL-containing tuple
-    is observed as the EMPTY tuple with ``null=True`` — the same canonical
-    marker the established relation evidence uses — and participates in
-    neither uniqueness, nor join matching, nor the multiplicity profiles; it
-    is counted per side.  A non-NULL key must have EXACTLY the declared
-    composite arity; component order is semantically significant.
+    row (active AND deleted records); the public output is COUNT-ONLY.
+
+    Truthful memory statement: the internal state is proportional to the
+    number of DISTINCT observed key tuples, which can approach the record
+    count — this is streaming input with count-only output, NOT the final
+    REQ-P4-002 bounded-memory production verification strategy (P4 will bind
+    relationship evidence through its own approved bounded strategy).
+
+    A NULL-containing tuple is observed as the EMPTY tuple with
+    ``null=True`` — the same canonical marker the established relation
+    evidence uses — and participates in neither uniqueness, nor join
+    matching, nor the multiplicity profiles; it is counted per side.  A
+    non-NULL key must have EXACTLY the declared composite arity; component
+    order is semantically significant.
     """
 
     def __init__(self, *, composite_arity: int) -> None:

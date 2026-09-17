@@ -52,11 +52,6 @@ EXPECTED_PUBLIC_EXPORTS = {
     "RelationshipMetadata",
     "RelationalAssurance",
     "RelationalAssuranceLevel",
-    # REQ-P3-006/P3-007: the standalone value-free verification evidence and
-    # assurance summary models that P4/P5 later embed.
-    "RelationalAssuranceSummary",
-    "RelationshipVerificationReport",
-    "VerificationStatus",
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",

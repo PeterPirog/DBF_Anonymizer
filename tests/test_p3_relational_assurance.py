@@ -1,8 +1,9 @@
 """Relational assurance levels derived from verification evidence (P3-007).
 
-The exact four-level vocabulary, the evidence-based derivation rules, the
-explicit VFP-metadata scope limitation (no full database relational
-correctness claim) and the privacy guards of the public assurance boundary.
+The exact four-level vocabulary, the evidence-based derivation rules, the ONE
+tested authoritative VFP metadata ingestion adapter, the explicit scope
+limitation (no full database relational correctness claim) and the privacy
+guards of the canonical public ``RelationalAssurance`` boundary.
 """
 
 from __future__ import annotations
@@ -13,20 +14,21 @@ from pathlib import Path
 
 import pytest
 
-from dbf_anonymizer import VerificationError
+from dbf_anonymizer import PolicyError, VerificationError
 from dbf_anonymizer.models import (
     MODEL_SCHEMA_VERSION,
     PUBLIC_MODEL_TYPES,
+    RelationalAssurance,
     RelationalAssuranceLevel,
     RelationshipMetadata,
 )
 from dbf_anonymizer.relationships import (
+    EVIDENCE_SCHEMA_VERSION,
     NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
     PROVENANCE_POLICY_FILE,
     RELATIONAL_ASSURANCE_SCOPE_NOTE,
-    EVIDENCE_SCHEMA_VERSION,
-    RelationalAssuranceSummary,
+    authoritative_vfp_metadata_from_document,
     parse_relationship_document,
     relationship_fingerprint,
     verify_relationships,
@@ -34,9 +36,7 @@ from dbf_anonymizer.relationships import (
 from dbf_anonymizer.relationships.assurance import derive_relational_assurance
 from dbf_anonymizer.relationships.verification import (
     RelationEvidenceCounts,
-    RelationSideMetrics,
 )
-from dataclasses import fields as dataclass_fields
 
 from tests.test_p3_relationship_verification import (
     _counts,
@@ -46,29 +46,47 @@ from tests.test_p3_relationship_verification import (
 )
 
 
-def _metadata(
-    payload: object, *, authoritative: bool, provenance: str | None = None
-) -> RelationshipMetadata:
-    document = parse_relationship_document(payload)  # type: ignore[arg-type]
-    return RelationshipMetadata(
-        metadata_schema_version="1.0",
-        provenance=provenance or PROVENANCE_POLICY_FILE,
-        relationship_fingerprint=relationship_fingerprint(document),
-        relation_count=len(document.groups),
-        authoritative=authoritative,
+def _toolchain_document() -> dict[str, object]:
+    """The authoritative toolchain document (single relation, MCP provenance)."""
+    payload = _numeric_document()
+    payload["relations"][0]["provenance"] = PROVENANCE_MCP_VFP9SP2_TOOLCHAIN  # type: ignore[index,union-attr]
+    return payload
+
+
+def _multi_toolchain_document() -> dict[str, object]:
+    """A two-relation toolchain document (for missing/failed coverage)."""
+    return {
+        "metadata_schema_version": "1.0",
+        "relations": [
+            {
+                "relation_id": "rel-a",
+                "provenance": PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+                "comparison": "EXACT_VALUE",
+                "members": [
+                    {"table": "p/x.dbf", "field": "A", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                    {"table": "c/y.dbf", "field": "A", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                ],
+            },
+            {
+                "relation_id": "rel-b",
+                "provenance": PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+                "comparison": "EXACT_VALUE",
+                "members": [
+                    {"table": "p/x.dbf", "field": "B", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                    {"table": "c/y.dbf", "field": "B", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                ],
+            },
+        ],
+    }
+
+
+def _ordinary_metadata(payload: object) -> RelationshipMetadata:
+    """The ORDINARY (non-authoritative) adapter output for one document."""
+    from dbf_anonymizer.relationships import relationship_metadata_from_document
+
+    return relationship_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
     )
-
-
-def _verified_report(payload: object) -> object:
-    """A complete verified report for every relation of the document."""
-    document = parse_relationship_document(payload)  # type: ignore[arg-type]
-    before: dict[str, RelationEvidenceCounts] = {}
-    after: dict[str, RelationEvidenceCounts] = {}
-    for group in document.canonical_groups():
-        evidence = _counts([("A",), ("B",)], [("A",), ("B",), ("B",)])
-        before[group.relation_id] = evidence
-        after[group.relation_id] = evidence
-    return verify_relationships(document, before=before, after=after)
 
 
 def test_assurance_levels_are_the_exact_architecture_values() -> None:
@@ -92,19 +110,21 @@ def test_no_declared_metadata_is_global_exact_value() -> None:
         relation_count=0,
         authoritative=False,
     )
-    summary = derive_relational_assurance(relationships, None)
-    assert summary.level is RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
-    assert summary.relation_count == 0
-    assert summary.verified_relation_count == 0
-    assert summary.failed_relation_count == 0
-    assert summary.incomplete_relation_count == 0
-    assert summary.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
+    assurance = derive_relational_assurance(relationships, None)
+    assert assurance.level is RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
+    assert assurance.declared_relations == 0
+    assert assurance.verified_relations == 0
+    assert assurance.failed_relations == 0
+    assert assurance.incomplete_relations == 0
+    assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
+    assert assurance.evidence_fingerprint is None
+    assert assurance.evidence_schema_version == EVIDENCE_SCHEMA_VERSION
     # An empty report for the same empty dataset stays in the same state.
     empty_document = parse_relationship_document(
         {"metadata_schema_version": "1.0", "relations": []}
     )
     empty_report = verify_relationships(empty_document, before={}, after={})
-    assert derive_relational_assurance(relationships, empty_report) == summary
+    assert derive_relational_assurance(relationships, empty_report) == assurance
 
 
 def test_global_exact_value_rests_on_the_real_global_mapping_semantics(
@@ -167,18 +187,19 @@ def test_global_exact_value_rests_on_the_real_global_mapping_semantics(
 # ---------------------------------------------------------------------------
 def test_declared_relations_verified() -> None:
     payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=False)
+    relationships = _ordinary_metadata(payload)
+    assert relationships.authoritative is False
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
-    assert summary.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
-    assert summary.relation_count == 1
-    assert summary.verified_relation_count == 1
-    assert summary.failed_relation_count == 0
-    assert summary.incomplete_relation_count == 0
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
+    assert assurance.declared_relations == 1
+    assert assurance.verified_relations == 1
+    assert assurance.failed_relations == 0
+    assert assurance.incomplete_relations == 0
 
 
 # ---------------------------------------------------------------------------
@@ -186,18 +207,18 @@ def test_declared_relations_verified() -> None:
 # ---------------------------------------------------------------------------
 def test_declared_one_failed_relation_is_incomplete() -> None:
     payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=False)
+    relationships = _ordinary_metadata(payload)
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
-        # A broken after side (an extra orphan) FAILS the relation.
+        # A broken after side (extra orphans) FAILS the relation.
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("Z",), ("W",)])},
     )
     assert report.relations[0].status.value == "FAILED"
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
-    assert summary.level is RelationalAssuranceLevel.INCOMPLETE
-    assert summary.failed_relation_count == 1
-    assert summary.verified_relation_count == 0
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    assert assurance.failed_relations == 1
+    assert assurance.verified_relations == 0
 
 
 # ---------------------------------------------------------------------------
@@ -205,42 +226,42 @@ def test_declared_one_failed_relation_is_incomplete() -> None:
 # ---------------------------------------------------------------------------
 def test_declared_one_missing_relation_is_incomplete() -> None:
     payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=False)
-    evidence = _counts([("A",)], [("A",), ("B",)])
+    relationships = _ordinary_metadata(payload)
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
-        before={"rel-numeric-key": evidence},
+        before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={},
     )
     assert report.relations[0].status.value == "INCOMPLETE"
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
-    assert summary.level is RelationalAssuranceLevel.INCOMPLETE
-    assert summary.incomplete_relation_count == 1
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    assert assurance.incomplete_relations == 1
 
 
 def test_declared_relations_without_any_report_is_incomplete() -> None:
     payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=True)
-    summary = derive_relational_assurance(relationships, None)
-    assert summary.level is RelationalAssuranceLevel.INCOMPLETE
-    assert summary.incomplete_relation_count == 1
-    assert summary.verified_relation_count == 0
+    relationships = _ordinary_metadata(payload)
+    assurance = derive_relational_assurance(relationships, None)
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    assert assurance.incomplete_relations == 1
+    assert assurance.verified_relations == 0
+    assert assurance.evidence_fingerprint is None
 
 
 # ---------------------------------------------------------------------------
 # 22. VFP provenance label alone is NEVER evidence
 # ---------------------------------------------------------------------------
 def test_vfp_provenance_label_alone_never_grants_vfp_metadata_verified() -> None:
-    payload = _numeric_document()
+    payload = _toolchain_document()
     # The MCP provenance token with an UNVERIFIED (missing) report: the label
     # alone grants nothing — the truthful level is INCOMPLETE.
-    summary = derive_relational_assurance(
-        _metadata(payload, authoritative=False, provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN),
+    assurance = derive_relational_assurance(
+        _ordinary_metadata(payload),
         None,
     )
-    assert summary.level is RelationalAssuranceLevel.INCOMPLETE
-    # Provenance + complete verified evidence but NON-authoritative metadata:
-    # still only the declared level (the label alone is not coverage proof).
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    # Provenance + complete verified evidence but NON-authoritative metadata
+    # (the ORDINARY adapter): still only the declared level.
     document = parse_relationship_document(payload)  # type: ignore[arg-type]
     evidence = _counts([("A",)], [("A",), ("B",)])
     report = verify_relationships(
@@ -248,150 +269,253 @@ def test_vfp_provenance_label_alone_never_grants_vfp_metadata_verified() -> None
         before={"rel-numeric-key": evidence},
         after={"rel-numeric-key": evidence},
     )
-    non_authoritative = RelationshipMetadata(
-        metadata_schema_version="1.0",
-        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
-        relationship_fingerprint=relationship_fingerprint(document),
-        relation_count=1,
-        authoritative=False,
-    )
     assert (
-        derive_relational_assurance(non_authoritative, report).level
-        is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
-    )
-    # Authoritative + complete evidence but a POLICY_FILE provenance: the
-    # VFP toolchain boundary was not the source of the metadata.
-    policy_authoritative = RelationshipMetadata(
-        metadata_schema_version="1.0",
-        provenance=PROVENANCE_POLICY_FILE,
-        relationship_fingerprint=relationship_fingerprint(document),
-        relation_count=1,
-        authoritative=True,
-    )
-    assert (
-        derive_relational_assurance(policy_authoritative, report).level
+        derive_relational_assurance(_ordinary_metadata(payload), report).level
         is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
     )
 
 
 # ---------------------------------------------------------------------------
-# 23. authoritative VFP metadata + proven complete scope => VFP_METADATA_VERIFIED
+# the authoritative VFP metadata adapter (THE tested injection boundary)
+# ---------------------------------------------------------------------------
+def test_authoritative_adapter_marks_a_qualifying_toolchain_document() -> None:
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    metadata = authoritative_vfp_metadata_from_document(document)
+    assert metadata.authoritative is True
+    assert metadata.provenance == PROVENANCE_MCP_VFP9SP2_TOOLCHAIN
+    assert metadata.relationship_fingerprint == relationship_fingerprint(document)
+    assert metadata.relation_count == 1
+    assert metadata.metadata_schema_version == "1.0"
+
+
+def test_authoritative_adapter_refuses_policy_file_provenance() -> None:
+    payload = _numeric_document()  # provenance POLICY_FILE
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    with pytest.raises(PolicyError) as excinfo:
+        authoritative_vfp_metadata_from_document(document)
+    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(
+        excinfo.value.to_dict()
+    )
+
+
+def test_authoritative_adapter_refuses_mixed_provenance() -> None:
+    payload = _multi_toolchain_document()
+    payload["relations"][1]["provenance"] = PROVENANCE_POLICY_FILE  # type: ignore[index,union-attr]
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    with pytest.raises(PolicyError) as excinfo:
+        authoritative_vfp_metadata_from_document(document)
+    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(
+        excinfo.value.to_dict()
+    )
+    # The ordinary adapter truthfully reports the ambiguity, non-authoritative.
+    assert _ordinary_metadata(payload).provenance == "MIXED"  # type: ignore[arg-type]
+
+
+def test_authoritative_adapter_refuses_zero_relations() -> None:
+    empty_document = parse_relationship_document(
+        {"metadata_schema_version": "1.0", "relations": []}
+    )
+    with pytest.raises(PolicyError) as excinfo:
+        authoritative_vfp_metadata_from_document(empty_document)
+    assert "RELATIONSHIP_AUTHORITATIVE_EMPTY" in str(excinfo.value.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# A. authoritative toolchain document + complete verified report
+#    => VFP_METADATA_VERIFIED (metadata obtained through THE adapter)
 # ---------------------------------------------------------------------------
 def test_authoritative_vfp_metadata_with_complete_scope_is_verified() -> None:
-    payload = _numeric_document()
-    relationships = _metadata(
-        payload, authoritative=True, provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN
+    payload = _toolchain_document()
+    relationships = authoritative_vfp_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
     )
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
-    assert summary.level is RelationalAssuranceLevel.VFP_METADATA_VERIFIED
-    assert summary.verified_relation_count == 1
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.VFP_METADATA_VERIFIED
+    assert assurance.verified_relations == 1
+    assert assurance.evidence_fingerprint == report.evidence_fingerprint  # type: ignore[attr-defined]
+    assert assurance.relationship_fingerprint == relationships.relationship_fingerprint
     # Even this stronger level never claims full database correctness.
-    assert summary.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
+    assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
 
 
-def test_authoritative_vfp_metadata_with_incomplete_coverage_is_not_upgraded() -> None:
-    """Authoritative VFP metadata + a failed relation stays INCOMPLETE."""
-    payload = _numeric_document()
-    relationships = _metadata(
-        payload, authoritative=True, provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN
-    )
+# ---------------------------------------------------------------------------
+# B. toolchain provenance through the ORDINARY adapter => DECLARED_RELATIONS_VERIFIED
+# ---------------------------------------------------------------------------
+def test_toolchain_provenance_via_ordinary_adapter_stays_declared() -> None:
+    payload = _toolchain_document()
+    relationships = _ordinary_metadata(payload)
+    assert relationships.authoritative is False
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
-        after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",), ("W",)])},
+        after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    assert report.relations[0].status.value == "FAILED"
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
-    assert summary.level is RelationalAssuranceLevel.INCOMPLETE
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
 
 
-def test_vfp_metadata_requires_at_least_one_verified_relation() -> None:
-    """Authoritative metadata with ZERO relations never upgrades."""
-    relationships = RelationshipMetadata(
-        metadata_schema_version="1.1",
+# ---------------------------------------------------------------------------
+# C. authoritative adapter + one missing relation => INCOMPLETE
+# ---------------------------------------------------------------------------
+def test_authoritative_with_one_missing_relation_is_incomplete() -> None:
+    payload = _multi_toolchain_document()
+    relationships = authoritative_vfp_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
+    )
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        parse_relationship_document(payload),  # type: ignore[arg-type]
+        before={"rel-a": evidence, "rel-b": evidence},
+        after={"rel-a": evidence},  # rel-b AFTER side never evaluated
+    )
+    statuses = [entry.status.value for entry in report.relations]
+    assert statuses == ["VERIFIED", "INCOMPLETE"]
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    assert assurance.verified_relations == 1
+    assert assurance.incomplete_relations == 1
+
+
+# ---------------------------------------------------------------------------
+# D. authoritative adapter + one failed relation => INCOMPLETE
+# ---------------------------------------------------------------------------
+def test_authoritative_with_one_failed_relation_is_incomplete() -> None:
+    payload = _multi_toolchain_document()
+    relationships = authoritative_vfp_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
+    )
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    broken = _counts([("A",)], [("A",), ("W",), ("Z",)])
+    report = verify_relationships(
+        parse_relationship_document(payload),  # type: ignore[arg-type]
+        before={"rel-a": evidence, "rel-b": evidence},
+        after={"rel-a": evidence, "rel-b": broken},
+    )
+    statuses = [entry.status.value for entry in report.relations]
+    assert statuses == ["VERIFIED", "FAILED"]
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assert assurance.level is RelationalAssuranceLevel.INCOMPLETE
+    assert assurance.failed_relations == 1
+
+
+# ---------------------------------------------------------------------------
+# E. authoritative adapter + fingerprint mismatch => typed VerificationError
+# ---------------------------------------------------------------------------
+def test_authoritative_fingerprint_mismatch_fails_closed() -> None:
+    payload = _toolchain_document()
+    relationships = authoritative_vfp_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
+    )
+    other_payload = _toolchain_document()
+    other_payload["relations"][0]["relation_id"] = "rel-other"  # type: ignore[index,union-attr]
+    other_document = parse_relationship_document(other_payload)  # type: ignore[arg-type]
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        other_document,
+        before={"rel-other": evidence},
+        after={"rel-other": evidence},
+    )
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(relationships, report)
+    assert "RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH" in str(
+        excinfo.value.to_dict()
+    )
+
+
+# ---------------------------------------------------------------------------
+# G/H. mixed provenance and zero relations can never reach VFP_METADATA_VERIFIED
+# ---------------------------------------------------------------------------
+def test_mixed_provenance_cannot_become_vfp_metadata_verified() -> None:
+    """Mixed provenance: the adapter refuses, and even hostile truthiness
+    (manually authoritative) can never reach VFP_METADATA_VERIFIED because
+    the provenance is not the toolchain token."""
+    payload = _multi_toolchain_document()
+    payload["relations"][1]["provenance"] = PROVENANCE_POLICY_FILE  # type: ignore[index,union-attr]
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    with pytest.raises(PolicyError):
+        authoritative_vfp_metadata_from_document(document)
+    # Hostile manual construction (negative test only): the ordinary
+    # semantics still refuse the upgrade on the provenance check.
+    evidence = _counts([("A",)], [("A",), ("B",)])
+    report = verify_relationships(
+        document,
+        before={"rel-a": evidence, "rel-b": evidence},
+        after={"rel-a": evidence, "rel-b": evidence},
+    )
+    hostile = RelationshipMetadata(
+        metadata_schema_version="1.0",
+        provenance="MIXED",
+        relationship_fingerprint=relationship_fingerprint(document),
+        relation_count=2,
+        authoritative=True,
+    )
+    assert (
+        derive_relational_assurance(hostile, report).level
+        is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
+    )
+
+
+def test_zero_relation_authoritative_metadata_never_upgrades() -> None:
+    """H: a zero-relation document can never reach VFP_METADATA_VERIFIED."""
+    empty_document = parse_relationship_document(
+        {"metadata_schema_version": "1.0", "relations": []}
+    )
+    with pytest.raises(PolicyError):
+        authoritative_vfp_metadata_from_document(empty_document)
+    # Hostile manual construction (authoritative + toolchain provenance with
+    # ZERO relations): the derivation still refuses the stronger level.
+    hostile = RelationshipMetadata(
+        metadata_schema_version="1.0",
         provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
         relationship_fingerprint="sha256:authoritative-empty",
         relation_count=0,
         authoritative=True,
     )
     assert (
-        derive_relational_assurance(relationships, None).level
+        derive_relational_assurance(hostile, None).level
         is RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
     )
 
 
 # ---------------------------------------------------------------------------
-# fail closed: inconsistent evidence bindings
+# 24. explicit assurance-level serialization (canonical public model)
 # ---------------------------------------------------------------------------
-def test_evidence_fingerprint_mismatch_fails_closed() -> None:
+def test_derived_assurance_serialization_is_stable() -> None:
     payload = _numeric_document()
-    document = parse_relationship_document(payload)  # type: ignore[arg-type]
-    other_payload = _numeric_document()
-    other_payload["relations"][0]["relation_id"] = "rel-other"  # type: ignore[index,union-attr]
-    other_document = parse_relationship_document(other_payload)  # type: ignore[arg-type]
-    other_fingerprint = relationship_fingerprint(other_document)
-    evidence = _counts([("A",)], [("A",), ("B",)])
-    report = verify_relationships(
-        document,
-        before={"rel-numeric-key": evidence},
-        after={"rel-numeric-key": evidence},
-    )
-    mismatched = RelationshipMetadata(
-        metadata_schema_version="1.0",
-        provenance=PROVENANCE_POLICY_FILE,
-        relationship_fingerprint=other_fingerprint,
-        relation_count=1,
-        authoritative=False,
-    )
-    with pytest.raises(VerificationError) as excinfo:
-        derive_relational_assurance(mismatched, report)
-    assert "RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH" in str(excinfo.value.to_dict())
-    # An empty report against declared relations is also refused.
-    empty_document = parse_relationship_document(
-        {"metadata_schema_version": "1.0", "relations": []}
-    )
-    empty_report = verify_relationships(empty_document, before={}, after={})
-    with pytest.raises(VerificationError):
-        derive_relational_assurance(mismatched, empty_report)
-
-
-# ---------------------------------------------------------------------------
-# 24. explicit assurance-level serialization
-# ---------------------------------------------------------------------------
-def test_assurance_summary_serialization_is_stable() -> None:
-    payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=False)
-    summary = derive_relational_assurance(relationships, None)
-    payload_dict = summary.to_dict()
-    assert payload_dict["model_type"] == "RelationalAssuranceSummary"
+    relationships = _ordinary_metadata(payload)
+    assurance = derive_relational_assurance(relationships, None)
+    payload_dict = assurance.to_dict()
+    assert payload_dict["model_type"] == "RelationalAssurance"
     assert payload_dict["schema_version"] == MODEL_SCHEMA_VERSION
     assert tuple(payload_dict) == (
         "schema_version",
         "model_type",
         "level",
-        "relation_count",
-        "verified_relation_count",
-        "failed_relation_count",
-        "incomplete_relation_count",
+        "declared_relations",
+        "verified_relations",
+        "failed_relations",
+        "incomplete_relations",
+        "evidence_fingerprint",
         "relationship_fingerprint",
         "evidence_schema_version",
         "scope_note",
     )
     assert payload_dict["level"] == "INCOMPLETE"
     assert payload_dict["evidence_schema_version"] == EVIDENCE_SCHEMA_VERSION
+    assert payload_dict["scope_note"] == "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
     # Deterministic JSON round trip.
     assert json.loads(json.dumps(payload_dict, sort_keys=True)) == payload_dict
 
 
-def test_assurance_summary_model_is_guarded() -> None:
-    # The P1 public model registry stays untouched (REQ-P1-002 evidence);
-    # the P3-007 summary is the standalone model embedded by P4/P5 later.
-    assert RelationalAssuranceSummary not in PUBLIC_MODEL_TYPES
+def test_canonical_assurance_model_is_registered_and_guarded() -> None:
+    """THE ONE canonical public assurance model is the P1-registered model."""
+    assert RelationalAssurance in PUBLIC_MODEL_TYPES
     forbidden = {
         "key",
         "keys",
@@ -414,25 +538,9 @@ def test_assurance_summary_model_is_guarded() -> None:
         "secret",
         "secrets",
     }
-    from dbf_anonymizer.relationships import (
-        RelationInvariantResult,
-        RelationSideMetrics as SideMetrics,
-        RelationEvidenceCounts as Counts,
-        RelationVerificationEvidence,
-        RelationshipVerificationReport,
+    assert forbidden.isdisjoint(
+        field.name for field in dataclass_fields(RelationalAssurance)
     )
-
-    for model_type in (
-        RelationalAssuranceSummary,
-        RelationshipVerificationReport,
-        RelationInvariantResult,
-        RelationVerificationEvidence,
-        Counts,
-        SideMetrics,
-    ):
-        assert forbidden.isdisjoint(
-            field.name for field in dataclass_fields(model_type)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +568,7 @@ def test_no_full_database_correctness_overclaim() -> None:
         for token in overclaims:
             assert token not in level.value
     assert RELATIONAL_ASSURANCE_SCOPE_NOTE == "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
-    # The scope note is machine-carried by EVERY assurance payload.
+    # The scope note is machine-carried by EVERY derived assurance payload.
     relationships = RelationshipMetadata(
         metadata_schema_version="1.1",
         provenance="none",
@@ -468,47 +576,51 @@ def test_no_full_database_correctness_overclaim() -> None:
         relation_count=0,
         authoritative=False,
     )
-    for summary in (
+    for assurance in (
         derive_relational_assurance(relationships, None),
-        RelationalAssuranceSummary(
+        RelationalAssurance(
             level=RelationalAssuranceLevel.INCOMPLETE,
-            relation_count=1,
-            verified_relation_count=0,
-            failed_relation_count=0,
-            incomplete_relation_count=1,
+            declared_relations=1,
+            verified_relations=0,
+            failed_relations=0,
+            incomplete_relations=1,
             relationship_fingerprint="sha256:rel",
             evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
             scope_note=RELATIONAL_ASSURANCE_SCOPE_NOTE,
         ),
     ):
-        assert summary.to_dict()["scope_note"] == "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
-        boundary = str(summary) + "|" + repr(summary) + json.dumps(summary.to_dict())
+        assert assurance.to_dict()["scope_note"] == "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
+        boundary = str(assurance) + "|" + repr(assurance) + json.dumps(assurance.to_dict())
         for token in overclaims:
             assert token not in boundary
         assert "DBC" not in boundary  # no invented coverage claims
 
 
 def test_assurance_boundary_never_leaks_sensitive_material() -> None:
-    payload = _numeric_document()
-    relationships = _metadata(payload, authoritative=True)
+    payload = _toolchain_document()
+    relationships = authoritative_vfp_metadata_from_document(
+        parse_relationship_document(payload)  # type: ignore[arg-type]
+    )
     report = verify_relationships(
         parse_relationship_document(payload),  # type: ignore[arg-type]
         before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
         after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
     )
-    summary = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
+    assurance = derive_relational_assurance(relationships, report)  # type: ignore[arg-type]
     boundary = (
-        str(summary)
+        str(assurance)
         + "|"
-        + repr(summary)
+        + repr(assurance)
         + "|"
-        + json.dumps(summary.to_dict(), sort_keys=True)
+        + json.dumps(assurance.to_dict(), sort_keys=True)
         + "|"
         + str(report)
         + "|"
         + repr(report)
         + "|"
         + json.dumps(report.to_dict(), sort_keys=True)
+        + "|"
+        + json.dumps(relationships.to_dict(), sort_keys=True)
     )
     assert CANARY_TEXT not in boundary
     assert str(CANARY_NUMERIC) not in boundary

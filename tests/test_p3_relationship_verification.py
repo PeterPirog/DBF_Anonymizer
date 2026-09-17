@@ -33,10 +33,7 @@ from dbf_anonymizer.relationships import (
     relationship_fingerprint,
     verify_relationships,
 )
-from dbf_anonymizer.relationships.assurance import (
-    RelationalAssuranceSummary,
-    derive_relational_assurance,
-)
+from dbf_anonymizer.relationships.assurance import derive_relational_assurance
 from dbf_anonymizer.relationships.evidence import relation_metrics
 from dbf_anonymizer.relationships.verification import (
     INVARIANT_FOREIGN_MULTIPLICITY,
@@ -834,8 +831,8 @@ def test_missing_after_evidence_is_incomplete() -> None:
     assert entry.before.parent.rows_considered == 2
     summary = derive_relational_assurance(_metadata(fingerprint), report)
     assert summary.level.value == "INCOMPLETE"
-    assert summary.verified_relation_count == 0
-    assert summary.incomplete_relation_count == 1
+    assert summary.verified_relations == 0
+    assert summary.incomplete_relations == 1
 
 
 def test_missing_relation_is_not_a_zero_count_relation() -> None:
@@ -853,6 +850,108 @@ def test_missing_relation_is_not_a_zero_count_relation() -> None:
     )
     assert complete_empty.relations[0].status is VerificationStatus.VERIFIED
     assert complete_empty.complete is True
+
+
+# ---------------------------------------------------------------------------
+# the COMPLETE state matrix of one declared relation
+# ---------------------------------------------------------------------------
+def test_both_sides_missing_is_incomplete() -> None:
+    """A declared relation with NEITHER side evaluated is INCOMPLETE.
+
+    ``verify_relationships(document, before={}, after={})`` MUST return a
+    deterministic report with one INCOMPLETE entry per declared relation —
+    never a ValueError/KeyError/TypeError and never a zero-count relation.
+    """
+    document, fingerprint = _document(_numeric_document())
+    report = verify_relationships(document, before={}, after={})
+    entry = report.relations[0]
+    assert entry.status is VerificationStatus.INCOMPLETE
+    assert entry.before is None and entry.after is None
+    assert entry.invariants == ()
+    assert entry.composite_arity == 1
+    assert report.complete is False
+    assert report.relationship_fingerprint == fingerprint
+    assert report.evidence_schema_version == EVIDENCE_SCHEMA_VERSION
+    # The derived assurance: INCOMPLETE with every declared relation
+    # incomplete.
+    from dbf_anonymizer.models import RelationalAssurance
+
+    summary = derive_relational_assurance(_metadata(fingerprint), report)
+    assert isinstance(summary, RelationalAssurance)
+    assert summary.level.value == "INCOMPLETE"
+    assert summary.declared_relations == 1
+    assert summary.verified_relations == 0
+    assert summary.failed_relations == 0
+    assert summary.incomplete_relations == 1  # == the declared relation count
+    assert summary.scope_note == "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
+    # The report exists (with INCOMPLETE entries), so its deterministic
+    # evidence fingerprint is bound; only a MISSING report leaves it None.
+    assert summary.evidence_fingerprint == report.evidence_fingerprint
+
+
+def test_before_only_is_incomplete_and_after_only_is_incomplete() -> None:
+    """Cases 2 and 3: exactly one complete side -> INCOMPLETE."""
+    document, fingerprint = _document(_numeric_document())
+    evidence = _counts([("A",), ("B",)], [("A",), ("B",), ("B",)])
+    only_before = verify_relationships(
+        document, before={"rel-numeric-key": evidence}, after={}
+    )
+    assert only_before.relations[0].status is VerificationStatus.INCOMPLETE
+    assert only_before.relations[0].before is not None
+    assert only_before.relations[0].after is None
+    assert only_before.relations[0].invariants == ()
+    assert only_before.complete is False
+    only_after = verify_relationships(
+        document, before={}, after={"rel-numeric-key": evidence}
+    )
+    assert only_after.relations[0].status is VerificationStatus.INCOMPLETE
+    assert only_after.relations[0].before is None
+    assert only_after.relations[0].after is not None
+    assert only_after.complete is False
+    # The complete state matrix in one place:
+    # 4. both sides, all invariants pass -> VERIFIED;
+    # 5. both sides, an invariant fails -> FAILED.
+    verified = verify_relationships(
+        document, before={"rel-numeric-key": evidence}, after={"rel-numeric-key": evidence}
+    )
+    assert verified.relations[0].status is VerificationStatus.VERIFIED
+    broken_after = _counts([("A",)], [("A",), ("Z",), ("W",)])
+    failed = verify_relationships(
+        document, before={"rel-numeric-key": evidence}, after={"rel-numeric-key": broken_after}
+    )
+    assert failed.relations[0].status is VerificationStatus.FAILED
+    assert verified.relationship_fingerprint == fingerprint
+
+
+def test_manual_incomplete_with_both_complete_sides_is_refused() -> None:
+    """Structural misuse: complete evidence must resolve to VERIFIED/FAILED."""
+    from dbf_anonymizer.relationships import (
+        RelationVerificationEvidence,
+        VerificationStatus as Status,
+    )
+
+    evidence = _counts([("A",)], [("A",)])
+    with pytest.raises(ValueError):
+        RelationVerificationEvidence(
+            relation_id="rel-numeric-key",
+            composite_arity=1,
+            status=Status.INCOMPLETE,
+            before=evidence,
+            after=evidence,
+            invariants=(),
+        )
+
+
+def test_both_sides_missing_assurance_is_incomplete() -> None:
+    """Case 1 proven through the assurance derivation."""
+    document, fingerprint = _document(_numeric_document())
+    report = verify_relationships(document, before={}, after={})
+    assert report.relations[0].status is VerificationStatus.INCOMPLETE
+    summary = derive_relational_assurance(_metadata(fingerprint), report)
+    assert summary.level.value == "INCOMPLETE"
+    assert summary.incomplete_relations == summary.declared_relations == 1
+    assert summary.verified_relations == 0
+    assert summary.failed_relations == 0
 
 
 # ---------------------------------------------------------------------------
