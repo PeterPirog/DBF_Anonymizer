@@ -10,6 +10,11 @@ transport exists in this package).
 
 from __future__ import annotations
 
+from dbf_anonymizer.relationships.assurance import (
+    RELATIONAL_ASSURANCE_SCOPE_NOTE,
+    RelationalAssuranceSummary,
+    derive_relational_assurance,
+)
 from dbf_anonymizer.relationships.compatibility import (
     resolved_numeric_domain,
     resolved_relation_domain,
@@ -47,6 +52,24 @@ from dbf_anonymizer.relationships.models import (
     RelationshipDocument,
     normalize_relative_table_path,
 )
+from dbf_anonymizer.relationships.verification import (
+    EVIDENCE_SCHEMA_VERSION,
+    INVARIANT_FOREIGN_MULTIPLICITY,
+    INVARIANT_MATCHED_ROWS,
+    INVARIANT_NULL_COUNTS,
+    INVARIANT_ORPHAN_COUNT,
+    INVARIANT_PARENT_UNIQUENESS,
+    RELATIONSHIP_INVARIANTS,
+    RelationEvidenceCounts,
+    RelationInvariantResult,
+    RelationSideMetrics,
+    RelationVerificationEvidence,
+    RelationshipEvidenceAccumulator,
+    RelationshipVerificationReport,
+    VerificationStatus,
+    compare_relation_metrics,
+    verify_relationships,
+)
 
 __all__ = [
     "RELATIONSHIP_METADATA_SCHEMA_VERSION",
@@ -78,4 +101,23 @@ __all__ = [
     "resolved_numeric_domain",
     "RelationalMetrics",
     "relation_metrics",
+    "EVIDENCE_SCHEMA_VERSION",
+    "RELATIONSHIP_INVARIANTS",
+    "INVARIANT_PARENT_UNIQUENESS",
+    "INVARIANT_ORPHAN_COUNT",
+    "INVARIANT_MATCHED_ROWS",
+    "INVARIANT_NULL_COUNTS",
+    "INVARIANT_FOREIGN_MULTIPLICITY",
+    "VerificationStatus",
+    "RelationSideMetrics",
+    "RelationEvidenceCounts",
+    "RelationInvariantResult",
+    "RelationVerificationEvidence",
+    "RelationshipVerificationReport",
+    "RelationshipEvidenceAccumulator",
+    "compare_relation_metrics",
+    "verify_relationships",
+    "RELATIONAL_ASSURANCE_SCOPE_NOTE",
+    "RelationalAssuranceSummary",
+    "derive_relational_assurance",
 ]
