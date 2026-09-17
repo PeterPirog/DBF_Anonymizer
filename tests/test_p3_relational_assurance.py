@@ -335,6 +335,47 @@ def test_forged_public_authoritative_metadata_cannot_reach_vfp_metadata_verified
     assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
 
 
+def test_valid_binding_with_tampered_metadata_schema_fails_closed() -> None:
+    """MANDATORY adversarial regression (final schema-version binding gap).
+
+    A VALID binding minted for the supported metadata schema 1.0 paired with
+    a manually reconstructed descriptive metadata object that claims the
+    SAME toolchain provenance, fingerprint, relation count and
+    ``authoritative=True`` but a TAMPERED metadata schema version is a
+    structural trust-boundary error: a typed, value-free refusal — never
+    ``VFP_METADATA_VERIFIED``/``DECLARED_RELATIONS_VERIFIED``/``INCOMPLETE``.
+    """
+    payload = _toolchain_document()
+    document = parse_relationship_document(payload)  # type: ignore[arg-type]
+    authoritative = authoritative_vfp_metadata_from_document(document)
+    report = verify_relationships(
+        document,
+        before={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
+        after={"rel-numeric-key": _counts([("A",)], [("A",), ("B",)])},
+    )
+    tampered_metadata = RelationshipMetadata(
+        metadata_schema_version="2.0",
+        provenance=authoritative.metadata.provenance,
+        relationship_fingerprint=authoritative.metadata.relationship_fingerprint,
+        relation_count=authoritative.metadata.relation_count,
+        authoritative=True,
+    )
+    with pytest.raises(VerificationError) as excinfo:
+        derive_relational_assurance(
+            tampered_metadata,
+            report,  # type: ignore[arg-type]
+            authority_binding=authoritative.binding,
+        )
+    assert excinfo.value.context.detail_code == "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH"
+    # The tampered version value is never exposed in the failure boundary;
+    # the typed refusal carries only the stable machine detail code.
+    boundary = (
+        str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
+    )
+    assert "2.0" not in boundary
+    assert "2.0" not in str(excinfo.value.context.to_dict())
+
+
 def test_valid_binding_with_incomplete_and_failed_evidence_stays_incomplete() -> None:
     """Binding negatives 10/11: a VALID binding never repairs bad evidence."""
     payload = _multi_toolchain_document()

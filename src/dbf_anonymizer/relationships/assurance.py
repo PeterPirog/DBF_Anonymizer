@@ -80,14 +80,22 @@ def _validated_authority_binding(
       provenance label are DESCRIPTIVE facts, never credentials), and the
       maximum level stays ``DECLARED_RELATIONS_VERIFIED``.
     * a SUPPLIED binding that is structurally inconsistent with the metadata
-      or the report (different canonical relationship fingerprint, different
-      declared relation count, unsupported metadata schema version) is a
-      structural error: a stable typed, value-free ``VerificationError``.
+      or the report is a structural error: a stable typed, value-free
+      ``VerificationError`` (``RELATIONSHIP_AUTHORITY_BINDING_MISMATCH``).
+      The complete authority invariant:
+
+      ``relationships.metadata_schema_version == binding.metadata_schema_version
+      == RELATIONSHIP_METADATA_SCHEMA_VERSION``
+
+      plus the already implemented bindings — the canonical relationship
+      fingerprint (binding vs metadata, binding vs report) and the declared
+      relation count.  No version value is exposed in the error context.
     """
     if binding is None:
         return False
     if (
         binding.metadata_schema_version != RELATIONSHIP_METADATA_SCHEMA_VERSION
+        or relationships.metadata_schema_version != binding.metadata_schema_version
         or binding.relationship_fingerprint != relationships.relationship_fingerprint
         or binding.relation_count != relationships.relation_count
         or (
@@ -135,7 +143,8 @@ def derive_relational_assurance(
         ``MCP_VFP9SP2_TOOLCHAIN`` provenance AND complete verified evidence
         AND a VALID internal ``_AuthoritativeVFPBinding`` minted ONLY by the
         tested authoritative ingestion adapter for the SAME relationship
-        fingerprint and relation count.  The public boolean and the
+        fingerprint, the SAME declared relation count and the SAME supported
+        metadata schema version.  The public boolean and the
         provenance label alone are NEVER sufficient: without a binding the
         maximum level is ``DECLARED_RELATIONS_VERIFIED``; a SUPPLIED but
         inconsistent binding fails closed with a typed

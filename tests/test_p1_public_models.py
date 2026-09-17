@@ -315,6 +315,53 @@ def test_relationship_metadata_authoritative_is_a_genuine_bool(hostile: object) 
         )
 
 
+@pytest.mark.parametrize(
+    "malformed", ["", " 1.0", "1.0 ", "1 .0", "schema version", "\t1.0"]
+)
+def test_relationship_metadata_schema_version_is_a_validated_code(
+    malformed: str,
+) -> None:
+    """REQ-P1-002 regression: the declared metadata schema version is a
+    validated bounded code — empty, leading/trailing whitespace and embedded
+    whitespace are refused, never silently accepted malformed input."""
+    with pytest.raises(ValueError):
+        RelationshipMetadata(
+            metadata_schema_version=malformed,
+            provenance="declared",
+            relationship_fingerprint="sha256:relationships",
+            relation_count=1,
+            authoritative=False,
+        )
+
+
+@pytest.mark.parametrize("hostile", [1, 1.0, None, b"1.0", ["1.0"], True])
+def test_relationship_metadata_schema_version_rejects_non_string_input(
+    hostile: object,
+) -> None:
+    """The established runtime type convention: hostile non-string input is
+    a typed refusal, never an accidental AttributeError or silent truthiness."""
+    with pytest.raises(TypeError):
+        RelationshipMetadata(
+            metadata_schema_version=hostile,  # type: ignore[arg-type]
+            provenance="declared",
+            relationship_fingerprint="sha256:relationships",
+            relation_count=1,
+            authoritative=False,
+        )
+
+
+def test_relationship_metadata_schema_version_accepts_the_supported_version() -> None:
+    metadata = RelationshipMetadata(
+        metadata_schema_version="1.0",
+        provenance="declared",
+        relationship_fingerprint="sha256:relationships",
+        relation_count=1,
+        authoritative=False,
+    )
+    assert metadata.metadata_schema_version == "1.0"
+    assert metadata.to_dict()["metadata_schema_version"] == "1.0"
+
+
 def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
     capabilities = _samples()[0]
     assert isinstance(capabilities, Capabilities)
