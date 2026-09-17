@@ -987,16 +987,23 @@ def _numeric_relation_capacity(
     if bindings is None:
         bindings = {}
     from dbf_anonymizer.transforms.numeric_keys import (
+        MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE,
+        MEMBER_ORIGINAL_RECOVERY_UNWRITABLE,
+        MEMBER_ORIGINAL_REVERSIBLE,
         NumericKeyDomain,
+        NumericKeyMemberRange,
+        classify_member_original,
         integral_numeric_member,
         integer_member,
         numeric_key_domain_for,
         plan_numeric_bijection,
     )
 
-    tasks: list[tuple[str, NumericKeyDomain, list[tuple[str, str, str, tuple[int, int]]]]] = []
+    tasks: list[
+        tuple[str, NumericKeyDomain, list[tuple[str, str, NumericKeyMemberRange]]]
+    ] = []
     for group in reversible_groups:
-        members: list[tuple[str, str, str, tuple[int, int]]] = []
+        members: list[tuple[str, str, NumericKeyMemberRange]] = []
         domain_members = []
         for member in group.members:
             if not member.is_numeric_member:
@@ -1012,14 +1019,7 @@ def _numeric_relation_capacity(
             else:
                 kernel_member = integral_numeric_member(int(member.byte_width))
             domain_members.append(kernel_member)
-            members.append(
-                (
-                    member.table_path,
-                    member.field_name,
-                    dbf_type,
-                    kernel_member.original_range,
-                )
-            )
+            members.append((member.table_path, member.field_name, kernel_member))
         if not members:
             return (_CAPACITY_UNPROVEN, False)
         try:
@@ -1035,7 +1035,7 @@ def _numeric_relation_capacity(
     for _relation_id, domain, members in tasks:
         control.start_phase(ProgressPhase.CAPACITY_SCAN, total=len(members))
         distinct: set[int] = set()
-        for table_path, field_name, dbf_type, member_range in members:
+        for table_path, field_name, kernel_member in members:
             rel = table_path
             full = source_files.get(rel)
             if full is None:
@@ -1054,14 +1054,17 @@ def _numeric_relation_capacity(
                         # A non-integral observed numeric value cannot be
                         # represented faithfully by the integral domain.
                         return (_CAPACITY_INSUFFICIENT, unwritable)
-                    low, high = member_range
-                    if not low <= value <= high:
-                        if dbf_type == "I":
-                            # Readable but NOT reconstructable through the
-                            # pinned public Direct Write boundary.
-                            unwritable = True
-                            continue
+                    # THE SAME authoritative origin-member reversible rule the
+                    # allocator enforces: the verdict depends ONLY on the
+                    # originating member, never on the union of members.
+                    verdict = classify_member_original(kernel_member, value)
+                    if verdict == MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE:
                         return (_CAPACITY_INSUFFICIENT, unwritable)
+                    if verdict == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE:
+                        # Readable but NOT reconstructable through the pinned
+                        # public Direct Write boundary for this member.
+                        unwritable = True
+                        continue
                     if len(distinct) >= _MAX_NUMERIC_EXACT_VALUES and value not in distinct:
                         return (_CAPACITY_UNPROVEN, unwritable)
                     distinct.add(value)

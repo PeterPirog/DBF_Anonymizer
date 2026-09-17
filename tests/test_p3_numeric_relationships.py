@@ -591,7 +591,7 @@ def test_integer_domain_round_trip_and_bijection(tmp_path: Path) -> None:
         with writer_session(vault):
             service = NumericKeyDomainMapping(vault, domain_id=domain_id, domain=domain)
             for value in originals:
-                service.observe_original(value, original_range=(-(2**31) + 1, 2**31 - 2))
+                service.observe_original(value, member=integer_member())
             service.finalize()
             mapping: dict[int, int] = {}
             for value in originals:
@@ -620,11 +620,11 @@ def test_integer_extreme_original_fails_closed_before_publication(tmp_path: Path
                 vault, domain_id="dom-" + "9" * 16, domain=domain
             )
             with pytest.raises(MappingError) as low:
-                service.observe_original(-(2**31), original_range=(-(2**31), 2**31 - 1))
+                service.observe_original(-(2**31), member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(low.value.to_dict())
             _no_leak(low)
             with pytest.raises(MappingError) as high:
-                service.observe_original(2**31 - 1, original_range=(-(2**31), 2**31 - 1))
+                service.observe_original(2**31 - 1, member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(high.value.to_dict())
             _no_leak(high)
             # The refusal is stable and pre-publication: no mapping row exists.
@@ -640,7 +640,7 @@ def test_integral_numeric_domain_round_trip_with_widths(tmp_path: Path) -> None:
                 vault, domain_id="dom-" + "c" * 16, domain=domain
             )
             for value in (-9999, -1, 0, 7, 99999):
-                service.observe_original(value, original_range=(-9999, 99999))
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             mapping = {value: service.pseudonym_for(value) for value in (-9999, -1, 0, 7, 99999)}
             assert len(set(mapping.values())) == len(mapping)
@@ -650,7 +650,7 @@ def test_integral_numeric_domain_round_trip_with_widths(tmp_path: Path) -> None:
                 assert service.original_for(pseudonym) == value
             # Non-integral / out-of-domain originals are refused (never rounded).
             with pytest.raises(ValueError):
-                service.observe_original(-10000, original_range=(-9999, 99999))
+                service.observe_original(-10000, member=integral_numeric_member(5))
 
 
 def test_mixed_i_n_composite_members_share_one_domain(tmp_path: Path) -> None:
@@ -662,8 +662,8 @@ def test_mixed_i_n_composite_members_share_one_domain(tmp_path: Path) -> None:
             service = NumericKeyDomainMapping(
                 vault, domain_id="dom-" + "d" * 16, domain=domain
             )
-            service.observe_original(2147483646, original_range=(-(2**31) + 1, 2**31 - 2))
-            service.observe_original(-9999, original_range=(-9999, 99999))
+            service.observe_original(2147483646, member=integer_member())
+            service.observe_original(-9999, member=integral_numeric_member(5))
             service.finalize()
             big = service.pseudonym_for(2147483646)
             small = service.pseudonym_for(-9999)
@@ -695,7 +695,7 @@ def test_same_vault_reuse_consumes_no_rng(tmp_path: Path) -> None:
                 _random_below=counting_rng,
             )
             for value in originals:
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             first = {value: service.pseudonym_for(value) for value in originals}
             assert len(calls) >= 1  # fresh allocation consumed the generator
@@ -707,7 +707,7 @@ def test_same_vault_reuse_consumes_no_rng(tmp_path: Path) -> None:
                 _random_below=counting_rng,
             )
             for value in originals:
-                reopened.observe_original(value)
+                reopened.observe_original(value, member=integral_numeric_member(5))
             reopened.finalize()
             before = len(calls)
             second = {value: reopened.pseudonym_for(value) for value in originals}
@@ -716,9 +716,19 @@ def test_same_vault_reuse_consumes_no_rng(tmp_path: Path) -> None:
 
 
 def test_fresh_vault_mappings_are_independent(tmp_path: Path) -> None:
+    """Fresh-vault mapping VALIDITY (deterministic): each fresh vault's
+    mappings are a valid in-domain bijection with self-exclusion.
+
+    Range/validity evidence inspects ``mapping.values()`` (the PSEUDONYMS) —
+    never the dictionary keys (the originals).  Fresh-vault INDEPENDENCE is
+    proven deterministically by the controlled-RNG-sequence evidence in
+    :func:`test_fresh_vault_independence_is_deterministic`; production
+    CSPRNG binding is proven by the static architecture guard.  No
+    probabilistic non-equality of uncontrolled CSPRNG runs is used as
+    acceptance evidence.
+    """
     domain = _n_domain()
     originals = [-9, 0, 42, 7]
-    mappings = []
     for index in range(2):
         vault_dir = tmp_path / f"vault{index}"
         with _open_vault(vault_dir) as vault:
@@ -727,14 +737,16 @@ def test_fresh_vault_mappings_are_independent(tmp_path: Path) -> None:
                     vault, domain_id="dom-" + "f" * 16, domain=domain
                 )
                 for value in originals:
-                    service.observe_original(value)
+                    service.observe_original(value, member=integral_numeric_member(5))
                 service.finalize()
-                mappings.append({value: service.pseudonym_for(value) for value in originals})
-    for value in originals:
-        for pseudonym, _origin in mappings[0].items():
-            assert domain.contains_pseudonym(pseudonym)
-    # Independent CSPRNG allocations: the two fresh vaults do not coincide.
-    assert mappings[0] != mappings[1]
+                mapping = {value: service.pseudonym_for(value) for value in originals}
+                pseudonyms = list(mapping.values())
+                # Bijection, self-exclusion and shared-domain containment.
+                assert len(set(pseudonyms)) == len(pseudonyms)
+                for value, pseudonym in mapping.items():
+                    assert pseudonym != value
+                    assert domain.contains_pseudonym(pseudonym)
+                    assert service.original_for(pseudonym) == value
 
 
 def test_conflicting_persisted_self_mapping_fails_closed(tmp_path: Path) -> None:
@@ -938,7 +950,7 @@ def test_fixture_a_integer_relation_before_after_metrics_and_round_trip(
         with writer_session(vault):
             service = NumericKeyDomainMapping(vault, domain_id=domain_id, domain=domain)
             for value in sorted(set(pk_values + fk_values)):
-                service.observe_original(value, original_range=(-(2**31), 2**31 - 1))
+                service.observe_original(value, member=integer_member())
             service.finalize()
             shifted = {
                 value: service.pseudonym_for(value)
@@ -987,8 +999,13 @@ def test_fixture_b_integral_numeric_relation_with_differing_widths(
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             service = NumericKeyDomainMapping(vault, domain_id=domain_id, domain=domain)
-            for value in sorted(set(pk_values + fk_values)):
-                service.observe_original(value)
+            # Each occurrence is observed under ITS OWN originating member
+            # (the PK column is N(8), the FK column is N(5)) — never inferred
+            # from the numeric value itself.
+            for value in sorted(set(pk_values)):
+                service.observe_original(value, member=integral_numeric_member(8))
+            for value in sorted(set(fk_values)):
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             shifted = {
                 value: service.pseudonym_for(value)
@@ -997,7 +1014,7 @@ def test_fixture_b_integral_numeric_relation_with_differing_widths(
             pk_after = [shifted[v] for v in pk_values]
             fk_after = [shifted[v] for v in fk_values]
             after = relation_metrics([(v,) for v in pk_after], [(v,) for v in fk_after])
-            # Exact cross-table equality and exact round trip.
+            # Exact cross-table equality and exact round trip
             assert shifted[7] == service.pseudonym_for(7)
             for value, pseudonym in shifted.items():
                 assert service.original_for(pseudonym) == value
@@ -1074,7 +1091,7 @@ def test_fixture_c_composite_numeric_relation_ordered_tuples(tmp_path: Path) -> 
             service = NumericKeyDomainMapping(vault, domain_id=domain_id, domain=domain)
             observed = sorted({value for pair in pk_tuples + fk_tuples for value in pair})
             for value in observed:
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             shifted = {value: service.pseudonym_for(value) for value in observed}
             pk_after = [(shifted[a], shifted[b]) for a, b in pk_tuples]
@@ -1135,8 +1152,6 @@ def test_public_and_error_boundaries_never_leak_numeric_keys(tmp_path: Path) -> 
     assert all(canary not in domain_id for canary in canaries)
     # The allocated PSEUDONYMS, the residual candidate tokens and the numeric
     # domain bounds never enter any public payload either.
-    from dbf_anonymizer.transforms.numeric_keys import integer_member
-
     plan_payload = plan_payload + json.dumps([e.to_dict() for e in plan.numeric_identity_review])
     assert str(INTEGER_KEY_WRITABLE_LOW) not in preflight_payload
     assert str(INTEGER_KEY_WRITABLE_HIGH) not in preflight_payload
@@ -1149,7 +1164,7 @@ def test_public_and_error_boundaries_never_leak_numeric_keys(tmp_path: Path) -> 
                 domain=numeric_key_domain_for([integer_member()]),
             )
             for value in (-5, 0, 7, 2147483646):
-                service.observe_original(value)
+                service.observe_original(value, member=integer_member())
             service.finalize()
             allocated = [service.pseudonym_for(value) for value in (-5, 0, 7, 2147483646)]
             for pseudonym in allocated:
@@ -1185,7 +1200,7 @@ def test_mapping_enumeration_stays_internal(tmp_path: Path) -> None:
             service = NumericKeyDomainMapping(
                 vault, domain_id="dom-" + "7" * 16, domain=domain
             )
-            service.observe_original(CANARY_N)
+            service.observe_original(CANARY_N, member=integral_numeric_member(5))
             service.finalize()
             pseudonym = service.pseudonym_for(CANARY_N)
             rows = service.mapping_rows()
@@ -1222,8 +1237,8 @@ def test_adversarial_rng_self_collision_never_self_maps(tmp_path: Path) -> None:
                 domain=exact_domain,
                 _random_below=lambda _bound: 0,
             )
-            service.observe_original(5)
-            service.observe_original(6)
+            service.observe_original(5, member=exact_domain.members[0])
+            service.observe_original(6, member=exact_domain.members[0])
             service.finalize()
             first = service.pseudonym_for(5)
             assert first != 5
@@ -1259,8 +1274,8 @@ def test_forced_exact_completion_never_self_maps(
                 domain=exact_domain,
                 _random_below=lambda _bound: 0,
             )
-            service.observe_original(5)
-            service.observe_original(6)
+            service.observe_original(5, member=exact_domain.members[0])
+            service.observe_original(6, member=exact_domain.members[0])
             service.finalize()
             # The exact completion walks the ascending free tokens with the
             # original BLOCKED: 5 -> 6 and 6 -> 5 (never 5 -> 5).
@@ -1296,8 +1311,8 @@ def test_original_already_occupied_is_never_unblocked(
                 domain=exact_domain,
                 _random_below=lambda _bound: 0,
             )
-            service.observe_original(5)
-            service.observe_original(6)
+            service.observe_original(5, member=exact_domain.members[0])
+            service.observe_original(6, member=exact_domain.members[0])
             service.finalize()
             # Original 5 is itself occupied (it is 7's pseudonym): the exact
             # completion must still never return 5 for the original 5, and
@@ -1337,7 +1352,7 @@ def test_three_token_greedy_trap_completes_as_derangement(tmp_path: Path) -> Non
                 _random_below=lambda _bound: 0,
             )
             for value in (1, 2, 3):
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             # Greedy trap sequence: the first probe for 1 selects 2 (feasible,
             # committed), and every later probe for 2 keeps selecting the
@@ -1364,8 +1379,8 @@ def test_two_token_swap_always_completes(tmp_path: Path) -> None:
                 domain=exact_domain,
                 _random_below=lambda _bound: 0,
             )
-            service.observe_original(1)
-            service.observe_original(2)
+            service.observe_original(1, member=exact_domain.members[0])
+            service.observe_original(2, member=exact_domain.members[0])
             service.finalize()
             assert service.pseudonym_for(1) == 2
             assert service.pseudonym_for(2) == 1
@@ -1394,9 +1409,9 @@ def test_persisted_fixed_assignment_preserves_residual_feasibility(
                 domain=exact_domain,
                 _random_below=lambda _bound: 0,
             )
-            service.observe_original(1)
-            service.observe_original(2)
-            service.observe_original(3)
+            service.observe_original(1, member=exact_domain.members[0])
+            service.observe_original(2, member=exact_domain.members[0])
+            service.observe_original(3, member=exact_domain.members[0])
             service.finalize()
             # Persisted 1->2 is fixed; the residual completes as 2->3, 3->1.
             assert service.pseudonym_for(2) == 3
@@ -1426,9 +1441,9 @@ def test_infeasible_persisted_residual_fails_closed_at_finalize(
             service = NumericKeyDomainMapping(
                 vault, domain_id=domain_id, domain=exact_domain
             )
-            service.observe_original(1)
-            service.observe_original(2)
-            service.observe_original(3)
+            service.observe_original(1, member=exact_domain.members[0])
+            service.observe_original(2, member=exact_domain.members[0])
+            service.observe_original(3, member=exact_domain.members[0])
             # The persisted swap leaves original 3 with only its own forbidden
             # token: finalize refuses (no mapping is committed).
             with pytest.raises(MappingError) as excinfo:
@@ -1459,7 +1474,7 @@ def test_genuinely_infeasible_candidate_is_never_committed(tmp_path: Path) -> No
                 _random_below=scripted,
             )
             for value in (1, 2, 3):
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             # 1 -> 2 (first probe); for 2 the probes first draw the
             # infeasible candidate 1 (twice) and then the feasible 3; the
@@ -1580,12 +1595,14 @@ def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> N
 
     The public ``write_table`` boundary refuses BOTH int32 extremes (typed
     write failure) and accepts the interior boundaries exactly; the outcomes
-    are classified by TYPE/code, never by parsing human messages.
+    are classified by the PUBLIC typed error contract (class + stable error
+    code), never by parsing human messages and never by treating an
+    arbitrary unrelated exception as sufficient proof.
     """
     import dbfbridge
 
     assert dbfbridge.__version__ == "1.1.0"
-    from dbfbridge import DirectRecord, write_table as public_write_table
+    from dbfbridge import ErrorCode, WritePublicationFailedError
 
     from tests.support.numeric_tables import schema as numeric_schema
 
@@ -1594,6 +1611,8 @@ def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> N
         target = tmp_path / f"probe_{value}.dbf"
         outcome: str
         try:
+            from dbfbridge import write_table as public_write_table
+
             public_write_table(
                 target,
                 schema=numeric_schema((numeric_field("ID", "I", 4),)),
@@ -1601,13 +1620,20 @@ def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> N
             )
             outcome = "WRITABLE"
         except Exception as error:  # typed public boundary refusal
-            code = getattr(error, "code", None)
-            outcome = f"REFUSED:{type(error).__name__}:{getattr(code, 'value', code)}"
+            assert isinstance(error, WritePublicationFailedError)
+            assert error.code == ErrorCode.WRITE_PUBLICATION_FAILED  # type: ignore[attr-defined]
+            outcome = f"REFUSED:{type(error).__name__}:{error.code.value}"  # type: ignore[attr-defined]
         outcomes[value] = outcome
-    assert outcomes[-(2**31)].startswith("REFUSED:")
+    assert (
+        outcomes[-(2**31)]
+        == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
+    )
     assert outcomes[-(2**31) + 1] == "WRITABLE"
     assert outcomes[2**31 - 2] == "WRITABLE"
-    assert outcomes[2**31 - 1].startswith("REFUSED:")
+    assert (
+        outcomes[2**31 - 1]
+        == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
+    )
     # Every WRITABLE point round-trips exactly through the public boundary.
     for value in (-(2**31) + 1, 2**31 - 2):
         target = tmp_path / f"probe_{value}.dbf"
@@ -1634,7 +1660,7 @@ def test_every_accepted_reversible_i_original_is_recoverable(tmp_path: Path) -> 
                 domain=domain,
             )
             for value in (INTEGER_KEY_WRITABLE_LOW, -1, 0, INTEGER_KEY_WRITABLE_HIGH):
-                service.observe_original(value, original_range=(INTEGER_KEY_WRITABLE_LOW, INTEGER_KEY_WRITABLE_HIGH))
+                service.observe_original(value, member=integer_member())
             service.finalize()
             for value in (INTEGER_KEY_WRITABLE_LOW, -1, 0, INTEGER_KEY_WRITABLE_HIGH):
                 pseudonym = service.pseudonym_for(value)
@@ -1664,7 +1690,7 @@ def test_fresh_vault_independence_is_deterministic(tmp_path: Path) -> None:
                     _random_below=lambda _bound, _seed=seed: _seed,
                 )
                 for value in (-9, 0, 42, 7):
-                    service.observe_original(value)
+                    service.observe_original(value, member=integral_numeric_member(5))
                 service.finalize()
                 mapping = {value: service.pseudonym_for(value) for value in (-9, 0, 42, 7)}
                 # Validity: bijection, self-exclusion, in-domain.
@@ -1700,7 +1726,7 @@ def test_reuse_consumes_zero_rng_and_fresh_allocation_consumes_csrng(
                 _random_below=counting_rng,
             )
             for value in originals:
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             first = {value: service.pseudonym_for(value) for value in originals}
             # Fresh allocation actually consumed the (CSPRNG) generator.
@@ -1714,7 +1740,7 @@ def test_reuse_consumes_zero_rng_and_fresh_allocation_consumes_csrng(
                 _random_below=counting_rng,
             )
             for value in originals:
-                reopened.observe_original(value)
+                reopened.observe_original(value, member=integral_numeric_member(5))
             reopened.finalize()
             assert {value: reopened.pseudonym_for(value) for value in originals} == first
             assert len(calls) == fresh_calls
@@ -1745,7 +1771,7 @@ def test_failure_after_candidate_selection_rolls_back_completely(
                 _random_below=lambda _bound: 0,
             )
             for value in (-9, 0, 42):
-                service.observe_original(value)
+                service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             committed_first = service.pseudonym_for(-9)
             assert service.mapping_rows() == ((-9, committed_first),)
@@ -2081,3 +2107,209 @@ def test_unwritable_integer_original_is_caught_in_preflight(
     inventory = _side_effect_snapshot(tmp_path)
     assert not any("dictionary.sqlite3" in name for name in inventory)
     assert not any(name.endswith(("-wal", "-shm")) for name in inventory)
+
+
+# ---------------------------------------------------------------------------
+# FINAL DELTA — ORIGIN-MEMBER reversible-original invariant
+#
+# An observed occurrence is validated against ITS OWN originating member,
+# never against the union (ANY) of the relation's member ranges.  A wider or
+# different member can never authorize an unrecoverable occurrence, and no
+# observation-order/deduplication path can bypass the stricter member.
+# These regressions FAIL on the reviewed HEAD 76b94cb.
+# ---------------------------------------------------------------------------
+def _mixed_i_n_domain():
+    return numeric_key_domain_for([integer_member(), integral_numeric_member(10)])
+
+
+def test_i_high_extreme_refused_in_mixed_i_n_domain(tmp_path: Path) -> None:
+    """A. I-origin 2147483647 in a mixed I + N(10) relation fails closed.
+
+    N(10,0) could represent the value, but the ORIGIN is the Integer member
+    and the pinned public writer cannot reconstruct it for that member."""
+    domain = _mixed_i_n_domain()
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a1" * 8, domain=domain
+            )
+            with pytest.raises(MappingError) as excinfo:
+                service.observe_original(2147483647, member=integer_member())
+            assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
+            _no_leak(excinfo)
+            # The unrecoverable occurrence was never recorded.
+            assert service.observed_originals == ()
+
+
+def test_i_low_extreme_refused_in_mixed_i_n_domain(tmp_path: Path) -> None:
+    """B. I-origin -2147483648 in a mixed I + N(10) relation fails closed."""
+    domain = _mixed_i_n_domain()
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a2" * 8, domain=domain
+            )
+            with pytest.raises(MappingError) as excinfo:
+                service.observe_original(-(2**31), member=integer_member())
+            assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
+            _no_leak(excinfo)
+            assert service.observed_originals == ()
+
+
+def test_n_origin_high_value_is_reversible_in_mixed_domain(tmp_path: Path) -> None:
+    """C. The SAME value 2147483647 originating from N(10,0) IS reversible:
+    the N member itself admits and reconstructs it; the pseudonym must fit
+    the SHARED pseudonym domain and the reverse lookup is exact."""
+    domain = _mixed_i_n_domain()
+    # Shared pseudonym domain = intersection of member WRITABLE ranges:
+    # I writable [-2147483647, 2147483646] ∩ N(10,0) [-999999999, 9999999999].
+    assert domain.pseudonym_range == (-999999999, 2147483646)
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a3" * 8, domain=domain
+            )
+            service.observe_original(2147483647, member=integral_numeric_member(10))
+            service.finalize()
+            pseudonym = service.pseudonym_for(2147483647)
+            assert pseudonym != 2147483647
+            assert domain.contains_pseudonym(pseudonym)
+            assert service.original_for(pseudonym) == 2147483647
+
+
+def test_n_first_then_i_occurrence_still_fails(tmp_path: Path) -> None:
+    """D. Observation order cannot bypass a stricter member: the N(10)
+    occurrence of 2147483647 is observed first; the LATER I occurrence of the
+    same value must STILL fail closed (deduplication never skips
+    origin-member validation of a later occurrence)."""
+    domain = _mixed_i_n_domain()
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a4" * 8, domain=domain
+            )
+            service.observe_original(2147483647, member=integral_numeric_member(10))
+            with pytest.raises(MappingError) as excinfo:
+                service.observe_original(2147483647, member=integer_member())
+            assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
+            _no_leak(excinfo)
+
+
+def test_i_first_then_n_cannot_retroactively_validate(tmp_path: Path) -> None:
+    """E. The I occurrence fails IMMEDIATELY; no later N occurrence can
+    retroactively make it valid."""
+    domain = _mixed_i_n_domain()
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a5" * 8, domain=domain
+            )
+            with pytest.raises(MappingError) as excinfo:
+                service.observe_original(2147483647, member=integer_member())
+            assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
+            _no_leak(excinfo)
+            # The later, wider N occurrence does not undo the refusal: the
+            # service has no record of the refused I occurrence, and the
+            # refusal code stays reproducible for a repeated I occurrence.
+            service.observe_original(2147483647, member=integral_numeric_member(10))
+            with pytest.raises(MappingError) as again:
+                service.observe_original(2147483647, member=integer_member())
+            assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(again.value.to_dict())
+
+
+def test_ordinary_shared_value_maps_to_one_shared_pseudonym(
+    tmp_path: Path,
+) -> None:
+    """F. The value 42 occurring through BOTH the I and the N member is
+    accepted from both member contexts and maps to ONE shared pseudonym."""
+    domain = numeric_key_domain_for([integer_member(), integral_numeric_member(5)])
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a6" * 8, domain=domain
+            )
+            service.observe_original(42, member=integer_member())
+            service.observe_original(42, member=integral_numeric_member(5))
+            service.finalize()
+            pseudonym = service.pseudonym_for(42)
+            assert pseudonym != 42
+            assert domain.contains_pseudonym(pseudonym)
+            # ONE shared pseudonym across both member contexts.
+            assert service.pseudonym_for(42) == pseudonym
+            assert len(service.mapping_rows()) == 1
+            assert service.original_for(pseudonym) == 42
+
+
+def test_narrow_n_width_is_not_rescued_by_a_wider_n_member(
+    tmp_path: Path,
+) -> None:
+    """G. An occurrence must satisfy its ACTUAL originating N width: a wider
+    N(10) member in the same relation can never make an out-of-range N(5)
+    occurrence valid."""
+    domain = numeric_key_domain_for(
+        [integral_numeric_member(5), integral_numeric_member(10)]
+    )
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a7" * 8, domain=domain
+            )
+            # 100000 does not fit N(5,0) (99999 is the boundary) even though
+            # the relation also contains N(10,0).
+            with pytest.raises(ValueError):
+                service.observe_original(100000, member=integral_numeric_member(5))
+            # The same value from its OWN (wider) member is fine.
+            service.observe_original(100000, member=integral_numeric_member(10))
+            assert service.observed_originals == (100000,)
+
+
+def test_origin_refusal_carries_no_source_value(tmp_path: Path) -> None:
+    """H. The typed origin-member refusal never contains the source value."""
+    canary = "2147483647"
+    domain = _mixed_i_n_domain()
+    with _open_vault(tmp_path) as vault:
+        with writer_session(vault):
+            service = NumericKeyDomainMapping(
+                vault, domain_id="dom-" + "a8" * 8, domain=domain
+            )
+            with pytest.raises(MappingError) as excinfo:
+                service.observe_original(2147483647, member=integer_member())
+            boundary = (
+                str(excinfo.value)
+                + "|"
+                + repr(excinfo.value)
+                + "|"
+                + json.dumps(excinfo.value.to_dict(), sort_keys=True)
+            )
+            assert canary not in boundary
+            assert "-2147483648" not in boundary
+            assert "C:\\" not in boundary
+
+
+def test_preflight_and_allocator_share_the_origin_member_rule(
+    tmp_path: Path,
+) -> None:
+    """The pure classifier is the ONE origin-member rule: both the allocator
+    and the read-only numeric capacity preflight reach the same verdicts."""
+    from dbf_anonymizer.transforms.numeric_keys import (
+        MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE,
+        MEMBER_ORIGINAL_RECOVERY_UNWRITABLE,
+        MEMBER_ORIGINAL_REVERSIBLE,
+        classify_member_original,
+    )
+
+    i_member = integer_member()
+    n10_member = integral_numeric_member(10)
+    n5_member = integral_numeric_member(5)
+    # I origin: extremes readable but unrecoverable — the classifier verdict
+    # is member-specific, identical for the preflight scan and the allocator.
+    assert classify_member_original(i_member, 2147483647) == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE
+    assert classify_member_original(i_member, -(2**31)) == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE
+    assert classify_member_original(n10_member, 2147483647) == MEMBER_ORIGINAL_REVERSIBLE
+    assert classify_member_original(n5_member, 100000) == MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE
+    assert classify_member_original(i_member, 42) == MEMBER_ORIGINAL_REVERSIBLE
+    assert classify_member_original(n10_member, 42) == MEMBER_ORIGINAL_REVERSIBLE
+    with pytest.raises(TypeError):
+        classify_member_original(i_member, True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        classify_member_original(i_member, 1.0)  # type: ignore[arg-type]

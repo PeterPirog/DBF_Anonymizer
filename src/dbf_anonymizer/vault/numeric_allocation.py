@@ -52,8 +52,12 @@ from typing import Callable
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError
 from dbf_anonymizer.transforms.numeric_keys import (
+    MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE,
+    MEMBER_ORIGINAL_RECOVERY_UNWRITABLE,
     NumericKeyDomain,
+    NumericKeyMemberRange,
     canonical_integer_text,
+    classify_member_original,
     free_token_count,
     jth_free_token,
     parse_canonical_integer_text,
@@ -177,48 +181,51 @@ class NumericKeyDomainMapping:
         return tuple(sorted(self._originals))
 
     # -- COLLECT ------------------------------------------------------------------
-    def observe_original(self, original: int, *, original_range: tuple[int, int] | None = None) -> None:
-        """Record one exact distinct ORIGINAL value of the relation.
+    def observe_original(self, original: int, *, member: NumericKeyMemberRange) -> None:
+        """Record one exact distinct ORIGINAL occurrence of the relation.
 
         Constraint collection is closed after :meth:`finalize`.  NULL is
-        never observed and never mapped (it stays a preserved identity);
-        booleans are rejected as integers.  When the caller supplies the
-        originating member's verified range, the value must fit it.  Every
-        original must in any case fit at least one participating member's
-        REVERSIBLE representation range; a value that its member could
-        READ but the public Direct Write boundary could never reconstruct
-        during recovery (the readable-but-unwritable Integer extremes) fails
-        closed with the stable ``NUMERIC_KEY_RECOVERY_UNWRITABLE`` detail
-        BEFORE any allocation or publication.
+        never observed and never mapped (it stays a preserved identity) and
+        booleans are rejected as integers.
+
+        ORIGIN-MEMBER TRUTHFULNESS (REQ-P3-005): *original* is validated
+        against the REVERSIBLE constraints of ITS OWN originating member —
+        the required typed :class:`NumericKeyMemberRange` descriptor — and
+        NEVER against the union (ANY) of the relation's member ranges.  A
+        wider or different member can never authorize an occurrence:
+
+        * an occurrence outside the originating member's readable
+          representation is refused (typed ``ValueError``);
+        * an occurrence that the originating member could READ but the pinned
+          public Direct Write boundary could never reconstruct during
+          recovery (the readable-but-unwritable Integer extremes) fails
+          closed with the stable ``NUMERIC_KEY_RECOVERY_UNWRITABLE`` detail
+          BEFORE any allocation or publication — regardless of which other
+          members the relation contains and regardless of observation order
+          (a later, wider occurrence can never retroactively validate an
+          earlier refusal, because every occurrence is judged on its own
+          before any deduplication).
+
+        The shared :class:`NumericKeyDomain` governs exclusively where the
+        PSEUDONYM may be allocated — never whether an ORIGINAL is reversible.
         """
         if self._finalized:
             raise ValueError("original collection is closed after finalize")
-        if isinstance(original, bool) or not isinstance(original, int):
-            raise TypeError("an original numeric key value must be an exact int")
-        supplied_range: tuple[int, int] | None = None
-        if original_range is not None:
-            low, high = original_range
-            if not (isinstance(low, int) and isinstance(high, int)) or low > high:
-                raise ValueError("the member original range must be a non-empty closed range")
-            if not low <= original <= high:
-                raise ValueError("the original does not fit its member's representable range")
-            supplied_range = (low, high)
-        if any(
-            low <= original <= high for low, high in self._domain.member_original_ranges
-        ):
-            self._originals.add(original)
-            return
-        if supplied_range is not None:
-            # Readable by the member's field type, but the pinned public
-            # Direct Write boundary can never reconstruct it during recovery:
-            # fail closed before publication (never silently truncated).
+        verdict = classify_member_original(member, original)
+        if verdict == MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE:
+            raise ValueError(
+                "the original does not fit its originating member's "
+                "representable range"
+            )
+        if verdict == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE:
+            # Readable by the originating member's field type, but the pinned
+            # public Direct Write boundary can never reconstruct it during
+            # recovery for that same member: fail closed before publication
+            # (never silently truncated, never rescued by another member).
             raise _mapping_failure(
                 ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE, _DETAIL_RECOVERY_UNWRITABLE
             )
-        raise ValueError(
-            "the original does not fit any participating member's "
-            "representable range"
-        )
+        self._originals.add(original)
 
     # -- FINALIZE --------------------------------------------------------------------
     def finalize(self) -> None:

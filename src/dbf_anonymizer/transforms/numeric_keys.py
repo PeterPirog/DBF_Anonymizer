@@ -53,6 +53,10 @@ __all__ = [
     "NumericKeyDomain",
     "integer_member",
     "integral_numeric_member",
+    "MEMBER_ORIGINAL_REVERSIBLE",
+    "MEMBER_ORIGINAL_RECOVERY_UNWRITABLE",
+    "MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE",
+    "classify_member_original",
     "numeric_key_domain_for",
     "free_token_count",
     "selectable_token_count",
@@ -149,28 +153,56 @@ def intersect_ranges(
 class NumericKeyMemberRange:
     """The verified representation facts of ONE participating member field.
 
-    ``original_low``/``original_high`` is the member's verified READABLE
-    original range (what the public direct read can decode for its field
-    type); ``pseudonym_low``/``pseudonym_high`` is the member's verified
-    WRITABLE range (what the public Direct Write boundary accepts, the
-    strictest representation a pseudonym of this member can take).
+    The three ranges are deliberately SEPARATE concepts:
+
+    * ``readable_low``/``readable_high`` — what the public direct read can
+      decode for this member's field type (an Integer field decodes the full
+      signed 32-bit range);
+    * ``original_low``/``original_high`` — the REVERSIBLE original range: the
+      values this member can later reconstruct through the public Direct
+      Write boundary (an Integer member's writable range);
+    * ``pseudonym_low``/``pseudonym_high`` — the member's WRITABLE pseudonym
+      range (the strictest representation a pseudonym of this member can
+      take).
+
+    Origin-member truthfulness (REQ-P3-005): an observed occurrence is
+    validated against ITS OWN originating member — never against the union of
+    the relation's members (a wider Numeric member can never authorize an
+    unrecoverable Integer occurrence).
     """
 
     original_low: int
     original_high: int
     pseudonym_low: int
     pseudonym_high: int
+    readable_low: int | None = None
+    readable_high: int | None = None
 
     @property
     def original_range(self) -> tuple[int, int]:
+        """The member's REVERSIBLE original range (recoverable originals)."""
         return (self.original_low, self.original_high)
 
     @property
     def pseudonym_range(self) -> tuple[int, int]:
         return (self.pseudonym_low, self.pseudonym_high)
 
+    @property
+    def readable_range(self) -> tuple[int, int]:
+        """The member's full public READ range (defaults to the original range)."""
+        return (
+            self.original_low if self.readable_low is None else self.readable_low,
+            self.original_high if self.readable_high is None else self.readable_high,
+        )
+
     def contains_original(self, value: int) -> bool:
+        """Whether *value* is a REVERSIBLE original of this member."""
         return self.original_low <= value <= self.original_high
+
+    def contains_readable(self, value: int) -> bool:
+        """Whether *value* is decodable by this member's public read."""
+        low, high = self.readable_range
+        return low <= value <= high
 
 
 @dataclass(frozen=True)
@@ -220,18 +252,19 @@ def integer_member() -> NumericKeyMemberRange:
     the ORIGINAL during recovery.  The pinned ``dbfbridge[write]==1.1.0``
     boundary refuses both int32 extremes (typed write failure), so a
     reversible Integer member's ORIGINAL range is the verified WRITABLE
-    sub-range: an original Integer value outside it (readable, but not
-    reconstructable by the only architecture-permitted writer) must fail
+    sub-range, while its READABLE range remains the full signed 32-bit
+    decoding range: an original Integer value between the two (readable, but
+    not reconstructable by the only architecture-permitted writer) must fail
     closed BEFORE publication
-    (``NUMERIC_KEY_RECOVERY_UNWRITABLE``).  The full readable int32 facts
-    remain :data:`INTEGER_KEY_ORIGINAL_LOW`/:data:`INTEGER_KEY_ORIGINAL_HIGH`
-    and :func:`integer_original_range` for the identity path and diagnostics.
+    (``NUMERIC_KEY_RECOVERY_UNWRITABLE``).
     """
     return NumericKeyMemberRange(
         original_low=INTEGER_KEY_WRITABLE_LOW,
         original_high=INTEGER_KEY_WRITABLE_HIGH,
         pseudonym_low=INTEGER_KEY_WRITABLE_LOW,
         pseudonym_high=INTEGER_KEY_WRITABLE_HIGH,
+        readable_low=INTEGER_KEY_ORIGINAL_LOW,
+        readable_high=INTEGER_KEY_ORIGINAL_HIGH,
     )
 
 
@@ -249,9 +282,10 @@ def integer_readable_original_range() -> tuple[int, int]:
 def integral_numeric_member(width: int) -> NumericKeyMemberRange:
     """The verified member representation facts of an integral ``N(w, 0)`` key.
 
-    For an integral Numeric field the readable and writable ranges coincide:
-    a value fits exactly when its canonical decimal rendering fits the
-    declared width (never truncated, never silently rounded).
+    For an integral Numeric field the readable, reversible and pseudonym
+    ranges coincide: a value fits exactly when its canonical decimal
+    rendering fits the declared width (never truncated, never silently
+    rounded).
     """
     low, high = integral_numeric_range(width)
     return NumericKeyMemberRange(
@@ -259,7 +293,46 @@ def integral_numeric_member(width: int) -> NumericKeyMemberRange:
         original_high=high,
         pseudonym_low=low,
         pseudonym_high=high,
+        readable_low=low,
+        readable_high=high,
     )
+
+
+#: The verdict of :func:`classify_member_original` for one observed occurrence.
+MEMBER_ORIGINAL_REVERSIBLE = "REVERSIBLE"
+MEMBER_ORIGINAL_RECOVERY_UNWRITABLE = "RECOVERY_UNWRITABLE"
+MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE = "OUT_OF_MEMBER_RANGE"
+
+
+def classify_member_original(
+    member: NumericKeyMemberRange, value: int
+) -> str:
+    """The ORIGIN-MEMBER reversible verdict for one observed occurrence.
+
+    This is the ONE authoritative member-level reversible-original rule,
+    shared by the allocation service and the side-effect-free preflight:
+
+    * ``REVERSIBLE`` — the value fits the originating member's reversible
+      original range (readable AND reconstructable through the public writer
+      for THAT SAME member);
+    * ``RECOVERY_UNWRITABLE`` — the value is decodable by the originating
+      member's public read but the pinned public Direct Write boundary could
+      never reconstruct it for that member (the Integer extremes);
+    * ``OUT_OF_MEMBER_RANGE`` — the value does not even fit the originating
+      member's readable representation.
+
+    The verdict depends ONLY on the originating member: a wider or different
+    member of the same relation can never authorize an occurrence (the
+    shared :class:`NumericKeyDomain` governs exclusively where a PSEUDONYM
+    may be allocated — never whether an ORIGINAL is reversible).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("a numeric key original must be an exact int")
+    if member.contains_original(value):
+        return MEMBER_ORIGINAL_REVERSIBLE
+    if member.contains_readable(value):
+        return MEMBER_ORIGINAL_RECOVERY_UNWRITABLE
+    return MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE
 
 
 def numeric_key_domain_for(
