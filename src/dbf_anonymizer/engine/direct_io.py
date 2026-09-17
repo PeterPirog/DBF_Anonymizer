@@ -1,0 +1,220 @@
+"""Phase 4 Direct Read / Direct Write IO boundary (REQ-P4-001).
+
+The ONE production IO boundary of the two-pass engine.  Every production DBF
+read goes through :func:`stream_table_records` (the public
+``dbfbridge.iter_records`` Direct Read stream) and every production DBF/FPT
+write goes through :func:`write_fresh_table` (the public
+``dbfbridge.write_table`` boundary).  There is NO production path through
+JSONL/CSV intermediates, no direct ``dbfread``/``dbf`` access, no private
+``dbfbridge`` module, no raw record-byte rewriting and no source-artifact
+copying as transformed output.
+
+Public dbfbridge 1.1 capabilities this boundary relies on (audited by
+runtime introspection of the pinned ``dbfbridge[write]==1.1.0`` acceptance
+artifact):
+
+* ``read_schema`` / ``inspect_table`` — public schema and field descriptors;
+* ``iter_records(path, *, include_deleted, fields, memo, encoding,
+  decode_errors, progress, cancel_check)`` — the streaming O(1)-memory
+  Direct Read with deleted-record visibility (``include_deleted=True``
+  yields deleted physical records with preserved physical indices) and
+  per-record cooperative cancellation (a raising cancellation callable
+  propagates its typed exception unchanged);
+* ``DirectRecord(physical_index, deleted, values)`` — the typed logical
+  record; this boundary always keeps ``raw_record`` unset: the transform
+  path never consumes raw record bytes;
+* ``write_table(destination, *, schema, records, overwrite,
+  staging_directory, progress, cancel_check)`` — fresh DBF/FPT creation from
+  a lazily consumed record stream.
+
+PUBLIC CAPABILITY GAP (truthful report — fail closed, never worked around
+through private access): the public Direct Read exposes NULL state for
+numeric fields (decoded as ``None``) and for memo payloads, but a NULLable
+TEXT (``C``/``V``) field decodes BOTH its NULL and its empty-string records
+to ``""`` — the NULL/empty distinction is NOT exposed for text fields.  The
+engine therefore REFUSES tables carrying nullable text fields before any
+pass runs (typed, value-free refusal; the final ``_NullFlags`` handling is
+owned by P4-006) instead of inferring NULL from an empty-string heuristic.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterator, Sequence
+
+import dbfbridge
+from dbfbridge import (  # type: ignore[attr-defined]
+    DirectRecord,
+    TableSchema,
+    WriteResult,
+)
+
+from dbf_anonymizer.errors import (
+    CancellationError,
+    CallbackError,
+    DBFBridgeError,
+    ErrorCode,
+    ErrorContext,
+    PathError,
+    PublicationError,
+)
+
+__all__ = [
+    "DirectSourceTable",
+    "read_source_table",
+    "stream_table_records",
+    "write_fresh_table",
+]
+
+_ENGINE_OPERATION = "engine"
+
+
+def engine_path_failure(
+    detail_code: str, *, table_path: str | None = None
+) -> PathError:
+    """A stable typed, privacy-safe engine path refusal (no values)."""
+    return PathError(
+        ErrorCode.PATH_INVALID,
+        context=ErrorContext(
+            operation=_ENGINE_OPERATION,
+            table_path=table_path,
+            detail_code=detail_code,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class DirectSourceTable:
+    """One source table bound through the public Direct Read boundary.
+
+    ``absolute_path`` is INTERNAL engine state: it is never serialized,
+    never logged and never part of any public model, progress event or
+    manifest.
+    """
+
+    relative_path: str
+    schema: TableSchema
+    absolute_path: Path
+
+    @property
+    def has_memo_fields(self) -> bool:
+        return any(field.is_memo for field in self.schema.fields)
+
+    @property
+    def memo_field_names(self) -> tuple[str, ...]:
+        return tuple(
+            str(field.name) for field in self.schema.fields if field.is_memo
+        )
+
+
+def read_source_table(
+    source_root: Path,
+    relative_path: str,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> DirectSourceTable:
+    """Bind one source table through the public Direct Read boundary.
+
+    Read-only: the source is never opened for writing, never reindexed and
+    never mutated; no sidecar is created under the source tree.
+    """
+    if cancel_check is not None:
+        cancel_check()
+    absolute_path = source_root / relative_path
+    try:
+        schema = dbfbridge.read_schema(absolute_path)  # type: ignore[attr-defined]
+    except (CancellationError, CallbackError):
+        raise
+    except Exception as exc:
+        raise DBFBridgeError.from_exception(
+            exc,
+            context=ErrorContext(
+                operation=_ENGINE_OPERATION,
+                table_path=relative_path,
+                detail_code="ENGINE_READ_SCHEMA_FAILED",
+            ),
+        ) from None
+    return DirectSourceTable(
+        relative_path=relative_path,
+        schema=schema,
+        absolute_path=absolute_path,
+    )
+
+
+def stream_table_records(
+    table: DirectSourceTable,
+    *,
+    fields: Sequence[str] | None = None,
+    include_deleted: bool = True,
+    memo_policy: str = "skip",
+    cancel_check: Callable[[], None] | None = None,
+) -> Iterator[DirectRecord]:
+    """The streaming Direct Read of one source table (O(1) memory).
+
+    Deleted records are included by default (the production pipeline
+    transforms active AND deleted records; P4-005 owns their final
+    marker reconstruction).  The iteration is one pass, lazily consumed,
+    with the cooperative cancellation callable invoked by the public reader
+    at every physical record boundary.
+    """
+    try:
+        yield from dbfbridge.iter_records(  # type: ignore[attr-defined]
+            table.absolute_path,
+            fields=list(fields) if fields is not None else None,
+            include_deleted=include_deleted,
+            memo=memo_policy,
+            raw=False,
+            encoding="auto",
+            decode_errors="strict",
+            cancel_check=cancel_check,
+        )
+    except (CancellationError, CallbackError):
+        raise
+    except Exception as exc:
+        raise DBFBridgeError.from_exception(
+            exc,
+            context=ErrorContext(
+                operation=_ENGINE_OPERATION,
+                table_path=table.relative_path,
+                detail_code="ENGINE_DIRECT_READ_FAILED",
+            ),
+        ) from None
+
+
+def write_fresh_table(
+    destination: Path,
+    schema: TableSchema,
+    records: Iterator[DirectRecord],
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> WriteResult:
+    """Write ONE fresh DBF/FPT through the public Direct Write boundary.
+
+    ``records`` is a lazily consumed stream: the engine never materializes a
+    whole table before writing.  A destination conflict fails closed (typed
+    path refusal) instead of overwriting an existing artifact.
+    """
+    if destination.exists():
+        raise engine_path_failure("ENGINE_OUTPUT_EXISTS", table_path=destination.name)
+    try:
+        result = dbfbridge.write_table(
+            destination,
+            schema=schema,
+            records=records,
+            overwrite=False,
+            cancel_check=cancel_check,
+        )
+        assert isinstance(result, WriteResult)
+        return result
+    except (CancellationError, CallbackError):
+        raise
+    except Exception as exc:
+        raise DBFBridgeError.from_exception(
+            exc,
+            context=ErrorContext(
+                operation=_ENGINE_OPERATION,
+                table_path=destination.name,
+                detail_code="ENGINE_DIRECT_WRITE_FAILED",
+            ),
+        ) from exc
