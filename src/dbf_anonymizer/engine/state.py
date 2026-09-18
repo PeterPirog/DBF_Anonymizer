@@ -123,6 +123,14 @@ _SENSITIVE_SCHEMA = (
     " token_idx INTEGER)",
     "CREATE INDEX res_assign_class ON res_assign(kind, length, orig_idx)",
     "CREATE INDEX res_assign_token ON res_assign(kind, token_idx)",
+    # THE DATABASE-ENFORCED MATCHING INVARIANT: one reserved-token resource
+    # may be assigned to AT MOST ONE original.  ``orig_idx`` uniqueness (the
+    # primary key) already enforces one assignment per original; this
+    # partial UNIQUE index enforces the other direction for kind='token'
+    # rows, so a double occupancy of a reserved resource is a hard SQLite
+    # refusal, never a silent algorithmic slip.
+    "CREATE UNIQUE INDEX res_assign_token_once "
+    "ON res_assign (token_idx) WHERE kind = 'token'",
     "CREATE TABLE res_visited (orig_idx INTEGER PRIMARY KEY)",
     "CREATE TABLE res_dfs ("
     " depth INTEGER PRIMARY KEY,"

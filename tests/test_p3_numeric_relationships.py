@@ -2049,8 +2049,19 @@ def test_numeric_capacity_progress_and_cancellation_remain_bounded(
     assert result.ready
     joined = "".join(payloads)
     assert "CAPACITY_SCAN" in joined
+    # VALUE canaries are checked over the VALUE-BEARING payload fields: the
+    # process-unique operation identifier ("op-" + random hex) is redacted
+    # first, because a random hex can COINCIDENTALLY contain a canary-looking
+    # digit run (e.g. "op-5..." contains "-5") without any value ever
+    # leaking — a false positive, not a privacy failure.
+    operation_ids = {
+        str(json.loads(payload)["operation_id"]) for payload in payloads
+    }
+    boundary = joined
+    for operation_id in operation_ids:
+        boundary = boundary.replace(operation_id, "")
     for canary in ("-5", "123456"):
-        assert canary not in joined
+        assert canary not in boundary
     # Cancellation before the scan starts produces the typed cancellation and
     # never a completed result (a returning truthy check — a raising callback
     # is contained as CANCEL_CALLBACK_FAILED by the P1-008 contract).

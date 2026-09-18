@@ -356,21 +356,32 @@ def solve_text_residual(
     and constraint satisfaction).  Python memory is O(1) in every reachable
     branch: the originals, the reserved tokens, the capacities, the visited
     set, the DFS stack and the assignment all live in the spool's SQLite
-    tables.
+    tables.  Before returning, the solved assignment is VALIDATED
+    structurally with bounded SQL aggregates (the matching invariants are
+    enforced by the database too — see ``res_assign_token_once``); any
+    corruption fails closed with a stable, value-free detail code.
     """
     connection = spool.internal_connection()
     originals, _tokens = _build_residual_graph(
         vault, spool, domain_id=domain_id, alphabet=alphabet, base=base
     )
-    for original_idx in range(originals):
-        if cancel_probe is not None:
-            cancel_probe()
-        if _augment(connection, original_idx):
-            continue
-        raise _mapping_failure("ENGINE_TEXT_RESIDUAL_INFEASIBLE")
+    try:
+        for original_idx in range(originals):
+            if cancel_probe is not None:
+                cancel_probe()
+            if _augment(connection, original_idx):
+                continue
+            raise _mapping_failure("ENGINE_TEXT_RESIDUAL_INFEASIBLE")
+    except sqlite3.IntegrityError as exc:
+        # The database-enforced matching invariant fired (e.g. a reserved
+        # token assigned twice): the solved state is corrupt — fail closed.
+        raise _mapping_failure("ENGINE_TEXT_RESIDUAL_CORRUPT") from exc
     connection.execute("DELETE FROM res_visited")
     connection.execute("DELETE FROM res_dfs")
     connection.commit()
+    _validate_residual_assignment(
+        connection, vault=vault, domain_id=domain_id, originals=originals, base=base
+    )
     class_assignments = int(
         connection.execute(
             "SELECT COUNT(*) FROM res_assign WHERE kind = 'class'"
@@ -389,6 +400,151 @@ def solve_text_residual(
         class_assignments=class_assignments,
         token_assignments=token_assignments,
     )
+
+
+def _validate_residual_assignment(
+    connection: sqlite3.Connection,
+    *,
+    vault: VaultDatabase,
+    domain_id: str,
+    originals: int,
+    base: int,
+) -> None:
+    """The post-solve matching-invariant validator (bounded SQL aggregates).
+
+    Proven structurally, before any materialization, over the SOLVED
+    assignment tables:
+
+    * one assignment per original, every original assigned exactly once;
+    * every reserved-token resource assigned at most once (the partial
+      UNIQUE index enforces it at write time; the validator re-proves it);
+    * class assignments never exceed the class capacity the solver
+      consumed (the remaining fungible bookkeeping must reconcile exactly);
+    * a named token assignment is never the original's own reserved value;
+    * every assigned resource fits the original's strictest width;
+    * no dangling token id and no unknown assignment kind.
+
+    Only per-length aggregate rows (bounded by the maximum field width) and
+    scalar counts are materialized — never assignments, tokens or values.
+    Any violation is a stable, privacy-safe typed refusal.
+    """
+    _corrupt = _mapping_failure("ENGINE_TEXT_RESIDUAL_CORRUPT")
+    total = int(
+        connection.execute("SELECT COUNT(*) FROM res_assign").fetchone()[0]
+    )
+    if total != originals:
+        raise _corrupt
+    distinct_originals = int(
+        connection.execute(
+            "SELECT COUNT(DISTINCT orig_idx) FROM res_assign"
+        ).fetchone()[0]
+    )
+    if distinct_originals != originals:
+        raise _corrupt
+    if int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_original WHERE idx >= ?", (originals,)
+        ).fetchone()[0]
+    ) or int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign WHERE orig_idx >= ?",
+            (originals,),
+        ).fetchone()[0]
+    ):
+        raise _corrupt
+    unknown_kinds = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign "
+            "WHERE kind NOT IN ('class','token')"
+        ).fetchone()[0]
+    )
+    if unknown_kinds:
+        raise _corrupt
+    malformed = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign WHERE "
+            "(kind = 'class' AND (length IS NULL OR token_idx IS NOT NULL))"
+            " OR (kind = 'token' AND (token_idx IS NULL OR length IS NOT NULL))"
+        ).fetchone()[0]
+    )
+    if malformed:
+        raise _corrupt
+    dangling = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign a WHERE a.kind = 'token' "
+            "AND NOT EXISTS ("
+            " SELECT 1 FROM res_token t WHERE t.tid = a.token_idx)"
+        ).fetchone()[0]
+    )
+    if dangling:
+        raise _corrupt
+    duplicate_tokens = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM (SELECT token_idx FROM res_assign "
+            "WHERE kind = 'token' GROUP BY token_idx "
+            "HAVING COUNT(*) > 1)"
+        ).fetchone()[0]
+    )
+    if duplicate_tokens:
+        raise _corrupt
+    self_assigned = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign a JOIN res_token t "
+            "ON t.tid = a.token_idx JOIN res_original o ON o.idx = a.orig_idx "
+            "WHERE a.kind = 'token' AND (t.owner_idx = a.orig_idx "
+            "OR t.value = o.own_token)"
+        ).fetchone()[0]
+    )
+    if self_assigned:
+        raise _corrupt
+    too_long = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM res_assign a JOIN res_original o "
+            "ON o.idx = a.orig_idx WHERE "
+            "(a.kind = 'token' AND EXISTS ("
+            "  SELECT 1 FROM res_token t WHERE t.tid = a.token_idx "
+            "  AND t.length > o.width))"
+            " OR (a.kind = 'class' AND a.length > o.width)"
+        ).fetchone()[0]
+    )
+    if too_long:
+        raise _corrupt
+    occupied_by_length = dict(
+        (int(row[0]), int(row[1]))
+        for row in vault._internal_connection().execute(
+            "SELECT logical_byte_length, COUNT(*) FROM text_mappings "
+            "WHERE domain_id = ? GROUP BY logical_byte_length",
+            (domain_id,),
+        ).fetchall()
+    )
+    capacity_by_length = {
+        int(row[0]): int(row[1])
+        for row in connection.execute(
+            "SELECT length, fungible FROM res_cap"
+        ).fetchall()
+    }
+    for length, fungible_remaining in capacity_by_length.items():
+        reserved = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM res_token WHERE length = ?",
+                (int(length),),
+            ).fetchone()[0]
+        )
+        class_taken = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM res_assign WHERE kind = 'class' "
+                "AND length = ?",
+                (int(length),),
+            ).fetchone()[0]
+        )
+        expected_remaining = (
+            _class_size(base, int(length))
+            - occupied_by_length.get(int(length), 0)
+            - reserved
+            - class_taken
+        )
+        if int(fungible_remaining) != expected_remaining or expected_remaining < 0:
+            raise _corrupt
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +586,11 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
             "SELECT width, own_token FROM res_original WHERE idx = ?",
             (orig_idx,),
         ).fetchone()
+        if width_row is None:
+            # A frame whose orig_idx is not a real original id (e.g. a
+            # resource id used where an original id is required) is a
+            # structural corruption of the search — fail closed.
+            raise _mapping_failure("ENGINE_TEXT_RESIDUAL_CORRUPT")
         width = int(width_row[0])
         own_token = width_row[1]
 
@@ -493,14 +654,23 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
                 "UPDATE res_dfs SET token_pos = ? WHERE depth = ?",
                 (token_idx, depth),
             )
+            # The child frame represents the displaced OCCUPANT ORIGINAL —
+            # NEVER the resource id.  ``res_token.tid`` and
+            # ``res_original.idx`` are DIFFERENT namespaces: the occupant
+            # currently holding ``token_idx`` must find a new resource, so
+            # the frame's ``orig_idx`` is the occupant and the frame's
+            # ``vacate_token_idx`` is the resource it will vacate for its
+            # parent.  Using token_idx as orig_idx here would search for a
+            # resource of a NONEXISTENT/WRONG original (resource ids are
+            # not original ids).
             connection.execute(
                 "INSERT INTO res_visited (orig_idx) VALUES (?)", (occupant,)
             )
             connection.execute(
                 "INSERT INTO res_dfs (depth, orig_idx, vacate_kind, "
                 "vacate_length, vacate_token_idx, class_pos, token_pos, "
-                "displace_from) VALUES (?, ?, 'token', NULL, ?, 1, ?, -1)",
-                (depth + 1, token_idx, token_idx, occupant),
+                "displace_from) VALUES (?, ?, 'token', NULL, ?, 1, -1, -1)",
+                (depth + 1, occupant, token_idx),
             )
             advanced = True
             break
@@ -516,6 +686,15 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
 # ---------------------------------------------------------------------------
 _TEXT_PROBE_BUDGET = 64
 _TEXT_COMPLETION_WALK_LIMIT = 4096
+
+
+def _randbelow(bound: int) -> int:
+    """The OS CSPRNG (the ONLY production randomness source).
+
+    A private seam so behavioral tests can inject deterministic sequences
+    where exact choices matter; production always uses the OS CSPRNG.
+    """
+    return secrets.randbelow(bound)
 
 
 def materialize_text_assignment(
@@ -534,6 +713,15 @@ def materialize_text_assignment(
     blocked index stream); a named reserved assignment receives its exact
     token.  Nothing is sequence-derived and nothing is derived from the
     original value.
+
+    RESOURCE-PARTITION INVARIANCE: the free fungible universe during
+    materialization is EXACTLY the partition ``solve_text_residual`` solved
+    with — the token universe minus the persisted occupied tokens minus
+    EVERY ``res_token`` value.  The solved residual tables are immutable
+    for the whole materialization (they are dropped only afterwards), so a
+    named reserved resource can never be stolen by a later class
+    allocation, even though the corresponding observations are dropped
+    from the mutable ``text_observation`` table as their mappings commit.
     """
     connection = spool.internal_connection()
     cursor = connection.execute(
@@ -568,6 +756,21 @@ def materialize_text_assignment(
             yield value, candidate, len(candidate)
 
 
+def _reserved_token_blocked(connection: sqlite3.Connection, candidate: str) -> bool:
+    """Whether *candidate* is a RESERVED resource of the solved graph.
+
+    The check reads the IMMUTABLE solved residual graph (``res_token``),
+    never the mutable observation table: an original's self-value stays
+    excluded from the fungible pool from the moment the assignment is
+    solved until every assignment is materialized, regardless of when its
+    own observation is dropped.
+    """
+    row = connection.execute(
+        "SELECT 1 FROM res_token WHERE value = ?", (candidate,)
+    ).fetchone()
+    return row is not None
+
+
 def _select_fungible_token(
     value: str,
     length: int,
@@ -578,22 +781,33 @@ def _select_fungible_token(
     spool: PassOneSpool,
     domain_id: str,
 ) -> str:
-    """One CSPRNG free fungible token of *length* (probe, then exact walk)."""
+    """One CSPRNG free fungible token of *length* (probe, then exact walk).
+
+    Both the probe and the exact walk exclude exactly the solved resource
+    partition: persisted occupied tokens plus EVERY ``res_token`` value.
+    """
     class_low = token_space(length - 1, base)
     class_size = _class_size(base, length)
+    connection = spool.internal_connection()
     for _ in range(_TEXT_PROBE_BUDGET):
         candidate = token_at(
-            class_low + secrets.randbelow(class_size), length, alphabet
+            class_low + _randbelow(class_size), length, alphabet
         )
         if candidate == value:
             continue
         if _token_occupied(vault, domain_id, candidate):
             continue
-        if spool.text_is_observed(candidate):
+        if _reserved_token_blocked(connection, candidate):
             continue
         return candidate
     return _exact_fungible_walk(
-        value, length, alphabet=alphabet, base=base, vault=vault, spool=spool, domain_id=domain_id
+        value,
+        length,
+        alphabet=alphabet,
+        base=base,
+        vault=vault,
+        spool=spool,
+        domain_id=domain_id,
     )
 
 
@@ -609,9 +823,12 @@ def _exact_fungible_walk(
 ) -> str:
     """The exact j-th free fungible token of the class (O(1) Python RAM).
 
-    The blocked indices (occupied vault tokens plus remaining spool values,
-    which include the original's own value) are materialized into a sorted
-    SQLite temp table and the gap walk runs over a SQL-ordered stream.
+    The blocked indices — persisted occupied tokens PLUS every ``res_token``
+    value of the class (the immutable solved reserved partition) — are
+    materialized into a sorted SQLite temp table and the gap walk runs over
+    a SQL-ordered stream.  ``j`` comes from the OS CSPRNG exactly like the
+    probe phase, so nothing is sequence-derived and nothing is derived from
+    the original value.
     """
     class_low = token_space(length - 1, base)
     connection = spool.internal_connection()
@@ -624,14 +841,18 @@ def _exact_fungible_walk(
             "INSERT OR IGNORE INTO blocked_index (idx) VALUES (?)",
             (token_index(token, alphabet),),
         )
-    for reserved_value in spool.text_values_of_length(length):
-        if is_safe_token(reserved_value, alphabet):
+    reserved_cursor = connection.execute(
+        "SELECT value FROM res_token WHERE length = ?", (int(length),)
+    )
+    while True:
+        reserved_rows = reserved_cursor.fetchmany(MAX_SQL_BATCH)
+        if not reserved_rows:
+            break
+        for (reserved_value,) in reserved_rows:
             connection.execute(
                 "INSERT OR IGNORE INTO blocked_index (idx) VALUES (?)",
-                (token_index(reserved_value, alphabet),),
+                (token_index(str(reserved_value), alphabet),),
             )
-    connection.commit()
-
     connection.commit()
 
     def sorted_indices() -> Iterator[int]:
@@ -650,7 +871,7 @@ def _exact_fungible_walk(
     )
     free_count = _class_size(base, length) - blocked_count
     previous = class_low - 1
-    remaining = secrets.randbelow(free_count)
+    remaining = _randbelow(free_count)
     for index in sorted_indices():
         gap = index - previous - 1
         if remaining < gap:

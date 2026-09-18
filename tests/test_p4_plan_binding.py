@@ -358,3 +358,77 @@ def test_untampered_plan_still_executes(tmp_path: Path) -> None:
     assert result.tables_written == ("north/customers.dbf", "south/orders.dbf")
     assert result.all_relations_verified
     assert spool_artifacts(_vault_dir(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# REQ-P1-008: the pre-execution source refingerprint is cancellable
+# ---------------------------------------------------------------------------
+def test_cancellation_during_pre_execution_refingerprint(tmp_path: Path) -> None:
+    """The cooperative cancellation probe is polled INSIDE the pre-execution
+    source fingerprint scan: a returning-true check raises the typed
+    CancellationError before ANY side effect — no vault, no spool, no
+    output, no source record stream — and the source stays unchanged."""
+    import dbfbridge
+    from dbf_anonymizer import CancellationError
+
+    source_root = _make_dataset(tmp_path)
+    plan = _plan(tmp_path, source_root)
+    failure_time = _hash_tree(source_root)
+    probes = {"count": 0}
+
+    def cancel() -> bool:
+        probes["count"] += 1
+        return True  # cancel at the FIRST fingerprint scan safe point
+
+    import pytest as _pytest
+
+    mp = _pytest.MonkeyPatch()
+
+    def forbidden_iter_records(*args: object, **kwargs: object):
+        raise AssertionError(
+            "no PASS1 source record stream may open before the "
+            "pre-execution revalidation completes"
+        )
+
+    mp.setattr(dbfbridge, "iter_records", forbidden_iter_records)
+    try:
+        with pytest.raises(CancellationError) as excinfo:
+            run_two_pass(plan, cancel_check=cancel)
+    finally:
+        mp.undo()
+    # The probe was really polled during the refingerprint scan.
+    assert probes["count"] >= 1
+    assert (
+        excinfo.value.to_dict()["context"]["detail_code"] == "CANCELLED_BY_CHECK"
+    )
+    assert _hash_tree(source_root) == failure_time
+    assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
+    assert spool_artifacts(_vault_dir(tmp_path)) == []
+    assert not (tmp_path / "output").exists() or not any(
+        (tmp_path / "output").rglob("*")
+    )
+
+
+def test_raising_cancel_check_during_refingerprint_stays_classified(
+    tmp_path: Path,
+) -> None:
+    """P1-008 containment: a RAISING cancel check can never manufacture a
+    genuine cancellation — during the pre-execution refingerprint it stays
+    classified as CANCEL_CALLBACK_FAILED, with zero side effects."""
+    from dbf_anonymizer import CallbackError
+
+    source_root = _make_dataset(tmp_path)
+    plan = _plan(tmp_path, source_root)
+    failure_time = _hash_tree(source_root)
+
+    def bad_check() -> bool:
+        raise RuntimeError("hostile callback")
+
+    with pytest.raises(CallbackError) as excinfo:
+        run_two_pass(plan, cancel_check=bad_check)
+    assert (
+        excinfo.value.to_dict()["context"]["detail_code"] == "CANCEL_CHECK"
+    )
+    assert _hash_tree(source_root) == failure_time
+    assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
+    assert spool_artifacts(_vault_dir(tmp_path)) == []

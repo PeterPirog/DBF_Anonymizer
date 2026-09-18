@@ -386,6 +386,7 @@ def _revalidate_execution_identity(
     vault_path: Path,
     resolved_policy: object,
     relationship_document: RelationshipDocument | None,
+    cancel_probe: Callable[[], None] | None = None,
 ) -> None:
     """The pre-execution trust revalidation (zero side effects on refusal).
 
@@ -394,6 +395,13 @@ def _revalidate_execution_identity(
     fingerprint — instead of inventing a divergent second implementation.
     Every refusal happens BEFORE the vault, the spool or any output
     artifact is created.
+
+    REQ-P1-008: the source refingerprint is a potentially long scan inside
+    a public long-running operation, so the caller's cooperative
+    cancellation probe (the SAME controller probe used everywhere else —
+    a returning-true check raises the typed ``CancellationError`` and a
+    raising callback stays contained as ``CANCEL_CALLBACK_FAILED``) is
+    polled at the kernel's scan safe points.
     """
     from dbf_anonymizer.discovery import (
         collect_fingerprint_entries,
@@ -404,7 +412,7 @@ def _revalidate_execution_identity(
     from dbf_anonymizer.relationships.document import relationship_fingerprint
 
     entries = collect_fingerprint_entries(
-        source_root, cancel_probe=None
+        source_root, cancel_probe=cancel_probe
     )
     current_source = compute_source_fingerprint(entries)
     if current_source != plan.dataset.source_fingerprint:
@@ -500,6 +508,7 @@ def run_two_pass(
         vault_path=vault_path,
         resolved_policy=resolved_policy,
         relationship_document=context.relationship_document,
+        cancel_probe=control.check_cancelled,
     )
     engine_plan = build_engine_plan(
         plan,

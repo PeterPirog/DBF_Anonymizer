@@ -28,6 +28,7 @@ import pytest
 import dbfbridge
 from dbf_anonymizer import VaultError, build_plan
 from dbf_anonymizer.engine import run_two_pass
+from dbf_anonymizer.engine import text_residual as text_residual_module
 from dbf_anonymizer.engine.state import MAX_RECORD_BATCH
 from dbf_anonymizer.errors import MappingError
 from dbf_anonymizer.vault.mappings import create_domain, text_mapping_rows
@@ -156,6 +157,101 @@ def test_forced_residual_derangement_is_exact_and_bounded(
     # BOUNDED Python buffers: the whole forced-residual run (planning is
     # excluded) stays far below any dataset-scaled footprint.
     assert peak < 8 * 1024 * 1024
+
+
+_ODD_VALUES = [
+    value
+    for value in (list(_ALPHABET) + [a + b for a in _ALPHABET for b in _ALPHABET])
+    if value != "A"
+]
+assert len(_ODD_VALUES) == len(_VALUES) - 1
+assert len(_ODD_VALUES) > MAX_RECORD_BATCH
+assert len(_ODD_VALUES) % 2 == 1  # an ODD full derangement
+
+
+def _write_odd_source(source_root: Path) -> None:
+    write_numeric_table(
+        source_root,
+        "codes.dbf",
+        (numeric_field("CODE", "C", 2),),
+        [{"CODE": value} for value in _ODD_VALUES],
+    )
+
+
+def test_forced_residual_odd_derangement_at_production_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ODD production-scale forced-residual derangement: one persisted
+    foreign mapping occupies token 'A'; the source observes the REMAINING
+    1331 safe tokens (> MAX_RECORD_BATCH).  Fungible capacity is 0 in both
+    classes, so all 1331 originals must exchange reserved tokens through a
+    full ODD derangement — the even adjacent-swap shortcut is impossible
+    and the token-displacement branch genuinely runs."""
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    vault_path = tmp_path / "vault" / "dictionary.sqlite3"
+    _write_odd_source(source_root)
+    plan = build_plan(str(source_root), str(output_root), str(vault_path))
+    _seed_occupied_token(vault_path, plan)
+    _block_oracle(monkeypatch)
+    # Structural proof that the displacement chain really runs: spy on the
+    # solver unwind stack (a chain of at least two frames must resolve).
+    max_stack = {"depth": 0}
+    real_unwind = text_residual_module._unwind
+
+    def spy_unwind(connection, found):
+        rows = int(
+            connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0]
+        )
+        max_stack["depth"] = max(max_stack["depth"], int(rows))
+        return real_unwind(connection, found)
+
+    monkeypatch.setattr(text_residual_module, "_unwind", spy_unwind)
+    tracemalloc.start()
+    result = run_two_pass(plan)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert result.text_allocated == len(_ODD_VALUES)
+    assert result.text_reused == 0
+    assert result.pass2_records_written == len(_ODD_VALUES)
+    assert result.read_streams == (
+        ("pass1", "codes.dbf"),
+        ("pass2", "codes.dbf"),
+    )
+    # The displacement branch really ran (the odd cycle needs it).
+    assert max_stack["depth"] >= 2
+    # EXACT ODD BIJECTION over 1331 originals, no self maps, all unique:
+    vault = VaultDatabase.open(
+        vault_path,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+        dbfbridge_version=str(dbfbridge.__version__),
+    )
+    rows = list(text_mapping_rows(vault, GLOBAL_TEXT_DOMAIN_ID))
+    vault.close()
+    mapping = {original: pseudonym for original, pseudonym, _l in rows}
+    # The vault also holds the seeded FOREIGN mapping (fixed, untouched):
+    assert mapping["FOREIGN-NOT-IN-DATASET"] == "A"
+    source_mapping = {
+        original: pseudonym
+        for original, pseudonym in mapping.items()
+        if original != "FOREIGN-NOT-IN-DATASET"
+    }
+    assert set(source_mapping) == set(_ODD_VALUES)  # no missing mappings
+    assert len(source_mapping) == len(_ODD_VALUES)
+    assert len(set(source_mapping.values())) == len(_ODD_VALUES)  # injective
+    assert all(
+        source_mapping[value] != value for value in source_mapping
+    )  # no self map
+    assert "A" not in set(source_mapping.values())  # occupied token stays
+    assert all(len(p) <= 2 for p in source_mapping.values())
+    output_values = [
+        record.values["CODE"]
+        for record in dbfbridge.iter_records(output_root / "codes.dbf")
+    ]
+    assert output_values == [mapping[value] for value in _ODD_VALUES]
+    assert peak < 8 * 1024 * 1024  # bounded Python buffers
 
 
 def test_forced_residual_exhaustion_is_a_typed_refusal(
