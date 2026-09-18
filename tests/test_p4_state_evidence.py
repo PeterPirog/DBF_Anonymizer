@@ -192,38 +192,41 @@ def test_numeric_residual_kernel_matches_plan_numeric_bijection(tmp_path) -> Non
             )
     finally:
         vault.release_writer_lease(lease)
-    rng = random.Random(20260917)
-    mismatch = 0
-    for _trial in range(200):
-        remaining = rng.randint(0, 6)
-        occupied = rng.randint(0, 12)
-        spool_conn = spool.internal_connection()
-        spool_conn.execute("DELETE FROM numeric_observation")
-        spool_conn.commit()
-        spool._pending_numeric.clear()  # noqa: SLF001 - test instrumentation
-        values = rng.sample(range(-30, 30), remaining)
-        for value in values:
-            spool.observe_numeric(domain_id, str(value))
-        spool.flush()
-        candidate = rng.randint(domain.pseudonym_low, domain.pseudonym_high)
-        aggregate = _numeric_residual_feasible(
-            domain=domain,
-            occupied_after=occupied + 1,
-            remaining_after=remaining - 1,
-            vault=vault,
-            spool=spool,
-            domain_id=domain_id,
-        )
-        # The authoritative kernel with the SAME facts:
-        authoritative = plan_numeric_bijection(
-            domain,
-            values[1:] if values else [],
-            list(range(occupied + 1)),
-        )
-        if aggregate != authoritative:
-            mismatch += 1
-    assert mismatch == 0
-    spool.cleanup()
+    try:
+        rng = random.Random(20260917)
+        mismatch = 0
+        for _trial in range(200):
+            remaining = rng.randint(0, 6)
+            occupied = rng.randint(0, 12)
+            spool_conn = spool.internal_connection()
+            spool_conn.execute("DELETE FROM numeric_observation")
+            spool_conn.commit()
+            spool._pending_numeric.clear()  # noqa: SLF001 - test instrumentation
+            values = rng.sample(range(-30, 30), remaining)
+            for value in values:
+                spool.observe_numeric(domain_id, str(value))
+            spool.flush()
+            candidate = rng.randint(domain.pseudonym_low, domain.pseudonym_high)
+            aggregate = _numeric_residual_feasible(
+                domain=domain,
+                occupied_after=occupied + 1,
+                remaining_after=remaining - 1,
+                vault=vault,
+                spool=spool,
+                domain_id=domain_id,
+            )
+            # The authoritative kernel with the SAME facts:
+            authoritative = plan_numeric_bijection(
+                domain,
+                values[1:] if values else [],
+                list(range(occupied + 1)),
+            )
+            if aggregate != authoritative:
+                mismatch += 1
+        assert mismatch == 0
+    finally:
+        vault.close()
+        spool.cleanup()
 
 
 def test_spool_batch_bounds_are_bounded_constants() -> None:

@@ -49,10 +49,16 @@ from dbf_anonymizer.engine.state import (
     MAX_RECORD_BATCH,
     PassOneSpool,
 )
-from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError, PathError
+from dbf_anonymizer.errors import (
+    ErrorCode,
+    ErrorContext,
+    MappingError,
+    PathError,
+    PublicationError,
+    VaultError,
+)
 from dbf_anonymizer.models import Plan
 from dbf_anonymizer.policy import resolve_policy
-from dbf_anonymizer.relationships.document import parse_relationship_document
 from dbf_anonymizer.relationships.models import (
     RelationGroup,
     RelationshipDocument,
@@ -87,6 +93,15 @@ def _path_failure(detail_code: str) -> PathError:
 def _mapping_failure(detail_code: str) -> MappingError:
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
+        context=ErrorContext(operation="engine", detail_code=detail_code),
+    )
+
+
+def _identity_failure(detail_code: str) -> VaultError:
+    """A typed execution-identity refusal (same family as the P2-010
+    vault fingerprint checks): value-free, path-free, stable."""
+    return VaultError(
+        ErrorCode.VAULT_IDENTITY_MISMATCH,
         context=ErrorContext(operation="engine", detail_code=detail_code),
     )
 
@@ -251,7 +266,12 @@ def build_engine_plan(
     if relationship_document is not None:
         # EVERY declared relation is tracked for the verification evidence —
         # declared text relations and reversible numeric relations alike.
+        # BLOCKER 2 fix: the relation member fields of EVERY table are
+        # collected so the pass-1 projection reads every declared member
+        # (identity members included) — a missing member would otherwise be
+        # misread as NULL in the BEFORE evidence.
         numeric_by_group: dict[RelationGroup, str] = dict(numeric_groups)
+        relation_fields_by_table: dict[str, set[str]] = {}
         for group in relationship_document.groups:
             group_domain: str | None = numeric_by_group.get(group)
             domain: NumericKeyDomain | None = None
@@ -274,12 +294,20 @@ def build_engine_plan(
                 "CANDIDATE"
             )
             foreign_members = group.members_for_role("FOREIGN")
+            parent_table = str(parent_members[0].table_path)
+            foreign_table = str(foreign_members[0].table_path)
+            relation_fields_by_table.setdefault(parent_table, set()).update(
+                str(member.field_name) for member in parent_members
+            )
+            relation_fields_by_table.setdefault(foreign_table, set()).update(
+                str(member.field_name) for member in foreign_members
+            )
             relations.append(
                 RelationDirective(
                     relation_id=str(group.relation_id),
                     composite_arity=len(parent_members),
-                    parent_table=str(parent_members[0].table_path),
-                    foreign_table=str(foreign_members[0].table_path),
+                    parent_table=parent_table,
+                    foreign_table=foreign_table,
                     parent_fields=tuple(
                         str(member.field_name) for member in parent_members
                     ),
@@ -290,6 +318,24 @@ def build_engine_plan(
                     numeric_domain=domain,
                 )
             )
+        updated_tables: list[TableDirective] = []
+        for directive in tables:
+            updated_tables.append(
+                TableDirective(
+                    relative_path=directive.relative_path,
+                    transformed=directive.transformed,
+                    memo_fields=directive.memo_fields,
+                    temporal_fields=directive.temporal_fields,
+                    relation_fields=tuple(
+                        sorted(
+                            relation_fields_by_table.get(
+                                directive.relative_path, set()
+                            )
+                        )
+                    ),
+                )
+            )
+        tables = updated_tables
     return EnginePlan(
         plan=plan,
         tables=tuple(tables),
@@ -332,6 +378,54 @@ def _temporal_action(merged_policy: dict[str, object], dbf_type: str) -> str | N
     return None if action == "KEEP" else action
 
 
+def _revalidate_execution_identity(
+    plan: Plan,
+    *,
+    source_root: Path,
+    output_root: Path,
+    vault_path: Path,
+    resolved_policy: object,
+    relationship_document: RelationshipDocument | None,
+) -> None:
+    """The pre-execution trust revalidation (zero side effects on refusal).
+
+    Re-runs the EXISTING canonical kernels — the source fingerprint kernel
+    of :func:`build_plan`, the preflight overlap semantics and the policy
+    fingerprint — instead of inventing a divergent second implementation.
+    Every refusal happens BEFORE the vault, the spool or any output
+    artifact is created.
+    """
+    from dbf_anonymizer.discovery import (
+        collect_fingerprint_entries,
+        compute_source_fingerprint,
+    )
+    from dbf_anonymizer.policy import compute_policy_fingerprint
+    from dbf_anonymizer.preflight import _paths_overlap
+    from dbf_anonymizer.relationships.document import relationship_fingerprint
+
+    entries = collect_fingerprint_entries(
+        source_root, cancel_probe=None
+    )
+    current_source = compute_source_fingerprint(entries)
+    if current_source != plan.dataset.source_fingerprint:
+        raise _identity_failure("ENGINE_SOURCE_FINGERPRINT_MISMATCH")
+    if _paths_overlap(source_root, output_root, vault_path):
+        raise _path_failure("ENGINE_PATH_OVERLAP")
+    current_policy = compute_policy_fingerprint(resolved_policy)  # type: ignore[arg-type]
+    if current_policy != plan.policy.policy_fingerprint:
+        raise _identity_failure("ENGINE_POLICY_IDENTITY_MISMATCH")
+    declared = plan.relationships
+    if relationship_document is not None:
+        if relationship_fingerprint(relationship_document) != (
+            declared.relationship_fingerprint
+        ):
+            raise _identity_failure("ENGINE_RELATIONSHIP_IDENTITY_MISMATCH")
+        if len(relationship_document.groups) != declared.relation_count:
+            raise _identity_failure("ENGINE_RELATIONSHIP_COUNT_MISMATCH")
+    elif declared.relation_count > 0:
+        raise _identity_failure("ENGINE_RELATIONSHIP_DOCUMENT_MISSING")
+
+
 class _WriterLease:
     """The production writer-lease context of the engine (P2 policy)."""
 
@@ -352,15 +446,32 @@ class _WriterLease:
 def run_two_pass(
     plan: Plan,
     *,
-    source_root: Path | str,
-    output_root: Path | str,
-    vault_path: Path | str,
-    policy: object = None,
-    relationship_document: RelationshipDocument | None = None,
     progress: Callable[[object], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> TwoPassResult:
-    """The bounded two-pass production run over one immutable plan.
+    """The bounded two-pass production run bound to ONE execution identity.
+
+    The Plan and its PRIVATE execution context are the ONLY source of truth:
+    source/output/vault roots, the resolved policy snapshot and the parsed
+    relationship document are resolved from the retained context — the
+    engine accepts NO runtime path/policy/metadata overrides (there are no
+    released users and no duplicate inputs).
+
+    PRE-EXECUTION REVALIDATION (before the vault, the spool or any output
+    artifact is created — zero transformation-equivalent side effects on
+    refusal):
+
+    1. SOURCE IDENTITY — the source fingerprint is RECOMPUTED with the SAME
+       canonical kernel :func:`build_plan` used and must equal
+       ``plan.dataset.source_fingerprint`` exactly (a source changed after
+       planning fails before any side effect).
+    2. PATH / TRUST ZONES — the existing preflight overlap semantics
+       (resolved aliases) reject any source/output/vault nesting.
+    3. POLICY — the context's resolved policy fingerprint must equal
+       ``plan.policy.policy_fingerprint`` (no caller-supplied policy).
+    4. RELATIONSHIPS — the retained parsed document's canonical fingerprint
+       must equal ``plan.relationships.relationship_fingerprint``.
+    5. VAULT — the existing P2-010 fingerprint checks run unchanged at open.
 
     Cancellation and progress follow REQ-P1-008: the cooperative check is
     polled between tables, per record and before every finalize/write safe
@@ -370,22 +481,31 @@ def run_two_pass(
     the only durable mapping truth; the ephemeral evidence spool is
     protected Zone B state that is cleaned up explicitly after the run.
     """
-    source = Path(source_root)
-    output = Path(output_root)
-    vault_path = Path(vault_path)
+    context = plan.execution_context
+    if context is None:
+        raise _path_failure("ENGINE_PLAN_CONTEXT_MISSING")
+    source = Path(context.source_root)
+    output = Path(context.output_root)
+    vault_path = Path(context.vault_path)
+    resolved_policy = context.resolved_policy
+    if resolved_policy is None:
+        raise _path_failure("ENGINE_PLAN_POLICY_MISSING")
     control = ProgressController(
         operation="two_pass", progress=progress, cancel_check=cancel_check
     )
-    parsed_document = (
-        parse_relationship_document(relationship_document)
-        if isinstance(relationship_document, dict)
-        else relationship_document
+    _revalidate_execution_identity(
+        plan,
+        source_root=source,
+        output_root=output,
+        vault_path=vault_path,
+        resolved_policy=resolved_policy,
+        relationship_document=context.relationship_document,
     )
     engine_plan = build_engine_plan(
         plan,
         source_root=source,
-        policy=policy,
-        relationship_document=parsed_document,
+        policy=resolved_policy,
+        relationship_document=context.relationship_document,
     )
     vault = VaultDatabase.open(
         vault_path,
@@ -437,34 +557,36 @@ def run_two_pass(
             outcome=outcome,
             written=written,
         )
-        result_spool_bytes = _spool_size_bytes(vault_path.parent)
         control.complete(completed=len(result.tables_written))
         return result
-    except BaseException:
-        _discard_written(output, written)
+    except BaseException as original:
+        cleanup_failures = _discard_written(output, written)
+        if cleanup_failures:
+            # The original operation failure stays identifiable (it is the
+            # chained __cause__ of the typed cleanup-safety refusal).
+            raise PublicationError(
+                ErrorCode.PUBLICATION_INCOMPLETE,
+                context=ErrorContext(
+                    operation="two_pass",
+                    detail_code="ENGINE_OUTPUT_CLEANUP_FAILED",
+                ),
+            ) from original
         raise
     finally:
         vault.close()
         spool.cleanup()
 
 
-def _spool_size_bytes(vault_path: Path) -> int:
-    from dbf_anonymizer.engine.state import PASS1_STATE_FILENAME
-
-    spool_file = vault_path.parent / PASS1_STATE_FILENAME
-    try:
-        return spool_file.stat().st_size
-    except OSError:
-        return 0
-
-
-def _discard_written(output_root: Path, written: Sequence[str]) -> None:
+def _discard_written(output_root: Path, written: Sequence[str]) -> list[str]:
     """Remove everything THIS run wrote (no partial published output).
 
-    Best-effort artifact removal after a failure or cancellation; a cleanup
-    failure is surfaced, never silently ignored.  The durable
-    publication/staging state remains REQ-P4-009 scope.
+    Every removal failure is COLLECTED and returned — never silently
+    swallowed.  The caller keeps the original operation failure identifiable
+    and surfaces a typed cleanup-safety error chained to it.  The durable
+    publication/staging state remains REQ-P4-009 scope; no atomic
+    publication claim is made.
     """
+    failures: list[str] = []
     for relative_path in reversed(written):
         base = output_root / relative_path
         for suffix in ("", ".fpt"):
@@ -472,7 +594,8 @@ def _discard_written(output_root: Path, written: Sequence[str]) -> None:
             try:
                 if artifact.exists():
                     artifact.unlink()
-            except OSError:
-                pass
-
-
+            except OSError as exc:
+                failures.append(
+                    f"{relative_path}{suffix}:{type(exc).__name__}"
+                )
+    return failures

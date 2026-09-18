@@ -20,7 +20,7 @@ small-fixture oracle and the equivalence is cross-checked by the test suite.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Iterator, Sequence
 
 from dbfbridge import DirectRecord  # type: ignore[attr-defined]
 
@@ -80,6 +80,7 @@ def run_pass_two(
     """The write pass: resolve, transform, direct-write, then compare."""
     control.start_phase(ProgressPhase.PASS2_WRITE, total=len(engine_plan.tables))
     records_written = 0
+    read_streams: list[tuple[str, str]] = []
     for directive in engine_plan.tables:
         assert isinstance(directive, TableDirective)
         control.check_cancelled()
@@ -109,6 +110,7 @@ def run_pass_two(
                 control,
                 text_domain_id,
                 temporal_offset,
+                read_streams,
             ),
             cancel_check=control.check_cancelled,
         )
@@ -126,7 +128,8 @@ def run_pass_two(
         numeric_allocated=dict(outcome.numeric_allocated),
         temporal_offset_allocated=outcome.temporal_offset is not None,
         relations=tuple(summaries),
-        evidence_spool_bytes=0,
+        evidence_spool_bytes=spool.size_bytes(),
+        read_streams=tuple(outcome.read_streams) + tuple(read_streams),
     )
 
 
@@ -154,9 +157,11 @@ def _transform_stream(
     control: ProgressController,
     text_domain_id: str | None,
     temporal_offset: int | None,
-) -> Iterator[DirectRecord]:
+    read_streams: list[tuple[str, str]],
+    ) -> Iterator[DirectRecord]:
     """The lazy transformed record stream feeding the Direct Write boundary."""
     memo_policy = "inline" if table.has_memo_fields else "skip"
+    read_streams.append(("pass2", directive.relative_path))
     records = stream_table_records(
         table,
         include_deleted=True,
@@ -309,5 +314,3 @@ def _compare_relations(
 
 
 _UNUSED_TEXT_DOMAIN = GLOBAL_TEXT_DOMAIN_ID
-
-

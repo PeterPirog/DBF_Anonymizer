@@ -147,13 +147,7 @@ def _run_engine(tmp_path: Path, document: dict[str, object]):
         str(vault_path),
         relationship_document=document,
     )
-    result = run_two_pass(
-        plan,
-        source_root=source_root,
-        output_root=output_root,
-        vault_path=vault_path,
-        relationship_document=document,
-    )
+    result = run_two_pass(plan)
     # SOURCE IMMUTABILITY (P0-004): two read passes changed nothing.
     assert _hash_tree(source_root) == before_hashes
     return result, source_root, output_root, vault_path
@@ -258,13 +252,7 @@ def test_two_pass_preserves_deleted_records_and_order(tmp_path: Path) -> None:
         str(vault_path),
         relationship_document=document,
     )
-    result = run_two_pass(
-        plan,
-        source_root=source_root,
-        output_root=output_root,
-        vault_path=vault_path,
-        relationship_document=document,
-    )
+    result = run_two_pass(plan)
     assert result.pass1_deleted_scanned == 2
     assert result.pass2_records_written == 4
     assert result.all_relations_verified
@@ -304,13 +292,7 @@ def test_engine_refuses_nullable_text_before_any_output(tmp_path: Path) -> None:
         relationship_document=document,
     )
     with pytest.raises(PathError) as excinfo:
-        run_two_pass(
-            plan,
-            source_root=source_root,
-            output_root=output_root,
-            vault_path=vault_path,
-            relationship_document=document,
-        )
+        run_two_pass(plan)
     assert "ENGINE_NULLABLE_TEXT_UNSUPPORTED" in str(excinfo.value.to_dict())
     assert not (output_root / "north/customers.dbf").exists()
     assert not (output_root / "south/orders.dbf").exists()
@@ -338,13 +320,6 @@ def test_cancellation_removes_partial_output(tmp_path: Path) -> None:
         return calls["count"] > 50
 
     with pytest.raises(Exception) as excinfo:
-        run_two_pass(
-            plan,
-            source_root=source_root,
-            output_root=output_root,
-            vault_path=vault_path,
-            relationship_document=document,
-            cancel_check=cancel,
-        )
+        run_two_pass(plan, cancel_check=cancel)
     assert not (output_root / "north/customers.dbf").exists()
     _ = excinfo, CancellationError

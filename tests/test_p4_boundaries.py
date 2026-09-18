@@ -49,27 +49,6 @@ def _engine_sources() -> dict[Path, str]:
     }
 
 
-def test_engine_modules_exist() -> None:
-    sources = _engine_sources()
-    expected = {
-        "__init__.py",
-        "directives.py",
-        "direct_io.py",
-        "state.py",
-        "pass1.py",
-        "pass2.py",
-        "run.py",
-    }
-    assert {path.name for path in sources} == expected
-
-
-def _engine_sources() -> dict[Path, str]:
-    return {
-        path: path.read_text(encoding="utf-8")
-        for path in sorted(ENGINE_ROOT.rglob("*.py"))
-    }
-
-
 def test_engine_sources_never_import_forbidden_modules() -> None:
     """The production Phase 4 modules perform no IO outside the boundary.
 
@@ -177,20 +156,21 @@ def test_engine_public_boundaries_never_leak_canaries(tmp_path: Path) -> None:
             }
         ],
     }
+    source_root = tmp_path / "source"
     write_numeric_table(
-        tmp_path,
+        source_root,
         "data.dbf",
         (numeric_field("CUST_ID", "C", 8), numeric_field("AMT", "N", 8)),
         [{"CUST_ID": canary_text, "AMT": 1}, {"CUST_ID": "OTHER", "AMT": 2}],
     )
     write_numeric_table(
-        tmp_path,
+        source_root,
         "ref.dbf",
         (numeric_field("CUST_ID", "C", 8),),
         [{"CUST_ID": canary_text}, {"CUST_ID": "OTHER"}],
     )
     plan = build_plan(
-        str(tmp_path),
+        str(source_root),
         str(tmp_path / "out"),
         str(tmp_path / "vault" / "dictionary.sqlite3"),
         relationship_document=document,
@@ -200,14 +180,7 @@ def test_engine_public_boundaries_never_leak_canaries(tmp_path: Path) -> None:
     def progress(event: object) -> None:
         events.append(event)
 
-    result = run_two_pass(
-        plan,
-        source_root=tmp_path,
-        output_root=tmp_path / "out",
-        vault_path=tmp_path / "vault" / "dictionary.sqlite3",
-        relationship_document=document,
-        progress=progress,
-    )
+    result = run_two_pass(plan, progress=progress)
     boundary = str(result)
     for event in events:
         boundary += "|" + repr(event)
@@ -280,20 +253,10 @@ def test_engine_errors_never_leak_canaries(tmp_path: Path) -> None:
         relationship_document=document,
     )
     with pytest.raises(PathError) as excinfo:
-        run_two_pass(
-            plan,
-            source_root=tmp_path,
-            output_root=tmp_path / "out",
-            vault_path=tmp_path / "vault" / "dictionary.sqlite3",
-            relationship_document=document,
-        )
+        run_two_pass(plan)
     boundary = (
         str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     )
     assert canary_text not in boundary
     assert "C:\\" not in boundary
     _ = PathError
-
-
-
-

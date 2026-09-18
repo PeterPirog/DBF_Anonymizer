@@ -107,13 +107,7 @@ def run_benchmark(customers: int, orders: int) -> dict[str, object]:
         )
         tracemalloc.start()
         started = time.perf_counter()
-        result = run_two_pass(
-            plan,
-            source_root=source_root,
-            output_root=output_root,
-            vault_path=vault_path,
-            relationship_document=DOCUMENT,
-        )
+        result = run_two_pass(plan)
         run_seconds = time.perf_counter() - started
         _current, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()

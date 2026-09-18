@@ -104,13 +104,7 @@ def test_bounded_memory_contract_on_a_large_unique_fixture(tmp_path: Path) -> No
         relationship_document=document,
     )
     tracemalloc.start()
-    result = run_two_pass(
-        plan,
-        source_root=source_root,
-        output_root=output_root,
-        vault_path=vault_path,
-        relationship_document=document,
-    )
+    result = run_two_pass(plan)
     _current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     # The full run completed with every relation verified:
@@ -137,4 +131,3 @@ def test_bounded_memory_contract_on_a_large_unique_fixture(tmp_path: Path) -> No
         },
         sort_keys=True,
     )
-

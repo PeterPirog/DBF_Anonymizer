@@ -17,17 +17,17 @@ state of this pass is O(1) plus bounded SQL batch buffers.
 Finalization allocates the vault mappings through ONE semantic definition
 per domain kind:
 
-* TEXT — the fungible CSPRNG streaming allocation: originals are processed
-  in deterministic (strictest width, canonical identity) order and each one
-  receives a CSPRNG-chosen free token of the SHORTEST feasible length class
-  that is neither occupied nor the still-unpersisted self-value of another
-  original (EDF ordering; SQL-backed occupancy and self-value checks).  The
-  documented near-exhaustion regime (NO fungible capacity left in any
-  reachable class) delegates the remaining problem to the ONE authoritative
-  exact planner — the existing P2 :class:`GlobalTextDomainMapping` — which
-  is the same semantic definition as the P2 evidence; its O(remaining
-  distinct) memory in that regime is truthful and never presented as the
-  general bounded path.
+* TEXT — the EXACT disk-backed residual assignment solver
+  (:mod:`dbf_anonymizer.engine.text_residual`): the remaining originals,
+  their reserved self-value tokens, the fungible class capacities, the
+  visited set, the DFS stack and the assignment all live in the spool's
+  SQLite tables and are solved with augmenting paths — an exact bipartite
+  b-matching semantically equivalent to the authoritative P2 planner, which
+  is now a SMALL-CASE TEST ORACLE ONLY and is never imported by any
+  production engine module.  The CSPRNG materialization then streams the
+  solved assignment and picks the actual token values (bounded probe phase
+  plus the exact j-th-free completion over a SQL-ordered blocked stream).
+
 * NUMERIC — every candidate is committed ONLY after the residual
   feasibility kernel (the authoritative P2/P3 Hall conditions, re-evaluated
   with O(1) SQL aggregates and cross-checked against
@@ -44,7 +44,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Iterator, Sequence
 
 from dbf_anonymizer.engine import direct_io
 from dbf_anonymizer.engine.directives import (
@@ -66,13 +66,7 @@ from dbf_anonymizer.transforms.numeric_keys import (
     parse_canonical_integer_text,
     plan_numeric_bijection,
 )
-from dbf_anonymizer.transforms.text import (
-    candidate_alphabet,
-    is_safe_token,
-    token_at,
-    token_index,
-    token_space,
-)
+from dbf_anonymizer.transforms.text import candidate_alphabet
 from dbf_anonymizer.vault.mappings import (
     add_numeric_key_mapping,
     add_text_mapping,
@@ -87,16 +81,11 @@ from dbf_anonymizer.vault.schema import (
     VAULT_TABLE_DOMAIN_KIND_TEXT,
 )
 from dbf_anonymizer.vault.store import VaultDatabase
-from dbf_anonymizer.vault.text_allocation import (
-    GLOBAL_TEXT_DOMAIN_ID,
-    GLOBAL_TEXT_PROBE_BUDGET,
-    GlobalTextDomainMapping,
-)
+from dbf_anonymizer.vault.text_allocation import GLOBAL_TEXT_DOMAIN_ID
 from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
 
 __all__ = ["PassOneOutcome", "run_pass_one", "run_pass_one_finalize"]
 
-_TEXT_PROBE_BUDGET = GLOBAL_TEXT_PROBE_BUDGET
 _TEXT_COMPLETION_WALK_LIMIT = 4096
 _NUMERIC_COMPLETION_WALK_LIMIT = 4096
 
@@ -115,6 +104,9 @@ class PassOneOutcome:
     tables_scanned: int = 0
     records_scanned: int = 0
     deleted_scanned: int = 0
+    #: One-shot per-pass instrumentation (REQ-P4-002): every Direct Read
+    #: stream opened during pass 1, in order ("pass1", relative_path).
+    read_streams: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _mapping_failure(detail_code: str) -> MappingError:
@@ -122,6 +114,11 @@ def _mapping_failure(detail_code: str) -> MappingError:
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
         context=ErrorContext(operation="engine", detail_code=detail_code),
     )
+
+
+def _randbelow(bound: int) -> int:
+    """The OS CSPRNG (the ONLY production randomness source)."""
+    return secrets.randbelow(bound)
 
 
 def _capacity_failure(detail_code: str) -> MappingError:
@@ -163,12 +160,15 @@ def run_pass_one(
         )
         spool.flush()
         projected = _projection_fields(directive)
-        memo_policy = "inline" if table.has_memo_fields else "skip"
+        # Memo payloads are NEVER read in pass 1 (no vault allocation, no
+        # evidence copy): the Direct Read skips memo payloads regardless of
+        # whether the table carries any memo field.
+        outcome.read_streams.append(("pass1", directive.relative_path))
         records = stream_table_records(
             table,
             fields=projected,
             include_deleted=True,
-            memo_policy=memo_policy,
+            memo_policy="skip",
             cancel_check=control.check_cancelled,
         )
         for record in records:
@@ -186,14 +186,22 @@ def run_pass_one(
 
 
 def _projection_fields(directive: "TableDirective") -> Sequence[str] | None:
-    """Pass 1 reads only the transformed/relation fields (bounded reads).
+    """Pass 1 reads ONLY the union of the transformed fields and EVERY
+    declared relation member field of the table (BLOCKER 2 fix).
 
-    Memo fields are NEVER read in pass 1 (their payloads are never copied
-    into relationship evidence); the full field set is read in pass 2.
+    Memo payloads are never read in pass 1 (they are never copied into
+    relationship evidence and need no vault allocation), identity relation
+    members ARE read — a missing member would otherwise be misread as NULL
+    in the BEFORE evidence while pass 2 (which reads the full record) sees
+    the actual value.  The union is deduplicated and deterministic.
     """
     names: set[str] = set()
     for field_directive in directive.transformed:
+        if field_directive.action == "MASK_REVERSIBLE":
+            continue  # memo payloads are never read in pass 1
         names.add(field_directive.field_name)
+    for field_name in directive.relation_fields:
+        names.add(field_name)
     return tuple(sorted(names)) if names else None
 
 
@@ -338,12 +346,22 @@ def run_pass_one_finalize(
 
 
 
+
 # ---------------------------------------------------------------------------
-# TEXT finalization (storage-backed streaming allocation + exact oracle)
+# TEXT finalization: EXACT disk-backed residual solver + CSPRNG materialization
 # ---------------------------------------------------------------------------
 def _finalize_text(
     vault: VaultDatabase, spool: PassOneSpool, control: ProgressController
 ) -> tuple[str | None, int, int]:
+    """Allocate the global text domain with the EXACT bounded residual solver.
+
+    The production path NEVER falls back to an in-memory planner: the
+    residual originals, their reserved self-value tokens, the fungible class
+    capacities, the visited set, the DFS stack and the assignment all live
+    in the spool's SQLite tables; Python holds O(1) state in every reachable
+    branch.  The CSPRNG materialization streams the solved assignment and
+    picks the actual token values (probe phase + exact completion).
+    """
     encodings = spool.text_encoding_union()
     if not encodings:
         return (None, 0, 0)
@@ -359,340 +377,60 @@ def _finalize_text(
                     domain_kind=VAULT_TABLE_DOMAIN_KIND_TEXT,
                     domain_id=domain_id,
                 )
-    base = len(alphabet)
-    occupied = _occupied_text_lengths(vault, domain_id)
-    reserved = _reserved_text_lengths(vault, spool, domain_id, alphabet)
-    allocated = 0
+    # REUSE first: persisted originals leave the residual problem entirely
+    # (their mapping is revalidated against the strictest width and never
+    # silently remapped).
     reused = 0
     for value, width in spool.text_observations():
         control.check_cancelled()
         existing = get_text_pseudonym(vault, domain_id, value)
-        if existing is not None:
-            if len(existing) > width:
-                raise _mapping_failure("ENGINE_TEXT_PERSISTED_INCOMPATIBLE")
-            spool.drop_text_observation(value)
-            if is_safe_token(value, alphabet) and not _token_occupied(
-                vault, domain_id, value
-            ):
-                _counter_down(reserved, len(value))
-            reused += 1
+        if existing is None:
             continue
-        if width <= 0:
-            raise _mapping_failure("ENGINE_TEXT_WIDTH_INFEASIBLE")
-        candidate = _select_text_candidate(
-            value,
-            width,
-            alphabet=alphabet,
-            base=base,
-            occupied=occupied,
-            reserved=reserved,
-            vault=vault,
-            spool=spool,
-            domain_id=domain_id,
-        )
-        with vault.transaction():
-            fresh = get_text_pseudonym(vault, domain_id, value)
-            if fresh is None:
-                add_text_mapping(
-                    vault,
-                    domain_id,
-                    value,
-                    candidate,
-                    logical_byte_length=len(candidate),
-                )
-            else:  # pragma: no cover - single writer, defensive only
-                candidate = fresh
+        if len(existing) > width:
+            raise _mapping_failure("ENGINE_TEXT_PERSISTED_INCOMPATIBLE")
         spool.drop_text_observation(value)
-        _after_text_commit(
-            value, candidate, alphabet, vault, domain_id, spool, occupied, reserved
-        )
+        reused += 1
+    if width_infeasible(spool):
+        raise _mapping_failure("ENGINE_TEXT_WIDTH_INFEASIBLE")
+    from dbf_anonymizer.engine.text_residual import (
+        materialize_text_assignment,
+        solve_text_residual,
+    )
+
+    plan = solve_text_residual(
+        vault,
+        spool,
+        domain_id=domain_id,
+        alphabet=alphabet,
+        base=len(alphabet),
+        cancel_probe=control.check_cancelled,
+    )
+    allocated = 0
+    for value, token, encoded_length in materialize_text_assignment(
+        vault, spool, domain_id=domain_id, alphabet=alphabet, base=len(alphabet)
+    ):
+        control.check_cancelled()
+        with vault.transaction():
+            add_text_mapping(
+                vault, domain_id, value, token, logical_byte_length=encoded_length
+            )
+        spool.drop_text_observation(value)
         allocated += 1
+    connection = spool.internal_connection()
+    connection.execute("DELETE FROM res_original")
+    connection.execute("DELETE FROM res_token")
+    connection.execute("DELETE FROM res_cap")
+    connection.execute("DELETE FROM res_assign")
+    connection.commit()
     return (domain_id, allocated, reused)
 
 
-def _occupied_text_lengths(
-    vault: VaultDatabase, domain_id: str
-) -> dict[int, int]:
-    """O(max_width) occupied-token counters (one SQL aggregate)."""
-    rows = vault._internal_connection().execute(
-        "SELECT logical_byte_length, COUNT(*) FROM text_mappings "
-        "WHERE domain_id = ? GROUP BY logical_byte_length",
-        (domain_id,),
-    ).fetchall()
-    return {int(length): int(count) for length, count in rows}
-
-
-def _reserved_text_lengths(
-    vault: VaultDatabase,
-    spool: PassOneSpool,
-    domain_id: str,
-    alphabet: str,
-) -> dict[int, int]:
-    """O(max_width) reserved-token counters (one streamed SQL pass).
-
-    A reserved token is the still-unpersisted self-value of one original: a
-    safe token whose value equals some remaining observation and which is
-    not occupied.  The pass streams the spool (O(1) RAM) and checks vault
-    occupancy through the indexed mapping table.
-    """
-    reserved: dict[int, int] = {}
-    cursor = spool.internal_connection().execute(
-        "SELECT value_length, canonical FROM text_observation ORDER BY value_length"
-    )
-    while True:
-        rows = cursor.fetchmany(512)
-        if not rows:
-            break
-        for length, canonical in rows:
-            value = bytes(canonical).decode("utf-8")
-            if not is_safe_token(value, alphabet):
-                continue
-            if _token_occupied(vault, domain_id, value):
-                continue
-            reserved[int(length)] = reserved.get(int(length), 0) + 1
-    return reserved
-
-
-def _token_occupied(vault: VaultDatabase, domain_id: str, token: str) -> bool:
-    row = vault._internal_connection().execute(
-        "SELECT 1 FROM text_mappings WHERE domain_id = ? AND pseudonym_value = ?",
-        (domain_id, token),
+def width_infeasible(spool: PassOneSpool) -> bool:
+    """Whether any remaining observation has a non-positive strictest width."""
+    row = spool.internal_connection().execute(
+        "SELECT 1 FROM text_observation WHERE min_width < 1 LIMIT 1"
     ).fetchone()
     return row is not None
-
-
-def _counter_down(counters: dict[int, int], length: int) -> None:
-    current = counters.get(length, 0)
-    if current > 0:
-        counters[length] = current - 1
-
-
-def _class_size(base: int, length: int) -> int:
-    """The exact token count of one length class (bounded arithmetic)."""
-    size: int = base**length
-    return size
-
-
-def _supply_of(
-    length: int, base: int, occupied: dict[int, int], reserved: dict[int, int]
-) -> int:
-    return _class_size(base, length) - occupied.get(length, 0) - reserved.get(length, 0)
-
-
-def _shortest_fungible_class(
-    width: int, base: int, occupied: dict[int, int], reserved: dict[int, int]
-) -> tuple[int, int] | None:
-    """The shortest feasible length class and its fungible free supply."""
-    for length in range(1, width + 1):
-        supply = _supply_of(length, base, occupied, reserved)
-        if supply > 0:
-            return (length, supply)
-    return None
-
-
-def _select_text_candidate(
-    value: str,
-    width: int,
-    *,
-    alphabet: str,
-    base: int,
-    occupied: dict[int, int],
-    reserved: dict[int, int],
-    vault: VaultDatabase,
-    spool: PassOneSpool,
-    domain_id: str,
-) -> str:
-    """One CSPRNG free fungible token (probe phase, then exact completion)."""
-    selection = _shortest_fungible_class(width, base, occupied, reserved)
-    if selection is None:
-        return _text_oracle_complete(
-            value,
-            vault=vault,
-            spool=spool,
-            domain_id=domain_id,
-        )
-    length, _supply = selection
-    class_low = token_space(length - 1, base)
-    class_size = base**length
-    for _ in range(_TEXT_PROBE_BUDGET):
-        candidate = token_at(
-            class_low + secrets.randbelow(class_size), length, alphabet
-        )
-        if candidate == value:
-            continue
-        if _token_occupied(vault, domain_id, candidate):
-            continue
-        if spool.text_is_observed(candidate):
-            continue
-        return candidate
-    return _text_exact_completion(
-        value,
-        width,
-        alphabet=alphabet,
-        base=base,
-        vault=vault,
-        spool=spool,
-        domain_id=domain_id,
-    )
-
-
-def _occupied_tokens_of_length(
-    vault: VaultDatabase, domain_id: str, length: int
-) -> Iterator[str]:
-    cursor = vault._internal_connection().execute(
-        "SELECT pseudonym_value FROM text_mappings "
-        "WHERE domain_id = ? AND logical_byte_length = ?",
-        (domain_id, length),
-    )
-    while True:
-        rows = cursor.fetchmany(512)
-        if not rows:
-            return
-        for (token,) in rows:
-            yield str(token)
-
-
-def _text_exact_completion(
-    value: str,
-    width: int,
-    *,
-    alphabet: str,
-    base: int,
-    vault: VaultDatabase,
-    spool: PassOneSpool,
-    domain_id: str,
-) -> str:
-    """The exact deterministic completion of one fungible class slot.
-
-    The j-th free fungible token of the SHORTEST feasible class is selected
-    by an ascending gap walk over the blocked index stream; ``j`` comes from
-    the OS CSPRNG exactly like the probe phase, so nothing is
-    sequence-derived and nothing is derived from the original value.  The
-    blocked indices are materialized into a sorted SQLite temp table so the
-    walk runs with O(1) Python RAM.
-    """
-    counters = _counters_for(vault, spool, domain_id, alphabet)
-    selection = _shortest_fungible_class(width, base, counters[0], counters[1])
-    if selection is None:  # pragma: no cover - the caller checked supply
-        return _text_oracle_complete(
-            value, vault=vault, spool=spool, domain_id=domain_id
-        )
-    length, supply = selection
-    class_low = token_space(length - 1, base)
-    connection = spool.internal_connection()
-    connection.execute(
-        "CREATE TEMP TABLE IF NOT EXISTS blocked_index (idx INTEGER PRIMARY KEY)"
-    )
-    connection.execute("DELETE FROM blocked_index")
-    for token in _occupied_tokens_of_length(vault, domain_id, length):
-        connection.execute(
-            "INSERT OR IGNORE INTO blocked_index (idx) VALUES (?)",
-            (token_index(token, alphabet),),
-        )
-    for reserved_value in spool.text_values_of_length(length):
-        if is_safe_token(reserved_value, alphabet):
-            connection.execute(
-                "INSERT OR IGNORE INTO blocked_index (idx) VALUES (?)",
-                (token_index(reserved_value, alphabet),),
-            )
-    connection.commit()
-
-    def sorted_indices() -> Iterator[int]:
-        cursor = connection.execute("SELECT idx FROM blocked_index ORDER BY idx")
-        while True:
-            rows = cursor.fetchmany(512)
-            if not rows:
-                return
-            for (index,) in rows:
-                yield int(index)
-
-    chosen = _streaming_jth_free_text(
-        class_low=class_low, blocked_sorted=sorted_indices(), j=secrets.randbelow(supply)
-    )
-    connection.execute("DELETE FROM blocked_index")
-    connection.commit()
-    return token_at(chosen, length, alphabet)
-
-
-def _streaming_jth_free_text(
-    *,
-    class_low: int,
-    blocked_sorted: Iterator[int],
-    j: int,
-) -> int:
-    """The j-th free index of one class over a SORTED blocked index stream.
-
-    The same gap-walk rule as the authoritative P2
-    :func:`dbf_anonymizer.transforms.text._jth_free_in_class` kernel
-    (equivalence is cross-checked by the randomized test suite), evaluated
-    with O(1) Python RAM over a SQL-ordered index stream.
-    """
-    previous = class_low - 1
-    remaining = j
-    for index in blocked_sorted:
-        gap = index - previous - 1
-        if remaining < gap:
-            return previous + 1 + remaining
-        remaining -= gap
-        previous = index
-    return previous + 1 + remaining
-
-
-def _counters_for(
-    vault: VaultDatabase, spool: PassOneSpool, domain_id: str, alphabet: str
-) -> tuple[dict[int, int], dict[int, int]]:
-    occupied = _occupied_text_lengths(vault, domain_id)
-    reserved = _reserved_text_lengths(vault, spool, domain_id, alphabet)
-    return (occupied, reserved)
-
-
-def _text_oracle_complete(
-    value: str,
-    *,
-    vault: VaultDatabase,
-    spool: PassOneSpool,
-    domain_id: str,
-) -> str:
-    """The documented near-exhaustion regime: the ONE exact P2 planner.
-
-    The remaining unpersisted observation set is loaded into the existing
-    P2 :class:`GlobalTextDomainMapping` (the SAME semantic definition as the
-    P2 evidence) which plans and allocates the complete residual problem
-    EXACTLY (derangements included).  Its O(remaining distinct) memory in
-    this regime is truthful, documented and exercised only by small
-    adversarial fixtures.
-    """
-    planner = GlobalTextDomainMapping(vault, domain_id=domain_id)
-    encodings = sorted(spool.text_encoding_union())
-    if not encodings:  # pragma: no cover - the streaming phase required one
-        raise _mapping_failure("ENGINE_TEXT_ORACLE_EMPTY")
-    for observed, observed_width in spool.text_observations():
-        for encoding in encodings:
-            planner.observe(observed, encoding=encoding, byte_width=observed_width)
-    planner.finalize()
-    mapped = planner.pseudonym_for(value)
-    spool.drop_text_observation(value)
-    return mapped
-
-
-def _after_text_commit(
-    value: str,
-    candidate: str,
-    alphabet: str,
-    vault: VaultDatabase,
-    domain_id: str,
-    spool: PassOneSpool,
-    occupied: dict[int, int],
-    reserved: dict[int, int],
-) -> None:
-    """O(1) counter maintenance after one committed allocation."""
-    occupied[len(candidate)] = occupied.get(len(candidate), 0) + 1
-    if is_safe_token(value, alphabet) and not _token_occupied(vault, domain_id, value):
-        _counter_down(reserved, len(value))
-    if is_safe_token(candidate, alphabet) and spool.text_is_observed(candidate):
-        # The committed token was a remaining original's own value; it is
-        # occupied now and leaves the reserved pool.
-        _counter_down(reserved, len(candidate))
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +661,7 @@ def _select_numeric_candidate(
 
     for _ in range(NUMERIC_KEY_PROBE_BUDGET):
         candidate = _streaming_jth_free_numeric(
-            domain, occupied_stream(), secrets.randbelow(free)
+            domain, occupied_stream(), _randbelow(free)
         )
         if _accept(candidate):
             return candidate
@@ -935,7 +673,3 @@ def _select_numeric_candidate(
         if _accept(candidate):
             return candidate
     raise _capacity_failure("ENGINE_NUMERIC_NO_COMPLETION")
-
-
-
-

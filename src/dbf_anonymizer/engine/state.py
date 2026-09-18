@@ -46,6 +46,9 @@ __all__ = [
     "EVIDENCE_SPOOL_SCHEMA_VERSION",
     "PASS1_STATE_FILENAME",
     "PassOneSpool",
+    "spool_artifacts",
+    "canonical_text_identity",
+    "canonical_composite_identity",
 ]
 
 #: The bounded in-memory record batch of the engine (structural contract:
@@ -61,6 +64,14 @@ EVIDENCE_SPOOL_SCHEMA_VERSION = "1.0"
 
 #: The spool filename inside the protected vault directory (Zone B).
 PASS1_STATE_FILENAME = "pass1-state.sqlite3"
+
+#: The COMPLETE sensitive artifact inventory of the ephemeral spool
+#: (REQ-P4-002 / P2-009 policy): the main database plus every SQLite
+#: sidecar SQLite could ever leave behind.  ``journal_mode=OFF`` keeps the
+#: live set to the main file alone, but a crash under a different journal
+#: mode (or a hostile leftover) can leave ANY of these — the lifecycle
+#: refuses and cleans ALL of them.
+_SPOOL_ARTIFACT_SUFFIXES: tuple[str, ...] = ("", "-wal", "-shm", "-journal")
 
 _SENSITIVE_SCHEMA = (
     "CREATE TABLE meta ("
@@ -89,7 +100,58 @@ _SENSITIVE_SCHEMA = (
     " rows_considered INTEGER NOT NULL,"
     " null_tuple_count INTEGER NOT NULL,"
     " PRIMARY KEY (side, relation_id, role))",
+    # -- exact bounded text residual solver state (REQ-P4-002) --------------
+    # Every dataset-sized or distinct-value-sized traversal state of the
+    # exact residual assignment lives HERE (disk-backed), never in Python.
+    "CREATE TABLE res_original ("
+    " idx INTEGER PRIMARY KEY,"
+    " width INTEGER NOT NULL,"
+    " canonical BLOB NOT NULL,"
+    " own_token TEXT)",  # its own value when that is a free safe token
+    "CREATE TABLE res_token ("
+    " tid INTEGER PRIMARY KEY,"
+    " value TEXT NOT NULL UNIQUE,"
+    " length INTEGER NOT NULL,"
+    " owner_idx INTEGER NOT NULL)",  # reserved self-value tokens
+    "CREATE TABLE res_cap ("
+    " length INTEGER PRIMARY KEY,"
+    " fungible INTEGER NOT NULL)",  # free non-reserved tokens per class
+    "CREATE TABLE res_assign ("
+    " orig_idx INTEGER PRIMARY KEY,"
+    " kind TEXT NOT NULL CHECK (kind IN ('class','token')),"
+    " length INTEGER,"
+    " token_idx INTEGER)",
+    "CREATE INDEX res_assign_class ON res_assign(kind, length, orig_idx)",
+    "CREATE INDEX res_assign_token ON res_assign(kind, token_idx)",
+    "CREATE TABLE res_visited (orig_idx INTEGER PRIMARY KEY)",
+    "CREATE TABLE res_dfs ("
+    " depth INTEGER PRIMARY KEY,"
+    " orig_idx INTEGER NOT NULL,"
+    " vacate_kind TEXT, vacate_length INTEGER, vacate_token_idx INTEGER,"
+    " class_pos INTEGER NOT NULL, token_pos INTEGER NOT NULL,"
+    " displace_from INTEGER NOT NULL)",
 )
+
+
+def spool_artifacts(vault_directory: Path) -> list[Path]:
+    """The bounded artifact inventory of the ephemeral spool (P2-009).
+
+    Returns every KNOWN spool artifact (main database plus every SQLite
+    sidecar) that currently exists under *vault_directory*.  The inventory
+    is value-free and internal: it never carries originals, pseudonyms or
+    absolute paths into any public boundary.
+    """
+    base = Path(vault_directory) / PASS1_STATE_FILENAME
+    found: list[Path] = []
+    for suffix in _SPOOL_ARTIFACT_SUFFIXES:
+        candidate = Path(str(base) + suffix)
+        try:
+            if candidate.exists():
+                found.append(candidate)
+        except OSError:
+            found.append(candidate)  # an inspectable-but-inaccessible
+            # artifact is treated as present (fail closed).
+    return found
 
 
 def _spool_failure(detail_code: str) -> VaultError:
@@ -140,17 +202,36 @@ class PassOneSpool:
 
     Bounded by construction: every dataset-sized or distinct-value-sized
     fact lives in SQLite; the Python-side state of this object is O(1)
-    (bounded SQL batch buffers of at most :data:`MAX_SQL_BATCH` rows).
+    (bounded SQL batch buffers of at most :data:`MAX_SQL_BATCH` rows, whose
+    high-water marks are tracked for the structural boundedness evidence).
+
+    Sensitive-artifact lifecycle (P2-009 policy): the spool is created with
+    ``journal_mode=OFF`` (no SQLite sidecar is ever written for it), the
+    main file is reserved owner-only where the platform permits, and the
+    startup refuses ANY known leftover artifact (main, ``-wal``, ``-shm``,
+    rollback journal) instead of silently reusing crash residue.  Cleanup
+    removes and verifies the COMPLETE inventory; failures are surfaced as
+    typed, value-free errors.  No secure-deletion claim is made.
     """
 
-    __slots__ = ("_connection", "_path", "_pending_text", "_pending_numeric", "_pending_keys", "_pending_facts", "_closed")
+    __slots__ = (
+        "_connection",
+        "_path",
+        "_pending_text",
+        "_pending_numeric",
+        "_pending_keys",
+        "_pending_facts",
+        "_closed",
+        "pending_high_water",
+    )
 
     def __init__(self, vault_directory: Path) -> None:
-        self._path = Path(vault_directory) / PASS1_STATE_FILENAME
-        if self._path.exists():
-            # A crash leftover is classified as sensitive state: refuse to
+        leftovers = spool_artifacts(vault_directory)
+        if leftovers:
+            # ANY crash residue is classified as sensitive state: refuse to
             # silently reuse or overwrite it (no secure-deletion claim).
             raise _spool_failure("LEFTOVER_REFUSED")
+        self._path = Path(vault_directory) / PASS1_STATE_FILENAME
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = self._connect(self._path)
         self._pending_text: list[tuple[bytes, int, int]] = []
@@ -158,22 +239,42 @@ class PassOneSpool:
         self._pending_keys: list[tuple[str, str, str, bytes, int]] = []
         self._pending_facts: list[tuple[str, str, str, int, int]] = []
         self._closed = False
+        #: Structural boundedness instrumentation: the high-water mark of
+        #: every bounded Python buffer (never exceeds MAX_SQL_BATCH).
+        self.pending_high_water: dict[str, int] = {}
         self._create_schema()
+
+    def _track_high_water(self) -> None:
+        """One bounded-instrumentation update per flush (O(1) Python)."""
+        for name, buffer in (
+            ("text", self._pending_text),
+            ("numeric", self._pending_numeric),
+            ("keys", self._pending_keys),
+            ("facts", self._pending_facts),
+        ):
+            previous = self.pending_high_water.get(name, 0)
+            if len(buffer) > previous:
+                self.pending_high_water[name] = len(buffer)
 
     @staticmethod
     def _connect(path: Path) -> "sqlite3.Connection":
         import os
         import sqlite3
 
-        # Owner-only reservation (P2-009 policy) BEFORE the SQLite layer
-        # opens the file: no intermediate world-readable state.
+        # Owner-only reservation (best-effort per platform) BEFORE the
+        # SQLite layer opens the file.  On POSIX this is the 0o600 mode; on
+        # Windows the platform ACL story is limited — no POSIX guarantee is
+        # claimed, the reservation is best-effort and truthful.
         descriptor = os.open(
             str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
         )
         os.close(descriptor)
         connection = sqlite3.connect(str(path))
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
+        # The spool is EPHEMERAL per-run state whose durability is worthless
+        # (it is rebuilt from the source on every run and refused if left
+        # behind): journal_mode=OFF writes NO sidecar artifact at all.
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
         return connection
 
     def _create_schema(self) -> None:
@@ -274,6 +375,7 @@ class PassOneSpool:
 
     def flush(self) -> None:
         """Flush every bounded pending batch and commit to SQLite."""
+        self._track_high_water()
         self._flush_text()
         self._flush_numeric()
         self._flush_keys()
@@ -482,30 +584,62 @@ class PassOneSpool:
         return digest.hexdigest()
 
     # -- lifecycle ---------------------------------------------------------------
-    def cleanup(self) -> None:
-        """Explicit spool cleanup: drop all sensitive rows, then the file.
+    def size_bytes(self) -> int:
+        """The current main spool artifact size (a truthful evidence metric).
 
-        Cleanup failures are SURFACED (typed) — never silently ignored.  No
-        secure-deletion claim is made; the unlink removes the artifact from
-        the protected Zone B directory.
+        Value-free: only the byte size of the ephemeral Zone B state file is
+        reported — never any of its contents.
         """
+        try:
+            return self._path.stat().st_size
+        except OSError:
+            return 0
+
+    def cleanup(self) -> None:
+        """Explicit spool cleanup: drop all sensitive rows, then EVERY artifact.
+
+        The COMPLETE inventory (main database plus every known SQLite
+        sidecar) is removed and the removal is VERIFIED; any failure is
+        SURFACED as a typed, value-free error — never silently ignored and
+        never echoing absolute paths or originals.  No secure-deletion claim
+        is made: the unlink removes the artifact from the protected Zone B
+        directory, nothing more.
+        """
+        if self._closed:
+            return
         self.flush()
         try:
-            self._connection.execute("DELETE FROM text_observation")
-            self._connection.execute("DELETE FROM numeric_observation")
-            self._connection.execute("DELETE FROM relation_keys")
-            self._connection.execute("DELETE FROM relation_side_facts")
-            self._connection.execute("DELETE FROM text_encoding")
-            self._connection.execute("DELETE FROM meta")
+            for table in (
+                "text_observation",
+                "numeric_observation",
+                "relation_keys",
+                "relation_side_facts",
+                "text_encoding",
+                "meta",
+                "res_original",
+                "res_token",
+                "res_cap",
+                "res_assign",
+                "res_visited",
+                "res_dfs",
+            ):
+                self._connection.execute(f"DELETE FROM {table}")
             self._connection.commit()
-            self._connection.execute("VACUUM")
-            self._connection.close()
-        except Exception as exc:  # noqa: BLE001 - surfaced storage failure
-            raise _spool_failure("CLEANUP_FAILED") from None
-        finally:
+        except Exception:  # noqa: BLE001 - surfaced storage failure
             self._closed = True
-        if self._path.exists():
+            raise _spool_failure("CLEANUP_FAILED") from None
+        try:
+            self._connection.close()
+        except Exception:  # noqa: BLE001 - surfaced storage failure
+            self._closed = True
+            raise _spool_failure("CLEANUP_FAILED") from None
+        self._closed = True
+        for artifact in spool_artifacts(self._path.parent):
             try:
-                self._path.unlink()
+                artifact.unlink()
             except OSError as exc:
-                raise _spool_failure("CLEANUP_FAILED") from None
+                raise _spool_failure("CLEANUP_FAILED") from exc
+        if spool_artifacts(self._path.parent):
+            # The verified-removal contract: an artifact that survives the
+            # unlink attempt is a surfaced cleanup failure.
+            raise _spool_failure("CLEANUP_FAILED")

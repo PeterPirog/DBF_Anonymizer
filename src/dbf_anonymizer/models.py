@@ -400,6 +400,7 @@ class _PlanExecutionContext:
     vault_path: str
     relationship_document: Any = None
     relationship_bindings: Any = None
+    resolved_policy: Any = None
 
     def __repr__(self) -> str:
         return "<_PlanExecutionContext>"

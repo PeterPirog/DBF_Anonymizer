@@ -56,6 +56,7 @@ class TableDirective:
     transformed: tuple[FieldDirective, ...]
     memo_fields: tuple[str, ...]
     temporal_fields: tuple[str, ...]
+    relation_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,9 @@ class TwoPassResult:
     temporal_offset_allocated: bool
     relations: tuple[RelationPassSummary, ...]
     evidence_spool_bytes: int
+    #: One-shot per-pass instrumentation (REQ-P4-002): every Direct Read
+    #: stream opened during the run, in order ("pass1"/"pass2", path).
+    read_streams: tuple[tuple[str, str], ...] = ()
 
     @property
     def all_relations_verified(self) -> bool:
