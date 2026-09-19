@@ -1,12 +1,13 @@
-"""Pass 2 of the bounded two-pass engine (REQ-P4-001/P4-002).
+"""Pass 2 fresh reconstruction (REQ-P4-001/P4-002/P4-003/P4-005).
 
 PASS 2 re-reads the source through the SAME public Direct Read boundary,
 resolves the already-finalized mappings and parameters from the protected
 vault state, transforms ONE record at a time and feeds the ONE public Direct
 Write boundary (fresh DBF/FPT creation from a lazily consumed record
-stream).  The final field-by-field reconstruction semantics remain owned by
-P4-003/004: this pass applies the P2/P3-verified value-level transforms for
-the classes the engine supports and FAILS CLOSED on anything else — a
+stream).  Every outgoing record is reconstructed from typed logical values;
+source raw-record images and memo blocks never enter the write stream.  This
+pass applies the P2/P3-verified value-level transforms for the classes the
+engine supports and FAILS CLOSED on anything else — a
 missing mapping, an unsupported field class or an unresolvable original is
 a typed, value-free refusal, never a silent skip.
 
@@ -159,7 +160,7 @@ def _transform_stream(
     temporal_offset: int | None,
     read_streams: list[tuple[str, str]],
     ) -> Iterator[DirectRecord]:
-    """The lazy transformed record stream feeding the Direct Write boundary."""
+    """Yield newly constructed typed records in unchanged physical order."""
     memo_policy = "inline" if table.has_memo_fields else "skip"
     read_streams.append(("pass2", directive.relative_path))
     records = stream_table_records(

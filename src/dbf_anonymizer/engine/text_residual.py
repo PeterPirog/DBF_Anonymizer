@@ -68,6 +68,23 @@ def _class_size(base: int, length: int) -> int:
     return size
 
 
+#: SQLite INTEGER upper bound: stored fungible capacities are clamped to it.
+_SQLITE_INT64_MAX = (1 << 63) - 1
+
+
+def _stored_capacity(size: int) -> int:
+    """Clamp an exact class capacity to the SQLite INTEGER domain.
+
+    A stored capacity only ever competes with ORIGINAL counts (bounded by
+    the dataset size, far below 2**63): clamping an astronomically large
+    class size (e.g. 36**48 for a wide C field) preserves the matching
+    semantics exactly while keeping the value storable in the spool's
+    INTEGER column.  The token-selection code paths use the unclamped
+    :func:`_class_size` so CSPRNG uniformity is untouched.
+    """
+    return min(size, _SQLITE_INT64_MAX)
+
+
 @dataclass(frozen=True)
 class TextResidualPlan:
     """The bounded outcome of the exact residual solve (counts only)."""
@@ -159,7 +176,7 @@ def _build_residual_graph(
         reserved_by_length[int(length)] = int(count)
     cap_batch: list[tuple[int, int]] = []
     for length in range(1, max_width + 1):
-        fungible = (
+        fungible = _stored_capacity(
             _class_size(base, length)
             - occupied_by_length.get(length, 0)
             - reserved_by_length.get(length, 0)
@@ -537,12 +554,11 @@ def _validate_residual_assignment(
                 (int(length),),
             ).fetchone()[0]
         )
-        expected_remaining = (
+        expected_remaining = _stored_capacity(
             _class_size(base, int(length))
             - occupied_by_length.get(int(length), 0)
             - reserved
-            - class_taken
-        )
+        ) - class_taken
         if int(fungible_remaining) != expected_remaining or expected_remaining < 0:
             raise _corrupt
 

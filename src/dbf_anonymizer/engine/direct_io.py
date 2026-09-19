@@ -1,4 +1,4 @@
-"""Phase 4 Direct Read / Direct Write IO boundary (REQ-P4-001).
+"""Phase 4 Direct Read / fresh Direct Write boundary (REQ-P4-001/P4-003).
 
 The ONE production IO boundary of the two-pass engine.  Every production DBF
 read goes through :func:`stream_table_records` (the public
@@ -21,8 +21,9 @@ artifact):
   per-record cooperative cancellation (a raising cancellation callable
   propagates its typed exception unchanged);
 * ``DirectRecord(physical_index, deleted, values)`` — the typed logical
-  record; this boundary always keeps ``raw_record`` unset: the transform
-  path never consumes raw record bytes;
+  record; outgoing records are newly constructed only from physical order,
+  deletion state and transformed typed application values, with
+  ``raw_record`` unset throughout the transform path;
 * ``write_table(destination, *, schema, records, overwrite,
   staging_directory, progress, cancel_check)`` — fresh DBF/FPT creation from
   a lazily consumed record stream.
