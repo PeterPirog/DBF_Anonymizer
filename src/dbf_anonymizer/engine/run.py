@@ -1,4 +1,4 @@
-"""The Phase 4 two-pass engine coordinator (REQ-P4-001/P4-002).
+"""The Phase 4 two-pass engine coordinator (REQ-P4-001/P4-002/P4-003/P4-005).
 
 This module binds the immutable typed plan, the resolved policy and the
 declared relationship document into the engine's INTERNAL field directives
@@ -16,9 +16,10 @@ production pipeline:
 
 The engine is an INTERNAL implementation boundary: it is not part of the
 root public API, no public ``pseudonymize`` operation exists yet (the
-publication/staging state is REQ-P4-009 scope) and the final field-by-field
-reconstruction semantics remain owned by P4-003/004.  Unsupported execution
-fails CLOSED before any output is produced — the engine never publishes a
+publication/staging state is REQ-P4-009 scope).  Supported records are freshly
+reconstructed from transformed typed values with deleted markers and physical
+order preserved; the complete field-class matrix remains P4-004 scope.
+Unsupported execution fails CLOSED before any output is produced — the engine never publishes a
 partially transformed dataset: every table written by THIS run is removed
 again when the run fails or is cancelled (full crash-resilient publication
 state belongs to P4-009).
