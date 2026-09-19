@@ -168,9 +168,21 @@ def _transform_stream(
         memo_policy=memo_policy,
         cancel_check=control.check_cancelled,
     )
+    system_fields = {
+        str(field.name)
+        for field in table.schema.fields
+        if str(field.dbf_type).upper() == "0"
+    }
     for record in records:
         control.check_cancelled()
-        values = dict(record.values)
+        # Type-0 fields (notably VFP _NullFlags) are writer-owned system
+        # state.  Supply only logical application values and let dbfbridge
+        # derive the output bitmap from None/non-None values.
+        values = {
+            name: value
+            for name, value in record.values.items()
+            if name not in system_fields
+        }
         for field_directive in directive.transformed:
             name = field_directive.field_name
             value = values.get(name)

@@ -11,4 +11,4 @@
 # Source of truth: the immutable target architecture REQ-P0-002.
 # Bump this pin only together with a re-run of the P0 capability contract.
 
-dbfbridge[write]==1.1.0
+dbfbridge[write]==1.1.1

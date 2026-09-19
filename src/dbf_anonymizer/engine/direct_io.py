@@ -10,7 +10,7 @@ JSONL/CSV intermediates, no direct ``dbfread``/``dbf`` access, no private
 copying as transformed output.
 
 Public dbfbridge 1.1 capabilities this boundary relies on (audited by
-runtime introspection of the pinned ``dbfbridge[write]==1.1.0`` acceptance
+runtime introspection of the pinned ``dbfbridge[write]==1.1.1`` acceptance
 artifact):
 
 * ``read_schema`` / ``inspect_table`` — public schema and field descriptors;
@@ -27,14 +27,13 @@ artifact):
   staging_directory, progress, cancel_check)`` — fresh DBF/FPT creation from
   a lazily consumed record stream.
 
-PUBLIC CAPABILITY GAP (truthful report — fail closed, never worked around
-through private access): the public Direct Read exposes NULL state for
-numeric fields (decoded as ``None``) and for memo payloads, but a NULLable
-TEXT (``C``/``V``) field decodes BOTH its NULL and its empty-string records
-to ``""`` — the NULL/empty distinction is NOT exposed for text fields.  The
-engine therefore REFUSES tables carrying nullable text fields before any
-pass runs (typed, value-free refusal; the final ``_NullFlags`` handling is
-owned by P4-006) instead of inferring NULL from an empty-string heuristic.
+The public 1.1 contract exposes nullable ``C``/``V`` and numeric values as
+typed logical values: ``None`` remains distinct from ``""`` and numeric zero.
+Field projection and Direct Read -> Direct Write -> Direct Read preserve the
+same distinction.  The engine never interprets payload appearance as NULL and
+never constructs ``_NullFlags``; the public writer owns that system bitmap.
+Nullable ``M``/``G``/``P`` remain fail-closed at the application layer until
+their complete P4-006/P4-007 transformation matrix is integrated.
 """
 
 from __future__ import annotations

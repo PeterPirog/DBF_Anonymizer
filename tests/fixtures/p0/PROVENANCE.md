@@ -88,8 +88,9 @@ self-contained, path-free and deterministic.
 
 - Deterministic regeneration of the dbfbridge-generated subset:
   `python tools/generate_p0_fixtures.py --out <dir>` (pinned `last_update`,
-  fixed records; requires the pinned tested artifact
-  `dbfbridge[write]==1.1.0`, see `requirements/p0-dbfbridge-tested.txt`).
+  fixed records; the corpus originated with dbfbridge 1.1.0 and is
+  byte-identically revalidated with the pinned tested artifact
+  `dbfbridge[write]==1.1.1`, see `requirements/p0-dbfbridge-tested.txt`).
   The generator incorporates the committed static VFP evidence
   byte-for-byte (without modifying it) and re-verifies every VFP artifact
   hash against the committed authoritative evidence record. Re-running the
@@ -114,6 +115,7 @@ self-contained, path-free and deterministic.
 All public-API facts stated above (round trips, typed errors, codepage
 round trips, trailing-space semantics, `write_table` refusals, the
 structural-CDX flag behavior, and the VFP9 evidence facts) were verified
-empirically against the pinned public distribution `dbfbridge==1.1.0` and
-the committed authoritative VFP evidence record before being encoded here.
+empirically against public dbfbridge 1.1.0, revalidated against the pinned
+public distribution `dbfbridge==1.1.1`, and checked against the committed
+authoritative VFP evidence record before being encoded here.
 No property is claimed beyond what the committed tests assert.

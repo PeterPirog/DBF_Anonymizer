@@ -34,7 +34,7 @@ version 1.0). Raw VFP verification log (sanitized):
    structural `INDEXED_TABLE.CDX` (2 tags: `SYNTHCODE -> CODE`,
    `SYNTHNOTE -> NOTE`). The table was closed and reopened in VFP;
    `SET ORDER TO TAG SYNTHCODE` then `ORDER()` = `SYNTHCODE`;
-   `RECCOUNT()` = 4. Through the public pinned `dbfbridge==1.1.0` API:
+   `RECCOUNT()` = 4. Through the public pinned `dbfbridge==1.1.1` API:
    `has_structural_cdx = true`, `companion_cdx_present = true`.
 2. **DBC-bound** — `dbc/dbc_bound_table.dbf` + `fixture.dbc`/`fixture.dct`/
    `fixture.dcx`: the table was created inside a fresh minimal DBC; VFP

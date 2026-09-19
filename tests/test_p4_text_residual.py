@@ -420,38 +420,64 @@ def test_persisted_occupied_resources_can_make_it_infeasible(
 # ---------------------------------------------------------------------------
 # deterministic reserved-token STEAL regression (Blocker 4)
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("probe_budget", "choices"),
+    [(64, (3, 0, 4)), (0, (0, 0))],
+    ids=("bounded-probe", "exact-walk"),
+)
 def test_materialization_never_steals_a_reserved_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe_budget: int,
+    choices: tuple[int, ...],
 ) -> None:
-    """alphabet 'abcd', originals a, b, x (width 1): the solved assignment
-    is a -> class, b -> NAMED reserved token 'a' (reached through a real
-    class-displacement chain), x -> class.  The RNG seam makes the first
-    class mapping consume a genuine fungible token, the observation 'a' is
-    dropped when its mapping commits, and the LATER class allocation (for
-    'x') then ATTEMPTS to choose 'a'.  'a' must STILL be blocked — it is a
-    ``res_token`` of the immutable solved graph even though it no longer
-    appears in text_observation — and the named assignment to 'a' stands,
-    with fully unique pseudonyms and zero randomness dependence."""
+    """Exercise the real theft window in both materialization branches.
+
+    The test arranges the valid solved partition ``a -> class, b -> class,
+    c -> reserved token a``.  The mapping for ``a`` commits and its
+    observation is dropped before ``b`` materializes, while token ``a`` is
+    not yet occupied in the vault.  Therefore ONLY the immutable ``res_token``
+    partition can prevent ``b`` from stealing it.
+    """
     work = tmp_path / "t6"
     work.mkdir()
     with _open_vault(work) as vault:
         domain_id = _seed_domain(vault)
         spool = PassOneSpool(work / "vault")
-        for value in ("a", "b", "x"):
+        for value in ("a", "b", "c"):
             spool.observe_text(value, byte_width=1)
         spool.flush()
-        _solve(vault, spool, domain_id, alphabet="abcd")
-        # Deterministic solved assignment:
+        _solve(vault, spool, domain_id, alphabet="abcde")
+        # The solver found the same resource multiset with token 'a' assigned
+        # to 'b'.  Reassign those two compatible width-1 resources so the
+        # named assignment occurs last; this is a valid solved state and
+        # exposes the otherwise-uncovered materialization ordering window.
+        connection = spool.internal_connection()
+        originals = _original_ids(spool)
+        tokens = _token_ids(spool)
+        connection.execute(
+            "UPDATE res_assign SET kind = 'class', length = 1, token_idx = NULL "
+            "WHERE orig_idx = ?",
+            (originals["b"],),
+        )
+        connection.execute(
+            "UPDATE res_assign SET kind = 'token', length = NULL, token_idx = ? "
+            "WHERE orig_idx = ?",
+            (tokens["a"], originals["c"]),
+        )
+        connection.commit()
         assert _solved_assignment(spool) == {
             "a": ("class", 1, None),
-            "b": ("token", None, "a"),
-            "x": ("class", 1, None),
+            "b": ("class", 1, None),
+            "c": ("token", None, "a"),
         }
-        # RNG seam: the first class allocation ('a') picks 'c'; the later
-        # class allocation ('x') first ATTEMPTS 'a' (index 0) — which must
-        # be refused — and then picks 'd'.  The named assignment 'b' -> 'a'
-        # commits in between, after the observation 'a' was dropped.
-        sequence = iter([2, 0, 3])
+        # Probe: a->d, then b attempts reserved/unoccupied a before choosing e.
+        # Exact walk: after a->d, its SQL blocked set still includes a/b/c,
+        # leaving only e for b.  In both cases c->a commits last.
+        monkeypatch.setattr(
+            text_residual_module, "_TEXT_PROBE_BUDGET", probe_budget
+        )
+        sequence = iter(choices)
 
         def deterministic_randbelow(bound: int) -> int:
             return next(sequence) % bound
@@ -471,8 +497,8 @@ def test_materialization_never_steals_a_reserved_token(
                 vault,
                 spool,
                 domain_id=domain_id,
-                alphabet="abcd",
-                base=4,
+                alphabet="abcde",
+                base=5,
             ):
                 with vault.transaction():
                     add_text_mapping(
@@ -486,9 +512,9 @@ def test_materialization_never_steals_a_reserved_token(
                 allocated[value] = token
         finally:
             vault.release_writer_lease(lease)
-        # The reserved resource 'a' survived the dropped observation and
-        # went to its NAMED assignment; the class allocation never stole it.
-        assert allocated == {"a": "c", "b": "a", "x": "d"}
+        # The reserved resource 'a' survived the dropped observation while
+        # still unoccupied and went to its later named assignment.
+        assert allocated == {"a": "d", "b": "e", "c": "a"}
         assert len(set(allocated.values())) == 3
         spool.cleanup()
 

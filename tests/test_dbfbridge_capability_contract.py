@@ -24,12 +24,20 @@ from dbfbridge import (
     inspect_table,
     iter_raw_records,
     iter_records,
+    read_records,
     read_schema,
     write_table,
 )
 
 
-def _field(name: str, dbf_type: str, length: int, *, decimals: int = 0) -> FieldInfo:
+def _field(
+    name: str,
+    dbf_type: str,
+    length: int,
+    *,
+    decimals: int = 0,
+    flags: int = 0,
+) -> FieldInfo:
     return FieldInfo(
         ordinal=0,
         name=name,
@@ -37,7 +45,7 @@ def _field(name: str, dbf_type: str, length: int, *, decimals: int = 0) -> Field
         length=length,
         decimal_count=decimals,
         address=0,
-        flags=0,
+        flags=flags,
         index_field_flag=0,
         autoincrement_next_value=0,
         autoincrement_step=1,
@@ -48,7 +56,7 @@ def _field(name: str, dbf_type: str, length: int, *, decimals: int = 0) -> Field
     )
 
 
-def _schema(fields: tuple[FieldInfo, ...]) -> TableSchema:
+def _schema(fields: tuple[FieldInfo, ...], *, dbversion: int = 0x30) -> TableSchema:
     return TableSchema(
         path=Path("memory:p0-fixture"),
         record_count=0,
@@ -65,7 +73,7 @@ def _schema(fields: tuple[FieldInfo, ...]) -> TableSchema:
         table_flags=0,
         fields=fields,
         warnings=(),
-        dbversion_byte=0x30,
+        dbversion_byte=dbversion,
         dbversion_name="Visual FoxPro",
         last_update=None,
         incomplete_transaction=False,
@@ -157,3 +165,102 @@ def test_public_direct_read_write_round_trip(tmp_path: Any) -> None:
     assert all(record.values == {} for record in raw_stream)
     assert all(isinstance(record.raw_record, bytes) for record in raw_stream)
     assert raw_stream[1].deleted is True
+
+
+def test_public_nullable_logical_fidelity_projection_pagination_and_round_trip(
+    tmp_path: Any,
+) -> None:
+    """The pinned public artifact owns NULL state and its physical bitmap."""
+    source = tmp_path / "nullable_source.dbf"
+    output = tmp_path / "nullable_roundtrip.dbf"
+    fields = (
+        _field("TXT", "C", 10, flags=0x02),
+        _field("VC", "V", 20, flags=0x02),
+        _field("QTY", "N", 8, decimals=2, flags=0x02),
+        _field("CNT", "I", 4, flags=0x02),
+        _field("_NULLFLAGS", "0", 1, flags=0x01),
+    )
+    records = [
+        DirectRecord(
+            physical_index=0,
+            deleted=False,
+            values={"TXT": None, "VC": None, "QTY": None, "CNT": None},
+        ),
+        DirectRecord(
+            physical_index=1,
+            deleted=False,
+            values={"TXT": "", "VC": "", "QTY": 0.0, "CNT": 0},
+        ),
+        DirectRecord(
+            physical_index=2,
+            deleted=False,
+            values={"TXT": "ABC", "VC": "A", "QTY": 2.25, "CNT": -7},
+        ),
+        DirectRecord(
+            physical_index=3,
+            deleted=True,
+            values={"TXT": "Z" * 10, "VC": "X" * 20, "QTY": 3.5, "CNT": 9},
+        ),
+        DirectRecord(
+            physical_index=4,
+            deleted=False,
+            values={"TXT": "", "VC": " ", "QTY": 4.5, "CNT": 10},
+        ),
+        DirectRecord(
+            physical_index=5,
+            deleted=False,
+            values={"TXT": "A", "VC": "A ", "QTY": 5.5, "CNT": 11},
+        ),
+        DirectRecord(
+            physical_index=6,
+            deleted=False,
+            values={"TXT": "A", "VC": "A  ", "QTY": 6.5, "CNT": 12},
+        ),
+    ]
+    # Records contain logical values only.  The caller never constructs or
+    # supplies the _NullFlags bitmap declared by the public schema.
+    write_table(source, schema=_schema(fields, dbversion=0x32), records=records)
+
+    streamed = tuple(iter_records(source, include_deleted=True))
+    assert [row.values["TXT"] for row in streamed[:3]] == [None, "", "ABC"]
+    assert [type(row.values["TXT"]) for row in streamed[:3]] == [type(None), str, str]
+    assert [row.values["VC"] for row in streamed] == [
+        None,
+        "",
+        "A",
+        "X" * 20,
+        " ",
+        "A ",
+        "A  ",
+    ]
+    assert [type(row.values["VC"]) for row in streamed[:3]] == [type(None), str, str]
+    assert [row.values["QTY"] for row in streamed[:3]] == [None, 0.0, 2.25]
+    assert [row.values["CNT"] for row in streamed[:3]] == [None, 0, -7]
+    assert [row.deleted for row in streamed] == [False, False, False, True, False, False, False]
+
+    projected_c = tuple(iter_records(source, fields=["TXT"], include_deleted=True))
+    projected_v = tuple(iter_records(source, fields=["VC"], include_deleted=True))
+    assert [row.values["TXT"] for row in projected_c[:3]] == [None, "", "ABC"]
+    assert [row.values["VC"] for row in projected_v[:3]] == [None, "", "A"]
+
+    first = read_records(
+        source, offset=0, limit=2, fields=["TXT", "VC"], include_deleted=True
+    )
+    rest = read_records(
+        source, offset=2, limit=10, fields=["TXT", "VC"], include_deleted=True
+    )
+    paged = first.records + rest.records
+    assert [row.values["TXT"] for row in paged[:3]] == [None, "", "ABC"]
+    assert [row.values["VC"] for row in paged[:3]] == [None, "", "A"]
+
+    write_table(
+        output,
+        schema=read_schema(source),
+        records=iter_records(source, include_deleted=True),
+    )
+    roundtrip = tuple(iter_records(output, include_deleted=True))
+    application_names = ("TXT", "VC", "QTY", "CNT")
+    assert [
+        tuple(row.values[name] for name in application_names) for row in roundtrip
+    ] == [tuple(row.values[name] for name in application_names) for row in streamed]
+    assert [row.deleted for row in roundtrip] == [row.deleted for row in streamed]

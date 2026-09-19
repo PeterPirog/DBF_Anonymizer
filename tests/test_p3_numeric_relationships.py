@@ -1591,7 +1591,7 @@ def test_reversible_numeric_plus_text_uses_one_vault(tmp_path: Path) -> None:
 # BLOCKER 6 — verified public Direct Write Integer boundary evidence
 # ---------------------------------------------------------------------------
 def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> None:
-    """Independent re-proof against the pinned dbfbridge[write]==1.1.0.
+    """Independent re-proof against the pinned dbfbridge[write]==1.1.1.
 
     The public ``write_table`` boundary refuses BOTH int32 extremes (typed
     write failure) and accepts the interior boundaries exactly; the outcomes
@@ -1601,7 +1601,7 @@ def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> N
     """
     import dbfbridge
 
-    assert dbfbridge.__version__ == "1.1.0"
+    assert dbfbridge.__version__ == "1.1.1"
     from dbfbridge import ErrorCode, WritePublicationFailedError
 
     from tests.support.numeric_tables import schema as numeric_schema

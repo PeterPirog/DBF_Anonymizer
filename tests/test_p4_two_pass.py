@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from dbf_anonymizer import PathError, build_plan
+from dbf_anonymizer import build_plan
 from dbf_anonymizer.engine import run_two_pass
 from support.numeric_tables import (
     NULLABLE_FLAG,
@@ -265,37 +265,6 @@ def test_two_pass_preserves_deleted_records_and_order(tmp_path: Path) -> None:
         (0, True),
         (1, False),
     ]
-
-
-def test_engine_refuses_nullable_text_before_any_output(tmp_path: Path) -> None:
-    """Fail closed: the nullable-text public capability gap refuses execution."""
-    document = _text_document()
-    source_root = tmp_path / "source"
-    output_root = tmp_path / "output"
-    vault_path = tmp_path / "vault" / "dictionary.sqlite3"
-    _write_dataset(source_root)
-    from tests.support.numeric_tables import numeric_field as _f
-    from tests.support.numeric_tables import write_numeric_table as _w
-
-    # A nullable TEXT field cannot expose its NULL state through the public
-    # Direct Read — the engine refuses the whole table before any pass.
-    _w(
-        source_root,
-        "north/nulltext.dbf",
-        (_f("T", "C", 6, flags=NULLABLE_FLAG),),
-        [{"T": "x"}],
-    )
-    plan = build_plan(
-        str(source_root),
-        str(output_root),
-        str(vault_path),
-        relationship_document=document,
-    )
-    with pytest.raises(PathError) as excinfo:
-        run_two_pass(plan)
-    assert "ENGINE_NULLABLE_TEXT_UNSUPPORTED" in str(excinfo.value.to_dict())
-    assert not (output_root / "north/customers.dbf").exists()
-    assert not (output_root / "south/orders.dbf").exists()
 
 
 def test_cancellation_removes_partial_output(tmp_path: Path) -> None:

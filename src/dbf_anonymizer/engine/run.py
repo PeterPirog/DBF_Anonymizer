@@ -185,13 +185,13 @@ def build_engine_plan(
             dbf_type = str(field_info.dbf_type).upper()
             if dbf_type == "0":
                 continue  # the writer-managed system bitmap
+            if bool(field_info.nullable) and dbf_type in ("M", "G", "P"):
+                # Nullable memo/general/picture application semantics remain
+                # outside this P4-001/P4-002 cluster.  C/V are admitted: the
+                # public 1.1 contract preserves None separately from "".
+                raise _path_failure("ENGINE_NULLABLE_MEMO_UNSUPPORTED")
             if not bool(field_info.supported) or bool(field_info.is_binary):
                 raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
-            if bool(field_info.nullable) and dbf_type in ("C", "V", "M", "G", "P"):
-                # PUBLIC CAPABILITY GAP (see direct_io docs): the public
-                # Direct Read cannot expose the NULL/empty distinction of
-                # text fields — fail closed instead of an empty heuristic.
-                raise _path_failure("ENGINE_NULLABLE_TEXT_UNSUPPORTED")
             numeric_binding = _numeric_member_of(
                 numeric_groups, relative_path, field_name=name
             )

@@ -120,7 +120,7 @@ def _read_acceptance_pin() -> str:
 
 def test_acceptance_pin_is_exact() -> None:
     pin = _read_acceptance_pin()
-    assert pin == "dbfbridge[write]==1.1.0", pin
+    assert pin == "dbfbridge[write]==1.1.1", pin
 
 
 def test_acceptance_pin_satisfies_runtime_range() -> None:

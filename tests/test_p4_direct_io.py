@@ -2,9 +2,8 @@
 
 Acceptance evidence on REAL public dbfbridge synthetic fixtures: the
 boundary streams the Direct Read with deleted-record visibility and feeds
-the public Direct Write boundary; the public capability gap for nullable
-text NULL state is proven and refused; no JSONL/CSV intermediate is ever
-created.
+the public Direct Write boundary; nullable text NULL state remains distinct
+from empty text; no JSONL/CSV intermediate is ever created.
 """
 
 from __future__ import annotations
@@ -16,7 +15,12 @@ import dbfbridge
 import pytest
 
 from dbf_anonymizer.engine import direct_io
-from support.numeric_tables import numeric_field, read_numeric_records, write_numeric_table
+from support.numeric_tables import (
+    NULLABLE_FLAG,
+    numeric_field,
+    read_numeric_records,
+    write_numeric_table,
+)
 from support.vault_sessions import sidecar_inventory
 
 
@@ -75,33 +79,32 @@ def test_direct_write_refuses_an_existing_destination(tmp_path: Path) -> None:
     assert "ENGINE_OUTPUT_EXISTS" in str(excinfo.value.to_dict())
 
 
-def test_public_capability_gap_nullable_text_null_state_is_refused(
+def test_public_nullable_text_null_state_is_typed_and_projection_safe(
     tmp_path: Path,
 ) -> None:
-    """The public Direct Read cannot expose text NULL/empty distinctions.
-
-    Both the NULL record and the empty-string record decode to ``""``: the
-    boundary documents the exact public capability gap and the engine refuses
-    nullable text fields instead of inferring NULL from an empty heuristic.
-    """
+    """Public Direct Read preserves None separately from empty text."""
     write_numeric_table(
         tmp_path,
         "gap/nulltext.dbf",
-        (numeric_field("T", "C", 6, flags=8), numeric_field("N", "N", 4)),
-        [{"T": None, "N": 1}, {"T": "", "N": 2}],
+        (
+            numeric_field("T", "C", 6, flags=NULLABLE_FLAG),
+            numeric_field("V", "V", 6, flags=NULLABLE_FLAG),
+            numeric_field("N", "N", 4),
+        ),
+        [
+            {"T": None, "V": None, "N": 1},
+            {"T": "", "V": "", "N": 2},
+            {"T": "ABC", "V": "A ", "N": 3},
+        ],
     )
     table = direct_io.read_source_table(tmp_path, "gap/nulltext.dbf")
-    decoded = [
-        record.values["T"]
-        for record in direct_io.stream_table_records(table, memo_policy="skip")
-    ]
-    assert decoded == ["", ""]  # the NULL/empty distinction is NOT exposed
-    # Numeric NULLs ARE exposed by the public Direct Read:
-    numeric_decoded = [
-        record.values["N"]
-        for record in direct_io.stream_table_records(table, memo_policy="skip")
-    ]
-    assert numeric_decoded == [1, 2]
+    records = list(
+        direct_io.stream_table_records(
+            table, fields=["T", "V"], memo_policy="skip"
+        )
+    )
+    assert [record.values["T"] for record in records] == [None, "", "ABC"]
+    assert [record.values["V"] for record in records] == [None, "", "A "]
     _ = json  # JSON remains a report/manifest format, never a record transport
 
 
