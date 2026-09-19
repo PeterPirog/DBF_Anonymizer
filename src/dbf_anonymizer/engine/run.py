@@ -26,6 +26,7 @@ state belongs to P4-009).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -48,6 +49,7 @@ from dbf_anonymizer.engine.pass2 import run_pass_two
 from dbf_anonymizer.engine.state import (
     MAX_RECORD_BATCH,
     PassOneSpool,
+    refuse_spool_leftovers,
 )
 from dbf_anonymizer.errors import (
     ErrorCode,
@@ -451,6 +453,47 @@ class _WriterLease:
         self._vault.release_writer_lease(self._token)
 
 
+def _cleanup_engine_resources(
+    spool: PassOneSpool | None,
+    vault: VaultDatabase | None,
+) -> VaultError | None:
+    """Attempt every acquired cleanup and return one safe typed failure.
+
+    The ephemeral original-bearing spool is cleaned first, then the durable
+    vault handle is closed.  A failure in either attempt never prevents the
+    other.  Underlying failures remain available for internal diagnostics but
+    are excluded from the public error serialization.
+    """
+    failures: list[tuple[str, BaseException]] = []
+    if spool is not None:
+        try:
+            spool.cleanup()
+        except BaseException as error:
+            failures.append(("spool", error))
+    if vault is not None:
+        try:
+            vault.close()
+        except BaseException as error:
+            failures.append(("vault", error))
+    if not failures:
+        return None
+    failed_resources = {resource for resource, _error in failures}
+    if failed_resources == {"spool", "vault"}:
+        detail_code = "ENGINE_MULTIPLE_RESOURCE_CLEANUP_FAILED"
+    elif "spool" in failed_resources:
+        detail_code = "ENGINE_SPOOL_CLEANUP_FAILED"
+    else:
+        detail_code = "ENGINE_VAULT_CLOSE_FAILED"
+    failure = VaultError(
+        ErrorCode.VAULT_STATE_INVALID,
+        context=ErrorContext(operation="two_pass", detail_code=detail_code),
+    )
+    # Private diagnostic evidence only: AnonymizerError.to_dict() deliberately
+    # exposes neither these exceptions nor their potentially unsafe messages.
+    setattr(failure, "_resource_cleanup_failures", tuple(failures))
+    return failure
+
+
 def run_two_pass(
     plan: Plan,
     *,
@@ -516,17 +559,22 @@ def run_two_pass(
         policy=resolved_policy,
         relationship_document=context.relationship_document,
     )
-    vault = VaultDatabase.open(
-        vault_path,
-        create=not vault_path.exists(),
-        expected_source_fingerprint=plan.dataset.source_fingerprint,
-        expected_policy_fingerprint=plan.policy.policy_fingerprint,
-        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
-        dbfbridge_version=str(dbfbridge.__version__),
-    )
-    spool = PassOneSpool(vault_directory=vault_path.parent)
+    # Execution-level refusal occurs before a new durable vault can be
+    # created.  PassOneSpool repeats the check to close the TOCTOU window.
+    refuse_spool_leftovers(vault_path.parent)
+    vault: VaultDatabase | None = None
+    spool: PassOneSpool | None = None
     written: list[str] = []
     try:
+        vault = VaultDatabase.open(
+            vault_path,
+            create=not vault_path.exists(),
+            expected_source_fingerprint=plan.dataset.source_fingerprint,
+            expected_policy_fingerprint=plan.policy.policy_fingerprint,
+            expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+            dbfbridge_version=str(dbfbridge.__version__),
+        )
+        spool = PassOneSpool(vault_directory=vault_path.parent)
         outcome = PassOneOutcome()
         temporal_domain = (
             TemporalShiftDomain(vault, domain_name=None)
@@ -582,8 +630,13 @@ def run_two_pass(
             ) from original
         raise
     finally:
-        vault.close()
-        spool.cleanup()
+        operation_error = sys.exc_info()[1]
+        cleanup_failure = _cleanup_engine_resources(spool, vault)
+        if cleanup_failure is not None:
+            if operation_error is not None:
+                raise cleanup_failure from operation_error
+            underlying = getattr(cleanup_failure, "_resource_cleanup_failures")[0][1]
+            raise cleanup_failure from underlying
 
 
 def _discard_written(output_root: Path, written: Sequence[str]) -> list[str]:

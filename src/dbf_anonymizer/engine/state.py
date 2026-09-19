@@ -46,6 +46,7 @@ __all__ = [
     "EVIDENCE_SPOOL_SCHEMA_VERSION",
     "PASS1_STATE_FILENAME",
     "PassOneSpool",
+    "refuse_spool_leftovers",
     "spool_artifacts",
     "canonical_text_identity",
     "canonical_composite_identity",
@@ -172,6 +173,38 @@ def _spool_failure(detail_code: str) -> VaultError:
     )
 
 
+def refuse_spool_leftovers(vault_directory: Path) -> None:
+    """Fail closed over any known sensitive spool residue."""
+    if spool_artifacts(vault_directory):
+        raise _spool_failure("LEFTOVER_REFUSED")
+
+
+def _remove_spool_artifacts(vault_directory: Path) -> bool:
+    """Attempt every known unlink and return whether any cleanup failed."""
+    failed = False
+    for artifact in spool_artifacts(vault_directory):
+        try:
+            artifact.unlink()
+        except OSError:
+            failed = True
+    remaining = bool(spool_artifacts(vault_directory))
+    return failed or remaining
+
+
+def _cleanup_incomplete_spool(
+    vault_directory: Path,
+    connection: sqlite3.Connection | None,
+) -> bool:
+    """Close a partial connection and remove all artifacts it may own."""
+    failed = False
+    if connection is not None:
+        try:
+            connection.close()
+        except Exception:  # noqa: BLE001 - reported as a typed cleanup failure
+            failed = True
+    return _remove_spool_artifacts(vault_directory) or failed
+
+
 def canonical_text_identity(value: str) -> bytes:
     """The canonical SQLite grouping identity of one decoded text value.
 
@@ -234,23 +267,33 @@ class PassOneSpool:
     )
 
     def __init__(self, vault_directory: Path) -> None:
-        leftovers = spool_artifacts(vault_directory)
-        if leftovers:
-            # ANY crash residue is classified as sensitive state: refuse to
-            # silently reuse or overwrite it (no secure-deletion claim).
-            raise _spool_failure("LEFTOVER_REFUSED")
+        # This constructor-level check remains authoritative against residue
+        # and TOCTOU even though run_two_pass also checks before vault open.
+        refuse_spool_leftovers(vault_directory)
         self._path = Path(vault_directory) / PASS1_STATE_FILENAME
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = self._connect(self._path)
-        self._pending_text: list[tuple[bytes, int, int]] = []
-        self._pending_numeric: list[tuple[str, str]] = []
-        self._pending_keys: list[tuple[str, str, str, bytes, int]] = []
-        self._pending_facts: list[tuple[str, str, str, int, int]] = []
         self._closed = False
-        #: Structural boundedness instrumentation: the high-water mark of
-        #: every bounded Python buffer (never exceeds MAX_SQL_BATCH).
-        self.pending_high_water: dict[str, int] = {}
-        self._create_schema()
+        try:
+            self._pending_text: list[tuple[bytes, int, int]] = []
+            self._pending_numeric: list[tuple[str, str]] = []
+            self._pending_keys: list[tuple[str, str, str, bytes, int]] = []
+            self._pending_facts: list[tuple[str, str, str, int, int]] = []
+            #: Structural boundedness instrumentation: the high-water mark of
+            #: every bounded Python buffer (never exceeds MAX_SQL_BATCH).
+            self.pending_high_water: dict[str, int] = {}
+            self._create_schema()
+        except BaseException as original:
+            self._closed = True
+            cleanup_failed = _cleanup_incomplete_spool(
+                self._path.parent, self._connection
+            )
+            detail = (
+                "INITIALIZATION_CLEANUP_FAILED"
+                if cleanup_failed
+                else "INITIALIZATION_FAILED"
+            )
+            raise _spool_failure(detail) from original
 
     def _track_high_water(self) -> None:
         """One bounded-instrumentation update per flush (O(1) Python)."""
@@ -273,17 +316,35 @@ class PassOneSpool:
         # SQLite layer opens the file.  On POSIX this is the 0o600 mode; on
         # Windows the platform ACL story is limited — no POSIX guarantee is
         # claimed, the reservation is best-effort and truthful.
-        descriptor = os.open(
-            str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-        )
-        os.close(descriptor)
-        connection = sqlite3.connect(str(path))
-        # The spool is EPHEMERAL per-run state whose durability is worthless
-        # (it is rebuilt from the source on every run and refused if left
-        # behind): journal_mode=OFF writes NO sidecar artifact at all.
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        return connection
+        created = False
+        connection: sqlite3.Connection | None = None
+        try:
+            descriptor = os.open(
+                str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            )
+            created = True
+            os.close(descriptor)
+            connection = sqlite3.connect(str(path))
+            # The spool is EPHEMERAL per-run state whose durability is worthless
+            # (it is rebuilt from the source on every run and refused if left
+            # behind): journal_mode=OFF writes NO sidecar artifact at all.
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            return connection
+        except BaseException as original:
+            if not created and spool_artifacts(path.parent):
+                # O_EXCL lost a race to new residue: never delete an artifact
+                # this constructor did not create.
+                raise _spool_failure("LEFTOVER_REFUSED") from original
+            cleanup_failed = created and _cleanup_incomplete_spool(
+                path.parent, connection
+            )
+            detail = (
+                "INITIALIZATION_CLEANUP_FAILED"
+                if cleanup_failed
+                else "INITIALIZATION_FAILED"
+            )
+            raise _spool_failure(detail) from original
 
     def _create_schema(self) -> None:
         for statement in _SENSITIVE_SCHEMA:
@@ -615,8 +676,9 @@ class PassOneSpool:
         """
         if self._closed:
             return
-        self.flush()
+        failed = False
         try:
+            self.flush()
             for table in (
                 "text_observation",
                 "numeric_observation",
@@ -634,20 +696,14 @@ class PassOneSpool:
                 self._connection.execute(f"DELETE FROM {table}")
             self._connection.commit()
         except Exception:  # noqa: BLE001 - surfaced storage failure
-            self._closed = True
-            raise _spool_failure("CLEANUP_FAILED") from None
+            failed = True
         try:
             self._connection.close()
         except Exception:  # noqa: BLE001 - surfaced storage failure
-            self._closed = True
-            raise _spool_failure("CLEANUP_FAILED") from None
+            failed = True
         self._closed = True
-        for artifact in spool_artifacts(self._path.parent):
-            try:
-                artifact.unlink()
-            except OSError as exc:
-                raise _spool_failure("CLEANUP_FAILED") from exc
-        if spool_artifacts(self._path.parent):
-            # The verified-removal contract: an artifact that survives the
-            # unlink attempt is a surfaced cleanup failure.
-            raise _spool_failure("CLEANUP_FAILED")
+        # Purge/close failure never prevents attempts for every known main or
+        # sidecar artifact.  This is unlinking, not a secure-deletion claim.
+        failed = _remove_spool_artifacts(self._path.parent) or failed
+        if failed:
+            raise _spool_failure("CLEANUP_FAILED") from None
