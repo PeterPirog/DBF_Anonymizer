@@ -912,9 +912,10 @@ def test_no_sqlite_database_files_in_package_or_fixtures() -> None:
 # REQ-P2-007 memo payload containment (static regressions)
 # ---------------------------------------------------------------------------
 #: The single authoritative memo recovery store of the one vault: the
-#: ``memo_recovery`` concept may be referenced only by the schema, the row
-#: recorder and the allocation boundary — never by planning/preflight, the
-#: public API or a second store.
+#: ``memo_recovery`` storage may be referenced only by the schema, row
+#: recorder and allocation boundary.  The engine may call that allocation
+#: boundary by its public package symbol, but never name the table, read
+#: payloads back or create a second store.
 MEMO_RECOVERY_MODULES = frozenset(
     {
         "vault/__init__.py",
@@ -924,6 +925,13 @@ MEMO_RECOVERY_MODULES = frozenset(
         "vault/memo_allocation.py",
     }
 )
+
+# The P4 engine may invoke the one vault allocation boundary.  It may not
+# name or implement the recovery table, read payloads back, or create another
+# payload store.
+MEMO_RECOVERY_CONSUMERS = {
+    "engine/pass2.py": "persist_memo_recovery",
+}
 
 #: The value-typed transform/vault boundary modules must stay free of any
 #: dependency-namespace or file-I/O behaviour (memo REQ-P2-007, temporal
@@ -943,8 +951,15 @@ def test_memo_recovery_is_the_single_payload_store() -> None:
         source = path.read_text(encoding="utf-8")
         if "memo_recovery" in source:
             relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
-            if relative.replace("dbf_anonymizer/", "") not in MEMO_RECOVERY_MODULES:
-                offending.append(str(path.relative_to(SRC_ROOT)))
+            normalized = relative.replace("dbf_anonymizer/", "")
+            if normalized in MEMO_RECOVERY_MODULES:
+                continue
+            allowed_symbol = MEMO_RECOVERY_CONSUMERS.get(normalized)
+            if allowed_symbol is not None:
+                assert source.count(allowed_symbol) == 2
+                assert "memo_recovery" not in source.replace(allowed_symbol, "")
+                continue
+            offending.append(str(path.relative_to(SRC_ROOT)))
     assert not offending, f"memo payload store referenced outside the vault: {offending}"
 
 

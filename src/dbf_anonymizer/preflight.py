@@ -76,7 +76,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 import dbfbridge
 
@@ -106,6 +106,7 @@ from dbf_anonymizer.models import (
     TransferProfile,
     VaultStrategy,
 )
+from dbf_anonymizer.policy import classify_field_capability
 from dbf_anonymizer.progress import (
     CancelCheck,
     ProgressCallback,
@@ -745,6 +746,16 @@ def _capacity_sufficient(
     if not dbf_rels:
         return _CAPACITY_OK
 
+    execution_context = plan.execution_context
+    merged_policy = (
+        execution_context.resolved_policy
+        if execution_context is not None
+        else None
+    )
+    if not isinstance(merged_policy, Mapping):
+        _LAST_CAPACITY_SCAN_STATS["outcome"] = _CAPACITY_UNPROVEN
+        return _CAPACITY_UNPROVEN
+
     participating: set[str] = set()
     sensitive: list[tuple[str, Path, int, list[tuple[str, int]]]] = []
     for rel in dbf_rels:
@@ -765,12 +776,16 @@ def _capacity_sufficient(
             ) from None
         fields: list[tuple[str, int]] = []
         for field in schema.fields:
-            if (
-                field.dbf_type.upper() in {"C", "V"}
-                and field.supported
-                and not field.is_binary
-                and not field.nocptrans
-            ):
+            action, _unsafe, _system = classify_field_capability(
+                str(field.dbf_type),
+                str(field.name),
+                bool(field.supported),
+                bool(field.is_binary),
+                bool(field.system),
+                bool(field.nocptrans),
+                merged_policy,
+            )
+            if action == "PSEUDONYMIZE_REVERSIBLE":
                 fields.append((field.name, field.length))
         if fields:
             if schema.encoding:

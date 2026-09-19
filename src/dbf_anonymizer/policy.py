@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from dbf_anonymizer.errors import PolicyError, ErrorCode, ErrorContext
@@ -35,6 +36,123 @@ INDEXES_ALLOWED_KEYS = frozenset({"profile"})
 SUPPORTED_INDEX_PROFILES = frozenset({"DATA_ONLY", "VFP_INDEXED"})
 
 SUPPORTED_SCHEMA_VERSION = 1
+
+FIELD_CAPABILITY_MATRIX_VERSION = "1.0"
+
+
+@dataclass(frozen=True, slots=True)
+class FieldCapabilityRule:
+    """One immutable row in the authoritative field capability matrix."""
+
+    dbf_types: tuple[str, ...]
+    logical_class: str
+    disposition: str
+    default_action: str | None
+    policy_section: str | None
+    policy_key: str | None
+    binary_descriptor_allowed: bool
+    nocptrans_allowed: bool
+
+
+# Matrix order is part of the deterministic versioned snapshot.  Every
+# planning, preflight and execution consumer delegates field classification to
+# ``classify_field_capability`` below rather than maintaining a type switch.
+FIELD_CAPABILITY_MATRIX: tuple[FieldCapabilityRule, ...] = (
+    FieldCapabilityRule(
+        ("C", "V"),
+        "TEXT",
+        "TRANSFORM",
+        "PSEUDONYMIZE_REVERSIBLE",
+        "text",
+        "default_action",
+        False,
+        False,
+    ),
+    FieldCapabilityRule(
+        ("M",),
+        "MEMO_TEXT_OR_BINARY_PAYLOAD",
+        "TRANSFORM",
+        "MASK_REVERSIBLE",
+        "memo",
+        "text",
+        False,
+        False,
+    ),
+    FieldCapabilityRule(
+        ("G", "P"),
+        "BINARY_MEMO",
+        "TRANSFORM",
+        "MASK_REVERSIBLE",
+        "memo",
+        "binary",
+        True,
+        True,
+    ),
+    FieldCapabilityRule(
+        ("D",),
+        "DATE",
+        "TRANSFORM",
+        "SHIFT_REVERSIBLE",
+        "temporal",
+        "date",
+        False,
+        True,
+    ),
+    FieldCapabilityRule(
+        ("T",),
+        "DATETIME",
+        "TRANSFORM",
+        "SHIFT_REVERSIBLE",
+        "temporal",
+        "datetime",
+        False,
+        True,
+    ),
+    FieldCapabilityRule(
+        ("N", "F", "I", "Y", "B", "L"),
+        "SCALAR_IDENTITY",
+        "IDENTITY",
+        None,
+        None,
+        None,
+        False,
+        True,
+    ),
+)
+
+_RULE_BY_DBF_TYPE = {
+    dbf_type: rule
+    for rule in FIELD_CAPABILITY_MATRIX
+    for dbf_type in rule.dbf_types
+}
+
+
+def field_capability_matrix_snapshot() -> dict[str, object]:
+    """Return the deterministic JSON-safe identity of the matrix contract."""
+
+    return {
+        "schema_version": FIELD_CAPABILITY_MATRIX_VERSION,
+        "trusted_system_field": {
+            "dbf_type": "0",
+            "name": "_NULLFLAGS",
+            "system": True,
+            "disposition": "WRITER_MANAGED",
+        },
+        "fallback_disposition": "UNSAFE",
+        "rules": [
+            {
+                "dbf_types": list(rule.dbf_types),
+                "logical_class": rule.logical_class,
+                "disposition": rule.disposition,
+                "default_action": rule.default_action,
+                "policy_section": rule.policy_section,
+                "policy_key": rule.policy_key,
+                "binary_descriptor_allowed": rule.binary_descriptor_allowed,
+                "nocptrans_allowed": rule.nocptrans_allowed,
+            }
+            for rule in FIELD_CAPABILITY_MATRIX
+        ],
+    }
 
 DEFAULT_POLICY: dict[str, Any] = {
     "schema_version": 1,
@@ -217,64 +335,25 @@ def classify_field_capability(
     if is_system or not is_supported:
         return (None, True, False)
 
-    upper_type = dbf_type.upper()
-
-    if upper_type in ("C", "V"):
-        if is_binary or nocptrans:
-            return (None, True, False)
-        text_section = merged_policy.get("text")
-        if isinstance(text_section, dict):
-            action: str = text_section.get("default_action", "PSEUDONYMIZE_REVERSIBLE")
-        else:
-            action = "PSEUDONYMIZE_REVERSIBLE"
-        if action == "KEEP":
-            return (None, False, False)
-        return (action, False, False)
-
-    elif upper_type == "M":
-        if is_binary or nocptrans:
-            return (None, True, False)
-        memo_section = merged_policy.get("memo")
-        if isinstance(memo_section, dict):
-            action = memo_section.get("text", "MASK_REVERSIBLE")
-        else:
-            action = "MASK_REVERSIBLE"
-        if action == "KEEP":
-            return (None, False, False)
-        return (action, False, False)
-
-    elif upper_type in ("G", "P"):
-        memo_section = merged_policy.get("memo")
-        if isinstance(memo_section, dict):
-            action = memo_section.get("binary", "MASK_REVERSIBLE")
-        else:
-            action = "MASK_REVERSIBLE"
-        if action == "KEEP":
-            return (None, False, False)
-        return (action, False, False)
-
-    elif upper_type == "D":
-        temporal_section = merged_policy.get("temporal")
-        if isinstance(temporal_section, dict):
-            action = temporal_section.get("date", "SHIFT_REVERSIBLE")
-        else:
-            action = "SHIFT_REVERSIBLE"
-        if action == "KEEP":
-            return (None, False, False)
-        return (action, False, False)
-
-    elif upper_type == "T":
-        temporal_section = merged_policy.get("temporal")
-        if isinstance(temporal_section, dict):
-            action = temporal_section.get("datetime", "SHIFT_REVERSIBLE")
-        else:
-            action = "SHIFT_REVERSIBLE"
-        if action == "KEEP":
-            return (None, False, False)
-        return (action, False, False)
-
-    elif upper_type in ("N", "I", "F", "Y", "B", "L"):
+    rule = _RULE_BY_DBF_TYPE.get(dbf_type.upper())
+    if rule is None:
+        return (None, True, False)
+    if is_binary and not rule.binary_descriptor_allowed:
+        return (None, True, False)
+    if nocptrans and not rule.nocptrans_allowed:
+        return (None, True, False)
+    if rule.disposition == "IDENTITY":
         return (None, False, False)
 
-    else:
-        return (None, True, False)
+    assert rule.default_action is not None
+    assert rule.policy_section is not None
+    assert rule.policy_key is not None
+    section = merged_policy.get(rule.policy_section)
+    action = (
+        str(section.get(rule.policy_key, rule.default_action))
+        if isinstance(section, dict)
+        else rule.default_action
+    )
+    if action == "KEEP":
+        return (None, False, False)
+    return (action, False, False)

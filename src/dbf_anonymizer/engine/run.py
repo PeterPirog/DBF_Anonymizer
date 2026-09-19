@@ -1,4 +1,4 @@
-"""The Phase 4 two-pass engine coordinator (REQ-P4-001/P4-002/P4-003/P4-005).
+"""The Phase 4 two-pass engine coordinator (REQ-P4-001 through P4-007).
 
 This module binds the immutable typed plan, the resolved policy and the
 declared relationship document into the engine's INTERNAL field directives
@@ -18,7 +18,8 @@ The engine is an INTERNAL implementation boundary: it is not part of the
 root public API, no public ``pseudonymize`` operation exists yet (the
 publication/staging state is REQ-P4-009 scope).  Supported records are freshly
 reconstructed from transformed typed values with deleted markers and physical
-order preserved; the complete field-class matrix remains P4-004 scope.
+order preserved.  The versioned field matrix in :mod:`dbf_anonymizer.policy`
+is shared with planning/preflight and execution.
 Unsupported execution fails CLOSED before any output is produced — the engine never publishes a
 partially transformed dataset: every table written by THIS run is removed
 again when the run fails or is cancelled (full crash-resilient publication
@@ -61,7 +62,7 @@ from dbf_anonymizer.errors import (
     VaultError,
 )
 from dbf_anonymizer.models import Plan
-from dbf_anonymizer.policy import resolve_policy
+from dbf_anonymizer.policy import classify_field_capability, resolve_policy
 from dbf_anonymizer.relationships.models import (
     RelationGroup,
     RelationshipDocument,
@@ -186,14 +187,18 @@ def build_engine_plan(
         for field_info in schema.fields:
             name = str(field_info.name)
             dbf_type = str(field_info.dbf_type).upper()
-            if dbf_type == "0":
-                continue  # the writer-managed system bitmap
-            if bool(field_info.nullable) and dbf_type in ("M", "G", "P"):
-                # Nullable memo/general/picture application semantics remain
-                # outside this P4-001/P4-002 cluster.  C/V are admitted: the
-                # public 1.1 contract preserves None separately from "".
-                raise _path_failure("ENGINE_NULLABLE_MEMO_UNSUPPORTED")
-            if not bool(field_info.supported) or bool(field_info.is_binary):
+            action, is_unsafe, is_system = classify_field_capability(
+                dbf_type,
+                name,
+                bool(field_info.supported),
+                bool(field_info.is_binary),
+                bool(field_info.system),
+                bool(field_info.nocptrans),
+                merged_policy,
+            )
+            if is_system:
+                continue
+            if is_unsafe:
                 raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
             numeric_binding = _numeric_member_of(
                 numeric_groups, relative_path, field_name=name
@@ -213,39 +218,35 @@ def build_engine_plan(
                 )
                 numeric_present = True
                 continue
-            if dbf_type in ("C", "V"):
-                if _text_action(merged_policy) is None:
-                    continue
+            if action is None:
+                continue
+            if action == ACTION_TEXT:
                 transformed.append(
                     FieldDirective(
                         field_name=name,
-                        action=ACTION_TEXT,
+                        action=action,
                         dbf_type=dbf_type,
                         encoding=str(schema.encoding),
                         byte_width=int(field_info.length),
                     )
                 )
                 text_present = True
-            elif dbf_type in ("M", "G", "P"):
-                if _memo_action(merged_policy, dbf_type) is None:
-                    continue
+            elif action == ACTION_MEMO:
                 transformed.append(
                     FieldDirective(
                         field_name=name,
-                        action=ACTION_MEMO,
+                        action=action,
                         dbf_type=dbf_type,
                         encoding=str(schema.encoding),
                         byte_width=int(field_info.length),
                     )
                 )
                 memo_fields.append(name)
-            elif dbf_type in ("D", "T"):
-                if _temporal_action(merged_policy, dbf_type) is None:
-                    continue
+            elif action == ACTION_TEMPORAL:
                 transformed.append(
                     FieldDirective(
                         field_name=name,
-                        action=ACTION_TEMPORAL,
+                        action=action,
                         dbf_type=dbf_type,
                         encoding=str(schema.encoding),
                         byte_width=int(field_info.length),
@@ -253,10 +254,8 @@ def build_engine_plan(
                 )
                 temporal_fields.append(name)
                 temporal_present = True
-            elif dbf_type in ("N", "I", "F", "Y", "B", "L"):
-                continue  # identity by policy (P2/P3 contract)
             else:
-                raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
+                raise _path_failure("ENGINE_ACTION_UNSUPPORTED")
         tables.append(
             TableDirective(
                 relative_path=relative_path,
@@ -349,38 +348,6 @@ def build_engine_plan(
     )
 
 
-def _text_action(merged_policy: dict[str, object]) -> str | None:
-    section = merged_policy.get("text")
-    action = (
-        str(section.get("default_action", "PSEUDONYMIZE_REVERSIBLE"))
-        if isinstance(section, dict)
-        else "PSEUDONYMIZE_REVERSIBLE"
-    )
-    return None if action == "KEEP" else action
-
-
-def _memo_action(merged_policy: dict[str, object], dbf_type: str) -> str | None:
-    section = merged_policy.get("memo")
-    key = "binary" if dbf_type in ("G", "P") else "text"
-    action = (
-        str(section.get(key, "MASK_REVERSIBLE"))
-        if isinstance(section, dict)
-        else "MASK_REVERSIBLE"
-    )
-    return None if action == "KEEP" else action
-
-
-def _temporal_action(merged_policy: dict[str, object], dbf_type: str) -> str | None:
-    section = merged_policy.get("temporal")
-    key = "datetime" if dbf_type == "T" else "date"
-    action = (
-        str(section.get(key, "SHIFT_REVERSIBLE"))
-        if isinstance(section, dict)
-        else "SHIFT_REVERSIBLE"
-    )
-    return None if action == "KEEP" else action
-
-
 def _revalidate_execution_identity(
     plan: Plan,
     *,
@@ -452,6 +419,37 @@ class _WriterLease:
 
     def __exit__(self, *exc_info: object) -> None:
         self._vault.release_writer_lease(self._token)
+
+
+def _register_memo_structure(
+    engine_plan: EnginePlan, vault: VaultDatabase
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """Register stable vault identities for every transformed memo field."""
+
+    bindings: dict[tuple[str, str], tuple[str, str]] = {}
+    if not any(table.memo_fields for table in engine_plan.tables):
+        return bindings
+    with vault.transaction():
+        for table in engine_plan.tables:
+            if not table.memo_fields:
+                continue
+            table_id = vault.register_table(table.relative_path)
+            for field in table.transformed:
+                if field.action != ACTION_MEMO:
+                    continue
+                field_id = vault.register_field(
+                    table_id,
+                    field.field_name,
+                    dbf_type=field.dbf_type,
+                    width=field.byte_width,
+                    encoding=field.encoding,
+                    transform_action=field.action,
+                )
+                bindings[(table.relative_path, field.field_name)] = (
+                    table_id,
+                    field_id,
+                )
+    return bindings
 
 
 def _cleanup_engine_resources(
@@ -605,16 +603,20 @@ def run_two_pass(
                 outcome=outcome,
                 temporal_domain=temporal_domain,
             )
-        result = run_pass_two(
-            engine_plan,
-            source_root=source,
-            output_root=output,
-            vault=vault,
-            spool=spool,
-            control=control,
-            outcome=outcome,
-            written=written,
-        )
+            memo_bindings = _register_memo_structure(
+                engine_plan, writer_vault
+            )
+            result = run_pass_two(
+                engine_plan,
+                source_root=source,
+                output_root=output,
+                vault=writer_vault,
+                spool=spool,
+                control=control,
+                outcome=outcome,
+                written=written,
+                memo_bindings=memo_bindings,
+            )
         control.complete(completed=len(result.tables_written))
         return result
     except BaseException as original:
@@ -652,13 +654,12 @@ def _discard_written(output_root: Path, written: Sequence[str]) -> list[str]:
     failures: list[str] = []
     for relative_path in reversed(written):
         base = output_root / relative_path
-        for suffix in ("", ".fpt"):
-            artifact = Path(str(base) + suffix)
+        for artifact in (base, base.with_suffix(".fpt")):
             try:
                 if artifact.exists():
                     artifact.unlink()
             except OSError as exc:
                 failures.append(
-                    f"{relative_path}{suffix}:{type(exc).__name__}"
+                    f"{artifact.name}:{type(exc).__name__}"
                 )
     return failures
