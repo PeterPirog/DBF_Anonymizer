@@ -13,9 +13,9 @@ from typing import Any, Mapping
 import dbfbridge
 import pytest
 
-from dbf_anonymizer import PathError, build_plan
+from dbf_anonymizer import build_plan
 from dbf_anonymizer.engine import direct_io, run_two_pass
-from dbf_anonymizer.vault.mappings import text_mapping_rows
+from dbf_anonymizer.vault.mappings import memo_recovery_rows, text_mapping_rows
 from dbf_anonymizer.vault.store import VaultDatabase
 from dbf_anonymizer.vault.text_allocation import GLOBAL_TEXT_DOMAIN_ID
 from support.numeric_tables import (
@@ -241,7 +241,7 @@ def test_nullable_identity_numeric_preserves_none_zero_and_nonzero(
     assert result.text_allocated == 0
 
 
-def test_nullable_memo_remains_fail_closed_until_later_p4_scope(
+def test_nullable_memo_preserves_null_and_masks_empty_and_nonempty(
     tmp_path: Path,
 ) -> None:
     source_root = tmp_path / "source"
@@ -254,11 +254,30 @@ def test_nullable_memo_remains_fail_closed_until_later_p4_scope(
         [{"NOTE": None}, {"NOTE": ""}, {"NOTE": "ABC"}],
     )
     plan = build_plan(source_root, output_root, vault_path)
-    with pytest.raises(PathError) as excinfo:
-        run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_NULLABLE_MEMO_UNSUPPORTED"
+    run_two_pass(plan)
+
+    output = tuple(
+        dbfbridge.iter_records(output_root / "memo.dbf", memo="inline")
     )
-    assert not output_root.exists()
-    assert not vault_path.exists()
+    values = [record.values["NOTE"] for record in output]
+    assert values[0] is None
+    assert values[1] == values[2] == "[MASKED-MEMO]"
+    assert values[1] != "" and values[2] != "ABC"
+
+    with VaultDatabase.open(
+        vault_path,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+    ) as vault:
+        table_id = str(vault.tables()[0]["table_id"])
+        rows = memo_recovery_rows(vault, table_id)
+        assert [row["physical_record_index"] for row in rows] == [1, 2]
+        assert [bytes(row["original_payload"]) for row in rows] == [b"", b"ABC"]
+        registered_names = {
+            str(row[0])
+            for row in vault._internal_connection().execute(
+                "SELECT name FROM fields ORDER BY name"
+            )
+        }
+        assert registered_names == {"NOTE"}

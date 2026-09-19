@@ -33,8 +33,9 @@ typed logical values: ``None`` remains distinct from ``""`` and numeric zero.
 Field projection and Direct Read -> Direct Write -> Direct Read preserve the
 same distinction.  The engine never interprets payload appearance as NULL and
 never constructs ``_NullFlags``; the public writer owns that system bitmap.
-Nullable ``M``/``G``/``P`` remain fail-closed at the application layer until
-their complete P4-006/P4-007 transformation matrix is integrated.
+Nullable ``M``/``G``/``P`` use the same typed contract: ``None`` remains NULL,
+while empty text/binary payloads remain non-NULL values for the bounded memo
+vault pipeline.
 """
 
 from __future__ import annotations

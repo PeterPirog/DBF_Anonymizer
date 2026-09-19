@@ -42,7 +42,6 @@ from dbf_anonymizer.engine.pass1 import PassOneOutcome
 from dbf_anonymizer.engine.state import PassOneSpool, canonical_composite_identity
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError
 from dbf_anonymizer.progress import ProgressController, ProgressPhase
-from dbf_anonymizer.transforms.memo import memo_safe_mask
 from dbf_anonymizer.transforms.numeric_keys import (
     canonical_integer_text,
     parse_canonical_integer_text,
@@ -53,6 +52,7 @@ from dbf_anonymizer.vault.mappings import (
     get_text_pseudonym,
     temporal_parameter,
 )
+from dbf_anonymizer.vault.memo_allocation import persist_memo_recovery
 from dbf_anonymizer.vault.store import VaultDatabase
 from dbf_anonymizer.vault.text_allocation import GLOBAL_TEXT_DOMAIN_ID
 from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
@@ -77,6 +77,7 @@ def run_pass_two(
     control: ProgressController,
     outcome: PassOneOutcome,
     written: list[str],
+    memo_bindings: dict[tuple[str, str], tuple[str, str]],
 ) -> TwoPassResult:
     """The write pass: resolve, transform, direct-write, then compare."""
     control.start_phase(ProgressPhase.PASS2_WRITE, total=len(engine_plan.tables))
@@ -112,6 +113,7 @@ def run_pass_two(
                 text_domain_id,
                 temporal_offset,
                 read_streams,
+                memo_bindings,
             ),
             cancel_check=control.check_cancelled,
         )
@@ -159,7 +161,8 @@ def _transform_stream(
     text_domain_id: str | None,
     temporal_offset: int | None,
     read_streams: list[tuple[str, str]],
-    ) -> Iterator[DirectRecord]:
+    memo_bindings: dict[tuple[str, str], tuple[str, str]],
+) -> Iterator[DirectRecord]:
     """Yield newly constructed typed records in unchanged physical order."""
     memo_policy = "inline" if table.has_memo_fields else "skip"
     read_streams.append(("pass2", directive.relative_path))
@@ -207,7 +210,18 @@ def _transform_stream(
                     raise _mapping_failure("ENGINE_TEXT_MAPPING_MISSING")
                 values[name] = mapped
             elif field_directive.action == "MASK_REVERSIBLE":
-                values[name] = memo_safe_mask(value)
+                binding = memo_bindings.get((directive.relative_path, name))
+                if binding is None:  # pragma: no cover - engine-plan invariant
+                    raise _mapping_failure("ENGINE_MEMO_BINDING_MISSING")
+                table_id, field_id = binding
+                values[name] = persist_memo_recovery(
+                    vault,
+                    table_id=table_id,
+                    physical_record_index=int(record.physical_index),
+                    field_id=field_id,
+                    dbf_type=field_directive.dbf_type,
+                    value=value,
+                )
             elif field_directive.action == "SHIFT_REVERSIBLE":
                 if temporal_offset is None:  # pragma: no cover - plan checked
                     raise _mapping_failure("ENGINE_TEMPORAL_OFFSET_MISSING")
