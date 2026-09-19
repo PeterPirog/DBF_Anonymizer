@@ -373,9 +373,23 @@ def test_public_review_metadata_never_leaks_values_or_paths(tmp_path: Path) -> N
         relationship_document=_identity_relation_document(),
     )
     payload = json.dumps(plan.to_dict())
+    # Structural identifier hex (plan id, dataset/policy/relationship
+    # fingerprints) is derived from CONTENT, never from source values, and a
+    # random-looking hex can COINCIDENTALLY contain a canary-looking digit
+    # run (e.g. "...999..." inside a 64-hex digest) — so value privacy is
+    # checked over the payload with those deterministic identifiers redacted.
+    redacted = payload
+    for identifier in (
+        plan.plan_id,
+        plan.dataset.dataset_id,
+        plan.dataset.source_fingerprint,
+        plan.policy.policy_fingerprint,
+        plan.relationships.relationship_fingerprint,
+    ):
+        redacted = redacted.replace(str(identifier), "")
     # No actual key value, no value sample, no absolute path and no vault
     # path can enter the public Plan serialization.
     for canary in ("2147483646", "123456", "-999", "999"):
-        assert canary not in payload
-    assert str(tmp_path) not in payload
+        assert canary not in redacted
+    assert str(tmp_path) not in redacted
     assert "IDENTITY_PRIVACY_REVIEW_REQUIRED" in payload

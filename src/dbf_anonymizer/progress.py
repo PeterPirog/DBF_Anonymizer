@@ -75,8 +75,10 @@ class ProgressPhase:
     ``SCAN`` is the phase family realized today (discovery, fingerprinting,
     table evaluation, source revalidation, capacity scanning).  ``WRITE``,
     ``VERIFICATION`` and ``PUBLICATION`` phases are documented as the
-    internal safe-point concepts for the future P4/P5 operations; no code
-    emits them yet and no future operation is faked by this module.
+    internal safe-point concepts for the future P4/P5 operations; the
+    Phase 4 two-pass engine (REQ-P4-002) realizes its own bounded phases
+    ``PASS1_SCAN``/``PASS1_FINALIZE``/``PASS2_WRITE`` on the same bounded
+    progress contract.  No operation outside the engine emits them.
     """
 
     OPERATION = "OPERATION"
@@ -89,6 +91,9 @@ class ProgressPhase:
     WRITE = "WRITE"
     VERIFICATION = "VERIFICATION"
     PUBLICATION = "PUBLICATION"
+    PASS1_SCAN = "PASS1_SCAN"
+    PASS1_FINALIZE = "PASS1_FINALIZE"
+    PASS2_WRITE = "PASS2_WRITE"
 
 
 class ProgressEventCode:

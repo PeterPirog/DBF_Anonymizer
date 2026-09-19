@@ -528,6 +528,7 @@ def build_plan(
         relationship_bindings=(
             dict(relationship_bindings) if relationship_bindings else None
         ),
+        resolved_policy=dict(merged_policy),
     )
 
     plan = Plan(

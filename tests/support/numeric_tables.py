@@ -4,7 +4,7 @@ Every table used by the P3-004/P3-005 numeric evidence suites is deterministic,
 obviously synthetic and redistributable.  Tables are built exclusively through
 the public ``dbfbridge.write_table`` boundary (no private imports, no manual
 byte construction); reading uses the public ``iter_records`` stream.  The
-verified public dbfbridge 1.1.0 representation facts encoded here:
+verified public dbfbridge 1.1 representation facts encoded here:
 
 * ``I`` fields: fixed 4-byte signed integers; the writable range excludes both
   int32 extremes; NULL requires a ``_NullFlags`` type-0 system column;

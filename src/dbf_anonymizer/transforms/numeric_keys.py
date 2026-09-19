@@ -7,7 +7,7 @@ no I/O, opens no file, imports no ``dbfbridge`` namespace, touches no vault
 state and draws no randomness — the CSPRNG-backed allocation service is
 :mod:`dbf_anonymizer.vault.numeric_allocation`, a consumer of these kernels.
 
-Verified public dbfbridge 1.1.0 facts this model encodes (never guessed):
+Verified public dbfbridge 1.1 facts this model encodes (never guessed):
 
 * an Integer (``I``) value is a signed 32-bit little-endian integer read as a
   Python ``int`` in ``[-2**31, 2**31 - 1]`` (NULL only through the VFP
@@ -249,7 +249,7 @@ def integer_member() -> NumericKeyMemberRange:
     Recovery truthfulness (REQ-P3-005): a REVERSIBLE mapping must be able to
     write the pseudonymized value back through the public Direct Write
     boundary, and the SAME public writer must later be able to reconstruct
-    the ORIGINAL during recovery.  The pinned ``dbfbridge[write]==1.1.0``
+    the ORIGINAL during recovery.  The pinned ``dbfbridge[write]==1.1.1``
     boundary refuses both int32 extremes (typed write failure), so a
     reversible Integer member's ORIGINAL range is the verified WRITABLE
     sub-range, while its READABLE range remains the full signed 32-bit
