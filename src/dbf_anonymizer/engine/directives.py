@@ -124,6 +124,9 @@ class TwoPassResult:
     #: One-shot per-pass instrumentation (REQ-P4-002): every Direct Read
     #: stream opened during the run, in order ("pass1"/"pass2", path).
     read_streams: tuple[tuple[str, str], ...] = ()
+    operation_id: str | None = None
+    output_fingerprint: str | None = None
+    reused_existing: bool = False
 
     @property
     def all_relations_verified(self) -> bool:

@@ -85,7 +85,7 @@ def _raw_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 # ---------------------------------------------------------------------------
-# Frozen schema 1.0 snapshot (REQ-P2-002): explicit immutable expectation
+# Frozen schema 1.1 snapshot (REQ-P2-002/P4-009): explicit expectation
 # ---------------------------------------------------------------------------
 #: Column tuple: (name, declared_type, notnull, default, pk_position).
 #: FK entry: (parent_table, ((child_column, parent_column), ...)) in declared
@@ -130,13 +130,20 @@ EXPECTED_SCHEMA_SNAPSHOT: dict[str, dict[str, object]] = {
             ("operation_id", "TEXT", 0, None, 1),
             ("state", "TEXT", 1, None, 0),
             ("source_fingerprint", "TEXT", 0, None, 0),
+            ("policy_fingerprint", "TEXT", 0, None, 0),
+            ("relationship_fingerprint", "TEXT", 0, None, 0),
+            ("vault_fingerprint", "TEXT", 0, None, 0),
+            ("destination_identity", "TEXT", 0, None, 0),
+            ("binding_fingerprint", "TEXT", 0, None, 0),
             ("output_fingerprint", "TEXT", 0, None, 0),
+            ("result_json", "TEXT", 0, None, 0),
             ("started_at", "TEXT", 0, None, 0),
             ("completed_at", "TEXT", 0, None, 0),
         ),
         "foreign_keys": (),
         "indexes": (
             ("sqlite_autoindex_operations_1", 1, "pk", ("operation_id",)),
+            ("uq_operations_destination", 1, "c", ("destination_identity",)),
         ),
     },
     "publication": {
@@ -302,7 +309,7 @@ def _live_schema_snapshot(vault: VaultDatabase) -> dict[str, dict[str, object]]:
     return snapshot
 
 
-def test_full_schema_1_0_snapshot_is_frozen(tmp_path: Path) -> None:
+def test_full_schema_1_1_snapshot_is_frozen(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
         live = _live_schema_snapshot(vault)
         assert set(live) == set(EXPECTED_SCHEMA_SNAPSHOT)
@@ -316,7 +323,7 @@ def test_full_schema_1_0_snapshot_is_frozen(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
     with _open_create(tmp_path) as vault:
-        assert vault.schema_version == VAULT_SCHEMA_VERSION == "1.0"
+        assert vault.schema_version == VAULT_SCHEMA_VERSION == "1.1"
         tables = {
             row[0]
             for row in vault._internal_connection().execute(
@@ -331,7 +338,9 @@ def test_schema_snapshot_is_explicit_and_versioned(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'uq_%'"
             ).fetchall()
         }
-        assert indexes == set(EXPECTED_VAULT_UNIQUE_INDEXES)
+        assert indexes == set(EXPECTED_VAULT_UNIQUE_INDEXES) | {
+            "uq_operations_destination"
+        }
 
         # The bijection constraints are real named UNIQUE indexes.
         for index_name in EXPECTED_VAULT_UNIQUE_INDEXES:

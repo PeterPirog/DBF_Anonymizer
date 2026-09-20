@@ -49,7 +49,7 @@ __all__ = [
 
 
 #: The only supported dictionary schema version for this release.
-VAULT_SCHEMA_VERSION = "1.0"
+VAULT_SCHEMA_VERSION = "1.1"
 
 #: The single database file of one dataset vault (architecture section 8).
 VAULT_DATABASE_FILENAME = "dictionary.sqlite3"
@@ -138,10 +138,20 @@ DDL_STATEMENTS: tuple[str, ...] = (
         operation_id TEXT PRIMARY KEY,
         state TEXT NOT NULL CHECK (state IN ('STARTED', 'COMPLETED')),
         source_fingerprint TEXT,
+        policy_fingerprint TEXT,
+        relationship_fingerprint TEXT,
+        vault_fingerprint TEXT,
+        destination_identity TEXT,
+        binding_fingerprint TEXT,
         output_fingerprint TEXT,
+        result_json TEXT,
         started_at TEXT,
         completed_at TEXT
     )
+    """,
+    """
+    CREATE UNIQUE INDEX uq_operations_destination
+        ON operations (destination_identity)
     """,
     """
     CREATE TABLE publication (

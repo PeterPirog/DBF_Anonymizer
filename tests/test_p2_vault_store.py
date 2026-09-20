@@ -166,7 +166,7 @@ def test_duplicate_basenames_share_the_dataset_vault(tmp_path: Path) -> None:
 def test_default_dictionary_path_is_the_single_database_file() -> None:
     assert default_dictionary_path(Path("protected")) == Path("protected") / VAULT_DATABASE_FILENAME
     assert VAULT_DATABASE_FILENAME == "dictionary.sqlite3"
-    assert VAULT_SCHEMA_VERSION == "1.0"
+    assert VAULT_SCHEMA_VERSION == "1.1"
 
 
 def test_operation_ids_are_stable_stored_and_bounded(tmp_path: Path) -> None:

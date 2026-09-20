@@ -81,6 +81,9 @@ class ErrorCode(str, Enum):
     PROGRESS_CALLBACK_FAILED = "PROGRESS_CALLBACK_FAILED"
     CANCEL_CALLBACK_FAILED = "CANCEL_CALLBACK_FAILED"
 
+    ENGINE_SPOOL_CLEANUP_FAILED = "ENGINE_SPOOL_CLEANUP_FAILED"
+    ENGINE_OUTPUT_CLEANUP_FAILED = "ENGINE_OUTPUT_CLEANUP_FAILED"
+
 
 @dataclass(frozen=True, slots=True)
 class ErrorDefinition:
@@ -217,6 +220,16 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCode.CANCEL_CALLBACK_FAILED,
         ErrorCategory.CALLBACK,
         "The cancellation-check callback raised an exception; the failure was contained.",
+    ),
+    ErrorDefinition(
+        ErrorCode.ENGINE_SPOOL_CLEANUP_FAILED,
+        ErrorCategory.PUBLICATION,
+        "Spool cleanup failed during engine operation.",
+    ),
+    ErrorDefinition(
+        ErrorCode.ENGINE_OUTPUT_CLEANUP_FAILED,
+        ErrorCategory.PUBLICATION,
+        "Output cleanup failed during engine operation.",
     ),
 )
 

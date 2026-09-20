@@ -222,7 +222,7 @@ def test_spool_cleanup_failure_does_not_skip_vault_close(
         )
 
     def tracked_vault_close(self: VaultDatabase) -> None:
-        vault_calls.append(True)
+        vault_calls.append(self._read_only)
         real_vault_close(self)
 
     monkeypatch.setattr(PassOneSpool, "cleanup", cleanup_then_fail)
@@ -231,7 +231,9 @@ def test_spool_cleanup_failure_does_not_skip_vault_close(
         run_two_pass(plan)
 
     assert _detail(excinfo.value) == "ENGINE_SPOOL_CLEANUP_FAILED"
-    assert vault_calls == [True]
+    # Pass 2 owns and closes one read-only connection; final resource cleanup
+    # still closes the authoritative writable vault after spool cleanup fails.
+    assert vault_calls == [True, False]
     assert spool_artifacts(vault_path.parent) == []
     _assert_safe_boundary(excinfo.value, tmp_path)
     monkeypatch.setattr(VaultDatabase, "close", real_vault_close)

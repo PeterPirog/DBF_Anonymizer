@@ -43,6 +43,7 @@ from dbf_anonymizer.vault.mappings import (
 from dbf_anonymizer.vault.store import VaultDatabase
 
 __all__ = [
+    "mask_memo_value",
     "persist_memo_recovery",
     "recover_memo_value",
 ]
@@ -104,6 +105,11 @@ def _mask_for(dbf_type: str, value: object) -> str | bytes | None:
     if isinstance(value, (bytes, bytearray)):
         return memo_kernels.memo_safe_mask(value)
     raise _unsupported()
+
+
+def mask_memo_value(dbf_type: str, value: object) -> str | bytes | None:
+    """Return the validated safe mask after recovery is already durable."""
+    return _mask_for(dbf_type, value)
 
 
 def persist_memo_recovery(

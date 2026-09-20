@@ -29,6 +29,7 @@ state belongs to P4-009).
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -48,9 +49,22 @@ from dbf_anonymizer.engine.directives import (
 )
 from dbf_anonymizer.engine.pass1 import PassOneOutcome, run_pass_one, run_pass_one_finalize
 from dbf_anonymizer.engine.pass2 import run_pass_two
+from dbf_anonymizer.engine.locking import DestinationLock
+from dbf_anonymizer.engine.publication import (
+    DatasetStaging,
+    FaultInjector,
+    PublicationIdentity,
+    build_publication_identity,
+    fingerprint_dataset,
+    result_from_receipt,
+    result_receipt,
+)
 from dbf_anonymizer.engine.state import (
     MAX_RECORD_BATCH,
     PassOneSpool,
+    cleanup_evidence_root,
+    create_evidence_root,
+    refuse_evidence_leftovers,
     refuse_spool_leftovers,
 )
 from dbf_anonymizer.errors import (
@@ -77,6 +91,10 @@ from dbf_anonymizer.transforms.numeric_keys import (
 )
 from dbf_anonymizer.vault.numeric_allocation import numeric_key_domain_id
 from dbf_anonymizer.vault.store import VaultDatabase, new_writer_token
+from dbf_anonymizer.vault.schema import (
+    VAULT_OPERATION_STATE_COMPLETED,
+    VAULT_OPERATION_STATE_STARTED,
+)
 from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
 
 __all__ = [
@@ -108,6 +126,79 @@ def _identity_failure(detail_code: str) -> VaultError:
         ErrorCode.VAULT_IDENTITY_MISMATCH,
         context=ErrorContext(operation="engine", detail_code=detail_code),
     )
+
+
+def _publication_failure(detail_code: str) -> PublicationError:
+    return PublicationError(
+        ErrorCode.PUBLICATION_INCOMPLETE,
+        context=ErrorContext(operation="publication", detail_code=detail_code),
+    )
+
+
+def _destination_conflict(detail_code: str) -> PathError:
+    return PathError(
+        ErrorCode.DESTINATION_CONFLICT,
+        context=ErrorContext(operation="publication", detail_code=detail_code),
+    )
+
+
+def _existing_completed_result(
+    identity: PublicationIdentity,
+    vault: VaultDatabase,
+    *,
+    control: ProgressController,
+) -> TwoPassResult | None:
+    """Recognize an exact completed retry or refuse every conflicting state."""
+    operation = vault.operation_record(identity.operation_id)
+    destination_operation = vault.operation_for_destination(
+        identity.destination_identity
+    )
+    if operation is None:
+        if destination_operation is not None:
+            raise _destination_conflict("DESTINATION_BOUND_TO_OTHER_OPERATION")
+        if identity.staging_root.exists():
+            raise _publication_failure("STALE_STAGING_DETECTED")
+        if identity.destination.exists():
+            raise _destination_conflict("UNOWNED_TARGET_EXISTS")
+        return None
+
+    expected = {
+        "source_fingerprint": vault.source_fingerprint,
+        "policy_fingerprint": vault.policy_fingerprint,
+        "relationship_fingerprint": vault.relationship_fingerprint,
+        "vault_fingerprint": identity.vault_fingerprint,
+        "destination_identity": identity.destination_identity,
+        "binding_fingerprint": identity.binding_fingerprint,
+    }
+    if any(operation.get(key) != value for key, value in expected.items()):
+        raise _identity_failure("ENGINE_OPERATION_BINDING_MISMATCH")
+    if (
+        destination_operation is None
+        or destination_operation.get("operation_id") != identity.operation_id
+    ):
+        raise _publication_failure("DESTINATION_OPERATION_MISSING")
+    if operation.get("state") == VAULT_OPERATION_STATE_STARTED:
+        raise _publication_failure("STALE_OPERATION_DETECTED")
+    if operation.get("state") != VAULT_OPERATION_STATE_COMPLETED:
+        raise _publication_failure("OPERATION_STATE_UNKNOWN")
+    if identity.staging_root.exists():
+        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
+    stored_fingerprint = operation.get("output_fingerprint")
+    receipt = operation.get("result_json")
+    if stored_fingerprint is None or receipt is None:
+        raise _publication_failure("COMPLETED_OPERATION_INCOMPLETE")
+    actual_fingerprint = fingerprint_dataset(
+        identity.destination, checkpoint=control.check_cancelled
+    )
+    if actual_fingerprint != stored_fingerprint:
+        raise _publication_failure("COMPLETED_OUTPUT_MISMATCH")
+    result = result_from_receipt(receipt)
+    if (
+        result.operation_id != identity.operation_id
+        or result.output_fingerprint != stored_fingerprint
+    ):
+        raise _publication_failure("OPERATION_RECEIPT_MISMATCH")
+    return result
 
 
 def _numeric_member_of(
@@ -430,21 +521,43 @@ def _register_memo_structure(
     if not any(table.memo_fields for table in engine_plan.tables):
         return bindings
     with vault.transaction():
+        existing_tables = {
+            str(row["relative_path"]): str(row["table_id"])
+            for row in vault.tables()
+        }
         for table in engine_plan.tables:
             if not table.memo_fields:
                 continue
-            table_id = vault.register_table(table.relative_path)
+            table_id = existing_tables.get(table.relative_path)
+            if table_id is None:
+                table_id = vault.register_table(table.relative_path)
+                existing_tables[table.relative_path] = table_id
             for field in table.transformed:
                 if field.action != ACTION_MEMO:
                     continue
-                field_id = vault.register_field(
-                    table_id,
-                    field.field_name,
-                    dbf_type=field.dbf_type,
-                    width=field.byte_width,
-                    encoding=field.encoding,
-                    transform_action=field.action,
-                )
+                existing = vault._internal_connection().execute(
+                    "SELECT field_id, dbf_type, width, encoding, transform_action "
+                    "FROM fields WHERE table_id = ? AND name = ?",
+                    (table_id, field.field_name),
+                ).fetchone()
+                if existing is None:
+                    field_id = vault.register_field(
+                        table_id,
+                        field.field_name,
+                        dbf_type=field.dbf_type,
+                        width=field.byte_width,
+                        encoding=field.encoding,
+                        transform_action=field.action,
+                    )
+                else:
+                    if tuple(existing[1:]) != (
+                        field.dbf_type,
+                        field.byte_width,
+                        field.encoding,
+                        field.action,
+                    ):
+                        raise _identity_failure("ENGINE_MEMO_STRUCTURE_MISMATCH")
+                    field_id = str(existing[0])
                 bindings[(table.relative_path, field.field_name)] = (
                     table_id,
                     field_id,
@@ -498,6 +611,9 @@ def run_two_pass(
     *,
     progress: Callable[[object], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    workers: int = 1,
+    operation_id: str | None = None,
+    fault_inject: FaultInjector | None = None,
 ) -> TwoPassResult:
     """The bounded two-pass production run bound to ONE execution identity.
 
@@ -531,6 +647,8 @@ def run_two_pass(
     the only durable mapping truth; the ephemeral evidence spool is
     protected Zone B state that is cleaned up explicitly after the run.
     """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
     context = plan.execution_context
     if context is None:
         raise _path_failure("ENGINE_PLAN_CONTEXT_MISSING")
@@ -558,13 +676,15 @@ def run_two_pass(
         policy=resolved_policy,
         relationship_document=context.relationship_document,
     )
-    # Execution-level refusal occurs before a new durable vault can be
-    # created.  PassOneSpool repeats the check to close the TOCTOU window.
-    refuse_spool_leftovers(vault_path.parent)
     vault: VaultDatabase | None = None
     spool: PassOneSpool | None = None
-    written: list[str] = []
     try:
+        # Refuse known sensitive residue before creating a fresh durable vault.
+        # Existing vaults are inspected first below so a crash-owned STARTED
+        # operation produces the more specific stale-transaction diagnosis.
+        if not vault_path.exists():
+            refuse_spool_leftovers(vault_path.parent)
+            refuse_evidence_leftovers(vault_path.parent)
         vault = VaultDatabase.open(
             vault_path,
             create=not vault_path.exists(),
@@ -573,65 +693,166 @@ def run_two_pass(
             expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
             dbfbridge_version=str(dbfbridge.__version__),
         )
-        spool = PassOneSpool(vault_directory=vault_path.parent)
-        outcome = PassOneOutcome()
-        temporal_domain = (
-            TemporalShiftDomain(vault, domain_name=None)
-            if engine_plan.temporal_present
-            else None
+        identity = build_publication_identity(
+            destination=output,
+            vault=vault,
+            source_fingerprint=plan.dataset.source_fingerprint,
+            policy_fingerprint=plan.policy.policy_fingerprint,
+            relationship_fingerprint=plan.relationships.relationship_fingerprint,
+            operation_id=operation_id,
         )
-        with _WriterLease(vault) as writer_vault:
-            control.start_phase(
-                ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables)
+        with DestinationLock(identity.lock_path):
+            if fault_inject is not None:
+                fault_inject("LOCK_ACQUIRED")
+            existing = _existing_completed_result(
+                identity, vault, control=control
             )
-            run_pass_one(
-                engine_plan,
-                source_root=source,
-                vault=writer_vault,
-                spool=spool,
-                control=control,
-                outcome=outcome,
-                temporal_domain=temporal_domain,
+            if existing is not None:
+                refuse_spool_leftovers(vault_path.parent)
+                refuse_evidence_leftovers(vault_path.parent)
+                control.complete(completed=len(existing.tables_written))
+                return existing
+
+            # Stale sensitive SQLite state is checked only after a matching
+            # STARTED operation had the opportunity to produce the more useful
+            # transaction-stale diagnosis above.
+            refuse_spool_leftovers(vault_path.parent)
+            refuse_evidence_leftovers(vault_path.parent)
+
+            with _WriterLease(vault) as writer_vault:
+                staging = DatasetStaging(identity)
+                evidence_root: Path | None = None
+                operation_started = False
+                try:
+                    if fault_inject is not None:
+                        fault_inject("BEFORE_OPERATION_START")
+                    with writer_vault.transaction():
+                        writer_vault.begin_operation(
+                            identity.operation_id,
+                            source_fingerprint=plan.dataset.source_fingerprint,
+                            policy_fingerprint=plan.policy.policy_fingerprint,
+                            relationship_fingerprint=(
+                                plan.relationships.relationship_fingerprint
+                            ),
+                            vault_fingerprint=identity.vault_fingerprint,
+                            destination_identity=identity.destination_identity,
+                            binding_fingerprint=identity.binding_fingerprint,
+                        )
+                    operation_started = True
+                    if fault_inject is not None:
+                        fault_inject("AFTER_OPERATION_START")
+                    staging.create()
+                    spool = PassOneSpool(vault_directory=vault_path.parent)
+                    outcome = PassOneOutcome()
+                    temporal_domain = (
+                        TemporalShiftDomain(writer_vault, domain_name=None)
+                        if engine_plan.temporal_present
+                        else None
+                    )
+                    memo_bindings = _register_memo_structure(
+                        engine_plan, writer_vault
+                    )
+                    control.start_phase(
+                        ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables)
+                    )
+                    run_pass_one(
+                        engine_plan,
+                        source_root=source,
+                        vault=writer_vault,
+                        spool=spool,
+                        control=control,
+                        outcome=outcome,
+                        temporal_domain=temporal_domain,
+                        memo_bindings=memo_bindings,
+                    )
+                    control.check_cancelled()
+                    control.start_phase(ProgressPhase.PASS1_FINALIZE)
+                    run_pass_one_finalize(
+                        engine_plan,
+                        vault=writer_vault,
+                        spool=spool,
+                        control=control,
+                        outcome=outcome,
+                        temporal_domain=temporal_domain,
+                    )
+                    evidence_root = create_evidence_root(
+                        vault_path.parent, identity.operation_id
+                    )
+                    result = run_pass_two(
+                        engine_plan,
+                        source_root=source,
+                        staging=staging,
+                        vault=writer_vault,
+                        spool=spool,
+                        control=control,
+                        outcome=outcome,
+                        workers=workers,
+                        evidence_root=evidence_root,
+                        fault_inject=fault_inject,
+                    )
+                    output_fingerprint = fingerprint_dataset(
+                        staging.dataset_root, checkpoint=control.check_cancelled
+                    )
+                    result = replace(
+                        result,
+                        operation_id=identity.operation_id,
+                        output_fingerprint=output_fingerprint,
+                    )
+                    with writer_vault.transaction():
+                        writer_vault.record_publication(
+                            identity.operation_id,
+                            "STAGED",
+                            output_fingerprint=output_fingerprint,
+                            vault_fingerprint=identity.vault_fingerprint,
+                        )
+                    if fault_inject is not None:
+                        fault_inject("AFTER_STAGED_STATE")
+                    control.check_cancelled()
+                    if fault_inject is not None:
+                        fault_inject("BEFORE_STAGING_PROMOTION")
+                    staging.promote()
+                    if fault_inject is not None:
+                        fault_inject("AFTER_STAGING_PROMOTION")
+                    staging.remove_metadata_after_promotion()
+                    with writer_vault.transaction():
+                        writer_vault.record_publication(
+                            identity.operation_id,
+                            "PUBLISHED",
+                            output_fingerprint=output_fingerprint,
+                            vault_fingerprint=identity.vault_fingerprint,
+                        )
+                        writer_vault.complete_operation(
+                            identity.operation_id,
+                            output_fingerprint=output_fingerprint,
+                            result_json=result_receipt(result),
+                        )
+                    if fault_inject is not None:
+                        fault_inject("AFTER_OPERATION_COMPLETE")
+                except BaseException as original:
+                    if operation_started and not staging.promoted:
+                        try:
+                            staging.cleanup_owned()
+                            if evidence_root is not None:
+                                cleanup_evidence_root(evidence_root)
+                            with writer_vault.transaction():
+                                writer_vault.abandon_operation(
+                                    identity.operation_id
+                                )
+                        except BaseException:
+                            raise PublicationError(
+                                ErrorCode.ENGINE_OUTPUT_CLEANUP_FAILED,
+                                context=ErrorContext(
+                                    operation="publication",
+                                    detail_code="ENGINE_OUTPUT_CLEANUP_FAILED",
+                                ),
+                            ) from original
+                    raise
+            # Cancellation is no longer observed after atomic promotion; this
+            # terminal event cannot turn a committed dataset into cancellation.
+            control.complete(
+                completed=len(result.tables_written), check_cancel=False
             )
-            control.check_cancelled()
-            control.start_phase(ProgressPhase.PASS1_FINALIZE)
-            run_pass_one_finalize(
-                engine_plan,
-                vault=writer_vault,
-                spool=spool,
-                control=control,
-                outcome=outcome,
-                temporal_domain=temporal_domain,
-            )
-            memo_bindings = _register_memo_structure(
-                engine_plan, writer_vault
-            )
-            result = run_pass_two(
-                engine_plan,
-                source_root=source,
-                output_root=output,
-                vault=writer_vault,
-                spool=spool,
-                control=control,
-                outcome=outcome,
-                written=written,
-                memo_bindings=memo_bindings,
-            )
-        control.complete(completed=len(result.tables_written))
-        return result
-    except BaseException as original:
-        cleanup_failures = _discard_written(output, written)
-        if cleanup_failures:
-            # The original operation failure stays identifiable (it is the
-            # chained __cause__ of the typed cleanup-safety refusal).
-            raise PublicationError(
-                ErrorCode.PUBLICATION_INCOMPLETE,
-                context=ErrorContext(
-                    operation="two_pass",
-                    detail_code="ENGINE_OUTPUT_CLEANUP_FAILED",
-                ),
-            ) from original
-        raise
+            return result
     finally:
         operation_error = sys.exc_info()[1]
         cleanup_failure = _cleanup_engine_resources(spool, vault)
@@ -640,26 +861,3 @@ def run_two_pass(
                 raise cleanup_failure from operation_error
             underlying = getattr(cleanup_failure, "_resource_cleanup_failures")[0][1]
             raise cleanup_failure from underlying
-
-
-def _discard_written(output_root: Path, written: Sequence[str]) -> list[str]:
-    """Remove everything THIS run wrote (no partial published output).
-
-    Every removal failure is COLLECTED and returned — never silently
-    swallowed.  The caller keeps the original operation failure identifiable
-    and surfaces a typed cleanup-safety error chained to it.  The durable
-    publication/staging state remains REQ-P4-009 scope; no atomic
-    publication claim is made.
-    """
-    failures: list[str] = []
-    for relative_path in reversed(written):
-        base = output_root / relative_path
-        for artifact in (base, base.with_suffix(".fpt")):
-            try:
-                if artifact.exists():
-                    artifact.unlink()
-            except OSError as exc:
-                failures.append(
-                    f"{artifact.name}:{type(exc).__name__}"
-                )
-    return failures

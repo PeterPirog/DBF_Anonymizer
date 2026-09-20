@@ -1,9 +1,9 @@
-"""BLOCKER 6 regressions: failure output cleanup never swallows errors.
+"""BLOCKER 6 regressions: failure staging cleanup never swallows errors.
 
-``_discard_written`` must attempt removal of every artifact the run created,
-collect removal failures boundedly and SURFACE a typed cleanup/publication
-safety failure — while the original operation failure stays identifiable
-(chained ``__cause__``) and no path or value ever enters the error boundary.
+The transactional staging boundary must surface a typed cleanup/publication
+safety failure when owned staging cannot be removed, while the original
+operation failure stays identifiable (chained ``__cause__``), the final
+destination remains unpublished and no path or value enters the error boundary.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from dbf_anonymizer import CancellationError, build_plan
+from dbf_anonymizer.engine import publication as publication_module
 from dbf_anonymizer.engine import run_two_pass
 from dbf_anonymizer.errors import PublicationError
 from support.numeric_tables import numeric_field, write_numeric_table
@@ -100,17 +101,14 @@ def test_injected_unlink_failure_surfaces_typed_cleanup_error(
     clean failure — a typed publication-safety refusal is raised and the
     original cancellation stays its chained cause."""
     progress, cancel = _cancel_after_first_pass2_table()
-    real_unlink = Path.unlink
     failed: list[str] = []
 
-    def failing_unlink(self: Path, missing_ok: bool = False) -> None:
-        if self.name == _TABLES[0].rsplit("/", 1)[-1]:
-            failed.append(self.name)
-            raise OSError("injected unlink failure")
-        real_unlink(self, missing_ok=missing_ok)
+    def failing_rmtree(path: object) -> None:
+        failed.append(Path(path).name)  # type: ignore[arg-type]
+        raise OSError("injected staging cleanup failure")
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(Path, "unlink", failing_unlink)
+        patch.setattr(publication_module.shutil, "rmtree", failing_rmtree)
         with pytest.raises(PublicationError) as excinfo:
             run_two_pass(_plan(tmp_path), progress=progress, cancel_check=cancel)
     # The original operation failure (the cancellation) is preserved as the
@@ -120,9 +118,11 @@ def test_injected_unlink_failure_surfaces_typed_cleanup_error(
         excinfo.value.to_dict()["context"]["detail_code"]
         == "ENGINE_OUTPUT_CLEANUP_FAILED"
     )
-    # The unlink attempt really failed (truthful: the artifact stays).
+    # The cleanup attempt really failed: staging stays, but the final target
+    # was never exposed as a partial dataset.
     assert failed
-    assert (tmp_path / "output" / _TABLES[0]).exists()
+    assert not (tmp_path / "output").exists()
+    assert len(tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))) == 1
     # No path or value leakage in the typed boundary.
     boundary = (
         str(excinfo.value)
