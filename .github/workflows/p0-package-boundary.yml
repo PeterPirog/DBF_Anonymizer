@@ -176,11 +176,7 @@ jobs:
       - name: Prove bounded workers, transactional publication and Windows locks
         env:
           PYTHONUTF8: "1"
-        run: |
-          python -m pytest \
-            tests/test_p4_parallel_execution.py \
-            tests/test_p4_transactional_publication.py \
-            -ra
+        run: python -m pytest tests/test_p4_parallel_execution.py tests/test_p4_transactional_publication.py -ra
 
   tests:
     name: Remaining pytest suite / ${{ matrix.os }}

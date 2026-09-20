@@ -20,7 +20,7 @@ small-fixture oracle and the equivalence is cross-checked by the test suite.
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -54,6 +54,7 @@ from dbf_anonymizer.errors import (
     ErrorCode,
     ErrorContext,
     MappingError,
+    PublicationError,
 )
 from dbf_anonymizer.progress import ProgressController, ProgressPhase
 from dbf_anonymizer.transforms.numeric_keys import (
@@ -114,9 +115,7 @@ def run_pass_two(
         written.append(table_result.relative_path)
         records_written += table_result.records_written
         read_streams.append(("pass2", table_result.relative_path))
-        control.bump(
-            ProgressPhase.PASS2_WRITE, table_path=table_result.relative_path
-        )
+        control.bump(ProgressPhase.PASS2_WRITE, table_path=table_result.relative_path)
         if len(written) == 1 and fault_inject is not None:
             fault_inject("AFTER_FIRST_TABLE_STAGED")
 
@@ -167,31 +166,34 @@ def run_pass_two(
                     )
                     for index, directive in batch
                 ]
+                pending = set(futures)
+                primary_failure: BaseException | None = None
                 try:
-                    while not all(future.done() for future in futures):
+                    while pending:
+                        done, pending = wait(
+                            pending,
+                            timeout=0.05,
+                            return_when=FIRST_EXCEPTION,
+                        )
+                        if any(
+                            not future.cancelled() and future.exception() is not None
+                            for future in done
+                        ):
+                            stop.set()
+                            for future in pending:
+                                future.cancel()
+                            wait(pending)
+                            primary_failure = _primary_worker_failure(futures)
+                            break
                         control.check_cancelled()
-                        wait(futures, timeout=0.05)
                 except BaseException:
                     stop.set()
-                    wait(futures)
+                    for future in pending:
+                        future.cancel()
+                    wait(pending)
                     raise
-                failures = [
-                    future.exception()
-                    for future in futures
-                    if future.exception() is not None
-                ]
-                if failures:
-                    stop.set()
-                    primary = next(
-                        (
-                            failure
-                            for failure in failures
-                            if not isinstance(failure, CancellationError)
-                        ),
-                        failures[0],
-                    )
-                    assert isinstance(primary, BaseException)
-                    raise primary
+                if primary_failure is not None:
+                    raise primary_failure
                 for future in futures:
                     accept(future.result())
     cleanup_evidence_root(evidence_root)
@@ -230,6 +232,34 @@ def _worker_checkpoint(stop: Event) -> None:
                 operation="two_pass", detail_code="CANCELLED_BY_COORDINATOR"
             ),
         )
+
+
+def _primary_worker_failure(
+    futures: Sequence[Future[_TableWriteResult]],
+) -> BaseException:
+    """Choose one stable primary failure in table submission order."""
+    failures: list[BaseException] = []
+    for future in futures:
+        if future.cancelled():
+            continue
+        failure = future.exception()
+        if failure is not None:
+            failures.append(failure)
+    if not failures:  # pragma: no cover - guarded by the completed-future scan
+        raise AssertionError("worker failure was not retained")
+    return next(
+        (failure for failure in failures if not isinstance(failure, CancellationError)),
+        failures[0],
+    )
+
+
+def _worker_cleanup_failure() -> PublicationError:
+    return PublicationError(
+        ErrorCode.PUBLICATION_INCOMPLETE,
+        context=ErrorContext(
+            operation="two_pass", detail_code="ENGINE_WORKER_CLEANUP_FAILED"
+        ),
+    )
 
 
 def _write_table(
@@ -290,14 +320,24 @@ def _write_table(
             records_written=int(result.records_written),
             evidence_path=evidence_path,
         )
-    except BaseException:
+    except BaseException as original:
         stop.set()
+        cleanup_failures: list[BaseException] = []
         if shard is not None:
-            shard.cleanup()
-        raise
-    finally:
+            try:
+                shard.cleanup()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(cleanup_error)
         if reader is not None:
-            reader.close()
+            try:
+                reader.close()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(cleanup_error)
+        if cleanup_failures:
+            failure = _worker_cleanup_failure()
+            setattr(failure, "_worker_cleanup_failures", tuple(cleanup_failures))
+            raise failure from original
+        raise
 
 
 def _text_domain_id(outcome: PassOneOutcome) -> str:
@@ -357,7 +397,9 @@ def _transform_stream(
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise _mapping_failure("ENGINE_NUMERIC_VALUE_UNSUPPORTED")
                 mapped = get_numeric_pseudonym(
-                    vault, field_directive.numeric_domain_id, canonical_integer_text(value)
+                    vault,
+                    field_directive.numeric_domain_id,
+                    canonical_integer_text(value),
                 )
                 if mapped is None:
                     raise _mapping_failure("ENGINE_NUMERIC_MAPPING_MISSING")

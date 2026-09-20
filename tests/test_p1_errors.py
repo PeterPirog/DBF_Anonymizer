@@ -33,6 +33,37 @@ from dbf_anonymizer import (
 )
 
 
+_ERROR_CODES_FOR_REGISTRY_1_3 = (
+    "PATH_INVALID",
+    "PATH_NOT_FOUND",
+    "PATH_OVERLAP",
+    "DESTINATION_CONFLICT",
+    "POLICY_INVALID",
+    "POLICY_UNSUPPORTED",
+    "DBFBRIDGE_FAILURE",
+    "VAULT_UNAVAILABLE",
+    "VAULT_CORRUPT",
+    "VAULT_ACCESS_DENIED",
+    "VAULT_SCHEMA_UNSUPPORTED",
+    "VAULT_IDENTITY_MISMATCH",
+    "VAULT_STATE_INVALID",
+    "VAULT_WRITER_CONFLICT",
+    "MAPPING_CAPACITY_EXHAUSTED",
+    "MAPPING_CONSTRAINT_INFEASIBLE",
+    "MAPPING_CONFLICT",
+    "RELATIONSHIP_INVALID",
+    "RELATIONSHIP_VERIFICATION_FAILED",
+    "PUBLICATION_FAILED",
+    "PUBLICATION_INCOMPLETE",
+    "VERIFICATION_FAILED",
+    "RECOVERY_FAILED",
+    "RECOVERY_NOT_PERMITTED",
+    "OPERATION_CANCELLED",
+    "PROGRESS_CALLBACK_FAILED",
+    "CANCEL_CALLBACK_FAILED",
+)
+
+
 def test_error_registry_is_versioned_complete_and_unique() -> None:
     assert ERROR_SCHEMA_VERSION == "1.0"
     # REQ-P1-008 advanced the registry to 1.1 (PROGRESS_CALLBACK_FAILED and
@@ -41,9 +72,16 @@ def test_error_registry_is_versioned_complete_and_unique() -> None:
     # 1.3 with MAPPING_CONSTRAINT_INFEASIBLE. Existing codes are never changed.
     assert ERROR_REGISTRY_VERSION == "1.3"
     registered_codes = [definition.code for definition in ERROR_REGISTRY]
+    assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_3
+    assert (
+        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_3
+    )
     assert len(registered_codes) == len(set(registered_codes))
     assert set(registered_codes) == set(ErrorCode)
-    assert all(definition.message and definition.message.endswith(".") for definition in ERROR_REGISTRY)
+    assert all(
+        definition.message and definition.message.endswith(".")
+        for definition in ERROR_REGISTRY
+    )
 
 
 def test_representative_error_for_every_required_category() -> None:

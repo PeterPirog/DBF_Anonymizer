@@ -47,7 +47,11 @@ from dbf_anonymizer.engine.directives import (
     TableDirective,
     TwoPassResult,
 )
-from dbf_anonymizer.engine.pass1 import PassOneOutcome, run_pass_one, run_pass_one_finalize
+from dbf_anonymizer.engine.pass1 import (
+    PassOneOutcome,
+    run_pass_one,
+    run_pass_one_finalize,
+)
 from dbf_anonymizer.engine.pass2 import run_pass_two
 from dbf_anonymizer.engine.locking import DestinationLock
 from dbf_anonymizer.engine.publication import (
@@ -370,9 +374,7 @@ def build_engine_plan(
             domain: NumericKeyDomain | None = None
             if group_domain is not None:
                 numeric_member_list = [
-                    member
-                    for member in group.members
-                    if member.is_numeric_member
+                    member for member in group.members if member.is_numeric_member
                 ]
                 ranges = []
                 for member in numeric_member_list:
@@ -383,9 +385,9 @@ def build_engine_plan(
                     else:  # pragma: no cover - the planner refuses others
                         raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
                 domain = numeric_key_domain_for(ranges)
-            parent_members = group.members_for_role("PRIMARY") or group.members_for_role(
-                "CANDIDATE"
-            )
+            parent_members = group.members_for_role(
+                "PRIMARY"
+            ) or group.members_for_role("CANDIDATE")
             foreign_members = group.members_for_role("FOREIGN")
             parent_table = str(parent_members[0].table_path)
             foreign_table = str(foreign_members[0].table_path)
@@ -421,9 +423,7 @@ def build_engine_plan(
                     temporal_fields=directive.temporal_fields,
                     relation_fields=tuple(
                         sorted(
-                            relation_fields_by_table.get(
-                                directive.relative_path, set()
-                            )
+                            relation_fields_by_table.get(directive.relative_path, set())
                         )
                     ),
                 )
@@ -472,9 +472,7 @@ def _revalidate_execution_identity(
     from dbf_anonymizer.preflight import _paths_overlap
     from dbf_anonymizer.relationships.document import relationship_fingerprint
 
-    entries = collect_fingerprint_entries(
-        source_root, cancel_probe=cancel_probe
-    )
+    entries = collect_fingerprint_entries(source_root, cancel_probe=cancel_probe)
     current_source = compute_source_fingerprint(entries)
     if current_source != plan.dataset.source_fingerprint:
         raise _identity_failure("ENGINE_SOURCE_FINGERPRINT_MISMATCH")
@@ -522,8 +520,7 @@ def _register_memo_structure(
         return bindings
     with vault.transaction():
         existing_tables = {
-            str(row["relative_path"]): str(row["table_id"])
-            for row in vault.tables()
+            str(row["relative_path"]): str(row["table_id"]) for row in vault.tables()
         }
         for table in engine_plan.tables:
             if not table.memo_fields:
@@ -535,11 +532,15 @@ def _register_memo_structure(
             for field in table.transformed:
                 if field.action != ACTION_MEMO:
                     continue
-                existing = vault._internal_connection().execute(
-                    "SELECT field_id, dbf_type, width, encoding, transform_action "
-                    "FROM fields WHERE table_id = ? AND name = ?",
-                    (table_id, field.field_name),
-                ).fetchone()
+                existing = (
+                    vault._internal_connection()
+                    .execute(
+                        "SELECT field_id, dbf_type, width, encoding, transform_action "
+                        "FROM fields WHERE table_id = ? AND name = ?",
+                        (table_id, field.field_name),
+                    )
+                    .fetchone()
+                )
                 if existing is None:
                     field_id = vault.register_field(
                         table_id,
@@ -704,9 +705,7 @@ def run_two_pass(
         with DestinationLock(identity.lock_path):
             if fault_inject is not None:
                 fault_inject("LOCK_ACQUIRED")
-            existing = _existing_completed_result(
-                identity, vault, control=control
-            )
+            existing = _existing_completed_result(identity, vault, control=control)
             if existing is not None:
                 refuse_spool_leftovers(vault_path.parent)
                 refuse_evidence_leftovers(vault_path.parent)
@@ -749,9 +748,7 @@ def run_two_pass(
                         if engine_plan.temporal_present
                         else None
                     )
-                    memo_bindings = _register_memo_structure(
-                        engine_plan, writer_vault
-                    )
+                    memo_bindings = _register_memo_structure(engine_plan, writer_vault)
                     control.start_phase(
                         ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables)
                     )
@@ -835,12 +832,10 @@ def run_two_pass(
                             if evidence_root is not None:
                                 cleanup_evidence_root(evidence_root)
                             with writer_vault.transaction():
-                                writer_vault.abandon_operation(
-                                    identity.operation_id
-                                )
+                                writer_vault.abandon_operation(identity.operation_id)
                         except BaseException:
                             raise PublicationError(
-                                ErrorCode.ENGINE_OUTPUT_CLEANUP_FAILED,
+                                ErrorCode.PUBLICATION_INCOMPLETE,
                                 context=ErrorContext(
                                     operation="publication",
                                     detail_code="ENGINE_OUTPUT_CLEANUP_FAILED",
@@ -849,9 +844,7 @@ def run_two_pass(
                     raise
             # Cancellation is no longer observed after atomic promotion; this
             # terminal event cannot turn a committed dataset into cancellation.
-            control.complete(
-                completed=len(result.tables_written), check_cancel=False
-            )
+            control.complete(completed=len(result.tables_written), check_cancel=False)
             return result
     finally:
         operation_error = sys.exc_info()[1]

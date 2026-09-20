@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ from dbf_anonymizer import (
     build_plan,
 )
 from dbf_anonymizer.engine import run as run_module
+from dbf_anonymizer.engine import locking as locking_module
 from dbf_anonymizer.engine import pass2 as pass2_module
 from dbf_anonymizer.engine import run_two_pass
 from dbf_anonymizer.engine.locking import DestinationLock
@@ -337,6 +339,91 @@ def test_destination_lock_has_real_os_ownership(tmp_path: Path) -> None:
         pass
 
 
+def test_destination_lock_refuses_nonregular_path(tmp_path: Path) -> None:
+    lock_path = tmp_path / "target.lock"
+    lock_path.mkdir()
+
+    with pytest.raises(PublicationError) as excinfo:
+        with DestinationLock(lock_path):
+            pass
+
+    assert excinfo.value.to_dict()["context"]["detail_code"] == (
+        "DESTINATION_LOCK_INVALID"
+    )
+
+
+def test_destination_lock_refuses_symlink_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "target.lock"
+    real_lstat = locking_module.os.lstat
+
+    def symlink_lstat(path: object) -> os.stat_result:
+        if Path(path) == lock_path:  # type: ignore[arg-type]
+            return os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        return real_lstat(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(locking_module.os, "lstat", symlink_lstat)
+
+    with pytest.raises(PublicationError) as excinfo:
+        with DestinationLock(lock_path):
+            pass
+
+    assert excinfo.value.to_dict()["context"]["detail_code"] == (
+        "DESTINATION_LOCK_INVALID"
+    )
+
+
+def test_lock_stream_close_failure_is_typed(tmp_path: Path) -> None:
+    lock = DestinationLock(tmp_path / "target.lock")
+    lock.__enter__()
+    stream = lock._stream
+    assert stream is not None
+
+    class CloseFailingStream:
+        @property
+        def closed(self) -> bool:
+            return stream.closed
+
+        def fileno(self) -> int:
+            return stream.fileno()
+
+        def seek(self, offset: int) -> int:
+            return stream.seek(offset)
+
+        def close(self) -> None:
+            stream.close()
+            raise OSError("private close failure")
+
+    lock._stream = CloseFailingStream()  # type: ignore[assignment]
+    with pytest.raises(PublicationError) as excinfo:
+        lock.close()
+
+    assert excinfo.value.to_dict()["context"]["detail_code"] == (
+        "DESTINATION_LOCK_RELEASE_FAILED"
+    )
+    assert lock._stream is None
+
+
+def test_lock_release_failure_preserves_operation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = RuntimeError("operation failed")
+
+    def fail_release(_stream: object) -> None:
+        raise OSError("release failed")
+
+    monkeypatch.setattr(DestinationLock, "_release", staticmethod(fail_release))
+    with pytest.raises(PublicationError) as excinfo:
+        with DestinationLock(tmp_path / "target.lock"):
+            raise original
+
+    assert excinfo.value.__cause__ is original
+    assert excinfo.value.to_dict()["context"]["detail_code"] == (
+        "DESTINATION_LOCK_RELEASE_FAILED"
+    )
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows file-lock evidence")
 def test_windows_destination_lock_is_owned_across_processes(tmp_path: Path) -> None:
     lock_path = tmp_path / "windows-target.lock"
@@ -448,19 +535,74 @@ def test_parallel_worker_failure_leaves_no_completed_publication(
     plan, source, output, vault = _plan(tmp_path)
     source_before = _hash_tree(source)
     barrier = threading.Barrier(2)
-    real_write = pass2_module.write_fresh_table
+    failure_released = threading.Event()
+    sibling_stopped = threading.Event()
+    captured_stop: list[threading.Event] = []
+    real_checkpoint = pass2_module._worker_checkpoint
+
+    def capture_checkpoint(stop: threading.Event) -> None:
+        if not captured_stop:
+            captured_stop.append(stop)
+        real_checkpoint(stop)
 
     def fail_one_worker(*args: object, **kwargs: object):
         destination = Path(args[0])  # type: ignore[arg-type]
         barrier.wait(timeout=30)
         if destination.parent.name == "00000000":
+            failure_released.set()
             raise RuntimeError("deterministic worker failure")
-        return real_write(*args, **kwargs)  # type: ignore[arg-type]
+        assert failure_released.wait(timeout=30)
+        assert captured_stop[0].wait(timeout=30)
+        cancel_check = kwargs["cancel_check"]
+        assert callable(cancel_check)
+        try:
+            cancel_check()
+        except CancellationError:
+            sibling_stopped.set()
+            raise
+        raise AssertionError("sibling worker ignored the coordinator stop")
 
+    monkeypatch.setattr(pass2_module, "_worker_checkpoint", capture_checkpoint)
     monkeypatch.setattr(pass2_module, "write_fresh_table", fail_one_worker)
     with pytest.raises(RuntimeError, match="deterministic worker failure"):
         run_two_pass(plan, workers=2)
 
+    assert sibling_stopped.is_set()
+    assert not output.exists()
+    assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+    assert _vault_counts(plan, vault)[0] == 0
+    assert _hash_tree(source) == source_before
+
+
+def test_worker_cleanup_failure_preserves_original_cause_and_privacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, source, output, vault = _plan(tmp_path)
+    source_before = _hash_tree(source)
+    real_cleanup = pass2_module.RelationEvidenceShard.cleanup
+
+    def fail_write(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("PRIVATE-WORKER-FAILURE")
+
+    def cleanup_then_fail(shard: object) -> None:
+        real_cleanup(shard)  # type: ignore[arg-type]
+        raise OSError("PRIVATE-CLEANUP-FAILURE")
+
+    monkeypatch.setattr(pass2_module, "write_fresh_table", fail_write)
+    monkeypatch.setattr(
+        pass2_module.RelationEvidenceShard, "cleanup", cleanup_then_fail
+    )
+
+    with pytest.raises(PublicationError) as excinfo:
+        run_two_pass(plan, workers=1)
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert excinfo.value.to_dict()["context"]["detail_code"] == (
+        "ENGINE_WORKER_CLEANUP_FAILED"
+    )
+    serialized = json.dumps(excinfo.value.to_dict(), sort_keys=True)
+    assert "PRIVATE-WORKER-FAILURE" not in serialized
+    assert "PRIVATE-CLEANUP-FAILURE" not in serialized
     assert not output.exists()
     assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
     assert _vault_counts(plan, vault)[0] == 0
