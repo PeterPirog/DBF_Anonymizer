@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from pathlib import Path
 
 import dbfbridge
 import pytest
 
 import dbf_anonymizer.engine.run as run_module
+import dbf_anonymizer.engine.state as state_module
 from dbf_anonymizer import build_plan
 from dbf_anonymizer.engine import run_two_pass
 from dbf_anonymizer.engine.state import (
     PASS1_STATE_FILENAME,
     PassOneSpool,
+    RelationEvidenceShard,
     spool_artifacts,
 )
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError, VaultError
@@ -168,6 +171,99 @@ def test_constructor_cleanup_failure_is_typed_and_keeps_initial_error(
     (vault_directory / PASS1_STATE_FILENAME).unlink()
 
 
+def test_evidence_shard_create_failure_is_typed_and_cleans_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "evidence.sqlite3"
+
+    def fail_connect(*_args: object, **_kwargs: object) -> None:
+        raise sqlite3.OperationalError("private create failure")
+
+    monkeypatch.setattr(state_module.sqlite3, "connect", fail_connect)
+    with pytest.raises(VaultError) as excinfo:
+        RelationEvidenceShard(path)
+
+    assert _detail(excinfo.value) == "ENGINE_SPOOL_EVIDENCE_SHARD_CREATE_FAILED"
+    assert not path.exists()
+    _assert_safe_boundary(excinfo.value, tmp_path)
+
+
+def test_evidence_shard_create_cleanup_failure_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "evidence.sqlite3"
+    real_unlink = Path.unlink
+
+    def fail_connect(*_args: object, **_kwargs: object) -> None:
+        raise sqlite3.OperationalError("private create failure")
+
+    def fail_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == path:
+            raise OSError("private unlink failure")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(state_module.sqlite3, "connect", fail_connect)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(VaultError) as excinfo:
+        RelationEvidenceShard(path)
+
+    assert _detail(excinfo.value) == (
+        "ENGINE_SPOOL_EVIDENCE_SHARD_CREATE_CLEANUP_FAILED"
+    )
+    assert path.is_file()
+    _assert_safe_boundary(excinfo.value, tmp_path)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    path.unlink()
+
+
+def test_evidence_shard_close_failure_is_typed_and_still_unlinked(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "evidence.sqlite3"
+    shard = RelationEvidenceShard(path)
+    connection = shard._connection
+
+    class CloseFailingConnection:
+        def __getattr__(self, name: str) -> object:
+            return getattr(connection, name)
+
+        def close(self) -> None:
+            connection.close()
+            raise sqlite3.OperationalError("private close failure")
+
+    shard._connection = CloseFailingConnection()  # type: ignore[assignment]
+    with pytest.raises(VaultError) as excinfo:
+        shard.cleanup()
+
+    assert _detail(excinfo.value) == "ENGINE_SPOOL_EVIDENCE_SHARD_CLOSE_FAILED"
+    assert not path.exists()
+    _assert_safe_boundary(excinfo.value, tmp_path)
+
+
+def test_evidence_shard_unlink_failure_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "evidence.sqlite3"
+    shard = RelationEvidenceShard(path)
+    shard.close()
+    real_unlink = Path.unlink
+
+    def fail_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == path:
+            raise OSError("private unlink failure")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(VaultError) as excinfo:
+        shard.cleanup()
+
+    assert _detail(excinfo.value) == "ENGINE_SPOOL_EVIDENCE_SHARD_CLEANUP_FAILED"
+    assert path.is_file()
+    _assert_safe_boundary(excinfo.value, tmp_path)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    path.unlink()
+
+
 def test_vault_close_failure_does_not_skip_spool_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -222,7 +318,7 @@ def test_spool_cleanup_failure_does_not_skip_vault_close(
         )
 
     def tracked_vault_close(self: VaultDatabase) -> None:
-        vault_calls.append(True)
+        vault_calls.append(self._read_only)
         real_vault_close(self)
 
     monkeypatch.setattr(PassOneSpool, "cleanup", cleanup_then_fail)
@@ -231,7 +327,9 @@ def test_spool_cleanup_failure_does_not_skip_vault_close(
         run_two_pass(plan)
 
     assert _detail(excinfo.value) == "ENGINE_SPOOL_CLEANUP_FAILED"
-    assert vault_calls == [True]
+    # Pass 2 owns and closes one read-only connection; final resource cleanup
+    # still closes the authoritative writable vault after spool cleanup fails.
+    assert vault_calls == [True, False]
     assert spool_artifacts(vault_path.parent) == []
     _assert_safe_boundary(excinfo.value, tmp_path)
     monkeypatch.setattr(VaultDatabase, "close", real_vault_close)

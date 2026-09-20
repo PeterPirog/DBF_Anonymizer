@@ -930,6 +930,7 @@ MEMO_RECOVERY_MODULES = frozenset(
 # name or implement the recovery table, read payloads back, or create another
 # payload store.
 MEMO_RECOVERY_CONSUMERS = {
+    "engine/pass1.py": "persist_memo_recovery",
     "engine/pass2.py": "persist_memo_recovery",
 }
 
@@ -965,7 +966,7 @@ def test_memo_recovery_is_the_single_payload_store() -> None:
 
 def test_no_second_memo_or_payload_table_in_the_schema() -> None:
     schema_source = (SRC_ROOT / "vault" / "schema.py").read_text(encoding="utf-8")
-    # The frozen schema 1.0 keeps exactly ONE payload store; a second
+    # The versioned vault schema keeps exactly ONE payload store; a second
     # memo/payload table can never be introduced silently.
     payload_tables = [
         name

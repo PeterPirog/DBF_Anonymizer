@@ -34,6 +34,7 @@ kernel remains the small-fixture oracle; equivalence is cross-checked).
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -46,6 +47,10 @@ __all__ = [
     "EVIDENCE_SPOOL_SCHEMA_VERSION",
     "PASS1_STATE_FILENAME",
     "PassOneSpool",
+    "RelationEvidenceShard",
+    "create_evidence_root",
+    "cleanup_evidence_root",
+    "refuse_evidence_leftovers",
     "refuse_spool_leftovers",
     "spool_artifacts",
     "canonical_text_identity",
@@ -65,6 +70,7 @@ EVIDENCE_SPOOL_SCHEMA_VERSION = "1.0"
 
 #: The spool filename inside the protected vault directory (Zone B).
 PASS1_STATE_FILENAME = "pass1-state.sqlite3"
+PASS2_EVIDENCE_PREFIX = ".pass2-evidence-"
 
 #: The COMPLETE sensitive artifact inventory of the ephemeral spool
 #: (REQ-P4-002 / P2-009 policy): the main database plus every SQLite
@@ -75,9 +81,7 @@ PASS1_STATE_FILENAME = "pass1-state.sqlite3"
 _SPOOL_ARTIFACT_SUFFIXES: tuple[str, ...] = ("", "-wal", "-shm", "-journal")
 
 _SENSITIVE_SCHEMA = (
-    "CREATE TABLE meta ("
-    " key TEXT PRIMARY KEY,"
-    " value TEXT NOT NULL)",
+    "CREATE TABLE meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE text_observation ("
     " canonical BLOB PRIMARY KEY,"
     " value_length INTEGER NOT NULL,"
@@ -179,6 +183,49 @@ def refuse_spool_leftovers(vault_directory: Path) -> None:
         raise _spool_failure("LEFTOVER_REFUSED")
 
 
+def _evidence_roots(vault_directory: Path) -> list[Path]:
+    try:
+        return sorted(
+            path
+            for path in Path(vault_directory).iterdir()
+            if path.name.startswith(PASS2_EVIDENCE_PREFIX)
+        )
+    except FileNotFoundError:
+        return []
+    except OSError:
+        raise _spool_failure("EVIDENCE_INSPECTION_FAILED") from None
+
+
+def refuse_evidence_leftovers(vault_directory: Path) -> None:
+    """Fail closed over any protected per-table AFTER-evidence residue."""
+    if _evidence_roots(vault_directory):
+        raise _spool_failure("EVIDENCE_LEFTOVER_REFUSED")
+
+
+def create_evidence_root(vault_directory: Path, operation_id: str) -> Path:
+    """Reserve this operation's protected evidence-shard directory."""
+    refuse_evidence_leftovers(vault_directory)
+    token = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:24]
+    root = Path(vault_directory) / f"{PASS2_EVIDENCE_PREFIX}{token}"
+    try:
+        root.mkdir(mode=0o700)
+    except OSError:
+        raise _spool_failure("EVIDENCE_ROOT_CREATE_FAILED") from None
+    return root
+
+
+def cleanup_evidence_root(root: Path) -> None:
+    """Remove one proven-local evidence root after every shard is consumed."""
+    import shutil
+
+    try:
+        shutil.rmtree(root)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise _spool_failure("EVIDENCE_CLEANUP_FAILED") from None
+
+
 def _remove_spool_artifacts(vault_directory: Path) -> bool:
     """Attempt every known unlink and return whether any cleanup failed."""
     failed = False
@@ -229,12 +276,19 @@ def canonical_composite_identity(components: tuple[object, ...]) -> bytes:
     parts: list[bytes] = [str(len(components)).encode("ascii")]
     for component in components:
         if isinstance(component, str):
-            parts.append(b"T" + str(len(component.encode("utf-8"))).encode("ascii") + b":" + component.encode("utf-8"))
+            parts.append(
+                b"T"
+                + str(len(component.encode("utf-8"))).encode("ascii")
+                + b":"
+                + component.encode("utf-8")
+            )
         elif isinstance(component, bool) or not isinstance(component, int):
             raise _spool_failure("KEY_COMPONENT_UNSUPPORTED")
         else:
             text = str(int(component))
-            parts.append(b"N" + str(len(text)).encode("ascii") + b"|" + text.encode("ascii"))
+            parts.append(
+                b"N" + str(len(text)).encode("ascii") + b"|" + text.encode("ascii")
+            )
     return b"\x00".join(parts)
 
 
@@ -319,9 +373,7 @@ class PassOneSpool:
         created = False
         connection: sqlite3.Connection | None = None
         try:
-            descriptor = os.open(
-                str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-            )
+            descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             created = True
             os.close(descriptor)
             connection = sqlite3.connect(str(path))
@@ -359,9 +411,7 @@ class PassOneSpool:
     def observe_text(self, value: str, *, byte_width: int) -> None:
         """Record one text occurrence constraint (strictest width = MIN)."""
         canonical = canonical_text_identity(value)
-        self._pending_text.append(
-            (canonical, len(value), int(byte_width))
-        )
+        self._pending_text.append((canonical, len(value), int(byte_width)))
         if len(self._pending_text) >= MAX_SQL_BATCH:
             self._flush_text()
 
@@ -479,9 +529,7 @@ class PassOneSpool:
         )
 
     def text_encoding_union(self) -> frozenset[str]:
-        rows = self._connection.execute(
-            "SELECT encoding FROM text_encoding"
-        ).fetchall()
+        rows = self._connection.execute("SELECT encoding FROM text_encoding").fetchall()
         return frozenset(str(row[0]) for row in rows)
 
     def text_free_reserved_count(self, length: int) -> int:
@@ -506,9 +554,7 @@ class PassOneSpool:
         ).fetchone()
         return int(row[0])
 
-    def numeric_observation_stream(
-        self, domain_id: str
-    ) -> Iterator[str]:
+    def numeric_observation_stream(self, domain_id: str) -> Iterator[str]:
         cursor = self._connection.execute(
             "SELECT canonical FROM numeric_observation WHERE domain_id = ? "
             "ORDER BY canonical ASC",
@@ -586,9 +632,7 @@ class PassOneSpool:
             for canonical, occurrences in rows:
                 yield bytes(canonical), int(occurrences)
 
-    def relation_unique_count(
-        self, side: str, relation_id: str, role: str
-    ) -> int:
+    def relation_unique_count(self, side: str, relation_id: str, role: str) -> int:
         row = self._connection.execute(
             "SELECT COUNT(*) FROM relation_keys "
             "WHERE side = ? AND relation_id = ? AND role = ?",
@@ -596,9 +640,7 @@ class PassOneSpool:
         ).fetchone()
         return int(row[0])
 
-    def relation_row_count(
-        self, side: str, relation_id: str, role: str
-    ) -> int:
+    def relation_row_count(self, side: str, relation_id: str, role: str) -> int:
         row = self._connection.execute(
             "SELECT COALESCE(SUM(occurrences), 0) FROM relation_keys "
             "WHERE side = ? AND relation_id = ? AND role = ?",
@@ -635,9 +677,7 @@ class PassOneSpool:
             if left_row[1] != right_row[1]:
                 return False
 
-    def relation_profile_digest(
-        self, side: str, relation_id: str, role: str
-    ) -> str:
+    def relation_profile_digest(self, side: str, relation_id: str, role: str) -> str:
         """A stable SHA-256 digest of the sorted multiplicity profile.
 
         The profile is streamed in canonical order and hashed incrementally:
@@ -651,6 +691,70 @@ class PassOneSpool:
         ):
             digest.update(str(occurrences).encode("ascii") + b",")
         return digest.hexdigest()
+
+    def merge_relation_shard(self, path: Path) -> None:
+        """Merge one closed worker shard through this serialized authority."""
+        try:
+            connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        except sqlite3.Error:
+            raise _spool_failure("EVIDENCE_SHARD_OPEN_FAILED") from None
+        merge_failure: BaseException | None = None
+        try:
+            key_cursor = connection.execute(
+                "SELECT side, relation_id, role, canonical, occurrences "
+                "FROM relation_keys ORDER BY side, relation_id, role, canonical"
+            )
+            while True:
+                rows = key_cursor.fetchmany(MAX_SQL_BATCH)
+                if not rows:
+                    break
+                self._connection.executemany(
+                    "INSERT INTO relation_keys "
+                    "(side, relation_id, role, canonical, occurrences) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(side, relation_id, role, canonical) DO UPDATE SET "
+                    "occurrences = occurrences + excluded.occurrences",
+                    rows,
+                )
+            fact_cursor = connection.execute(
+                "SELECT side, relation_id, role, rows_considered, null_tuple_count "
+                "FROM relation_side_facts ORDER BY side, relation_id, role"
+            )
+            while True:
+                rows = fact_cursor.fetchmany(MAX_SQL_BATCH)
+                if not rows:
+                    break
+                self._connection.executemany(
+                    "INSERT INTO relation_side_facts "
+                    "(side, relation_id, role, rows_considered, null_tuple_count) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(side, relation_id, role) DO UPDATE SET "
+                    "rows_considered = rows_considered + excluded.rows_considered, "
+                    "null_tuple_count = null_tuple_count + excluded.null_tuple_count",
+                    rows,
+                )
+            self._connection.commit()
+        except sqlite3.Error as error:
+            merge_failure = error
+        close_failure: BaseException | None = None
+        try:
+            connection.close()
+        except sqlite3.Error as error:
+            close_failure = error
+        if merge_failure is not None:
+            failure = _spool_failure("EVIDENCE_SHARD_MERGE_FAILED")
+            if close_failure is not None:
+                setattr(failure, "_evidence_cleanup_failures", (close_failure,))
+            raise failure from None
+        try:
+            path.unlink()
+        except OSError:
+            failure = _spool_failure("EVIDENCE_SHARD_CLEANUP_FAILED")
+            if close_failure is not None:
+                raise failure from _spool_failure("EVIDENCE_SHARD_CLOSE_FAILED")
+            raise failure from None
+        if close_failure is not None:
+            raise _spool_failure("EVIDENCE_SHARD_CLOSE_FAILED") from None
 
     # -- lifecycle ---------------------------------------------------------------
     def size_bytes(self) -> int:
@@ -707,3 +811,138 @@ class PassOneSpool:
         failed = _remove_spool_artifacts(self._path.parent) or failed
         if failed:
             raise _spool_failure("CLEANUP_FAILED") from None
+
+
+class RelationEvidenceShard:
+    """One worker-owned SQLite sink for transformed relationship evidence."""
+
+    __slots__ = ("_connection", "path", "_pending_keys", "_pending_facts", "_closed")
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._closed = False
+        self._pending_keys: list[tuple[str, str, str, bytes, int]] = []
+        self._pending_facts: list[tuple[str, str, str, int, int]] = []
+        connection: sqlite3.Connection | None = None
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(descriptor)
+            connection = sqlite3.connect(str(path))
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute(
+                "CREATE TABLE relation_keys ("
+                "side TEXT NOT NULL, relation_id TEXT NOT NULL, role TEXT NOT NULL, "
+                "canonical BLOB NOT NULL, occurrences INTEGER NOT NULL, "
+                "PRIMARY KEY (side, relation_id, role, canonical))"
+            )
+            connection.execute(
+                "CREATE TABLE relation_side_facts ("
+                "side TEXT NOT NULL, relation_id TEXT NOT NULL, role TEXT NOT NULL, "
+                "rows_considered INTEGER NOT NULL, null_tuple_count INTEGER NOT NULL, "
+                "PRIMARY KEY (side, relation_id, role))"
+            )
+            connection.commit()
+        except (OSError, sqlite3.Error) as original:
+            cleanup_failures: list[BaseException] = []
+            if connection is not None:
+                try:
+                    connection.close()
+                except BaseException as cleanup_error:
+                    cleanup_failures.append(cleanup_error)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                cleanup_failures.append(cleanup_error)
+            if cleanup_failures:
+                failure = _spool_failure("EVIDENCE_SHARD_CREATE_CLEANUP_FAILED")
+                setattr(failure, "_evidence_cleanup_failures", tuple(cleanup_failures))
+                raise failure from original
+            raise _spool_failure("EVIDENCE_SHARD_CREATE_FAILED") from None
+        self._connection = connection
+
+    def observe_relation_key(
+        self, side: str, relation_id: str, role: str, canonical: bytes
+    ) -> None:
+        self._pending_keys.append((side, relation_id, role, canonical, 1))
+        if len(self._pending_keys) >= MAX_SQL_BATCH:
+            self._flush_keys()
+
+    def observe_relation_side(
+        self,
+        side: str,
+        relation_id: str,
+        role: str,
+        *,
+        rows: int,
+        nulls: int,
+    ) -> None:
+        self._pending_facts.append((side, relation_id, role, rows, nulls))
+        if len(self._pending_facts) >= MAX_SQL_BATCH:
+            self._flush_facts()
+
+    def _flush_keys(self) -> None:
+        if not self._pending_keys:
+            return
+        self._connection.executemany(
+            "INSERT INTO relation_keys "
+            "(side, relation_id, role, canonical, occurrences) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(side, relation_id, role, canonical) DO UPDATE SET "
+            "occurrences = occurrences + excluded.occurrences",
+            self._pending_keys,
+        )
+        self._pending_keys.clear()
+
+    def _flush_facts(self) -> None:
+        if not self._pending_facts:
+            return
+        self._connection.executemany(
+            "INSERT INTO relation_side_facts "
+            "(side, relation_id, role, rows_considered, null_tuple_count) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(side, relation_id, role) DO UPDATE SET "
+            "rows_considered = rows_considered + excluded.rows_considered, "
+            "null_tuple_count = null_tuple_count + excluded.null_tuple_count",
+            self._pending_facts,
+        )
+        self._pending_facts.clear()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        failure: BaseException | None = None
+        try:
+            self._flush_keys()
+            self._flush_facts()
+            self._connection.commit()
+        except (OSError, sqlite3.Error) as error:
+            failure = error
+        try:
+            self._connection.close()
+        except (OSError, sqlite3.Error) as error:
+            if failure is None:
+                failure = error
+        self._closed = True
+        if failure is not None:
+            raise _spool_failure("EVIDENCE_SHARD_CLOSE_FAILED") from failure
+
+    def cleanup(self) -> None:
+        close_failure: BaseException | None = None
+        try:
+            self.close()
+        except BaseException as error:
+            close_failure = error
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failure = _spool_failure("EVIDENCE_SHARD_CLEANUP_FAILED")
+            if close_failure is not None:
+                raise failure from close_failure
+            raise failure from None
+        if close_failure is not None:
+            raise close_failure

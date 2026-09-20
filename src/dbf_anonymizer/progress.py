@@ -252,13 +252,14 @@ class ProgressController:
             table_path=table_path,
         )
 
-    def complete(self, *, completed: int) -> None:
+    def complete(self, *, completed: int, check_cancel: bool = True) -> None:
         """Emit the single terminal ``COMPLETED`` event before a real return.
 
         Cancellation is polled first, so a cancellation observed at the very
         end still produces no completion event and no result.
         """
-        self.check_cancelled()
+        if check_cancel:
+            self.check_cancelled()
         self.emit(
             ProgressEventCode.COMPLETED,
             ProgressPhase.OPERATION,

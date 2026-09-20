@@ -100,7 +100,9 @@ class ErrorDefinition:
 
 ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
     ErrorDefinition(ErrorCode.PATH_INVALID, ErrorCategory.PATH, "A path is invalid."),
-    ErrorDefinition(ErrorCode.PATH_NOT_FOUND, ErrorCategory.PATH, "A required path was not found."),
+    ErrorDefinition(
+        ErrorCode.PATH_NOT_FOUND, ErrorCategory.PATH, "A required path was not found."
+    ),
     ErrorDefinition(
         ErrorCode.PATH_OVERLAP,
         ErrorCategory.PATH,
@@ -111,7 +113,9 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCategory.PATH,
         "The requested destination conflicts with existing state.",
     ),
-    ErrorDefinition(ErrorCode.POLICY_INVALID, ErrorCategory.POLICY, "The policy is invalid."),
+    ErrorDefinition(
+        ErrorCode.POLICY_INVALID, ErrorCategory.POLICY, "The policy is invalid."
+    ),
     ErrorDefinition(
         ErrorCode.POLICY_UNSUPPORTED,
         ErrorCategory.POLICY,
@@ -197,7 +201,9 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCategory.VERIFICATION,
         "Dataset verification failed.",
     ),
-    ErrorDefinition(ErrorCode.RECOVERY_FAILED, ErrorCategory.RECOVERY, "Recovery failed."),
+    ErrorDefinition(
+        ErrorCode.RECOVERY_FAILED, ErrorCategory.RECOVERY, "Recovery failed."
+    ),
     ErrorDefinition(
         ErrorCode.RECOVERY_NOT_PERMITTED,
         ErrorCategory.RECOVERY,
@@ -228,7 +234,9 @@ _ERROR_BY_CODE: dict[ErrorCode, ErrorDefinition] = {
 def _validate_token(value: str, *, field_name: str) -> str:
     """Validate a bounded machine token without interpreting its meaning."""
     if not value or len(value) > 128 or value.strip() != value:
-        raise ValueError(f"{field_name} must be a non-empty token of at most 128 characters")
+        raise ValueError(
+            f"{field_name} must be a non-empty token of at most 128 characters"
+        )
     if any(character.isspace() for character in value):
         raise ValueError(f"{field_name} must not contain whitespace")
     return value
@@ -268,10 +276,17 @@ class ErrorContext:
     detail_code: str | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("operation", "policy_rule", "relationship_id", "detail_code"):
+        for field_name in (
+            "operation",
+            "policy_rule",
+            "relationship_id",
+            "detail_code",
+        ):
             value = getattr(self, field_name)
             if value is not None:
-                object.__setattr__(self, field_name, _validate_token(value, field_name=field_name))
+                object.__setattr__(
+                    self, field_name, _validate_token(value, field_name=field_name)
+                )
         for field_name in ("artifact_path", "table_path"):
             value = getattr(self, field_name)
             if value is not None:

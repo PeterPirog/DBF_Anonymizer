@@ -20,8 +20,11 @@ small-fixture oracle and the equivalence is cross-checked by the test suite.
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from threading import Event
+from typing import Callable, Iterator, Sequence
 
 from dbfbridge import DirectRecord  # type: ignore[attr-defined]
 
@@ -39,8 +42,20 @@ from dbf_anonymizer.engine.directives import (
     TwoPassResult,
 )
 from dbf_anonymizer.engine.pass1 import PassOneOutcome
-from dbf_anonymizer.engine.state import PassOneSpool, canonical_composite_identity
-from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError
+from dbf_anonymizer.engine.publication import DatasetStaging, FaultInjector
+from dbf_anonymizer.engine.state import (
+    PassOneSpool,
+    RelationEvidenceShard,
+    canonical_composite_identity,
+    cleanup_evidence_root,
+)
+from dbf_anonymizer.errors import (
+    CancellationError,
+    ErrorCode,
+    ErrorContext,
+    MappingError,
+    PublicationError,
+)
 from dbf_anonymizer.progress import ProgressController, ProgressPhase
 from dbf_anonymizer.transforms.numeric_keys import (
     canonical_integer_text,
@@ -52,7 +67,7 @@ from dbf_anonymizer.vault.mappings import (
     get_text_pseudonym,
     temporal_parameter,
 )
-from dbf_anonymizer.vault.memo_allocation import persist_memo_recovery
+from dbf_anonymizer.vault.memo_allocation import mask_memo_value
 from dbf_anonymizer.vault.store import VaultDatabase
 from dbf_anonymizer.vault.text_allocation import GLOBAL_TEXT_DOMAIN_ID
 from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
@@ -71,54 +86,119 @@ def run_pass_two(
     engine_plan: EnginePlan,
     *,
     source_root: Path,
-    output_root: Path,
+    staging: DatasetStaging,
     vault: VaultDatabase,
     spool: PassOneSpool,
     control: ProgressController,
     outcome: PassOneOutcome,
-    written: list[str],
-    memo_bindings: dict[tuple[str, str], tuple[str, str]],
+    workers: int,
+    evidence_root: Path,
+    fault_inject: FaultInjector | None = None,
 ) -> TwoPassResult:
-    """The write pass: resolve, transform, direct-write, then compare."""
+    """Bounded table write pass, serialized evidence merge, then compare."""
+    if isinstance(workers, bool) or workers < 1:
+        raise ValueError("workers must be a positive integer")
     control.start_phase(ProgressPhase.PASS2_WRITE, total=len(engine_plan.tables))
     records_written = 0
     read_streams: list[tuple[str, str]] = []
-    for directive in engine_plan.tables:
-        assert isinstance(directive, TableDirective)
-        control.check_cancelled()
-        table = read_source_table(
-            source_root,
-            directive.relative_path,
-            cancel_check=control.check_cancelled,
-        )
-        destination = output_root / directive.relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        written.append(directive.relative_path)
-        text_domain_id = (
-            outcome.text_domain_id if engine_plan.text_present else None
-        )
-        temporal_offset = (
-            _persisted_temporal_offset(vault) if engine_plan.temporal_present else None
-        )
-        result = write_fresh_table(
-            destination,
-            table.schema,
-            _transform_stream(
-                engine_plan,
-                directive,
-                table,
-                vault,
-                spool,
-                control,
-                text_domain_id,
-                temporal_offset,
-                read_streams,
-                memo_bindings,
-            ),
-            cancel_check=control.check_cancelled,
-        )
-        records_written += int(result.records_written)
-        control.bump(ProgressPhase.PASS2_WRITE, table_path=directive.relative_path)
+    written: list[str] = []
+    text_domain_id = outcome.text_domain_id if engine_plan.text_present else None
+    temporal_offset = (
+        _persisted_temporal_offset(vault) if engine_plan.temporal_present else None
+    )
+    stop = Event()
+
+    def accept(table_result: _TableWriteResult) -> None:
+        nonlocal records_written
+        spool.merge_relation_shard(table_result.evidence_path)
+        staging.assemble_table(table_result.index, table_result.relative_path)
+        written.append(table_result.relative_path)
+        records_written += table_result.records_written
+        read_streams.append(("pass2", table_result.relative_path))
+        control.bump(ProgressPhase.PASS2_WRITE, table_path=table_result.relative_path)
+        if len(written) == 1 and fault_inject is not None:
+            fault_inject("AFTER_FIRST_TABLE_STAGED")
+
+    if workers == 1:
+        for index, directive in enumerate(engine_plan.tables):
+            control.check_cancelled()
+            accept(
+                _write_table(
+                    index,
+                    directive,
+                    engine_plan=engine_plan,
+                    source_root=source_root,
+                    staging=staging,
+                    vault=vault,
+                    evidence_root=evidence_root,
+                    text_domain_id=text_domain_id,
+                    temporal_offset=temporal_offset,
+                    checkpoint=control.check_cancelled,
+                    stop=stop,
+                )
+            )
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="dbf-table"
+        ) as executor:
+            for start in range(0, len(engine_plan.tables), workers):
+                control.check_cancelled()
+                batch = tuple(
+                    (index, engine_plan.tables[index])
+                    for index in range(
+                        start, min(start + workers, len(engine_plan.tables))
+                    )
+                )
+                futures: list[Future[_TableWriteResult]] = [
+                    executor.submit(
+                        _write_table,
+                        index,
+                        directive,
+                        engine_plan=engine_plan,
+                        source_root=source_root,
+                        staging=staging,
+                        vault=vault,
+                        evidence_root=evidence_root,
+                        text_domain_id=text_domain_id,
+                        temporal_offset=temporal_offset,
+                        checkpoint=lambda: _worker_checkpoint(stop),
+                        stop=stop,
+                    )
+                    for index, directive in batch
+                ]
+                pending = set(futures)
+                primary_failure: BaseException | None = None
+                try:
+                    while pending:
+                        done, pending = wait(
+                            pending,
+                            timeout=0.05,
+                            return_when=FIRST_EXCEPTION,
+                        )
+                        if any(
+                            not future.cancelled() and future.exception() is not None
+                            for future in done
+                        ):
+                            stop.set()
+                            for future in pending:
+                                future.cancel()
+                            wait(pending)
+                            primary_failure = _primary_worker_failure(futures)
+                            break
+                        control.check_cancelled()
+                except BaseException:
+                    stop.set()
+                    for future in pending:
+                        future.cancel()
+                    wait(pending)
+                    raise
+                if primary_failure is not None:
+                    raise primary_failure
+                for future in futures:
+                    accept(future.result())
+    cleanup_evidence_root(evidence_root)
+    if fault_inject is not None:
+        fault_inject("AFTER_ALL_TABLES_STAGED")
     spool.flush()
     summaries = _compare_relations(engine_plan, spool)
     return TwoPassResult(
@@ -134,6 +214,130 @@ def run_pass_two(
         evidence_spool_bytes=spool.size_bytes(),
         read_streams=tuple(outcome.read_streams) + tuple(read_streams),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _TableWriteResult:
+    index: int
+    relative_path: str
+    records_written: int
+    evidence_path: Path
+
+
+def _worker_checkpoint(stop: Event) -> None:
+    if stop.is_set():
+        raise CancellationError(
+            ErrorCode.OPERATION_CANCELLED,
+            context=ErrorContext(
+                operation="two_pass", detail_code="CANCELLED_BY_COORDINATOR"
+            ),
+        )
+
+
+def _primary_worker_failure(
+    futures: Sequence[Future[_TableWriteResult]],
+) -> BaseException:
+    """Choose one stable primary failure in table submission order."""
+    failures: list[BaseException] = []
+    for future in futures:
+        if future.cancelled():
+            continue
+        failure = future.exception()
+        if failure is not None:
+            failures.append(failure)
+    if not failures:  # pragma: no cover - guarded by the completed-future scan
+        raise AssertionError("worker failure was not retained")
+    return next(
+        (failure for failure in failures if not isinstance(failure, CancellationError)),
+        failures[0],
+    )
+
+
+def _worker_cleanup_failure() -> PublicationError:
+    return PublicationError(
+        ErrorCode.PUBLICATION_INCOMPLETE,
+        context=ErrorContext(
+            operation="two_pass", detail_code="ENGINE_WORKER_CLEANUP_FAILED"
+        ),
+    )
+
+
+def _write_table(
+    index: int,
+    directive: TableDirective,
+    *,
+    engine_plan: EnginePlan,
+    source_root: Path,
+    staging: DatasetStaging,
+    vault: VaultDatabase,
+    evidence_root: Path,
+    text_domain_id: str | None,
+    temporal_offset: int | None,
+    checkpoint: Callable[[], None],
+    stop: Event,
+) -> _TableWriteResult:
+    """Write one isolated table with thread-local SQLite ownership."""
+    evidence_path = evidence_root / f"{index:08d}.sqlite3"
+    shard: RelationEvidenceShard | None = None
+    reader: VaultDatabase | None = None
+    try:
+        checkpoint()
+        shard = RelationEvidenceShard(evidence_path)
+        reader = VaultDatabase.open_reader(
+            vault.path,
+            expected_source_fingerprint=vault.source_fingerprint,
+            expected_policy_fingerprint=vault.policy_fingerprint,
+            expected_relationship_fingerprint=vault.relationship_fingerprint,
+        )
+        table = read_source_table(
+            source_root,
+            directive.relative_path,
+            cancel_check=checkpoint,
+        )
+        destination = staging.table_destination(index, directive.relative_path)
+        result = write_fresh_table(
+            destination,
+            table.schema,
+            _transform_stream(
+                engine_plan,
+                directive,
+                table,
+                reader,
+                shard,
+                checkpoint,
+                text_domain_id,
+                temporal_offset,
+            ),
+            cancel_check=checkpoint,
+        )
+        shard.close()
+        shard = None
+        reader.close()
+        reader = None
+        return _TableWriteResult(
+            index=index,
+            relative_path=directive.relative_path,
+            records_written=int(result.records_written),
+            evidence_path=evidence_path,
+        )
+    except BaseException as original:
+        stop.set()
+        cleanup_failures: list[BaseException] = []
+        if shard is not None:
+            try:
+                shard.cleanup()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(cleanup_error)
+        if reader is not None:
+            try:
+                reader.close()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(cleanup_error)
+        if cleanup_failures:
+            failure = _worker_cleanup_failure()
+            setattr(failure, "_worker_cleanup_failures", tuple(cleanup_failures))
+            raise failure from original
+        raise
 
 
 def _text_domain_id(outcome: PassOneOutcome) -> str:
@@ -156,21 +360,18 @@ def _transform_stream(
     directive: TableDirective,
     table: DirectSourceTable,
     vault: VaultDatabase,
-    spool: PassOneSpool,
-    control: ProgressController,
+    evidence: RelationEvidenceShard,
+    checkpoint: Callable[[], None],
     text_domain_id: str | None,
     temporal_offset: int | None,
-    read_streams: list[tuple[str, str]],
-    memo_bindings: dict[tuple[str, str], tuple[str, str]],
 ) -> Iterator[DirectRecord]:
     """Yield newly constructed typed records in unchanged physical order."""
     memo_policy = "inline" if table.has_memo_fields else "skip"
-    read_streams.append(("pass2", directive.relative_path))
     records = stream_table_records(
         table,
         include_deleted=True,
         memo_policy=memo_policy,
-        cancel_check=control.check_cancelled,
+        cancel_check=checkpoint,
     )
     system_fields = {
         str(field.name)
@@ -178,7 +379,7 @@ def _transform_stream(
         if str(field.dbf_type).upper() == "0"
     }
     for record in records:
-        control.check_cancelled()
+        checkpoint()
         # Type-0 fields (notably VFP _NullFlags) are writer-owned system
         # state.  Supply only logical application values and let dbfbridge
         # derive the output bitmap from None/non-None values.
@@ -196,7 +397,9 @@ def _transform_stream(
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise _mapping_failure("ENGINE_NUMERIC_VALUE_UNSUPPORTED")
                 mapped = get_numeric_pseudonym(
-                    vault, field_directive.numeric_domain_id, canonical_integer_text(value)
+                    vault,
+                    field_directive.numeric_domain_id,
+                    canonical_integer_text(value),
                 )
                 if mapped is None:
                     raise _mapping_failure("ENGINE_NUMERIC_MAPPING_MISSING")
@@ -210,18 +413,7 @@ def _transform_stream(
                     raise _mapping_failure("ENGINE_TEXT_MAPPING_MISSING")
                 values[name] = mapped
             elif field_directive.action == "MASK_REVERSIBLE":
-                binding = memo_bindings.get((directive.relative_path, name))
-                if binding is None:  # pragma: no cover - engine-plan invariant
-                    raise _mapping_failure("ENGINE_MEMO_BINDING_MISSING")
-                table_id, field_id = binding
-                values[name] = persist_memo_recovery(
-                    vault,
-                    table_id=table_id,
-                    physical_record_index=int(record.physical_index),
-                    field_id=field_id,
-                    dbf_type=field_directive.dbf_type,
-                    value=value,
-                )
+                values[name] = mask_memo_value(field_directive.dbf_type, value)
             elif field_directive.action == "SHIFT_REVERSIBLE":
                 if temporal_offset is None:  # pragma: no cover - plan checked
                     raise _mapping_failure("ENGINE_TEMPORAL_OFFSET_MISSING")
@@ -231,11 +423,11 @@ def _transform_stream(
             assert isinstance(relation, RelationDirective)
             if relation.parent_table == directive.relative_path:
                 _observe_after_side(
-                    relation, "parent", relation.parent_fields, values, spool
+                    relation, "parent", relation.parent_fields, values, evidence
                 )
             if relation.foreign_table == directive.relative_path:
                 _observe_after_side(
-                    relation, "foreign", relation.foreign_fields, values, spool
+                    relation, "foreign", relation.foreign_fields, values, evidence
                 )
         yield DirectRecord(
             physical_index=record.physical_index,
@@ -249,7 +441,7 @@ def _observe_after_side(
     role: str,
     fields: Sequence[str],
     values: dict[str, object],
-    spool: PassOneSpool,
+    evidence: RelationEvidenceShard,
 ) -> None:
     """The P3 NULL semantics on the TRANSFORMED (after) side."""
     components: list[object] = []
@@ -262,11 +454,11 @@ def _observe_after_side(
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             raise _mapping_failure("ENGINE_RELATION_MEMBER_UNSUPPORTED")
         components.append(int(value) if isinstance(value, int) else str(value))
-    spool.observe_relation_side(
+    evidence.observe_relation_side(
         "after", relation.relation_id, role, rows=1, nulls=1 if null_tuple else 0
     )
     if not null_tuple:
-        spool.observe_relation_key(
+        evidence.observe_relation_key(
             "after",
             relation.relation_id,
             role,

@@ -6,7 +6,7 @@ database (``dictionary.sqlite3``) for the whole source tree (REQ-P2-001).
 This module owns the connection lifecycle and the fail-closed boundaries:
 
 * **Creation** — ``VaultDatabase.open(path, create=True, ...)`` creates the
-  schema 1.0 dictionary inside ONE system transaction; creation over an
+  schema 1.1 dictionary inside ONE system transaction; creation over an
   existing file is refused (an unknown database is never dropped, recreated
   or converted); the WAL journal mode is SET and its PRAGMA RESULT verified.
   Once the atomic ``O_CREAT | O_EXCL`` reservation succeeds, the whole
@@ -228,6 +228,7 @@ class VaultDatabase:
         source_fingerprint: str,
         policy_fingerprint: str,
         relationship_fingerprint: str,
+        read_only: bool = False,
     ) -> None:
         self._connection = connection
         self._path = path
@@ -236,6 +237,7 @@ class VaultDatabase:
         self._source_fingerprint = source_fingerprint
         self._policy_fingerprint = policy_fingerprint
         self._relationship_fingerprint = relationship_fingerprint
+        self._read_only = read_only
         self._transaction: VaultTransaction | None = None
         self._transaction_authorized = False
         self._writer_token: str | None = None
@@ -257,7 +259,7 @@ class VaultDatabase:
     ) -> "VaultDatabase":
         """Open (or create) the dictionary database with full validation.
 
-        ``create=True`` builds the schema 1.0 dictionary (WAL mode set and its
+        ``create=True`` builds the schema 1.1 dictionary (WAL mode set and its
         PRAGMA result verified); the target file must not already exist.
 
         Without ``create`` the open is TWO-STAGE and fail-closed: STAGE 1
@@ -325,6 +327,35 @@ class VaultDatabase:
             expected_source_fingerprint=expected_source_fingerprint,
             expected_policy_fingerprint=expected_policy_fingerprint,
             expected_relationship_fingerprint=expected_relationship_fingerprint,
+        )
+
+    @classmethod
+    def open_reader(
+        cls,
+        path: Path | str,
+        *,
+        expected_source_fingerprint: str | None = None,
+        expected_policy_fingerprint: str | None = None,
+        expected_relationship_fingerprint: str | None = None,
+    ) -> "VaultDatabase":
+        """Open one independently owned live read-only worker connection.
+
+        Unlike immutable validation snapshots, this connection observes the
+        committed WAL state finalized immediately before parallel pass 2.  It
+        can never acquire a writer lease or enter a mutation transaction, and
+        closing it never checkpoints the authoritative writer's WAL.
+        """
+        database_path = Path(path)
+        if _raw_file_kind(database_path) != _RAW_FILE_KIND_FILE:
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "DICTIONARY_MISSING")
+        connection = cls._connect_live_reader(database_path)
+        return cls._bind(
+            connection,
+            database_path,
+            expected_source_fingerprint=expected_source_fingerprint,
+            expected_policy_fingerprint=expected_policy_fingerprint,
+            expected_relationship_fingerprint=expected_relationship_fingerprint,
+            read_only=True,
         )
 
     @staticmethod
@@ -411,6 +442,26 @@ class VaultDatabase:
         except sqlite3.Error:
             connection.close()
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
+        return connection
+
+    @classmethod
+    def _connect_live_reader(cls, path: Path) -> sqlite3.Connection:
+        """Open a WAL-aware read-only connection for one pass-2 worker."""
+        try:
+            uri = path.resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=VAULT_BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
+            connection.execute(f"PRAGMA busy_timeout = {VAULT_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA query_only = ON")
+        except PermissionError:
+            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "OPEN_DENIED") from None
+        except (OSError, sqlite3.Error):
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
         return connection
 
     @staticmethod
@@ -699,6 +750,7 @@ class VaultDatabase:
         expected_source_fingerprint: str | None,
         expected_policy_fingerprint: str | None,
         expected_relationship_fingerprint: str | None,
+        read_only: bool = False,
     ) -> "VaultDatabase":
         """Bind the accepted connection to the validated identity.
 
@@ -727,6 +779,7 @@ class VaultDatabase:
             source_fingerprint=fingerprints["source"],
             policy_fingerprint=fingerprints["policy"],
             relationship_fingerprint=fingerprints["relationship"],
+            read_only=read_only,
         )
         mismatches = (
             ("SOURCE_FINGERPRINT", expected_source_fingerprint, fingerprints["source"]),
@@ -890,6 +943,8 @@ class VaultDatabase:
         connection refuses further ordinary operations until reopened.
         """
         self._require_trusted_connection()
+        if self._read_only:
+            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "READ_ONLY_CONNECTION")
         if self._transaction is not None and self._transaction.active:
             raise ValueError("vault transaction already active")
         if self._writer_token is None:
@@ -992,6 +1047,8 @@ class VaultDatabase:
         connection allowed to run ordinary mutation transactions.
         """
         _validate_token(owner_token, field_name="owner_token")
+        if self._read_only:
+            raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "READ_ONLY_CONNECTION")
         if self._closed:
             raise RuntimeError("vault database is closed")
         if self._poisoned is not None:
@@ -1069,6 +1126,11 @@ class VaultDatabase:
         operation_id: str | None = None,
         *,
         source_fingerprint: str | None = None,
+        policy_fingerprint: str | None = None,
+        relationship_fingerprint: str | None = None,
+        vault_fingerprint: str | None = None,
+        destination_identity: str | None = None,
+        binding_fingerprint: str | None = None,
     ) -> str:
         """Persist one ``STARTED`` operation row; returns its stable ID."""
         self._require_active_transaction("begin_operation")
@@ -1084,8 +1146,20 @@ class VaultDatabase:
         try:
             self._connection.execute(
                 "INSERT INTO operations (operation_id, state, source_fingerprint, "
-                "started_at) VALUES (?, ?, ?, ?)",
-                (operation_id, VAULT_OPERATION_STATE_STARTED, source_fingerprint, _utc_now()),
+                "policy_fingerprint, relationship_fingerprint, vault_fingerprint, "
+                "destination_identity, binding_fingerprint, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    operation_id,
+                    VAULT_OPERATION_STATE_STARTED,
+                    source_fingerprint,
+                    policy_fingerprint,
+                    relationship_fingerprint,
+                    vault_fingerprint,
+                    destination_identity,
+                    binding_fingerprint,
+                    _utc_now(),
+                ),
             )
         except sqlite3.IntegrityError:
             raise _vault_failure(
@@ -1098,22 +1172,80 @@ class VaultDatabase:
         operation_id: str,
         *,
         output_fingerprint: str | None = None,
+        result_json: str | None = None,
     ) -> None:
         """Deterministically finish one started operation row."""
         self._require_active_transaction("complete_operation")
         cursor = self._connection.execute(
             "UPDATE operations SET state = ?, completed_at = ?, output_fingerprint = "
-            "COALESCE(?, output_fingerprint) WHERE operation_id = ? AND state = ?",
+            "COALESCE(?, output_fingerprint), result_json = COALESCE(?, result_json) "
+            "WHERE operation_id = ? AND state = ?",
             (
                 VAULT_OPERATION_STATE_COMPLETED,
                 _utc_now(),
                 output_fingerprint,
+                result_json,
                 operation_id,
                 VAULT_OPERATION_STATE_STARTED,
             ),
         )
         if cursor.rowcount != 1:
             raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "OPERATION_NOT_STARTED")
+
+    def abandon_operation(self, operation_id: str) -> None:
+        """Delete one proven-local STARTED operation after safe cleanup.
+
+        This is never stale-state recovery.  The active lease holder may use
+        it only while handling its own pre-promotion failure after it has
+        removed the staging tree it created in the same invocation.
+        """
+        self._require_active_transaction("abandon_operation")
+        self._connection.execute(
+            "DELETE FROM publication WHERE operation_id = ?", (operation_id,)
+        )
+        cursor = self._connection.execute(
+            "DELETE FROM operations WHERE operation_id = ? AND state = ?",
+            (operation_id, VAULT_OPERATION_STATE_STARTED),
+        )
+        if cursor.rowcount != 1:
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "OPERATION_NOT_STARTED")
+
+    def operation_record(self, operation_id: str) -> dict[str, str | None] | None:
+        """Return one complete internal operation binding, if present."""
+        row = self._internal_connection().execute(
+            "SELECT operation_id, state, source_fingerprint, policy_fingerprint, "
+            "relationship_fingerprint, vault_fingerprint, destination_identity, "
+            "binding_fingerprint, output_fingerprint, result_json, started_at, "
+            "completed_at FROM operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        names = (
+            "operation_id",
+            "state",
+            "source_fingerprint",
+            "policy_fingerprint",
+            "relationship_fingerprint",
+            "vault_fingerprint",
+            "destination_identity",
+            "binding_fingerprint",
+            "output_fingerprint",
+            "result_json",
+            "started_at",
+            "completed_at",
+        )
+        return {name: None if value is None else str(value) for name, value in zip(names, row)}
+
+    def operation_for_destination(
+        self, destination_identity: str
+    ) -> dict[str, str | None] | None:
+        """Return the unique operation bound to a normalized destination."""
+        row = self._internal_connection().execute(
+            "SELECT operation_id FROM operations WHERE destination_identity = ?",
+            (destination_identity,),
+        ).fetchone()
+        return None if row is None else self.operation_record(str(row[0]))
 
     def operations(self) -> tuple[dict[str, str | None], ...]:
         """All persisted operations in stable operation-id order."""
@@ -1281,6 +1413,15 @@ class VaultDatabase:
             return
         self._closed = True
         failure: VaultError | None = None
+        if self._read_only:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                failure = _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "CLOSE_FAILED")
+            self._cleanup_failure = failure
+            if failure is not None and not record_failure_only:
+                raise failure
+            return
         try:
             self._checkpoint_wal()
         except VaultError as error:

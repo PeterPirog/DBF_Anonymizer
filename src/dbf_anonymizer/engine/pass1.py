@@ -75,6 +75,7 @@ from dbf_anonymizer.vault.mappings import (
     get_text_pseudonym,
     mapping_domains,
 )
+from dbf_anonymizer.vault.memo_allocation import persist_memo_recovery
 from dbf_anonymizer.vault.numeric_allocation import NUMERIC_KEY_PROBE_BUDGET
 from dbf_anonymizer.vault.schema import (
     VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
@@ -144,6 +145,7 @@ def run_pass_one(
     control: ProgressController,
     outcome: PassOneOutcome,
     temporal_domain: TemporalShiftDomain | None,
+    memo_bindings: dict[tuple[str, str], tuple[str, str]],
 ) -> None:
     """One deterministic Direct Read scan of the whole planned dataset."""
 
@@ -160,21 +162,28 @@ def run_pass_one(
         )
         spool.flush()
         projected = _projection_fields(directive)
-        # Memo payloads are NEVER read in pass 1 (no vault allocation, no
-        # evidence copy): the Direct Read skips memo payloads regardless of
-        # whether the table carries any memo field.
+        # Memo recovery is persisted by this authoritative sequential pass,
+        # before any table worker exists.  Parallel pass 2 is read-only with
+        # respect to the recovery vault.
         outcome.read_streams.append(("pass1", directive.relative_path))
         records = stream_table_records(
             table,
             fields=projected,
             include_deleted=True,
-            memo_policy="skip",
+            memo_policy="inline" if directive.memo_fields else "skip",
             cancel_check=control.check_cancelled,
         )
         for record in records:
             control.check_cancelled()
             _observe_record(
-                engine_plan, directive, record, spool, outcome, temporal_domain
+                engine_plan,
+                directive,
+                record,
+                vault,
+                spool,
+                outcome,
+                temporal_domain,
+                memo_bindings,
             )
             outcome.records_scanned += 1
             if record.deleted:
@@ -189,16 +198,14 @@ def _projection_fields(directive: "TableDirective") -> Sequence[str] | None:
     """Pass 1 reads ONLY the union of the transformed fields and EVERY
     declared relation member field of the table (BLOCKER 2 fix).
 
-    Memo payloads are never read in pass 1 (they are never copied into
-    relationship evidence and need no vault allocation), identity relation
+    Memo payloads are read one record at a time so their recovery rows are
+    durable before parallel writing begins; identity relation
     members ARE read — a missing member would otherwise be misread as NULL
     in the BEFORE evidence while pass 2 (which reads the full record) sees
     the actual value.  The union is deduplicated and deterministic.
     """
     names: set[str] = set()
     for field_directive in directive.transformed:
-        if field_directive.action == "MASK_REVERSIBLE":
-            continue  # memo payloads are never read in pass 1
         names.add(field_directive.field_name)
     for field_name in directive.relation_fields:
         names.add(field_name)
@@ -209,9 +216,11 @@ def _observe_record(
     engine_plan: "EnginePlan",
     directive: "TableDirective",
     record: object,
+    vault: VaultDatabase,
     spool: PassOneSpool,
     outcome: PassOneOutcome,
     temporal_domain: TemporalShiftDomain | None,
+    memo_bindings: dict[tuple[str, str], tuple[str, str]],
 ) -> None:
     values = record.values  # type: ignore[attr-defined]
     for field_directive in directive.transformed:
@@ -224,7 +233,21 @@ def _observe_record(
         elif field_directive.action == "SHIFT_REVERSIBLE":
             if temporal_domain is not None:
                 temporal_domain.observe(value)
-        # MASK_REVERSIBLE: memo payloads are never collected into evidence.
+        elif field_directive.action == "MASK_REVERSIBLE":
+            binding = memo_bindings.get(
+                (directive.relative_path, field_directive.field_name)
+            )
+            if binding is None:
+                raise _mapping_failure("ENGINE_MEMO_BINDING_MISSING")
+            table_id, field_id = binding
+            persist_memo_recovery(
+                vault,
+                table_id=table_id,
+                physical_record_index=int(record.physical_index),  # type: ignore[attr-defined]
+                field_id=field_id,
+                dbf_type=field_directive.dbf_type,
+                value=value,
+            )
     for relation in engine_plan.relations:
         assert isinstance(relation, RelationDirective)
         if relation.parent_table == directive.relative_path:
