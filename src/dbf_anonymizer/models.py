@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.1"
+MODEL_SCHEMA_VERSION = "1.2"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -52,6 +52,23 @@ class VaultStrategy(str, Enum):
 
     NONE = "NONE"
     SINGLE_DATASET_SQLITE = "SINGLE_DATASET_SQLITE"
+
+
+class VerificationStatus(str, Enum):
+    """The ONE authoritative overall dataset verification verdict (REQ-P5-001).
+
+    ``PASS``  — every verification dimension that was required by the dataset
+    was independently verified; no unavailable-dimension claim is involved.
+    ``PARTIAL`` — every verified dimension held, but at least one required
+    verification dimension was truthfully unavailable (stable bounded check
+    code in ``check_codes``); PARTIAL is never silently promoted to PASS.
+    ``FAIL`` — at least one verified dimension detected corruption, tampering
+    or a broken contract; the stable finding codes name the dimension(s).
+    """
+
+    PASS = "PASS"
+    PARTIAL = "PARTIAL"
+    FAIL = "FAIL"
 
 
 #: The single review status of unchanged numeric identifiers (REQ-P3-004).
@@ -589,14 +606,32 @@ class PseudonymizationResult(PublicModel):
 
 @dataclass(frozen=True, slots=True)
 class VerificationResult(PublicModel):
-    verified: bool
+    """The ONE authoritative dataset verification verdict (REQ-P5-001).
+
+    ``status`` is the single authoritative PASS/PARTIAL/FAIL state; the
+    convenience ``verified`` property is DERIVED (PASS only) and never an
+    independent truth field. ``operation_id`` is the canonical durable
+    operation id of the verified pseudonymization operation (shared with
+    every ProgressEvent of the verification and the public pseudonymize
+    result). ``check_codes`` carries the stable, versioned finding codes of
+    failed/unavailable dimensions; a clean PASS carries none.
+    """
+
+    status: VerificationStatus
     dataset: DatasetIdentity
+    operation_id: str
     table_count: int
     record_count: int
     check_codes: tuple[str, ...]
     assurance: RelationalAssurance
 
+    @property
+    def verified(self) -> bool:
+        """Derived convenience truth: exactly the PASS status."""
+        return self.status is VerificationStatus.PASS
+
     def __post_init__(self) -> None:
+        _validated_code(self.operation_id, field_name="operation_id")
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
         for code in self.check_codes:
@@ -605,8 +640,9 @@ class VerificationResult(PublicModel):
     def to_dict(self) -> JsonDict:
         return _payload(
             "VerificationResult",
-            verified=self.verified,
+            status=self.status,
             dataset=self.dataset,
+            operation_id=self.operation_id,
             table_count=self.table_count,
             record_count=self.record_count,
             check_codes=self.check_codes,
@@ -701,6 +737,7 @@ __all__ = [
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",
+    "VerificationStatus",
     "VerificationResult",
     "RecoveryResult",
     "TransferBundleResult",

@@ -1,7 +1,8 @@
 """Public API entry point for DBF_Anonymizer 1.0 operational functions.
 
-Exposes capability discovery, deterministic planning/preflight and the
-synchronous transport-neutral ``pseudonymize`` service operation.
+Exposes capability discovery, deterministic planning/preflight, the
+synchronous transport-neutral ``pseudonymize`` service operation and the
+public independent dataset verification ``verify_dataset`` service.
 """
 
 from __future__ import annotations
@@ -33,8 +34,15 @@ from dbf_anonymizer.progress import (
 from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
 )
+from dbf_anonymizer.verification import verify_dataset
 
-__all__ = ["capabilities", "build_plan", "preflight", "pseudonymize"]
+__all__ = [
+    "capabilities",
+    "build_plan",
+    "preflight",
+    "pseudonymize",
+    "verify_dataset",
+]
 
 _MAX_PUBLIC_WORKERS = 32
 

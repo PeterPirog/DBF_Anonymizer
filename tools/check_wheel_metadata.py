@@ -77,6 +77,7 @@ def check_wheel(wheel: Path) -> None:
         "dbf_anonymizer/__main__.py",
         "dbf_anonymizer/models.py",
         "dbf_anonymizer/errors.py",
+        "dbf_anonymizer/verification.py",
         "dbf_anonymizer/py.typed",
     }
     missing = [name for name in required_members if not any(n == name for n in members)]
