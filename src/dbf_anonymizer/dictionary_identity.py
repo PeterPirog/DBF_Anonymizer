@@ -49,8 +49,9 @@ DICTIONARY_BUSY_TIMEOUT_MS = 10_000
 #: The ambiguous SQLite lifecycle artifacts that make a persisted dictionary
 #: state unverifiable without recovery: a write-ahead log, its shared-memory
 #: index and a rollback journal. A cleanly closed WAL dictionary leaves none
-#: of them behind, so any of these beside an existing file means the
-#: committed state cannot be validated read-only and immutably.
+#: of them behind, so any of these beside an existing file — derived from the
+#: dictionary's OWN filename — means the committed state cannot be validated
+#: read-only and immutably.
 DICTIONARY_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
@@ -73,11 +74,15 @@ def dictionary_id_shape_valid(value: object, prefix: str) -> bool:
 
 
 def dictionary_sidecars(path: Path) -> tuple[str, ...]:
-    """The fail-closed ambiguous sidecar inventory beside *path*.
+    """The fail-closed sidecar inventory OWNED by exactly this dictionary file.
 
-    ``PermissionError``/``OSError`` become typed privacy-safe failures; an
-    uninspectable directory is never treated as sidecar-free (fail-open is
-    impossible).
+    Only companions derived from *path* itself (``<name>-wal``, ``<name>-shm``
+    and ``<name>-journal``) belong to this dictionary's lifecycle state. An
+    unrelated sibling's SQLite artifacts (e.g. ``other.sqlite3-wal``) are
+    foreign state and must never influence THIS dictionary's compatibility
+    (truthful REQ-P2-010 reuse). ``PermissionError``/``OSError`` become typed
+    privacy-safe failures; an uninspectable directory is never treated as
+    sidecar-free (fail-open is impossible).
     """
     try:
         names = os.listdir(path.parent)
@@ -89,11 +94,8 @@ def dictionary_sidecars(path: Path) -> tuple[str, ...]:
         raise _dictionary_failure(
             ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED"
         ) from None
-    return tuple(
-        name
-        for name in sorted(names)
-        if name.endswith(DICTIONARY_SIDECAR_SUFFIXES)
-    )
+    owned = {f"{path.name}{suffix}" for suffix in DICTIONARY_SIDECAR_SUFFIXES}
+    return tuple(name for name in sorted(names) if name in owned)
 
 
 def connect_dictionary_readonly(path: Path) -> sqlite3.Connection:

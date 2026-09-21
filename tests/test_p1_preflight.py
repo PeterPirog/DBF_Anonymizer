@@ -683,6 +683,75 @@ def test_sidecar_ambiguous_vault_fails_closed_without_recovery(
     assert sidecar_path.stat().st_mtime_ns == sidecar_before[1]
 
 
+@pytest.mark.parametrize(
+    "foreign_suffix", ["-wal", "-shm", "-journal"], ids=["wal", "shm", "journal"]
+)
+def test_unrelated_sibling_sidecars_do_not_affect_dictionary_compatibility(
+    tmp_path: Path, foreign_suffix: str
+) -> None:
+    """Sidecar ownership is scoped to the dictionary's OWN filename (truthful
+    REQ-P2-010 reuse): an unrelated sibling's SQLite lifecycle artifacts (e.g.
+    ``unrelated.sqlite3-wal``) are foreign state and never make a clean
+    compatible dictionary unusable. The foreign sibling stays byte- and
+    mtime-identical."""
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    before = _vault_state(vault)
+    foreign = vault.parent / ("unrelated.sqlite3" + foreign_suffix)
+    foreign.write_bytes(b"FOREIGN-SIBLING-LIFECYCLE-STATE")
+    foreign_before = (foreign.read_bytes(), foreign.stat().st_mtime_ns)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is True
+    assert "VAULT_REUSE_INCOMPATIBLE" not in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_vault_untouched(vault, before, extra_names=(foreign.name,))
+    assert foreign.read_bytes() == foreign_before[0]
+    assert foreign.stat().st_mtime_ns == foreign_before[1]
+
+
+def test_dictionary_sidecar_ownership_is_exactly_the_owned_companions(
+    tmp_path: Path,
+) -> None:
+    """Direct kernel evidence: ``dictionary_sidecars`` reports only the
+    companions derived from the dictionary's OWN filename. Sibling artifacts
+    of other databases, prefix collisions and suffix-extended names are
+    foreign state and never reported."""
+    from dbf_anonymizer.dictionary_identity import dictionary_sidecars
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir(parents=True)
+    dictionary = vault_dir / "dictionary.sqlite3"
+    dictionary.write_bytes(b"dictionary-bytes")
+    for suffix in ("-wal", "-shm", "-journal"):
+        (vault_dir / ("dictionary.sqlite3" + suffix)).write_bytes(b"owned")
+    for foreign in (
+        "unrelated.sqlite3-wal",
+        "unrelated.sqlite3-shm",
+        "unrelated.sqlite3-journal",
+        "wal",
+        "shm",
+        "journal",
+        "dictionary.sqlite3-wal.bak",
+        "dictionary.sqlite3-wal2",
+    ):
+        (vault_dir / foreign).write_bytes(b"foreign")
+
+    assert dictionary_sidecars(dictionary) == (
+        "dictionary.sqlite3-journal",
+        "dictionary.sqlite3-shm",
+        "dictionary.sqlite3-wal",
+    )
+    # Ownership is symmetric: the unrelated database owns exactly its own
+    # companions, never the dictionary's.
+    assert dictionary_sidecars(vault_dir / "unrelated.sqlite3") == (
+        "unrelated.sqlite3-journal",
+        "unrelated.sqlite3-shm",
+        "unrelated.sqlite3-wal",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 15. Invalid / tampered policy summary
 # ---------------------------------------------------------------------------
