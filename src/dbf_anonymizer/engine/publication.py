@@ -26,6 +26,10 @@ __all__ = [
 
 FaultInjector = Callable[[str], None]
 
+#: The INTERNAL operation-receipt schema. Any structural change bumps this
+#: version; unknown versions are rejected fail-closed on read-back.
+RECEIPT_SCHEMA_VERSION = "1.1"
+
 
 def _publication_failure(detail_code: str) -> PublicationError:
     return PublicationError(
@@ -61,6 +65,44 @@ class PublicationIdentity:
     staging_root: Path
 
 
+def derive_destination_identity(destination: Path) -> str:
+    """The canonical normalized destination identity digest (``dst-...``).
+
+    The ONE canonicalization of a destination root used by both the durable
+    operation-id kernel and the publication identity (never duplicated).
+    """
+    resolved = destination.resolve(strict=False)
+    normalized = os.path.normcase(os.path.normpath(str(resolved)))
+    return _digest("dst-", {"path": normalized})
+
+
+def derive_operation_id(
+    *,
+    source_fingerprint: str,
+    policy_fingerprint: str,
+    relationship_fingerprint: str,
+    destination_identity: str,
+) -> str:
+    """The deterministic durable operation id (stable ``vop-`` vocabulary).
+
+    Derived ONLY from privacy-safe identity digests that are available
+    BEFORE any execution — never from source values — and stable for an
+    exact compatible retry of the same plan against the same destination.
+    The full P4-009 operation binding (which additionally binds the ACTUAL
+    vault fingerprint) remains the stronger engine-side fail-closed check.
+    """
+    payload = {
+        "source": source_fingerprint,
+        "policy": policy_fingerprint,
+        "relationships": relationship_fingerprint,
+        "destination": destination_identity,
+    }
+    return "vop-" + hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        .encode("ascii")
+    ).hexdigest()[:32]
+
+
 def build_publication_identity(
     *,
     destination: Path,
@@ -70,9 +112,7 @@ def build_publication_identity(
     relationship_fingerprint: str,
     operation_id: str | None,
 ) -> PublicationIdentity:
-    resolved = destination.resolve(strict=False)
-    normalized = os.path.normcase(os.path.normpath(str(resolved)))
-    destination_identity = _digest("dst-", {"path": normalized})
+    destination_identity = derive_destination_identity(destination)
     vault_fingerprint = _digest(
         "vlt-",
         {
@@ -93,14 +133,19 @@ def build_publication_identity(
             "destination": destination_identity,
         },
     )
-    effective_operation_id = operation_id or "vop-" + hashlib.sha256(
-        binding_fingerprint.encode("ascii")
-    ).hexdigest()[:32]
+    # ONE deterministic operation-id kernel: an explicit id wins, otherwise
+    # the canonical pre-executable derivation applies (stable for retries).
+    effective_operation_id = operation_id or derive_operation_id(
+        source_fingerprint=source_fingerprint,
+        policy_fingerprint=policy_fingerprint,
+        relationship_fingerprint=relationship_fingerprint,
+        destination_identity=destination_identity,
+    )
     sibling_token = hashlib.sha256(destination_identity.encode("ascii")).hexdigest()[:24]
-    parent = resolved.parent
+    parent = destination.resolve(strict=False).parent
     return PublicationIdentity(
         operation_id=effective_operation_id,
-        destination=resolved,
+        destination=destination.resolve(strict=False),
         destination_identity=destination_identity,
         vault_fingerprint=vault_fingerprint,
         binding_fingerprint=binding_fingerprint,
@@ -262,7 +307,7 @@ class DatasetStaging:
 
 def result_receipt(result: TwoPassResult) -> str:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": RECEIPT_SCHEMA_VERSION,
         "tables_written": list(result.tables_written),
         "pass1_records_scanned": result.pass1_records_scanned,
         "pass1_deleted_scanned": result.pass1_deleted_scanned,
@@ -276,6 +321,7 @@ def result_receipt(result: TwoPassResult) -> str:
         "read_streams": [list(item) for item in result.read_streams],
         "operation_id": result.operation_id,
         "output_fingerprint": result.output_fingerprint,
+        "protected_state_created": result.protected_state_created,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -283,7 +329,7 @@ def result_receipt(result: TwoPassResult) -> str:
 def result_from_receipt(receipt: str) -> TwoPassResult:
     try:
         payload = json.loads(receipt)
-        if payload.get("schema_version") != "1.0":
+        if payload.get("schema_version") != RECEIPT_SCHEMA_VERSION:
             raise ValueError
         relations = tuple(
             RelationPassSummary(**item) for item in payload["relations"]
@@ -308,6 +354,7 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
             operation_id=str(payload["operation_id"]),
             output_fingerprint=str(payload["output_fingerprint"]),
             reused_existing=True,
+            protected_state_created=bool(payload["protected_state_created"]),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise _publication_failure("OPERATION_RECEIPT_INVALID") from None

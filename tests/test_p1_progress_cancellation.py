@@ -1085,9 +1085,8 @@ def test_cancellation_and_failure_events_stay_within_bounded_payloads(
 
 
 def test_public_surface_stays_exactly_the_current_contract() -> None:
-    # No future operation was faked; ProgressEvent stays public as before.
+    # No unfinished operation was faked; ProgressEvent stays public as before.
     for operation in (
-        "pseudonymize",
         "verify_dataset",
         "recover",
         "create_transfer_bundle",
@@ -1096,4 +1095,4 @@ def test_public_surface_stays_exactly_the_current_contract() -> None:
         assert not hasattr(dbf_anonymizer, operation)
     assert "ProgressEvent" in dbf_anonymizer.__all__
     assert "CallbackError" in dbf_anonymizer.__all__
-    assert "pseudonymize" not in dbf_anonymizer.__all__
+    assert "pseudonymize" in dbf_anonymizer.__all__

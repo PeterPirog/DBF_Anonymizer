@@ -3,8 +3,8 @@
 The project deliberately does not preserve the historical 0.3 API. This file
 protects that clean-slate decision while allowing the current 1.0 model,
 error and operational contracts to become public. The currently implemented
-operational surface is exactly ``capabilities``, ``build_plan`` and
-``preflight``; the unfinished operations stay absent (no success
+operational surface is exactly ``capabilities``, ``build_plan``, ``preflight``
+and ``pseudonymize``; the unfinished operations stay absent (no success
 placeholders).
 """
 
@@ -62,6 +62,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "VaultStrategy",
     "build_plan",
     "preflight",
+    "pseudonymize",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -87,7 +88,6 @@ EXPECTED_PUBLIC_EXPORTS = {
 }
 
 FUTURE_OPERATION_EXPORTS = {
-    "pseudonymize",
     "verify_dataset",
     "recover",
     "create_transfer_bundle",
@@ -115,6 +115,13 @@ def test_capabilities_is_public_and_has_a_single_implementation() -> None:
 
     assert dbf_anonymizer.capabilities is api_module.capabilities
     assert dbf_anonymizer.capabilities.__module__ == "dbf_anonymizer.capabilities"
+
+
+def test_pseudonymize_is_public_and_has_a_single_implementation() -> None:
+    import dbf_anonymizer.api as api_module
+
+    assert dbf_anonymizer.pseudonymize is api_module.pseudonymize
+    assert dbf_anonymizer.pseudonymize.__module__ == "dbf_anonymizer.api"
 
 
 def test_capabilities_returns_the_immutable_public_model() -> None:

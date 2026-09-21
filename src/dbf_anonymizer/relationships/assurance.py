@@ -31,6 +31,10 @@ correctness.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Protocol, Sequence
+
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, VerificationError
 from dbf_anonymizer.models import (
     RelationalAssurance,
@@ -62,6 +66,148 @@ RELATIONAL_ASSURANCE_SCOPE_NOTE = "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
 
 #: The bounded detail code of a SUPPLIED-but-inconsistent authority binding.
 _BINDING_MISMATCH = "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH"
+
+
+class _BoundedRelationEvidence(Protocol):
+    """Structural subset supplied by the bounded production engine."""
+
+    @property
+    def relation_id(self) -> str: ...
+
+    @property
+    def verified(self) -> bool: ...
+
+    @property
+    def before_rows(self) -> int: ...
+
+    @property
+    def after_rows(self) -> int: ...
+
+    @property
+    def before_nulls(self) -> int: ...
+
+    @property
+    def after_nulls(self) -> int: ...
+
+    @property
+    def before_unique(self) -> int: ...
+
+    @property
+    def after_unique(self) -> int: ...
+
+    @property
+    def matched_rows(self) -> int: ...
+
+    @property
+    def orphan_count(self) -> int: ...
+
+    @property
+    def parent_profile_equal(self) -> bool: ...
+
+    @property
+    def foreign_profile_equal(self) -> bool: ...
+
+
+def _evidence_failure(detail_code: str) -> VerificationError:
+    return VerificationError(
+        ErrorCode.VERIFICATION_FAILED,
+        context=ErrorContext(
+            operation="derive_relational_assurance",
+            detail_code=detail_code,
+        ),
+    )
+
+
+def _assurance_from_counts(
+    relationships: RelationshipMetadata,
+    *,
+    verified: int,
+    failed: int,
+    evidence_fingerprint: str | None,
+    authoritative_verified: bool,
+) -> RelationalAssurance:
+    """The single level-selection kernel for P3 and production evidence."""
+    relation_count = relationships.relation_count
+    if relation_count == 0:
+        level = RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
+    elif verified == relation_count and failed == 0:
+        level = (
+            RelationalAssuranceLevel.VFP_METADATA_VERIFIED
+            if authoritative_verified
+            else RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
+        )
+    else:
+        level = RelationalAssuranceLevel.INCOMPLETE
+    return RelationalAssurance(
+        level=level,
+        declared_relations=relation_count,
+        verified_relations=verified,
+        failed_relations=failed,
+        incomplete_relations=relation_count - verified - failed,
+        evidence_fingerprint=evidence_fingerprint,
+        relationship_fingerprint=relationships.relationship_fingerprint,
+        evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
+        scope_note=RELATIONAL_ASSURANCE_SCOPE_NOTE,
+    )
+
+
+def _derive_relational_assurance_from_bounded_evidence(
+    relationships: RelationshipMetadata,
+    evidence: Sequence[_BoundedRelationEvidence],
+) -> RelationalAssurance:
+    """Adapt bounded P4 relation summaries into the canonical P3 derivation.
+
+    This remains internal because ``RelationPassSummary`` is an engine receipt,
+    not a second public evidence model. The digest binds every bounded,
+    value-free fact used by the production comparison.
+    """
+    if len(evidence) != relationships.relation_count:
+        raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
+    if not evidence:
+        return _assurance_from_counts(
+            relationships,
+            verified=0,
+            failed=0,
+            evidence_fingerprint=None,
+            authoritative_verified=False,
+        )
+
+    ordered = sorted(evidence, key=lambda item: item.relation_id)
+    relation_ids = [item.relation_id for item in ordered]
+    if len(set(relation_ids)) != len(relation_ids):
+        raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
+    payload = {
+        "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+        "relationship_fingerprint": relationships.relationship_fingerprint,
+        "relations": [
+            {
+                "relation_id": item.relation_id,
+                "verified": item.verified,
+                "before_rows": item.before_rows,
+                "after_rows": item.after_rows,
+                "before_nulls": item.before_nulls,
+                "after_nulls": item.after_nulls,
+                "before_unique": item.before_unique,
+                "after_unique": item.after_unique,
+                "matched_rows": item.matched_rows,
+                "orphan_count": item.orphan_count,
+                "parent_profile_equal": item.parent_profile_equal,
+                "foreign_profile_equal": item.foreign_profile_equal,
+            }
+            for item in ordered
+        ],
+    }
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    verified = sum(1 for item in ordered if item.verified)
+    return _assurance_from_counts(
+        relationships,
+        verified=verified,
+        failed=len(ordered) - verified,
+        evidence_fingerprint=hashlib.sha256(canonical).hexdigest(),
+        authoritative_verified=False,
+    )
 
 
 def _validated_authority_binding(
@@ -161,41 +307,22 @@ def derive_relational_assurance(
         # never granted — see _validated_authority_binding).
         _validated_authority_binding(relationships, report, authority_binding)
     relation_count = relationships.relation_count
+    authoritative_verified = False
     if report is None or not report.relations:
         verified = 0
         failed = 0
-        if relation_count == 0:
-            level = RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
-        else:
-            level = RelationalAssuranceLevel.INCOMPLETE
-            if report is not None:
-                # An empty report against declared relations is a structural
-                # inconsistency: fail closed instead of a partial truth.
-                raise VerificationError(
-                    ErrorCode.VERIFICATION_FAILED,
-                    context=ErrorContext(
-                        operation="derive_relational_assurance",
-                        detail_code="RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH",
-                    ),
-                )
+        if relation_count and report is not None:
+            # An empty report against declared relations is a structural
+            # inconsistency: fail closed instead of a partial truth.
+            raise _evidence_failure(
+                "RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH"
+            )
         evidence_fingerprint = None
     else:
         if report.relationship_fingerprint != relationships.relationship_fingerprint:
-            raise VerificationError(
-                ErrorCode.VERIFICATION_FAILED,
-                context=ErrorContext(
-                    operation="derive_relational_assurance",
-                    detail_code="RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH",
-                ),
-            )
+            raise _evidence_failure("RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH")
         if len(report.relations) != relation_count:
-            raise VerificationError(
-                ErrorCode.VERIFICATION_FAILED,
-                context=ErrorContext(
-                    operation="derive_relational_assurance",
-                    detail_code="RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH",
-                ),
-            )
+            raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
         verified = sum(
             1
             for entry in report.relations
@@ -207,13 +334,7 @@ def derive_relational_assurance(
             if entry.status is VerificationStatus.FAILED
         )
         if verified + failed > relation_count:
-            raise VerificationError(
-                ErrorCode.VERIFICATION_FAILED,
-                context=ErrorContext(
-                    operation="derive_relational_assurance",
-                    detail_code="RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH",
-                ),
-            )
+            raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
         if verified == relation_count and relation_count > 0:
             if (
                 relationships.authoritative
@@ -225,20 +346,12 @@ def derive_relational_assurance(
                     relationships, report, authority_binding
                 )
             ):
-                level = RelationalAssuranceLevel.VFP_METADATA_VERIFIED
-            else:
-                level = RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
-        else:
-            level = RelationalAssuranceLevel.INCOMPLETE
+                authoritative_verified = True
         evidence_fingerprint = report.evidence_fingerprint
-    return RelationalAssurance(
-        level=level,
-        declared_relations=relation_count,
-        verified_relations=verified,
-        failed_relations=failed,
-        incomplete_relations=relation_count - verified - failed,
+    return _assurance_from_counts(
+        relationships,
+        verified=verified,
+        failed=failed,
         evidence_fingerprint=evidence_fingerprint,
-        relationship_fingerprint=relationships.relationship_fingerprint,
-        evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
-        scope_note=RELATIONAL_ASSURANCE_SCOPE_NOTE,
+        authoritative_verified=authoritative_verified,
     )

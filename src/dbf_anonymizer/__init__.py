@@ -9,8 +9,8 @@ side-effect-free public capability discovery ``capabilities`` from
 REQ-P1-007.  The long-running read/scan operations support the REQ-P1-008
 bounded structured progress and cooperative cancellation callbacks
 (keyword-only ``progress`` / ``cancel_check`` arguments).  The remaining
-operations (``pseudonymize``, ``verify_dataset``, ``recover``,
-``create_transfer_bundle`` and ``verify_transfer_bundle``) are introduced only
+operations (``verify_dataset``, ``recover``, ``create_transfer_bundle`` and
+``verify_transfer_bundle``) are introduced only
 when their owning requirements are implemented; no placeholder success
 functions are exported.
 
@@ -62,7 +62,7 @@ from .models import (
     VaultStrategy,
     VerificationResult,
 )
-from .api import build_plan, capabilities, preflight
+from .api import build_plan, capabilities, preflight, pseudonymize
 
 __version__ = "1.0.0.dev0"
 
@@ -88,6 +88,7 @@ __all__ = [
     "VaultStrategy",
     "build_plan",
     "preflight",
+    "pseudonymize",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",

@@ -14,9 +14,9 @@ production pipeline:
   transforms one record at a time and feeds the ONE public Direct Write
   boundary, followed by the streaming before/after evidence comparison.
 
-The engine is an INTERNAL implementation boundary: it is not part of the
-root public API, no public ``pseudonymize`` operation exists yet (the
-publication/staging state is REQ-P4-009 scope).  Supported records are freshly
+The engine is an INTERNAL implementation boundary used by the public
+``pseudonymize`` service; it is not itself part of the root public API.
+Supported records are freshly
 reconstructed from transformed typed values with deleted markers and physical
 order preserved.  The versioned field matrix in :mod:`dbf_anonymizer.policy`
 is shared with planning/preflight and execution.
@@ -85,7 +85,12 @@ from dbf_anonymizer.relationships.models import (
     RelationGroup,
     RelationshipDocument,
 )
-from dbf_anonymizer.progress import ProgressController, ProgressPhase
+from dbf_anonymizer.progress import (
+    CancelCheck,
+    ProgressCallback,
+    ProgressController,
+    ProgressPhase,
+)
 from dbf_anonymizer.transforms.numeric_keys import (
     NumericKeyDomain,
     NumericKeyMemberRange,
@@ -448,6 +453,7 @@ def _revalidate_execution_identity(
     resolved_policy: object,
     relationship_document: RelationshipDocument | None,
     cancel_probe: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
 ) -> None:
     """The pre-execution trust revalidation (zero side effects on refusal).
 
@@ -462,7 +468,10 @@ def _revalidate_execution_identity(
     cancellation probe (the SAME controller probe used everywhere else —
     a returning-true check raises the typed ``CancellationError`` and a
     raising callback stays contained as ``CANCEL_CALLBACK_FAILED``) is
-    polled at the kernel's scan safe points.
+    polled at the kernel's scan safe points, and the optional progress
+    probe (the SAME controller, ``SOURCE_REVALIDATION`` phase) reports
+    bounded per-artifact scan progress — reusing the existing fingerprint
+    kernel hooks and quanta, never a per-byte callback flood.
     """
     from dbf_anonymizer.discovery import (
         collect_fingerprint_entries,
@@ -472,7 +481,9 @@ def _revalidate_execution_identity(
     from dbf_anonymizer.preflight import _paths_overlap
     from dbf_anonymizer.relationships.document import relationship_fingerprint
 
-    entries = collect_fingerprint_entries(source_root, cancel_probe=cancel_probe)
+    entries = collect_fingerprint_entries(
+        source_root, cancel_probe=cancel_probe, progress_probe=progress_probe
+    )
     current_source = compute_source_fingerprint(entries)
     if current_source != plan.dataset.source_fingerprint:
         raise _identity_failure("ENGINE_SOURCE_FINGERPRINT_MISMATCH")
@@ -610,11 +621,12 @@ def _cleanup_engine_resources(
 def run_two_pass(
     plan: Plan,
     *,
-    progress: Callable[[object], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
     workers: int = 1,
     operation_id: str | None = None,
     fault_inject: FaultInjector | None = None,
+    control: ProgressController | None = None,
 ) -> TwoPassResult:
     """The bounded two-pass production run bound to ONE execution identity.
 
@@ -624,6 +636,16 @@ def run_two_pass(
     engine accepts NO runtime path/policy/metadata overrides (there are no
     released users and no duplicate inputs).
 
+    INTERNAL control injection (PRIVATE, never part of the root public API):
+    the public ``pseudonymize`` service supplies its OWN
+    :class:`~dbf_anonymizer.progress.ProgressController` via ``control`` so
+    one public invocation keeps ONE controller, ONE operation id and ONE
+    terminal completion across its shared preflight evaluation and the
+    engine passes. Without ``control`` the engine creates its own internal
+    controller from ``progress``/``cancel_check`` (the pre-existing
+    behavior every direct engine test relies on); supplying ``control``
+    together with separate callbacks is a fail-closed contract error.
+
     PRE-EXECUTION REVALIDATION (before the vault, the spool or any output
     artifact is created — zero transformation-equivalent side effects on
     refusal):
@@ -631,7 +653,8 @@ def run_two_pass(
     1. SOURCE IDENTITY — the source fingerprint is RECOMPUTED with the SAME
        canonical kernel :func:`build_plan` used and must equal
        ``plan.dataset.source_fingerprint`` exactly (a source changed after
-       planning fails before any side effect).
+       planning fails before any side effect). The re-scan reports bounded
+       ``SOURCE_REVALIDATION`` progress through the SAME controller.
     2. PATH / TRUST ZONES — the existing preflight overlap semantics
        (resolved aliases) reject any source/output/vault nesting.
     3. POLICY — the context's resolved policy fingerprint must equal
@@ -647,9 +670,29 @@ def run_two_pass(
     published partial output).  The single authoritative recovery vault is
     the only durable mapping truth; the ephemeral evidence spool is
     protected Zone B state that is cleaned up explicitly after the run.
+
+    TERMINAL COMPLETION OWNERSHIP: with a SELF-created controller the engine
+    owns its single terminal completion event exactly as before. With an
+    EXTERNALLY supplied controller (the public ``pseudonymize`` service) the
+    engine emits NO terminal completion — the public service derives the
+    relational assurance and constructs the public result first, then owns
+    the invocation's single COMPLETED event (never a late cancellation poll
+    after an already committed publication).
     """
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
+    external_control = control is not None
+    if control is not None:
+        if not isinstance(control, ProgressController):
+            raise TypeError("control must be a ProgressController")
+        if progress is not None or cancel_check is not None:
+            raise ValueError(
+                "an injected controller excludes separate progress/cancel callbacks"
+            )
+        if operation_id is not None and control.operation_id != operation_id:
+            raise ValueError(
+                "an injected controller and the operation id must match"
+            )
     context = plan.execution_context
     if context is None:
         raise _path_failure("ENGINE_PLAN_CONTEXT_MISSING")
@@ -659,9 +702,11 @@ def run_two_pass(
     resolved_policy = context.resolved_policy
     if resolved_policy is None:
         raise _path_failure("ENGINE_PLAN_POLICY_MISSING")
-    control = ProgressController(
-        operation="two_pass", progress=progress, cancel_check=cancel_check
-    )
+    if control is None:
+        control = ProgressController(
+            operation="two_pass", progress=progress, cancel_check=cancel_check
+        )
+    control.start_phase(ProgressPhase.SOURCE_REVALIDATION)
     _revalidate_execution_identity(
         plan,
         source_root=source,
@@ -670,6 +715,12 @@ def run_two_pass(
         resolved_policy=resolved_policy,
         relationship_document=context.relationship_document,
         cancel_probe=control.check_cancelled,
+        progress_probe=lambda done, total, rel: control.progress(
+            ProgressPhase.SOURCE_REVALIDATION,
+            completed=done,
+            total=total,
+            table_path=rel,
+        ),
     )
     engine_plan = build_engine_plan(
         plan,
@@ -679,6 +730,7 @@ def run_two_pass(
     )
     vault: VaultDatabase | None = None
     spool: PassOneSpool | None = None
+    protected_state_created = not vault_path.exists()
     try:
         # Refuse known sensitive residue before creating a fresh durable vault.
         # Existing vaults are inspected first below so a crash-owned STARTED
@@ -688,7 +740,7 @@ def run_two_pass(
             refuse_evidence_leftovers(vault_path.parent)
         vault = VaultDatabase.open(
             vault_path,
-            create=not vault_path.exists(),
+            create=protected_state_created,
             expected_source_fingerprint=plan.dataset.source_fingerprint,
             expected_policy_fingerprint=plan.policy.policy_fingerprint,
             expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
@@ -709,7 +761,8 @@ def run_two_pass(
             if existing is not None:
                 refuse_spool_leftovers(vault_path.parent)
                 refuse_evidence_leftovers(vault_path.parent)
-                control.complete(completed=len(existing.tables_written))
+                if not external_control:
+                    control.complete(completed=len(existing.tables_written))
                 return existing
 
             # Stale sensitive SQLite state is checked only after a matching
@@ -794,6 +847,7 @@ def run_two_pass(
                         result,
                         operation_id=identity.operation_id,
                         output_fingerprint=output_fingerprint,
+                        protected_state_created=protected_state_created,
                     )
                     with writer_vault.transaction():
                         writer_vault.record_publication(
@@ -844,7 +898,10 @@ def run_two_pass(
                     raise
             # Cancellation is no longer observed after atomic promotion; this
             # terminal event cannot turn a committed dataset into cancellation.
-            control.complete(completed=len(result.tables_written), check_cancel=False)
+            if not external_control:
+                control.complete(
+                    completed=len(result.tables_written), check_cancel=False
+                )
             return result
     finally:
         operation_error = sys.exc_info()[1]

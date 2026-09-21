@@ -112,10 +112,10 @@ def test_import_is_side_effect_free_and_does_not_fake_operations() -> None:
     assert "Capabilities" in dbf_anonymizer.__all__
     assert "build_plan" in dbf_anonymizer.__all__
     assert "preflight" in dbf_anonymizer.__all__
+    assert "pseudonymize" in dbf_anonymizer.__all__
     assert "capabilities" in dbf_anonymizer.__all__
     assert callable(dbf_anonymizer.capabilities)
     for operation in (
-        "pseudonymize",
         "verify_dataset",
         "recover",
         "create_transfer_bundle",

@@ -59,6 +59,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
+from dbf_anonymizer.dictionary_identity import (
+    DICTIONARY_BUSY_TIMEOUT_MS,
+    connect_dictionary_readonly,
+    dictionary_sidecars,
+    incompatible_dictionary_identity,
+    read_dictionary_identity,
+)
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, VaultError
 from dbf_anonymizer.vault.protection import harden_vault_directory
 from dbf_anonymizer.vault.schema import (
@@ -88,8 +95,9 @@ __all__ = [
 #: Bounded SQLite busy timeout: a competing writer WAITS (instead of failing
 #: on a transient lock) and then deterministically observes the committed
 #: lease — the concurrent-rejection evidence is a typed conflict, never a
-#: flaky race.
-VAULT_BUSY_TIMEOUT_MS = 10_000
+#: flaky race. The single shared value is owned by the dictionary-identity
+#: kernel; this alias keeps the store-level connection policy name.
+VAULT_BUSY_TIMEOUT_MS = DICTIONARY_BUSY_TIMEOUT_MS
 
 _MAX_TOKEN_LENGTH = 128
 
@@ -194,16 +202,6 @@ def _normalize_relative_path(value: str) -> str:
     if any(":" in part for part in parts):
         raise ValueError("relative path must not contain drive separators")
     return "/".join(parts)
-
-
-def vault_id_shape_valid(value: object, prefix: str) -> bool:
-    """True when *value* is ``prefix`` followed by 32 lowercase hex digits."""
-    if not isinstance(value, str) or not value.startswith(prefix):
-        return False
-    digits = value[len(prefix):]
-    if len(digits) != 32:
-        return False
-    return all(character in "0123456789abcdef" for character in digits)
 
 
 class VaultDatabase:
@@ -361,13 +359,7 @@ class VaultDatabase:
     @staticmethod
     def _has_wal_sidecar(path: Path) -> bool:
         """True when a crash-dirty ``-wal`` sidecar exists for the dictionary."""
-        try:
-            names = os.listdir(path.parent)
-        except PermissionError:
-            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "TARGET_STAT_DENIED") from None
-        except OSError:
-            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED") from None
-        return f"{path.name}-wal" in names
+        return f"{path.name}-wal" in dictionary_sidecars(path)
 
     @classmethod
     def _require_wal_journal_mode(cls, connection: sqlite3.Connection) -> None:
@@ -389,11 +381,11 @@ class VaultDatabase:
     ) -> None:
         """STAGE 1: read-only validation — never writes, never converts.
 
-        Uses an SQLite read-only URI connection so an incompatible, foreign or
-        corrupt database is rejected without any possibility of journal-mode
-        changes, metadata writes, sidecar creation or recovery writes. The
-        expected dataset identity is compared HERE, before any read/write
-        connection can exist.
+        Delegates every SQLite primitive to the shared dictionary-identity
+        kernel so store and preflight use ONE authoritative parsing of the
+        schema and dataset identity. The WAL sidecar policy is decided by
+        :meth:`open` BEFORE this stage: a crash-dirty WAL vault follows the
+        recovery path and never this strictly read-only one.
         """
         connection = cls._connect_readonly(path)
         try:
@@ -402,47 +394,19 @@ class VaultDatabase:
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
         finally:
             connection.close()
-        mismatches = (
-            ("SOURCE_FINGERPRINT", expected_source_fingerprint, fingerprints["source"]),
-            ("POLICY_FINGERPRINT", expected_policy_fingerprint, fingerprints["policy"]),
-            (
-                "RELATIONSHIP_FINGERPRINT",
-                expected_relationship_fingerprint,
-                fingerprints["relationship"],
-            ),
+        detail = incompatible_dictionary_identity(
+            fingerprints,
+            expected_source_fingerprint=expected_source_fingerprint,
+            expected_policy_fingerprint=expected_policy_fingerprint,
+            expected_relationship_fingerprint=expected_relationship_fingerprint,
         )
-        for detail_code, expected, actual in mismatches:
-            if expected is not None and expected != actual:
-                raise _vault_failure(ErrorCode.VAULT_IDENTITY_MISMATCH, detail_code)
+        if detail is not None:
+            raise _vault_failure(ErrorCode.VAULT_IDENTITY_MISMATCH, detail)
 
     @classmethod
     def _connect_readonly(cls, path: Path) -> sqlite3.Connection:
-        try:
-            # ``immutable=1`` reads the file without creating any -wal/-shm
-            # wal-index artifacts (a plain ``mode=ro`` open of a WAL database
-            # makes SQLite create persistent sidecars). The vault identity and
-            # schema are immutable after creation, so the validation snapshot
-            # is exact for every supported, cleanly-closed vault; a rejected
-            # database stays byte-identical and artifact-free.
-            uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
-            connection = sqlite3.connect(
-                uri,
-                uri=True,
-                timeout=VAULT_BUSY_TIMEOUT_MS / 1000,
-                isolation_level=None,
-            )
-        except PermissionError:
-            raise _vault_failure(ErrorCode.VAULT_ACCESS_DENIED, "OPEN_DENIED") from None
-        except OSError:
-            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
-        except sqlite3.Error:
-            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "OPEN_FAILED") from None
-        try:
-            connection.execute(f"PRAGMA busy_timeout = {VAULT_BUSY_TIMEOUT_MS}")
-        except sqlite3.Error:
-            connection.close()
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
-        return connection
+        """Delegate to the shared read-only immutable snapshot connection."""
+        return connect_dictionary_readonly(path)
 
     @classmethod
     def _connect_live_reader(cls, path: Path) -> sqlite3.Connection:
@@ -798,51 +762,16 @@ class VaultDatabase:
         return database
 
     @classmethod
-    def _validate(cls, connection: sqlite3.Connection) -> None:
-        """Deterministic integrity boundary (type-classified, never text-parsed)."""
-        check_rows = connection.execute("PRAGMA quick_check").fetchall()
-        if (
-            len(check_rows) != 1
-            or not isinstance(check_rows[0][0], str)
-            or check_rows[0][0] != "ok"
-        ):
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "QUICK_CHECK_FAILED")
-        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-        if violations:
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "FOREIGN_KEY_CHECK_FAILED")
-
-    @classmethod
     def _read_identity(
         cls, connection: sqlite3.Connection
     ) -> tuple[str, str, dict[str, str]]:
-        cls._validate(connection)
-        meta = connection.execute(
-            "SELECT schema_version, vault_id FROM meta WHERE singleton = 1"
-        ).fetchone()
-        if meta is None:
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "META_MISSING")
-        vault_id = meta[1]
-        if not vault_id_shape_valid(vault_id, VAULT_ID_PREFIX):
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "VAULT_ID_MALFORMED")
-        if meta[0] != VAULT_SCHEMA_VERSION:
-            raise _vault_failure(
-                ErrorCode.VAULT_SCHEMA_UNSUPPORTED, "SCHEMA_VERSION_UNSUPPORTED"
-            )
-        dataset = connection.execute(
-            "SELECT source_fingerprint, policy_fingerprint, relationship_fingerprint "
-            "FROM dataset WHERE singleton = 1"
-        ).fetchone()
-        if dataset is None:
-            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATASET_MISSING")
-        return (
-            str(vault_id),
-            str(meta[0]),
-            {
-                "source": str(dataset[0]),
-                "policy": str(dataset[1]),
-                "relationship": str(dataset[2]),
-            },
-        )
+        """Delegate to the shared dictionary-identity kernel.
+
+        The classmethod is preserved as the store's typed injection seam:
+        every identity read (validation snapshot, creation binding and
+        revalidation) stays interceptable at ONE seam.
+        """
+        return read_dictionary_identity(connection)
 
     # -- public state --------------------------------------------------------
     @property
