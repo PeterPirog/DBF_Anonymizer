@@ -151,34 +151,27 @@ def _assurance_from_counts(
     )
 
 
-def _derive_relational_assurance_from_bounded_evidence(
-    relationships: RelationshipMetadata,
+def bounded_evidence_fingerprint(
     evidence: Sequence[_BoundedRelationEvidence],
-) -> RelationalAssurance:
-    """Adapt bounded P4 relation summaries into the canonical P3 derivation.
+    *,
+    relationship_fingerprint: str,
+) -> str | None:
+    """The canonical evidence digest of bounded relation summaries.
 
-    This remains internal because ``RelationPassSummary`` is an engine receipt,
-    not a second public evidence model. The digest binds every bounded,
-    value-free fact used by the production comparison.
+    The ONE digest recipe shared by the assurance derivation and the
+    REQ-P5-001 dataset verification (which re-derives the expected evidence
+    fingerprint from the durable operation receipt). ``None`` for empty
+    evidence — matching the no-relation assurance payload.
     """
-    if len(evidence) != relationships.relation_count:
-        raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
     if not evidence:
-        return _assurance_from_counts(
-            relationships,
-            verified=0,
-            failed=0,
-            evidence_fingerprint=None,
-            authoritative_verified=False,
-        )
-
+        return None
     ordered = sorted(evidence, key=lambda item: item.relation_id)
     relation_ids = [item.relation_id for item in ordered]
     if len(set(relation_ids)) != len(relation_ids):
         raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
     payload = {
         "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
-        "relationship_fingerprint": relationships.relationship_fingerprint,
+        "relationship_fingerprint": relationship_fingerprint,
         "relations": [
             {
                 "relation_id": item.relation_id,
@@ -200,12 +193,32 @@ def _derive_relational_assurance_from_bounded_evidence(
     canonical = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _derive_relational_assurance_from_bounded_evidence(
+    relationships: RelationshipMetadata,
+    evidence: Sequence[_BoundedRelationEvidence],
+) -> RelationalAssurance:
+    """Adapt bounded P4 relation summaries into the canonical P3 derivation.
+
+    This remains internal because ``RelationPassSummary`` is an engine receipt,
+    not a second public evidence model. The digest binds every bounded,
+    value-free fact used by the production comparison (ONE shared recipe —
+    see :func:`bounded_evidence_fingerprint`).
+    """
+    if len(evidence) != relationships.relation_count:
+        raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
+    evidence_fingerprint = bounded_evidence_fingerprint(
+        evidence, relationship_fingerprint=relationships.relationship_fingerprint
+    )
+    ordered = sorted(evidence, key=lambda item: item.relation_id)
     verified = sum(1 for item in ordered if item.verified)
     return _assurance_from_counts(
         relationships,
         verified=verified,
         failed=len(ordered) - verified,
-        evidence_fingerprint=hashlib.sha256(canonical).hexdigest(),
+        evidence_fingerprint=evidence_fingerprint,
         authoritative_verified=False,
     )
 

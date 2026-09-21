@@ -60,7 +60,7 @@ __all__ = [
 ]
 
 #: Versioned identity of the bounded-progress / cancellation-quanta vocabulary.
-PROGRESS_QUANTUM_VERSION = "1.1"
+PROGRESS_QUANTUM_VERSION = "1.2"
 
 #: Type of the synchronous progress callback (REQ-P1-002 ProgressEvent).
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -79,14 +79,16 @@ class ProgressPhase:
     Phase 4 two-pass engine (REQ-P4-002) realizes its own bounded phases
     ``PASS1_SCAN``/``PASS1_FINALIZE``/``PASS2_WRITE`` on the same bounded
     progress contract, plus ``SOURCE_REVALIDATION`` for the pre-execution
-    trust re-scan.  No operation outside the engine emits them.
+    trust re-scan, and the REQ-P5-001 dataset verification service realizes
+    ``VERIFICATION`` (the streaming record/policy scan) plus
+    ``VAULT_VERIFICATION`` and ``OUTPUT_VERIFICATION`` for its dedicated
+    read-only vault and output-fingerprint phases.  No operation outside
+    the engine and the verification service emits them.
 
-    Vocabulary note (version 1.1): ``SOURCE_REVALIDATION`` was added so the
-    engine's pre-execution source re-scan reports bounded progress under its
-    OWN phase — a public ``pseudonymize`` invocation shares ONE controller
-    between the shared preflight evaluation and the engine, and reusing
-    ``SOURCE_VERIFICATION`` there would reset that phase's unit counts
-    within the same operation stream.
+    Vocabulary note (version 1.2): ``VAULT_VERIFICATION`` and
+    ``OUTPUT_VERIFICATION`` were added for the public dataset verification
+    service; ``VERIFICATION`` is realized by that service's bounded
+    streaming record/policy scan.
     """
 
     OPERATION = "OPERATION"
@@ -99,6 +101,8 @@ class ProgressPhase:
     SCAN = "SCAN"
     WRITE = "WRITE"
     VERIFICATION = "VERIFICATION"
+    VAULT_VERIFICATION = "VAULT_VERIFICATION"
+    OUTPUT_VERIFICATION = "OUTPUT_VERIFICATION"
     PUBLICATION = "PUBLICATION"
     PASS1_SCAN = "PASS1_SCAN"
     PASS1_FINALIZE = "PASS1_FINALIZE"

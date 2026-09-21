@@ -524,7 +524,15 @@ class _WriterLease:
 def _register_memo_structure(
     engine_plan: EnginePlan, vault: VaultDatabase
 ) -> dict[tuple[str, str], tuple[str, str]]:
-    """Register stable vault identities for every transformed memo field."""
+    """Register stable vault identities for every transformed memo field.
+
+    Memo identities must exist BEFORE pass 1 (the recovery rows reference
+    the stable field identity while records are observed). The complete
+    per-field policy application (text/numeric/temporal actions and their
+    mapping domains) is registered AFTER pass 1 finalize by
+    :func:`_register_transform_fields`, once the durable mapping-domain
+    rows exist.
+    """
 
     bindings: dict[tuple[str, str], tuple[str, str]] = {}
     if not any(table.memo_fields for table in engine_plan.tables):
@@ -575,6 +583,88 @@ def _register_memo_structure(
                     field_id,
                 )
     return bindings
+
+
+def _register_transform_fields(
+    engine_plan: EnginePlan,
+    vault: VaultDatabase,
+    outcome: PassOneOutcome,
+    temporal_domain: TemporalShiftDomain | None,
+) -> None:
+    """Register the durable per-field policy application (REQ-P5-001 reader).
+
+    Every TRANSFORMED field of every planned table is recorded with its
+    exact action and mapping domain so the public dataset verification can
+    independently check the applied policy without the private plan: the
+    vault is the durable authority for what was transformed. Memo fields
+    are registered earlier (recovery-row FK order); identity (KEEP) fields
+    stay unregistered — their verified postcondition is logical identity.
+
+    Domain FKs require the mapping-domain rows, which exist only after
+    pass 1 finalize; re-registration (a resumed run) reuses and revalidates
+    existing rows deterministically.
+    """
+    if not any(table.transformed for table in engine_plan.tables):
+        return
+    text_domain_id = outcome.text_domain_id
+    with vault.transaction():
+        existing_tables = {
+            str(row["relative_path"]): str(row["table_id"]) for row in vault.tables()
+        }
+        for table in engine_plan.tables:
+            if not table.transformed:
+                continue
+            table_id = existing_tables.get(table.relative_path)
+            if table_id is None:
+                table_id = vault.register_table(table.relative_path)
+                existing_tables[table.relative_path] = table_id
+            for field in table.transformed:
+                if field.action == ACTION_MEMO:
+                    continue  # registered before pass 1 (recovery FK order)
+                domain_id: str | None = None
+                if field.numeric_domain_id is not None:
+                    domain_id = field.numeric_domain_id
+                elif field.action == ACTION_TEXT and text_domain_id is not None:
+                    domain_id = text_domain_id
+                elif field.action == "SHIFT_REVERSIBLE" and temporal_domain is not None:
+                    domain_id = (
+                        temporal_domain.domain_id
+                        if vault._internal_connection()
+                        .execute(
+                            "SELECT 1 FROM mapping_domains WHERE domain_id = ?",
+                            (temporal_domain.domain_id,),
+                        )
+                        .fetchone()
+                        is not None
+                        else None
+                    )
+                existing = (
+                    vault._internal_connection()
+                    .execute(
+                        "SELECT field_id, dbf_type, width, encoding, transform_action, "
+                        "mapping_domain_id FROM fields WHERE table_id = ? AND name = ?",
+                        (table_id, field.field_name),
+                    )
+                    .fetchone()
+                )
+                if existing is None:
+                    vault.register_field(
+                        table_id,
+                        field.field_name,
+                        dbf_type=field.dbf_type,
+                        width=field.byte_width,
+                        encoding=field.encoding,
+                        transform_action=field.action,
+                        mapping_domain_id=domain_id,
+                    )
+                elif tuple(None if value is None else str(value) for value in existing[1:]) != (
+                    field.dbf_type,
+                    str(field.byte_width),
+                    field.encoding,
+                    field.action,
+                    domain_id,
+                ):
+                    raise _identity_failure("ENGINE_FIELD_STRUCTURE_MISMATCH")
 
 
 def _cleanup_engine_resources(
@@ -824,6 +914,9 @@ def run_two_pass(
                         control=control,
                         outcome=outcome,
                         temporal_domain=temporal_domain,
+                    )
+                    _register_transform_fields(
+                        engine_plan, writer_vault, outcome, temporal_domain
                     )
                     evidence_root = create_evidence_root(
                         vault_path.parent, identity.operation_id

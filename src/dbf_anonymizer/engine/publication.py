@@ -177,14 +177,25 @@ def _iter_dataset_files(root: Path) -> Iterator[tuple[str, Path]]:
 
 
 def fingerprint_dataset(
-    root: Path, *, checkpoint: Callable[[], None] | None = None
+    root: Path,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
 ) -> str:
-    """Hash a complete dataset tree incrementally in canonical path order."""
+    """Hash a complete dataset tree incrementally in canonical path order.
+
+    The optional private progress probe (REQ-P1-008, used by the REQ-P5-001
+    dataset verification service) is called with ``done, total, relative``
+    after each artifact digest — one bounded event per file, never per byte.
+    With ``progress_probe=None`` the pre-existing deterministic behavior and
+    the exact fingerprint bytes are unchanged.
+    """
     if not root.is_dir():
         raise _publication_failure("DATASET_MISSING")
     digest = hashlib.sha256(b"DBF-ANONYMIZER-DATASET/v1\x00")
+    inventory = list(_iter_dataset_files(root))
     count = 0
-    for relative, path in _iter_dataset_files(root):
+    for relative, path in inventory:
         if checkpoint is not None:
             checkpoint()
         count += 1
@@ -201,6 +212,8 @@ def fingerprint_dataset(
                 digest.update(block)
                 if checkpoint is not None:
                     checkpoint()
+        if progress_probe is not None:
+            progress_probe(count, len(inventory), relative)
     digest.update(count.to_bytes(8, "big"))
     return "out-" + digest.hexdigest()
 
