@@ -65,6 +65,44 @@ class PublicationIdentity:
     staging_root: Path
 
 
+def derive_destination_identity(destination: Path) -> str:
+    """The canonical normalized destination identity digest (``dst-...``).
+
+    The ONE canonicalization of a destination root used by both the durable
+    operation-id kernel and the publication identity (never duplicated).
+    """
+    resolved = destination.resolve(strict=False)
+    normalized = os.path.normcase(os.path.normpath(str(resolved)))
+    return _digest("dst-", {"path": normalized})
+
+
+def derive_operation_id(
+    *,
+    source_fingerprint: str,
+    policy_fingerprint: str,
+    relationship_fingerprint: str,
+    destination_identity: str,
+) -> str:
+    """The deterministic durable operation id (stable ``vop-`` vocabulary).
+
+    Derived ONLY from privacy-safe identity digests that are available
+    BEFORE any execution — never from source values — and stable for an
+    exact compatible retry of the same plan against the same destination.
+    The full P4-009 operation binding (which additionally binds the ACTUAL
+    vault fingerprint) remains the stronger engine-side fail-closed check.
+    """
+    payload = {
+        "source": source_fingerprint,
+        "policy": policy_fingerprint,
+        "relationships": relationship_fingerprint,
+        "destination": destination_identity,
+    }
+    return "vop-" + hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        .encode("ascii")
+    ).hexdigest()[:32]
+
+
 def build_publication_identity(
     *,
     destination: Path,
@@ -74,9 +112,7 @@ def build_publication_identity(
     relationship_fingerprint: str,
     operation_id: str | None,
 ) -> PublicationIdentity:
-    resolved = destination.resolve(strict=False)
-    normalized = os.path.normcase(os.path.normpath(str(resolved)))
-    destination_identity = _digest("dst-", {"path": normalized})
+    destination_identity = derive_destination_identity(destination)
     vault_fingerprint = _digest(
         "vlt-",
         {
@@ -97,14 +133,19 @@ def build_publication_identity(
             "destination": destination_identity,
         },
     )
-    effective_operation_id = operation_id or "vop-" + hashlib.sha256(
-        binding_fingerprint.encode("ascii")
-    ).hexdigest()[:32]
+    # ONE deterministic operation-id kernel: an explicit id wins, otherwise
+    # the canonical pre-executable derivation applies (stable for retries).
+    effective_operation_id = operation_id or derive_operation_id(
+        source_fingerprint=source_fingerprint,
+        policy_fingerprint=policy_fingerprint,
+        relationship_fingerprint=relationship_fingerprint,
+        destination_identity=destination_identity,
+    )
     sibling_token = hashlib.sha256(destination_identity.encode("ascii")).hexdigest()[:24]
-    parent = resolved.parent
+    parent = destination.resolve(strict=False).parent
     return PublicationIdentity(
         operation_id=effective_operation_id,
-        destination=resolved,
+        destination=destination.resolve(strict=False),
         destination_identity=destination_identity,
         vault_fingerprint=vault_fingerprint,
         binding_fingerprint=binding_fingerprint,

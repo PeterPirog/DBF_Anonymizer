@@ -12,6 +12,10 @@ from pathlib import Path
 
 from dbf_anonymizer.capabilities import capabilities
 from dbf_anonymizer.engine import run_two_pass
+from dbf_anonymizer.engine.publication import (
+    derive_destination_identity,
+    derive_operation_id,
+)
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PublicationError
 from dbf_anonymizer.models import (
     Plan,
@@ -79,16 +83,27 @@ def pseudonymize(
 ) -> PseudonymizationResult:
     """Synchronously pseudonymize one immutable plan (REQ-P4-008/P4-009).
 
-    ONE invocation is ONE logical operation (REQ-P1-008): a single
-    ``ProgressController`` with a single operation id drives the shared
-    side-effect-free preflight evaluation (source verification, table
+    ONE invocation is ONE logical operation with ONE canonical operation id
+    (REQ-P1-008): the durable publication identity, the vault operation row,
+    the publication receipt, the engine result, every
+    :class:`~dbf_anonymizer.models.ProgressEvent` and the returned
+    :class:`~dbf_anonymizer.models.PseudonymizationResult` all carry the
+    SAME stable ``vop-`` id, deterministically derived before any event is
+    emitted from identity digests only (source/policy/relationship
+    fingerprints plus the canonical destination identity) — stable for an
+    exact compatible retry, independent of source values, and still protected
+    by the engine's full operation binding including the actual vault
+    fingerprint.
+
+    A single ``ProgressController`` seeded with that canonical id drives the
+    shared side-effect-free preflight evaluation (source verification, table
     evaluation and capacity scanning WITHOUT an intermediate preflight
     completion), the engine's pre-execution source revalidation and every
-    pass1/pass2/publication phase — with exactly one terminal ``COMPLETED``
-    event emitted only after the dataset is genuinely published. Cancellation
-    and callback failures inside the preflight evaluation are typed,
-    contained and attributed to the ``pseudonymize`` operation while no
-    transformation state exists.
+    pass1/pass2/publication phase. The terminal ``COMPLETED`` event is owned
+    by the PUBLIC operation: it is emitted exactly once, only after the
+    relational assurance has been derived and the public result constructed
+    — never after a cancellation, rejection or callback failure, and never
+    with a late cancellation poll after an already committed publication.
 
     Fresh execution is gated by that shared read-only preflight evaluation.
     Exact completed retries are classified by the engine's durable execution
@@ -104,15 +119,30 @@ def pseudonymize(
         or not 1 <= workers <= _MAX_PUBLIC_WORKERS
     ):
         raise ValueError(f"workers must be an integer from 1 to {_MAX_PUBLIC_WORKERS}")
+    context = plan.execution_context
+    if context is None:
+        # Impossible for a real build_plan result; fail closed rather than guess.
+        raise _preflight_refusal()
 
+    # The canonical durable operation id exists BEFORE the first public
+    # progress event and is stable for exact compatible retries.
+    canonical_operation_id = derive_operation_id(
+        source_fingerprint=plan.dataset.source_fingerprint,
+        policy_fingerprint=plan.policy.policy_fingerprint,
+        relationship_fingerprint=plan.relationships.relationship_fingerprint,
+        destination_identity=derive_destination_identity(Path(context.output_root)),
+    )
     control = ProgressController(
-        operation="pseudonymize", progress=progress, cancel_check=cancel_check
+        operation="pseudonymize",
+        progress=progress,
+        cancel_check=cancel_check,
+        operation_id=canonical_operation_id,
     )
     control.start_phase(ProgressPhase.OPERATION)
     # The shared internal preflight evaluation core runs through THIS
     # controller: bounded progress for the potentially long read-only scan
-    # stages, and NO preflight terminal completion (the engine's final
-    # publication completion is the invocation's single COMPLETED event).
+    # stages, and NO preflight terminal completion (the public service owns
+    # the invocation's single COMPLETED event).
     check = _evaluate_plan_readonly(plan, control)
     if not check.ready:
         retry_only = (
@@ -122,7 +152,9 @@ def pseudonymize(
         if not retry_only:
             raise _preflight_refusal()
 
-    result = run_two_pass(plan, workers=workers, control=control)
+    result = run_two_pass(
+        plan, workers=workers, control=control, operation_id=canonical_operation_id
+    )
     if result.operation_id is None or result.output_fingerprint is None:
         raise PublicationError(
             ErrorCode.PUBLICATION_INCOMPLETE,
@@ -131,14 +163,11 @@ def pseudonymize(
                 detail_code="ENGINE_RESULT_IDENTITY_MISSING",
             ),
         )
-    context = plan.execution_context
-    if context is None:
-        raise _preflight_refusal()
     output_name = Path(context.output_root).name
     assurance = _derive_relational_assurance_from_bounded_evidence(
         plan.relationships, result.relations
     )
-    return PseudonymizationResult(
+    public_result = PseudonymizationResult(
         operation_id=result.operation_id,
         dataset=plan.dataset,
         output_path=output_name,
@@ -151,3 +180,9 @@ def pseudonymize(
             output_root=context.output_root
         ),
     )
+    # The PUBLIC operation owns its single terminal completion: emitted only
+    # now — after the assurance was derived and the public result constructed
+    # — and never with a late cancellation poll after the committed
+    # publication (the post-promotion cancellation rule is preserved).
+    control.complete(completed=len(result.tables_written), check_cancel=False)
+    return public_result

@@ -287,10 +287,12 @@ def test_completed_retry_returns_equivalent_public_result_without_passes(
     second = pseudonymize(plan, workers=3, progress=retry_recorder)
 
     # One coherent public operation stream: one operation id, exactly one
-    # terminal COMPLETED (engine-owned), and NO transformation-pass phase.
+    # terminal COMPLETED (public-owned), and NO transformation-pass phase.
     retry_events = retry_recorder.events
     assert retry_events
-    assert len({event.operation_id for event in retry_events}) == 1
+    # The retry stream uses the SAME canonical durable operation id.
+    assert second.operation_id == first.operation_id
+    assert {event.operation_id for event in retry_events} == {second.operation_id}
     retry_completed = retry_recorder.completed_events()
     assert len(retry_completed) == 1
     assert retry_events[-1] is retry_completed[0]
@@ -560,8 +562,12 @@ def test_public_progress_stream_is_one_operation_across_preflight_and_engine(
 
     events = recorder.events
     assert events
-    # ONE operation id across preflight-stage AND engine events.
-    assert len({event.operation_id for event in events}) == 1
+    # ONE canonical operation id across preflight-stage AND engine events,
+    # identical to the durable publication identity and the public result:
+    # every ProgressEvent.operation_id == PseudonymizationResult.operation_id.
+    assert {event.operation_id for event in events} == {result.operation_id}
+    assert result.operation_id.startswith("vop-")
+    assert len(result.operation_id) == len("vop-") + 32
 
     # Preflight-stage events are observable within the public invocation.
     assert recorder.phase("SOURCE_VERIFICATION", "STARTED")
@@ -754,3 +760,80 @@ def test_root_export_and_api_identity_are_exact() -> None:
 
     assert dbf_anonymizer.pseudonymize is api_module.pseudonymize
     assert "pseudonymize" in dbf_anonymizer.__all__
+
+
+def test_canonical_operation_id_kernel_is_deterministic_and_retry_stable(
+    tmp_path: Path,
+) -> None:
+    """The durable operation id is derived by ONE pure kernel from identity
+    digests available before execution: deterministic, bounded stable
+    ``vop-`` vocabulary, stable for exact compatible retries, and dependent
+    on every identity input. Destination canonicalization is the ONE shared
+    helper (never duplicated)."""
+    from dbf_anonymizer.engine.publication import (
+        derive_destination_identity,
+        derive_operation_id,
+    )
+
+    def identifier(
+        source: str = "src-a",
+        policy: str = "pol-a",
+        relationships: str = "rel-a",
+        destination_identity: str = "dst-a",
+    ) -> str:
+        return derive_operation_id(
+            source_fingerprint=source,
+            policy_fingerprint=policy,
+            relationship_fingerprint=relationships,
+            destination_identity=destination_identity,
+        )
+
+    first = identifier()
+    assert first == identifier()
+    assert first.startswith("vop-")
+    assert len(first) == len("vop-") + 32
+    assert all(character in "0123456789abcdef" for character in first[4:])
+    for changed in (
+        {"source": "src-b"},
+        {"policy": "pol-b"},
+        {"relationships": "rel-b"},
+        {"destination_identity": "dst-b"},
+    ):
+        assert identifier(**changed) != first
+
+    # The ONE canonical destination identity: stable for the same root and
+    # distinct for different roots.
+    assert derive_destination_identity(tmp_path / "out-a") == (
+        derive_destination_identity(tmp_path / "out-a")
+    )
+    assert derive_destination_identity(tmp_path / "out-a") != (
+        derive_destination_identity(tmp_path / "out-b")
+    )
+
+
+def test_public_adaptation_failure_after_engine_return_emits_no_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deterministic failure AFTER the engine returned but BEFORE the public
+    result exists: the shared public controller must NOT already have
+    emitted COMPLETED — the public operation owns its terminal event and a
+    failed adaptation never reports success."""
+    import dbf_anonymizer.api as api_module
+
+    plan, _source, _output, _vault = _plan(tmp_path)
+    recorder = _ProgressRecorder()
+
+    def failing_adaptation(relationships: object, evidence: object) -> object:
+        raise RuntimeError("synthetic public adaptation failure")
+
+    monkeypatch.setattr(
+        api_module,
+        "_derive_relational_assurance_from_bounded_evidence",
+        failing_adaptation,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic public adaptation failure"):
+        pseudonymize(plan, progress=recorder)
+
+    assert recorder.events
+    assert recorder.completed_events() == []

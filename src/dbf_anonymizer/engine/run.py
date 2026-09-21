@@ -670,15 +670,28 @@ def run_two_pass(
     published partial output).  The single authoritative recovery vault is
     the only durable mapping truth; the ephemeral evidence spool is
     protected Zone B state that is cleaned up explicitly after the run.
+
+    TERMINAL COMPLETION OWNERSHIP: with a SELF-created controller the engine
+    owns its single terminal completion event exactly as before. With an
+    EXTERNALLY supplied controller (the public ``pseudonymize`` service) the
+    engine emits NO terminal completion — the public service derives the
+    relational assurance and constructs the public result first, then owns
+    the invocation's single COMPLETED event (never a late cancellation poll
+    after an already committed publication).
     """
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
+    external_control = control is not None
     if control is not None:
         if not isinstance(control, ProgressController):
             raise TypeError("control must be a ProgressController")
         if progress is not None or cancel_check is not None:
             raise ValueError(
                 "an injected controller excludes separate progress/cancel callbacks"
+            )
+        if operation_id is not None and control.operation_id != operation_id:
+            raise ValueError(
+                "an injected controller and the operation id must match"
             )
     context = plan.execution_context
     if context is None:
@@ -748,7 +761,8 @@ def run_two_pass(
             if existing is not None:
                 refuse_spool_leftovers(vault_path.parent)
                 refuse_evidence_leftovers(vault_path.parent)
-                control.complete(completed=len(existing.tables_written))
+                if not external_control:
+                    control.complete(completed=len(existing.tables_written))
                 return existing
 
             # Stale sensitive SQLite state is checked only after a matching
@@ -884,7 +898,10 @@ def run_two_pass(
                     raise
             # Cancellation is no longer observed after atomic promotion; this
             # terminal event cannot turn a committed dataset into cancellation.
-            control.complete(completed=len(result.tables_written), check_cancel=False)
+            if not external_control:
+                control.complete(
+                    completed=len(result.tables_written), check_cancel=False
+                )
             return result
     finally:
         operation_error = sys.exc_info()[1]

@@ -137,6 +137,15 @@ CAPACITY_PROGRESS_RECORD_QUANTUM = 4096
 #: Bounded operation-id shape: "op-" + 32 lowercase hex characters.
 _OPERATION_ID_PREFIX = "op-"
 
+#: The durable engine/publication operation id shares the same bounded
+#: machine-token shape with the stable ``vop-`` vocabulary. A controller may
+#: be seeded with such a precomputed canonical id (PRIVATE/internal injection
+#: for the public pseudonymize service; standalone operations keep generating
+#: their existing invocation ids).
+_OPERATION_ID_PREFIXES = ("op-", "vop-")
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
 #: Stable detail codes for the contained callback-failure classification.
 _PROGRESS_CALLBACK_DETAIL = "PROGRESS_CALLBACK"
 _CANCEL_CHECK_DETAIL = "CANCEL_CHECK"
@@ -146,6 +155,21 @@ _CANCELLED_DETAIL = "CANCELLED_BY_CHECK"
 def _uuid_operation_id() -> str:
     """Privacy-safe in-memory invocation ID (no files, no network, no globals)."""
     return _OPERATION_ID_PREFIX + uuid.uuid4().hex
+
+
+def _bounded_operation_id_valid(value: object) -> bool:
+    """True for a bounded machine token (``op-``/``vop-`` + 32 lowercase hex)."""
+    if not isinstance(value, str):
+        return False
+    for prefix in _OPERATION_ID_PREFIXES:
+        digits = value[len(prefix):]
+        if (
+            value.startswith(prefix)
+            and len(digits) == 32
+            and all(character in _HEX_DIGITS for character in digits)
+        ):
+            return True
+    return False
 
 
 #: Private test seam: deterministic tests may replace this module-level
@@ -171,17 +195,29 @@ class ProgressController:
         operation: str,
         progress: ProgressCallback | None = None,
         cancel_check: CancelCheck | None = None,
+        operation_id: str | None = None,
     ) -> None:
+        if operation_id is not None and not _bounded_operation_id_valid(operation_id):
+            raise ValueError(
+                "operation_id must be a bounded machine token "
+                "(op-/vop- followed by 32 lowercase hex digits)"
+            )
         self._operation = operation
         self._progress = progress
         self._cancel_check = cancel_check
-        self._operation_id: str | None = None
+        self._operation_id: str | None = operation_id
         self._phase_totals: dict[str, int | None] = {}
         self._phase_counts: dict[str, int] = {}
 
     @property
     def operation_id(self) -> str:
-        """Privacy-safe invocation ID, generated lazily on first use."""
+        """Privacy-safe invocation ID, generated lazily on first use.
+
+        When the controller was seeded with a precomputed canonical id
+        (PRIVATE/internal injection), that id is returned unchanged — one
+        public operation keeps one canonical id across every event and the
+        durable publication identity.
+        """
         if self._operation_id is None:
             self._operation_id = _next_operation_id()
         return self._operation_id
