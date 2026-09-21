@@ -149,6 +149,28 @@ def _logical_tree(root: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
     return result
 
 
+class _ProgressRecorder:
+    """Deterministic synchronous progress recorder (serialized, same thread)."""
+
+    def __init__(self) -> None:
+        self.events: list[ProgressEvent] = []
+        self.threads: list[int] = []
+
+    def __call__(self, event: ProgressEvent) -> None:
+        self.events.append(event)
+        self.threads.append(threading.get_ident())
+
+    def phase(self, phase_code: str, event_code: str) -> list[ProgressEvent]:
+        return [
+            event
+            for event in self.events
+            if event.phase_code == phase_code and event.event_code == event_code
+        ]
+
+    def completed_events(self) -> list[ProgressEvent]:
+        return [event for event in self.events if event.event_code == "COMPLETED"]
+
+
 def _vault_counts(plan: object, vault_path: Path) -> tuple[int, int, int, int]:
     with VaultDatabase.open(
         vault_path,
@@ -261,7 +283,20 @@ def test_completed_retry_returns_equivalent_public_result_without_passes(
 
     monkeypatch.setattr(run_module, "run_pass_one", forbidden)
     monkeypatch.setattr(run_module, "run_pass_two", forbidden)
-    second = pseudonymize(plan, workers=3)
+    retry_recorder = _ProgressRecorder()
+    second = pseudonymize(plan, workers=3, progress=retry_recorder)
+
+    # One coherent public operation stream: one operation id, exactly one
+    # terminal COMPLETED (engine-owned), and NO transformation-pass phase.
+    retry_events = retry_recorder.events
+    assert retry_events
+    assert len({event.operation_id for event in retry_events}) == 1
+    retry_completed = retry_recorder.completed_events()
+    assert len(retry_completed) == 1
+    assert retry_events[-1] is retry_completed[0]
+    assert not retry_recorder.phase("PASS1_SCAN", "STARTED")
+    assert not retry_recorder.phase("PASS2_WRITE", "STARTED")
+    assert retry_recorder.phase("SOURCE_REVALIDATION", "STARTED")
 
     assert second == first
     assert second.vault_created is True
@@ -463,9 +498,12 @@ def test_public_cancellation_during_write_has_no_result_or_completed_event(
         )
 
     assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "pseudonymize"
     assert not output.exists()
     assert not any(event.event_code == "COMPLETED" for event in events)
     assert _hash_tree(source) == source_before
+    # The whole public stream stays ONE operation even across the passes.
+    assert len({event.operation_id for event in events}) == 1
 
 
 def test_public_callback_failures_are_contained_and_privacy_safe(
@@ -480,6 +518,7 @@ def test_public_callback_failures_are_contained_and_privacy_safe(
     with pytest.raises(CallbackError) as cancel_failure:
         pseudonymize(plan, cancel_check=bad_cancel)
     assert cancel_failure.value.code is ErrorCode.CANCEL_CALLBACK_FAILED
+    assert cancel_failure.value.context.operation == "pseudonymize"
     assert canary not in str(cancel_failure.value)
     assert canary not in repr(cancel_failure.value.to_dict())
     assert not output.exists()
@@ -491,9 +530,168 @@ def test_public_callback_failures_are_contained_and_privacy_safe(
     with pytest.raises(CallbackError) as progress_failure:
         pseudonymize(plan, progress=bad_progress)
     assert progress_failure.value.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+    assert progress_failure.value.context.operation == "pseudonymize"
     assert canary not in str(progress_failure.value)
     assert canary not in repr(progress_failure.value.to_dict())
     assert not output.exists()
+
+
+def test_public_progress_stream_is_one_operation_across_preflight_and_engine(
+    tmp_path: Path,
+) -> None:
+    """One public pseudonymize invocation is ONE logical progress operation.
+
+    The shared side-effect-free preflight evaluation and the engine passes
+    run under ONE controller: one operation id, bounded preflight-stage
+    events (source verification + table evaluation), the engine's
+    SOURCE_REVALIDATION/PASS1/PASS2 phases, and exactly ONE terminal
+    COMPLETED event emitted only after genuine publication — no intermediate
+    preflight completion, no per-byte callback flood, serialized callbacks
+    on the calling thread.
+    """
+    from dbf_anonymizer.progress import PROGRESS_QUANTUM_VERSION
+
+    assert PROGRESS_QUANTUM_VERSION == "1.1"
+
+    plan, _source, _output, _vault = _plan(tmp_path)
+    recorder = _ProgressRecorder()
+    result = pseudonymize(plan, workers=2, progress=recorder)
+    assert isinstance(result, PseudonymizationResult)
+
+    events = recorder.events
+    assert events
+    # ONE operation id across preflight-stage AND engine events.
+    assert len({event.operation_id for event in events}) == 1
+
+    # Preflight-stage events are observable within the public invocation.
+    assert recorder.phase("SOURCE_VERIFICATION", "STARTED")
+    assert recorder.phase("TABLE_EVALUATION", "STARTED")
+    assert recorder.phase("TABLE_EVALUATION", "PROGRESS")
+
+    # The engine stages follow the shared preflight evaluation.
+    revalidation_started = recorder.phase("SOURCE_REVALIDATION", "STARTED")
+    assert len(revalidation_started) == 1
+    preflight_table_index = events.index(recorder.phase("TABLE_EVALUATION", "STARTED")[0])
+    revalidation_index = events.index(revalidation_started[0])
+    assert preflight_table_index < revalidation_index
+    assert recorder.phase("PASS1_SCAN", "STARTED")
+    assert recorder.phase("PASS1_FINALIZE", "STARTED")
+    assert recorder.phase("PASS2_WRITE", "STARTED")
+    pass2_index = events.index(recorder.phase("PASS2_WRITE", "STARTED")[0])
+    assert revalidation_index < pass2_index
+
+    # Exactly ONE terminal COMPLETED event: last, operation phase, after the
+    # engine phases — never an intermediate preflight completion.
+    completed = recorder.completed_events()
+    assert len(completed) == 1
+    assert events[-1] is completed[0]
+    assert completed[0].phase_code == "OPERATION"
+    assert events.index(completed[0]) > pass2_index
+
+    # Serialized callbacks on the calling thread only.
+    assert set(recorder.threads) == {threading.get_ident()}
+    # Bounded, privacy-safe events: normalized relative paths only.
+    for event in events:
+        assert event.table_path is None or (
+            not Path(event.table_path).is_absolute() and "\\" not in event.table_path
+        )
+
+
+def test_public_source_revalidation_reports_bounded_progress(tmp_path: Path) -> None:
+    """The engine's pre-execution source re-scan reports bounded per-artifact
+    progress through the SAME controller (reusing the fingerprint kernel's
+    hooks/quanta — never a per-byte callback flood)."""
+    plan, source, _output, _vault = _plan(tmp_path)
+    recorder = _ProgressRecorder()
+    pseudonymize(plan, progress=recorder)
+
+    revalidation_progress = recorder.phase("SOURCE_REVALIDATION", "PROGRESS")
+    assert revalidation_progress
+    # Bounded: one event per in-scope artifact (DBF plus memo companions),
+    # never per byte.
+    in_scope = [
+        path
+        for path in source.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".dbf", ".fpt", ".cdx", ".idx"}
+    ]
+    assert len(revalidation_progress) == len(in_scope)
+    counts = [event.completed_units for event in revalidation_progress]
+    assert counts == sorted(counts)
+    assert all(event.total_units == len(in_scope) for event in revalidation_progress)
+    assert all(event.table_path is not None for event in revalidation_progress)
+    # One STARTED precedes the progress events of its phase.
+    started = recorder.phase("SOURCE_REVALIDATION", "STARTED")
+    assert events_index(recorder, started[0]) < events_index(
+        recorder, revalidation_progress[0]
+    )
+
+
+def events_index(recorder: _ProgressRecorder, event: ProgressEvent) -> int:
+    return recorder.events.index(event)
+
+
+def test_cancellation_inside_pseudonymize_preflight_is_typed_and_side_effect_free(
+    tmp_path: Path,
+) -> None:
+    """Cancellation observed during the internal pseudonymize-preflight stage
+    is the typed public cancellation attributed to the PUBLIC operation, and
+    no output, vault, staging or lock artifact exists afterwards."""
+    plan, _source, output, vault = _plan(tmp_path)
+    recorder = _ProgressRecorder()
+    state = {"cancel": False}
+
+    def progress(event: ProgressEvent) -> None:
+        recorder.events.append(event)
+        if event.phase_code == "OPERATION" and event.event_code == "STARTED":
+            state["cancel"] = True
+
+    with pytest.raises(CancellationError) as caught:
+        pseudonymize(
+            plan,
+            progress=progress,
+            cancel_check=lambda: state["cancel"],
+        )
+
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "pseudonymize"
+    assert not output.exists()
+    assert not vault.exists()
+    # Nothing was created anywhere: the vault directory either does not exist
+    # or stayed empty, and no lock/staging artifact appeared.
+    assert not vault.parent.exists() or list(vault.parent.iterdir()) == []
+    assert not any(output.parent.glob(".dbf-anonymizer-*"))
+    assert recorder.completed_events() == []
+
+
+def test_progress_callback_failure_inside_preflight_is_contained_and_typed(
+    tmp_path: Path,
+) -> None:
+    """A progress callback failure during the internal preflight stage is
+    classified as PROGRESS_CALLBACK_FAILED attributed to the PUBLIC
+    operation, leaks none of the raw callback message and creates no
+    transformation state."""
+    plan, _source, output, vault = _plan(tmp_path)
+    canary = "PRIVATE-PREFLIGHT-CALLBACK-CANARY-C:/secret/source.dbf"
+    received: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        received.append(event)
+        raise RuntimeError(canary)
+
+    with pytest.raises(CallbackError) as caught:
+        pseudonymize(plan, progress=progress)
+
+    assert caught.value.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+    assert caught.value.context.operation == "pseudonymize"
+    assert caught.value.context.detail_code == "PROGRESS_CALLBACK"
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value)
+    assert canary not in json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert received  # the failure happened on the public operation stream
+    assert caught.value.context is not None
+    assert not output.exists()
+    assert not vault.exists()
+    assert not any(output.parent.glob(".dbf-anonymizer-*"))
 
 
 def test_cancellation_requested_after_promotion_does_not_reclassify_success(

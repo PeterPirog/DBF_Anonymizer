@@ -60,7 +60,7 @@ __all__ = [
 ]
 
 #: Versioned identity of the bounded-progress / cancellation-quanta vocabulary.
-PROGRESS_QUANTUM_VERSION = "1.0"
+PROGRESS_QUANTUM_VERSION = "1.1"
 
 #: Type of the synchronous progress callback (REQ-P1-002 ProgressEvent).
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -78,7 +78,15 @@ class ProgressPhase:
     internal safe-point concepts for the future P4/P5 operations; the
     Phase 4 two-pass engine (REQ-P4-002) realizes its own bounded phases
     ``PASS1_SCAN``/``PASS1_FINALIZE``/``PASS2_WRITE`` on the same bounded
-    progress contract.  No operation outside the engine emits them.
+    progress contract, plus ``SOURCE_REVALIDATION`` for the pre-execution
+    trust re-scan.  No operation outside the engine emits them.
+
+    Vocabulary note (version 1.1): ``SOURCE_REVALIDATION`` was added so the
+    engine's pre-execution source re-scan reports bounded progress under its
+    OWN phase — a public ``pseudonymize`` invocation shares ONE controller
+    between the shared preflight evaluation and the engine, and reusing
+    ``SOURCE_VERIFICATION`` there would reset that phase's unit counts
+    within the same operation stream.
     """
 
     OPERATION = "OPERATION"
@@ -86,6 +94,7 @@ class ProgressPhase:
     FINGERPRINT = "FINGERPRINT"
     TABLE_EVALUATION = "TABLE_EVALUATION"
     SOURCE_VERIFICATION = "SOURCE_VERIFICATION"
+    SOURCE_REVALIDATION = "SOURCE_REVALIDATION"
     CAPACITY_SCAN = "CAPACITY_SCAN"
     SCAN = "SCAN"
     WRITE = "WRITE"

@@ -453,6 +453,7 @@ def _revalidate_execution_identity(
     resolved_policy: object,
     relationship_document: RelationshipDocument | None,
     cancel_probe: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
 ) -> None:
     """The pre-execution trust revalidation (zero side effects on refusal).
 
@@ -467,7 +468,10 @@ def _revalidate_execution_identity(
     cancellation probe (the SAME controller probe used everywhere else —
     a returning-true check raises the typed ``CancellationError`` and a
     raising callback stays contained as ``CANCEL_CALLBACK_FAILED``) is
-    polled at the kernel's scan safe points.
+    polled at the kernel's scan safe points, and the optional progress
+    probe (the SAME controller, ``SOURCE_REVALIDATION`` phase) reports
+    bounded per-artifact scan progress — reusing the existing fingerprint
+    kernel hooks and quanta, never a per-byte callback flood.
     """
     from dbf_anonymizer.discovery import (
         collect_fingerprint_entries,
@@ -477,7 +481,9 @@ def _revalidate_execution_identity(
     from dbf_anonymizer.preflight import _paths_overlap
     from dbf_anonymizer.relationships.document import relationship_fingerprint
 
-    entries = collect_fingerprint_entries(source_root, cancel_probe=cancel_probe)
+    entries = collect_fingerprint_entries(
+        source_root, cancel_probe=cancel_probe, progress_probe=progress_probe
+    )
     current_source = compute_source_fingerprint(entries)
     if current_source != plan.dataset.source_fingerprint:
         raise _identity_failure("ENGINE_SOURCE_FINGERPRINT_MISMATCH")
@@ -620,6 +626,7 @@ def run_two_pass(
     workers: int = 1,
     operation_id: str | None = None,
     fault_inject: FaultInjector | None = None,
+    control: ProgressController | None = None,
 ) -> TwoPassResult:
     """The bounded two-pass production run bound to ONE execution identity.
 
@@ -629,6 +636,16 @@ def run_two_pass(
     engine accepts NO runtime path/policy/metadata overrides (there are no
     released users and no duplicate inputs).
 
+    INTERNAL control injection (PRIVATE, never part of the root public API):
+    the public ``pseudonymize`` service supplies its OWN
+    :class:`~dbf_anonymizer.progress.ProgressController` via ``control`` so
+    one public invocation keeps ONE controller, ONE operation id and ONE
+    terminal completion across its shared preflight evaluation and the
+    engine passes. Without ``control`` the engine creates its own internal
+    controller from ``progress``/``cancel_check`` (the pre-existing
+    behavior every direct engine test relies on); supplying ``control``
+    together with separate callbacks is a fail-closed contract error.
+
     PRE-EXECUTION REVALIDATION (before the vault, the spool or any output
     artifact is created — zero transformation-equivalent side effects on
     refusal):
@@ -636,7 +653,8 @@ def run_two_pass(
     1. SOURCE IDENTITY — the source fingerprint is RECOMPUTED with the SAME
        canonical kernel :func:`build_plan` used and must equal
        ``plan.dataset.source_fingerprint`` exactly (a source changed after
-       planning fails before any side effect).
+       planning fails before any side effect). The re-scan reports bounded
+       ``SOURCE_REVALIDATION`` progress through the SAME controller.
     2. PATH / TRUST ZONES — the existing preflight overlap semantics
        (resolved aliases) reject any source/output/vault nesting.
     3. POLICY — the context's resolved policy fingerprint must equal
@@ -655,6 +673,13 @@ def run_two_pass(
     """
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
+    if control is not None:
+        if not isinstance(control, ProgressController):
+            raise TypeError("control must be a ProgressController")
+        if progress is not None or cancel_check is not None:
+            raise ValueError(
+                "an injected controller excludes separate progress/cancel callbacks"
+            )
     context = plan.execution_context
     if context is None:
         raise _path_failure("ENGINE_PLAN_CONTEXT_MISSING")
@@ -664,9 +689,11 @@ def run_two_pass(
     resolved_policy = context.resolved_policy
     if resolved_policy is None:
         raise _path_failure("ENGINE_PLAN_POLICY_MISSING")
-    control = ProgressController(
-        operation="two_pass", progress=progress, cancel_check=cancel_check
-    )
+    if control is None:
+        control = ProgressController(
+            operation="two_pass", progress=progress, cancel_check=cancel_check
+        )
+    control.start_phase(ProgressPhase.SOURCE_REVALIDATION)
     _revalidate_execution_identity(
         plan,
         source_root=source,
@@ -675,6 +702,12 @@ def run_two_pass(
         resolved_policy=resolved_policy,
         relationship_document=context.relationship_document,
         cancel_probe=control.check_cancelled,
+        progress_probe=lambda done, total, rel: control.progress(
+            ProgressPhase.SOURCE_REVALIDATION,
+            completed=done,
+            total=total,
+            table_path=rel,
+        ),
     )
     engine_plan = build_engine_plan(
         plan,

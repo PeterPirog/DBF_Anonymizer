@@ -19,8 +19,13 @@ from dbf_anonymizer.models import (
     _PseudonymizationExecutionContext,
 )
 from dbf_anonymizer.planning import build_plan
-from dbf_anonymizer.preflight import PreflightCode, preflight
-from dbf_anonymizer.progress import CancelCheck, ProgressCallback
+from dbf_anonymizer.preflight import PreflightCode, _evaluate_plan_readonly, preflight
+from dbf_anonymizer.progress import (
+    CancelCheck,
+    ProgressCallback,
+    ProgressController,
+    ProgressPhase,
+)
 from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
 )
@@ -74,11 +79,22 @@ def pseudonymize(
 ) -> PseudonymizationResult:
     """Synchronously pseudonymize one immutable plan (REQ-P4-008/P4-009).
 
-    Fresh execution is gated by the existing side-effect-free preflight. Exact
-    completed retries are classified by the engine's durable execution
+    ONE invocation is ONE logical operation (REQ-P1-008): a single
+    ``ProgressController`` with a single operation id drives the shared
+    side-effect-free preflight evaluation (source verification, table
+    evaluation and capacity scanning WITHOUT an intermediate preflight
+    completion), the engine's pre-execution source revalidation and every
+    pass1/pass2/publication phase — with exactly one terminal ``COMPLETED``
+    event emitted only after the dataset is genuinely published. Cancellation
+    and callback failures inside the preflight evaluation are typed,
+    contained and attributed to the ``pseudonymize`` operation while no
+    transformation state exists.
+
+    Fresh execution is gated by that shared read-only preflight evaluation.
+    Exact completed retries are classified by the engine's durable execution
     identity and return the persisted receipt without entering either pass.
     All transformation, locking, cleanup and atomic publication remain owned
-    by :func:`dbf_anonymizer.engine.run_two_pass`.
+    by :func:`dbf_anonymizer.engine.run_two_pass` under the SAME controller.
     """
     if not isinstance(plan, Plan):
         raise TypeError("pseudonymize requires a Plan")
@@ -89,7 +105,15 @@ def pseudonymize(
     ):
         raise ValueError(f"workers must be an integer from 1 to {_MAX_PUBLIC_WORKERS}")
 
-    check = preflight(plan, cancel_check=cancel_check)
+    control = ProgressController(
+        operation="pseudonymize", progress=progress, cancel_check=cancel_check
+    )
+    control.start_phase(ProgressPhase.OPERATION)
+    # The shared internal preflight evaluation core runs through THIS
+    # controller: bounded progress for the potentially long read-only scan
+    # stages, and NO preflight terminal completion (the engine's final
+    # publication completion is the invocation's single COMPLETED event).
+    check = _evaluate_plan_readonly(plan, control)
     if not check.ready:
         retry_only = (
             set(check.error_codes) == {PreflightCode.DESTINATION_CONFLICT}
@@ -98,12 +122,7 @@ def pseudonymize(
         if not retry_only:
             raise _preflight_refusal()
 
-    result = run_two_pass(
-        plan,
-        progress=progress,
-        cancel_check=cancel_check,
-        workers=workers,
-    )
+    result = run_two_pass(plan, workers=workers, control=control)
     if result.operation_id is None or result.output_fingerprint is None:
         raise PublicationError(
             ErrorCode.PUBLICATION_INCOMPLETE,

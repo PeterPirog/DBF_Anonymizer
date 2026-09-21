@@ -1184,42 +1184,25 @@ def _storage_ok(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry point + shared internal evaluation core
 # ---------------------------------------------------------------------------
-def preflight(
-    plan: Plan,
-    *,
-    progress: ProgressCallback | None = None,
-    cancel_check: CancelCheck | None = None,
-) -> PreflightResult:
-    """Evaluate a planned dataset for preconditions before transformation.
+def _evaluate_plan_readonly(plan: Plan, control: ProgressController) -> PreflightResult:
+    """The ONE read-only preflight evaluation core (internal).
 
-    ``preflight`` is source-read-only and side-effect-free. It aggregates all
-    preconditions into a single immutable :class:`PreflightResult`. Ordinary
-    findings never raise; only invalid object contracts, unexpected dependency
-    failures and impossible invariants do.
+    Drives every side-effect-free evaluation step through the SUPPLIED
+    :class:`~dbf_anonymizer.progress.ProgressController`: cancellation is
+    polled at the declared scan safe points and bounded structured progress
+    events are emitted with the controller's ONE operation id. The core
+    NEVER emits a terminal completion event:
 
-    REQ-P1-008: the optional keyword-only ``progress`` callback receives
-    bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
-    and ``cancel_check`` is polled at scan safe points (before every major
-    stage, once per visited directory during the strict source enumeration,
-    per checked table, per revalidated artifact, at bounded chunk intervals
-    while hashing and at every streamed capacity-scan record).
-    Cancellation raises the typed
-    :class:`~dbf_anonymizer.errors.CancellationError` — it is never turned
-    into an ordinary preflight finding and no result is produced after it.
-    Callback failures are contained into the classified
-    :class:`~dbf_anonymizer.errors.CallbackError`.  With both callbacks
-    omitted the deterministic result is unchanged.
+    * the public :func:`preflight` wrapper owns its single terminal
+      ``COMPLETED`` event for the standalone operation;
+    * the public ``pseudonymize`` service reuses this core under its OWN
+      controller, so one public invocation has exactly one controller, one
+      operation id and exactly one terminal completion emitted only after
+      the whole operation genuinely succeeds (no second logical operation
+      and no intermediate preflight completion).
     """
-    if not isinstance(plan, Plan):
-        raise TypeError("preflight requires a Plan")
-
-    control = ProgressController(
-        operation="preflight", progress=progress, cancel_check=cancel_check
-    )
-    control.start_phase(ProgressPhase.OPERATION)
-
     findings = _Findings()
     caps = _capability.capabilities_provider()
 
@@ -1227,9 +1210,7 @@ def preflight(
     if context is None:
         # Impossible for a real build_plan result; fail closed rather than guess.
         findings.error(PreflightCode.SOURCE_FINGERPRINT_MISMATCH)
-        result = findings.result(plan, caps)
-        control.complete(completed=len(plan.tables))
-        return result
+        return findings.result(plan, caps)
 
     source_root = Path(context.source_root)
     output_root = Path(context.output_root)
@@ -1393,7 +1374,47 @@ def preflight(
     elif not storage:
         findings.error(PreflightCode.STORAGE_SPACE_INSUFFICIENT)
 
-    result = findings.result(plan, caps)
+    return findings.result(plan, caps)
+
+
+def preflight(
+    plan: Plan,
+    *,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> PreflightResult:
+    """Evaluate a planned dataset for preconditions before transformation.
+
+    ``preflight`` is source-read-only and side-effect-free. It aggregates all
+    preconditions into a single immutable :class:`PreflightResult`. Ordinary
+    findings never raise; only invalid object contracts, unexpected dependency
+    failures and impossible invariants do.
+
+    REQ-P1-008: the optional keyword-only ``progress`` callback receives
+    bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
+    and ``cancel_check`` is polled at scan safe points (before every major
+    stage, once per visited directory during the strict source enumeration,
+    per checked table, per revalidated artifact, at bounded chunk intervals
+    while hashing and at every streamed capacity-scan record).
+    Cancellation raises the typed
+    :class:`~dbf_anonymizer.errors.CancellationError` — it is never turned
+    into an ordinary preflight finding and no result is produced after it.
+    Callback failures are contained into the classified
+    :class:`~dbf_anonymizer.errors.CallbackError`.  With both callbacks
+    omitted the deterministic result is unchanged.
+
+    The evaluation itself is the shared internal core
+    :func:`_evaluate_plan_readonly`; this wrapper owns the standalone
+    operation's single terminal completion event.
+    """
+    if not isinstance(plan, Plan):
+        raise TypeError("preflight requires a Plan")
+
+    control = ProgressController(
+        operation="preflight", progress=progress, cancel_check=cancel_check
+    )
+    control.start_phase(ProgressPhase.OPERATION)
+    result = _evaluate_plan_readonly(plan, control)
     # The single terminal completion event is emitted only now — after the
     # public result genuinely exists (never after cancellation).
     control.complete(completed=len(plan.tables))
