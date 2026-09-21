@@ -49,6 +49,9 @@ from dbf_anonymizer.models import (
     PreflightResult,
     RelationshipMetadata,
 )
+from dbf_anonymizer.vault.store import VaultDatabase
+
+import sqlite3
 
 import dbf_anonymizer.preflight  # ensure module loaded
 from dbf_anonymizer import preflight as _preflight_mod  # noqa: F401
@@ -211,7 +214,14 @@ def _preflight_no_side_effects(
     for absent in ("out", "vault"):
         if absent not in preexisting:
             assert not (tmp / absent).exists(), f"{absent} directory was created"
-    sqlite_sidecars = [n for n in (*created, *after) if "sqlite" in n.lower() or n.lower().endswith(("-wal", "-shm", ".lock", ".log"))]
+    # Preflight must create NO SQLite artifact or sidecar: the scan is over
+    # CREATED paths only, because a legitimately pre-existing dictionary
+    # file (the validated reuse candidate) is part of the tested state.
+    sqlite_sidecars = [
+        n
+        for n in created
+        if "sqlite" in n.lower() or n.lower().endswith(("-wal", "-shm", ".lock", ".log"))
+    ]
     assert not sqlite_sidecars, f"sqlite/sidecar created: {sqlite_sidecars}"
     return result
 
@@ -427,16 +437,20 @@ def test_vault_ancestor_is_file_rejected(tmp_path: Path) -> None:
     assert "DESTINATION_CONFLICT" in result.error_codes
 
 
-def test_existing_vault_file_is_deferred_to_identity_validation(tmp_path: Path) -> None:
+def test_existing_regular_vault_requires_readonly_identity_validation(
+    tmp_path: Path,
+) -> None:
+    """REQ-P1-006/P2-010 restored: an existing regular vault file is never
+    blindly accepted. The full deterministic matrix lives in the dedicated
+    reuse-validation section below (opaque, corrupt, unsupported schema,
+    fingerprint mismatch, sidecar ambiguity, compatible reuse)."""
     plan = _build_plan(tmp_path)
     vault = tmp_path / "vault" / "dict.sqlite3"
     vault.parent.mkdir(parents=True, exist_ok=True)
     vault.write_bytes(b"opaque-preexisting-vault")
-    before = vault.read_bytes()
     result = preflight(plan)
-    assert result.ready is True
-    assert "DESTINATION_CONFLICT" not in result.error_codes
-    assert vault.read_bytes() == before
+    assert result.ready is False
+    assert result.error_codes == ("VAULT_REUSE_INCOMPATIBLE",)
 
 
 def test_vault_target_is_directory_rejected(tmp_path: Path) -> None:
@@ -446,6 +460,227 @@ def test_vault_target_is_directory_rejected(tmp_path: Path) -> None:
     result = preflight(plan)
     assert result.ready is False
     assert "DESTINATION_CONFLICT" in result.error_codes
+
+
+# ---------------------------------------------------------------------------
+# 14b. Existing dictionary reuse validation (REQ-P1-006 / REQ-P2-010)
+#
+# An existing regular vault file is validated READ-ONLY during preflight with
+# the ONE shared dictionary-identity kernel. Every incompatible or
+# unverifiable state is a deterministic ``VAULT_REUSE_INCOMPATIBLE`` finding
+# with ZERO mutation: identical vault bytes, unchanged mtime, no created
+# sidecar/output/lock/staging artifact.
+# ---------------------------------------------------------------------------
+def _create_compatible_vault(plan: Plan) -> Path:
+    """Create and cleanly close a schema-compatible dictionary for *plan*.
+
+    The clean close runs the WAL truncate checkpoint, so NO ``-wal``/``-shm``
+    sidecar remains beside the file — the reusable resting state.
+    """
+    context = plan.execution_context
+    assert context is not None
+    vault_path = Path(context.vault_path)
+    vault_path.parent.mkdir(parents=True, exist_ok=True)
+    vault = VaultDatabase.open(
+        vault_path,
+        create=True,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+        dbfbridge_version=str(dbfbridge.__version__),
+    )
+    vault.close()
+    return vault_path
+
+
+def _vault_state(vault: Path) -> tuple[bytes, int]:
+    return vault.read_bytes(), vault.stat().st_mtime_ns
+
+
+def _assert_vault_untouched(
+    vault: Path, before: tuple[bytes, int], *, extra_names: tuple[str, ...] = ()
+) -> None:
+    """Byte-identical, mtime-identical, and no sidecar appeared or vanished."""
+    after_bytes, after_mtime = _vault_state(vault)
+    assert after_bytes == before[0]
+    assert after_mtime == before[1]
+    expected_inventory = sorted((vault.name, *extra_names))
+    assert sorted(p.name for p in vault.parent.iterdir()) == expected_inventory
+
+
+def test_preflight_code_vocabulary_is_versioned_and_exact() -> None:
+    """The preflight code vocabulary is pinned exactly: every pre-existing
+    code is retained unchanged and the vault-reuse finding is the single
+    addition of the versioned vocabulary 1.2."""
+    pf = _pf_module()
+    assert pf.PREFLIGHT_CODE_VERSION == "1.2"
+    assert pf.PreflightCode.VAULT_REUSE_INCOMPATIBLE == "VAULT_REUSE_INCOMPATIBLE"
+    assert pf._ERROR_CODES == frozenset(
+        {
+            "PATH_OVERLAP",
+            "PATH_INSPECTION_UNAVAILABLE",
+            "SOURCE_UNAVAILABLE",
+            "SOURCE_FINGERPRINT_MISMATCH",
+            "DESTINATION_CONFLICT",
+            "VAULT_REUSE_INCOMPATIBLE",
+            "MISSING_MEMO_COMPANION",
+            "MISSING_STRUCTURAL_INDEX",
+            "UNSUPPORTED_FIELD",
+            "UNSAFE_FIELD",
+            "POLICY_INCONSISTENT",
+            "OUTPUT_PROFILE_UNSUPPORTED",
+            "CAPABILITY_MISSING",
+            "STORAGE_SPACE_INSUFFICIENT",
+            "STORAGE_ESTIMATE_UNAVAILABLE",
+            "RELATIONSHIP_DOMAIN_UNVERIFIED",
+            "PSEUDONYM_CAPACITY_INSUFFICIENT",
+            "PSEUDONYM_CAPACITY_UNPROVEN",
+            "NUMERIC_KEY_RECOVERY_UNWRITABLE",
+        }
+    )
+    assert pf._WARNING_CODES == frozenset(
+        {"STRUCTURAL_CDX_DATA_ONLY", "STANDALONE_IDX_DATA_ONLY", "DBC_BOUND_REDUCED"}
+    )
+    assert pf._CHECK_CODES == frozenset(
+        {"DATA_ONLY_STANDALONE", "PREFLIGHT_EVALUATED"}
+    )
+
+
+def test_opaque_regular_vault_is_incompatible_without_mutation(tmp_path: Path) -> None:
+    plan = _build_plan(tmp_path)
+    vault = tmp_path / "vault" / "dict.sqlite3"
+    vault.parent.mkdir(parents=True, exist_ok=True)
+    vault.write_bytes(b"opaque-preexisting-vault")
+    before = _vault_state(vault)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def test_corrupt_sqlite_vault_is_incompatible_without_mutation(tmp_path: Path) -> None:
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    vault.write_bytes(b"corrupt-sqlite-bytes-" * 8)
+    before = _vault_state(vault)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def test_unsupported_dictionary_schema_is_incompatible_without_mutation(
+    tmp_path: Path,
+) -> None:
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE meta SET schema_version = '0.9' WHERE singleton = 1"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    before = _vault_state(vault)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def _vault_with_tampered_dataset_fingerprint(
+    tmp_path: Path, column: str
+) -> tuple[Plan, Path, tuple[bytes, int]]:
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            f"UPDATE dataset SET {column} = ? WHERE singleton = 1",
+            (f"tampered-{column}",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return plan, vault, _vault_state(vault)
+
+
+def test_source_fingerprint_mismatch_is_incompatible(tmp_path: Path) -> None:
+    plan, vault, before = _vault_with_tampered_dataset_fingerprint(
+        tmp_path, "source_fingerprint"
+    )
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def test_policy_fingerprint_mismatch_is_incompatible(tmp_path: Path) -> None:
+    plan, vault, before = _vault_with_tampered_dataset_fingerprint(
+        tmp_path, "policy_fingerprint"
+    )
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def test_relationship_fingerprint_mismatch_is_incompatible(tmp_path: Path) -> None:
+    plan, vault, before = _vault_with_tampered_dataset_fingerprint(
+        tmp_path, "relationship_fingerprint"
+    )
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+def test_compatible_clean_vault_with_missing_output_is_reusable(
+    tmp_path: Path,
+) -> None:
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    before = _vault_state(vault)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is True
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    assert "VAULT_REUSE_INCOMPATIBLE" not in result.error_codes
+    _assert_vault_untouched(vault, before)
+
+
+@pytest.mark.parametrize(
+    "sidecar_suffix", ["-wal", "-shm", "-journal"], ids=["wal", "shm", "journal"]
+)
+def test_sidecar_ambiguous_vault_fails_closed_without_recovery(
+    tmp_path: Path, sidecar_suffix: str
+) -> None:
+    plan = _build_plan(tmp_path)
+    vault = _create_compatible_vault(plan)
+    before = _vault_state(vault)
+    sidecar_path = vault.parent / (vault.name + sidecar_suffix)
+    sidecar_path.write_bytes(b"SYNTHETIC-AMBIGUOUS-SIDECAR-STATE")
+    sidecar_before = (sidecar_path.read_bytes(), sidecar_path.stat().st_mtime_ns)
+
+    result = _preflight_no_side_effects(plan, tmp_path, preexisting=("vault",))
+
+    assert result.ready is False
+    assert "VAULT_REUSE_INCOMPATIBLE" in result.error_codes
+    # No checkpoint/recovery happened: the dictionary AND the synthetic
+    # sidecar are byte- and mtime-identical, and no additional SQLite
+    # artifact appeared beside them.
+    _assert_vault_untouched(vault, before, extra_names=(vault.name + sidecar_suffix,))
+    assert sidecar_path.read_bytes() == sidecar_before[0]
+    assert sidecar_path.stat().st_mtime_ns == sidecar_before[1]
 
 
 # ---------------------------------------------------------------------------

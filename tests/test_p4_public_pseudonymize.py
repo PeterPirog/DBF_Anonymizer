@@ -17,13 +17,14 @@ from dbf_anonymizer import (
     CallbackError,
     CancellationError,
     ErrorCode,
+    PathError,
     ProgressEvent,
     Plan,
     PublicationError,
     PseudonymizationResult,
     RelationalAssuranceLevel,
-    VaultError,
     build_plan,
+    preflight,
     pseudonymize,
 )
 from dbf_anonymizer.engine import pass2 as pass2_module
@@ -248,6 +249,13 @@ def test_completed_retry_returns_equivalent_public_result_without_passes(
     }
     vault_before = _vault_counts(plan, vault)
 
+    # Preflight classifies the completed state exactly: the only blocker is
+    # the existing destination condition, and the vault passed the read-only
+    # identity validation (no VAULT_REUSE_INCOMPATIBLE can hide here).
+    check = preflight(plan)
+    assert check.ready is False
+    assert check.error_codes == ("DESTINATION_CONFLICT",)
+
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("completed retry entered a transformation pass")
 
@@ -287,15 +295,16 @@ def test_unsafe_existing_target_fails_closed_before_any_mutation(
     """Hostile existing-target regression for the public retry gate.
 
     A destination conflict is granted the engine-retry path ONLY when BOTH
-    durable targets are structurally present (output directory + regular
-    vault file), because only that state can be classified by the engine's
-    durable execution identity before its writer lease. Every other unsafe
-    existing-target state must refuse at the public gate, before ANY
-    filesystem mutation — no engine entry, no lock, no staging, no vault.
+    durable targets are structurally present AND the vault passed preflight's
+    read-only identity validation (an incompatible vault emits
+    ``VAULT_REUSE_INCOMPATIBLE`` and can never appear in a
+    destination-conflict-only error set). Every unsafe existing-target state
+    must refuse at the public gate, before ANY filesystem mutation — no
+    engine entry, no lock, no staging, no vault mutation.
     """
 
     def forbidden(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("unsafe target reached the engine")
+        raise AssertionError("unsafe target reached the engine transformation pass")
 
     monkeypatch.setattr(run_module, "run_pass_one", forbidden)
     monkeypatch.setattr(run_module, "run_pass_two", forbidden)
@@ -337,20 +346,86 @@ def test_unsafe_existing_target_fails_closed_before_any_mutation(
     assert not vault.exists()
     assert _hash_tree(source) == source_before_output_file
 
-    # 4. Both targets present but the vault file is foreign opaque state:
-    #    the engine-retry path is entered, yet identity validation fails
-    #    closed before the writer lease, the target or any artifact changes.
+    # 4. Foreign opaque vault + existing output: the read-only preflight
+    #    identity validation rejects the reuse candidate, so the public gate
+    #    refuses BEFORE the engine is entered at all (the transformation
+    #    guards above stay silent) and nothing is touched.
     plan, source, output, vault = _plan(tmp_path / "foreign-vault")
     output.mkdir(parents=True)
     (output / "stale.dat").write_bytes(b"stale-operator-data")
     vault.parent.mkdir(parents=True, exist_ok=True)
     vault.write_bytes(b"opaque-foreign-vault")
+    vault_before = vault.read_bytes()
     source_before_foreign = _hash_tree(source)
-    with pytest.raises(VaultError):
+    check = preflight(plan)
+    assert check.error_codes == ("DESTINATION_CONFLICT", "VAULT_REUSE_INCOMPATIBLE")
+    with pytest.raises(PublicationError) as foreign:
         pseudonymize(plan)
+    assert foreign.value.context.detail_code == "PREFLIGHT_REJECTED"
+    assert vault.read_bytes() == vault_before
     assert (output / "stale.dat").read_bytes() == b"stale-operator-data"
     assert not any(output.parent.glob(".dbf-anonymizer-*"))
     assert _hash_tree(source) == source_before_foreign
+
+    # 5. Foreign opaque vault with a missing output: incompatible reuse is
+    #    refused at the gate even without any destination conflict.
+    plan, source, output, vault = _plan(tmp_path / "opaque-vault-fresh")
+    vault.parent.mkdir(parents=True, exist_ok=True)
+    vault.write_bytes(b"opaque-unverifiable-vault")
+    source_before_opaque = _hash_tree(source)
+    with pytest.raises(PublicationError) as opaque:
+        pseudonymize(plan)
+    assert opaque.value.context.detail_code == "PREFLIGHT_REJECTED"
+    assert vault.read_bytes() == b"opaque-unverifiable-vault"
+    assert not output.exists()
+    assert _hash_tree(source) == source_before_opaque
+
+
+def test_hostile_unrelated_output_with_compatible_vault_is_not_completed_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compatible existing vault plus hostile unrelated output must never
+    be mistaken for a completed retry: preflight keeps ONLY the destination
+    finding (the vault passed the read-only identity validation), the engine
+    is entered and its durable operation binding refuses the unowned target
+    before any mutation — without entering either transformation pass."""
+    plan, source, output, vault = _plan(tmp_path / "hostile-output")
+    vault.parent.mkdir(parents=True, exist_ok=True)
+    compatible = VaultDatabase.open(
+        vault,
+        create=True,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+        dbfbridge_version=str(dbfbridge.__version__),
+    )
+    compatible.close()
+    vault_before = vault.read_bytes()
+    output.mkdir(parents=True)
+    marker = output / "operator-owned.txt"
+    marker.write_text("operator-owned", encoding="ascii")
+
+    check = preflight(plan)
+    assert check.ready is False
+    assert check.error_codes == ("DESTINATION_CONFLICT",)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("hostile output entered a transformation pass")
+
+    monkeypatch.setattr(run_module, "run_pass_one", forbidden)
+    monkeypatch.setattr(run_module, "run_pass_two", forbidden)
+
+    with pytest.raises(PathError) as unowned:
+        pseudonymize(plan)
+
+    assert unowned.value.code is ErrorCode.DESTINATION_CONFLICT
+    assert marker.read_text(encoding="ascii") == "operator-owned"
+    assert vault.read_bytes() == vault_before
+    # The engine-owned lock lifecycle may leave its transient lock artifact;
+    # the durable targets and the output tree itself stay untouched and no
+    # staging residue exists.
+    assert not any(output.parent.glob("*.staging*"))
+    assert [p.name for p in output.iterdir()] == ["operator-owned.txt"]
 
 
 def test_worker_contract_is_typed_bounded_and_checked_before_side_effects(

@@ -83,6 +83,7 @@ import dbfbridge
 from dbf_anonymizer import _capability
 from dbf_anonymizer import discovery
 from dbf_anonymizer import progress as progress_layer
+from dbf_anonymizer.dictionary_identity import validate_dictionary_identity_readonly
 from dbf_anonymizer.discovery import (
     _PATH_BLOCKED,
     _PATH_DIRECTORY,
@@ -97,6 +98,7 @@ from dbf_anonymizer.errors import (
     DBFBridgeError,
     ErrorContext,
     ErrorCode,
+    VaultError,
 )
 from dbf_anonymizer.models import (
     Capabilities,
@@ -123,7 +125,7 @@ from dbf_anonymizer.transforms.text import (
 __all__ = ["preflight", "PREFLIGHT_CODE_VERSION", "PreflightCode"]
 
 #: Versioned identity of the preflight code vocabulary.
-PREFLIGHT_CODE_VERSION = "1.1"
+PREFLIGHT_CODE_VERSION = "1.2"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,7 @@ class PreflightCode:
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     SOURCE_FINGERPRINT_MISMATCH = "SOURCE_FINGERPRINT_MISMATCH"
     DESTINATION_CONFLICT = "DESTINATION_CONFLICT"
+    VAULT_REUSE_INCOMPATIBLE = "VAULT_REUSE_INCOMPATIBLE"
     MISSING_MEMO_COMPANION = "MISSING_MEMO_COMPANION"
     MISSING_STRUCTURAL_INDEX = "MISSING_STRUCTURAL_INDEX"
     UNSUPPORTED_FIELD = "UNSUPPORTED_FIELD"
@@ -172,6 +175,7 @@ _ERROR_CODES = frozenset(
         PreflightCode.SOURCE_UNAVAILABLE,
         PreflightCode.SOURCE_FINGERPRINT_MISMATCH,
         PreflightCode.DESTINATION_CONFLICT,
+        PreflightCode.VAULT_REUSE_INCOMPATIBLE,
         PreflightCode.MISSING_MEMO_COMPANION,
         PreflightCode.MISSING_STRUCTURAL_INDEX,
         PreflightCode.UNSUPPORTED_FIELD,
@@ -476,12 +480,14 @@ def _ancestor_conflict(path: Path) -> bool:
 def _destination_conflict(output: Path, vault: Path) -> bool:
     """Detect path-type conflicts and unsafe existing destination state.
 
-    An existing regular vault file is a structurally valid reuse candidate;
-    its schema and complete dataset/policy/relationship identity are validated
-    fail-closed by the P2-010 vault boundary before execution can transform
-    anything. A directory or other non-file at the vault target remains a
-    conflict. The ancestor chains of BOTH targets are also checked: a file (or
-    otherwise non-directory component) in the hierarchy makes a missing target
+    An existing regular vault file is a structurally valid reuse CANDIDATE
+    only: its schema, integrity and complete dataset/policy/relationship
+    identity are validated read-only and fail-closed by the dedicated
+    vault-reuse step (see :func:`preflight`), which emits the
+    ``VAULT_REUSE_INCOMPATIBLE`` finding without ever mutating anything. A
+    directory or other non-file at the vault target remains a conflict. The
+    ancestor chains of BOTH targets are also checked: a file (or otherwise
+    non-directory component) in the hierarchy makes a missing target
     uncreatable.
 
     All decisions use the raw stat probe (never pathlib predicates):
@@ -499,13 +505,41 @@ def _destination_conflict(output: Path, vault: Path) -> bool:
         return True  # non-empty directory would overwrite existing state
 
     # Vault is a file target: a missing target or existing regular file is
-    # structurally valid. Identity validation belongs to the vault boundary.
+    # structurally valid; compatibility is validated read-only below.
     vault_kind = _probe(vault)
     if vault_kind not in (_PATH_MISSING, _PATH_FILE):
         return True
 
     # Any non-directory in either ancestor chain blocks directory creation.
     return _ancestor_conflict(output) or _ancestor_conflict(vault)
+
+
+def _existing_vault_reusable(
+    vault_path: Path,
+    *,
+    expected_source_fingerprint: str,
+    expected_policy_fingerprint: str,
+    expected_relationship_fingerprint: str,
+) -> bool:
+    """Read-only compatibility check of an existing regular vault file.
+
+    Delegates to the shared dictionary-identity kernel (ONE authoritative
+    schema/fingerprint parsing): integrity, exact schema version, identifier
+    shape, dataset identity and unambiguous sidecar state — all without any
+    mutation, sidecar creation, journal change or recovery. ``True`` means
+    the file is a compatible reuse candidate; every incompatible or
+    unverifiable state (including an unreadable file) fails closed.
+    """
+    try:
+        validate_dictionary_identity_readonly(
+            vault_path,
+            expected_source_fingerprint=expected_source_fingerprint,
+            expected_policy_fingerprint=expected_policy_fingerprint,
+            expected_relationship_fingerprint=expected_relationship_fingerprint,
+        )
+    except (VaultError, OSError):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1264,6 +1298,29 @@ def preflight(
         findings.error(PreflightCode.PATH_INSPECTION_UNAVAILABLE)
     if conflict:
         findings.error(PreflightCode.DESTINATION_CONFLICT)
+
+    # 3b. Existing regular vault file: read-only reuse validation
+    #     (REQ-P1-006 destination-state detection + REQ-P2-010 identity
+    #     checking). ONE shared dictionary-identity kernel decides integrity,
+    #     schema version, identifier shape, dataset identity and sidecar
+    #     ambiguity with ZERO mutation, sidecar creation, journal change or
+    #     recovery. An incompatible or unverifiable file fails closed with
+    #     the dedicated privacy-safe code — never with a SQLite message.
+    #     This runs for EVERY existing vault file, independently of any other
+    #     destination conflict, so an incompatible vault can never hide
+    #     behind an unrelated destination finding.
+    control.check_cancelled()
+    try:
+        vault_kind = _probe(vault_path)
+    except OSError:
+        vault_kind = None
+    if vault_kind == _PATH_FILE and not _existing_vault_reusable(
+        vault_path,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
+    ):
+        findings.error(PreflightCode.VAULT_REUSE_INCOMPATIBLE)
 
     # 4. Table-level field/companion findings (unsupported/unsafe/memo/cdx),
     #    with a per-table cancellation safe point and a progress event per

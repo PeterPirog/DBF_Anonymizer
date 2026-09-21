@@ -42,9 +42,17 @@ def _preflight_refusal() -> PublicationError:
 def _completed_retry_candidate(plan: Plan) -> bool:
     """Whether execution identity can safely classify an existing target.
 
-    With both durable targets present the engine can only return an exact
-    completed receipt or fail before acquiring its writer lease. It cannot
-    enter a new transformation pass over an existing output directory.
+    Vault COMPATIBILITY is owned by preflight's read-only dictionary-identity
+    validation: an opaque, corrupt, schema-unsupported, sidecar-ambiguous or
+    fingerprint-mismatched dictionary emits ``VAULT_REUSE_INCOMPATIBLE`` and
+    can never appear in a destination-conflict-only error set, so it can
+    never reach the engine through this retry exception. This structural
+    probe only confirms the completed-dataset FORM (an existing output
+    directory plus a regular dictionary file): with both durable targets
+    present the engine can only return an exact completed receipt or fail
+    before acquiring its writer lease — it cannot enter a new transformation
+    pass over an existing output directory, and the durable operation
+    binding still verifies the exact receipt and output fingerprint.
     """
     context = plan.execution_context
     if context is None:
