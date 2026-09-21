@@ -14,9 +14,9 @@ production pipeline:
   transforms one record at a time and feeds the ONE public Direct Write
   boundary, followed by the streaming before/after evidence comparison.
 
-The engine is an INTERNAL implementation boundary: it is not part of the
-root public API, no public ``pseudonymize`` operation exists yet (the
-publication/staging state is REQ-P4-009 scope).  Supported records are freshly
+The engine is an INTERNAL implementation boundary used by the public
+``pseudonymize`` service; it is not itself part of the root public API.
+Supported records are freshly
 reconstructed from transformed typed values with deleted markers and physical
 order preserved.  The versioned field matrix in :mod:`dbf_anonymizer.policy`
 is shared with planning/preflight and execution.
@@ -85,7 +85,12 @@ from dbf_anonymizer.relationships.models import (
     RelationGroup,
     RelationshipDocument,
 )
-from dbf_anonymizer.progress import ProgressController, ProgressPhase
+from dbf_anonymizer.progress import (
+    CancelCheck,
+    ProgressCallback,
+    ProgressController,
+    ProgressPhase,
+)
 from dbf_anonymizer.transforms.numeric_keys import (
     NumericKeyDomain,
     NumericKeyMemberRange,
@@ -610,8 +615,8 @@ def _cleanup_engine_resources(
 def run_two_pass(
     plan: Plan,
     *,
-    progress: Callable[[object], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
     workers: int = 1,
     operation_id: str | None = None,
     fault_inject: FaultInjector | None = None,
@@ -679,6 +684,7 @@ def run_two_pass(
     )
     vault: VaultDatabase | None = None
     spool: PassOneSpool | None = None
+    protected_state_created = not vault_path.exists()
     try:
         # Refuse known sensitive residue before creating a fresh durable vault.
         # Existing vaults are inspected first below so a crash-owned STARTED
@@ -688,7 +694,7 @@ def run_two_pass(
             refuse_evidence_leftovers(vault_path.parent)
         vault = VaultDatabase.open(
             vault_path,
-            create=not vault_path.exists(),
+            create=protected_state_created,
             expected_source_fingerprint=plan.dataset.source_fingerprint,
             expected_policy_fingerprint=plan.policy.policy_fingerprint,
             expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
@@ -794,6 +800,7 @@ def run_two_pass(
                         result,
                         operation_id=identity.operation_id,
                         output_fingerprint=output_fingerprint,
+                        protected_state_created=protected_state_created,
                     )
                     with writer_vault.transaction():
                         writer_vault.record_publication(

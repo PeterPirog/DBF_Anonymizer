@@ -26,6 +26,10 @@ __all__ = [
 
 FaultInjector = Callable[[str], None]
 
+#: The INTERNAL operation-receipt schema. Any structural change bumps this
+#: version; unknown versions are rejected fail-closed on read-back.
+RECEIPT_SCHEMA_VERSION = "1.1"
+
 
 def _publication_failure(detail_code: str) -> PublicationError:
     return PublicationError(
@@ -262,7 +266,7 @@ class DatasetStaging:
 
 def result_receipt(result: TwoPassResult) -> str:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": RECEIPT_SCHEMA_VERSION,
         "tables_written": list(result.tables_written),
         "pass1_records_scanned": result.pass1_records_scanned,
         "pass1_deleted_scanned": result.pass1_deleted_scanned,
@@ -276,6 +280,7 @@ def result_receipt(result: TwoPassResult) -> str:
         "read_streams": [list(item) for item in result.read_streams],
         "operation_id": result.operation_id,
         "output_fingerprint": result.output_fingerprint,
+        "protected_state_created": result.protected_state_created,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -283,7 +288,7 @@ def result_receipt(result: TwoPassResult) -> str:
 def result_from_receipt(receipt: str) -> TwoPassResult:
     try:
         payload = json.loads(receipt)
-        if payload.get("schema_version") != "1.0":
+        if payload.get("schema_version") != RECEIPT_SCHEMA_VERSION:
             raise ValueError
         relations = tuple(
             RelationPassSummary(**item) for item in payload["relations"]
@@ -308,6 +313,7 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
             operation_id=str(payload["operation_id"]),
             output_fingerprint=str(payload["output_fingerprint"]),
             reused_existing=True,
+            protected_state_created=bool(payload["protected_state_created"]),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise _publication_failure("OPERATION_RECEIPT_INVALID") from None

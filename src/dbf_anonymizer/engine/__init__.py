@@ -1,8 +1,9 @@
 """The Phase 4 bounded two-pass production engine (REQ-P4-001/P4-002).
 
 The engine is an INTERNAL implementation boundary: it is deliberately NOT
-part of the root public API and no public ``pseudonymize`` operation exists
-yet.  Every production DBF read goes through the ONE public
+part of the root public API; the public synchronous ``pseudonymize`` service
+delegates every mutation to :func:`run_two_pass` while the engine itself
+stays unexported.  Every production DBF read goes through the ONE public
 ``dbfbridge.iter_records`` Direct Read stream and every production DBF/FPT
 write through the ONE public ``dbfbridge.write_table`` boundary — no JSONL/
 CSV intermediates, no private ``dbfbridge`` modules, no direct
@@ -29,6 +30,7 @@ from dbf_anonymizer.engine.directives import (
     TableDirective,
     TwoPassResult,
 )
+from dbf_anonymizer.engine.publication import RECEIPT_SCHEMA_VERSION
 from dbf_anonymizer.engine.run import (
     build_engine_plan,
     run_two_pass,
@@ -53,4 +55,5 @@ __all__ = [
     "MAX_SQL_BATCH",
     "EVIDENCE_SPOOL_SCHEMA_VERSION",
     "PASS1_STATE_FILENAME",
+    "RECEIPT_SCHEMA_VERSION",
 ]

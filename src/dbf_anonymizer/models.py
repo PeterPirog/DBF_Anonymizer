@@ -539,6 +539,20 @@ class PreflightResult(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
+class _PseudonymizationExecutionContext:
+    """Runtime-only location of one published pseudonymized dataset.
+
+    The absolute path is retained only in memory for later service operations.
+    It is excluded from public serialization, representation and equality.
+    """
+
+    output_root: str
+
+    def __repr__(self) -> str:
+        return "<_PseudonymizationExecutionContext>"
+
+
+@dataclass(frozen=True, slots=True)
 class PseudonymizationResult(PublicModel):
     operation_id: str
     dataset: DatasetIdentity
@@ -548,6 +562,9 @@ class PseudonymizationResult(PublicModel):
     vault_created: bool
     output_fingerprint: str
     assurance: RelationalAssurance
+    execution_context: _PseudonymizationExecutionContext | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         _validated_code(self.operation_id, field_name="operation_id")

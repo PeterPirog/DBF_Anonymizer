@@ -427,14 +427,16 @@ def test_vault_ancestor_is_file_rejected(tmp_path: Path) -> None:
     assert "DESTINATION_CONFLICT" in result.error_codes
 
 
-def test_existing_vault_file_rejected_reuse_unimplemented(tmp_path: Path) -> None:
+def test_existing_vault_file_is_deferred_to_identity_validation(tmp_path: Path) -> None:
     plan = _build_plan(tmp_path)
     vault = tmp_path / "vault" / "dict.sqlite3"
     vault.parent.mkdir(parents=True, exist_ok=True)
     vault.write_bytes(b"opaque-preexisting-vault")
+    before = vault.read_bytes()
     result = preflight(plan)
-    assert result.ready is False
-    assert "DESTINATION_CONFLICT" in result.error_codes
+    assert result.ready is True
+    assert "DESTINATION_CONFLICT" not in result.error_codes
+    assert vault.read_bytes() == before
 
 
 def test_vault_target_is_directory_rejected(tmp_path: Path) -> None:

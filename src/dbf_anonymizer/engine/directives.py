@@ -127,6 +127,10 @@ class TwoPassResult:
     operation_id: str | None = None
     output_fingerprint: str | None = None
     reused_existing: bool = False
+    #: Whether the run created a fresh durable protected-state store (the
+    #: neutral internal fact; the protected-state name itself must never
+    #: enter the engine boundary serialization — see the P4 canary rules).
+    protected_state_created: bool = False
 
     @property
     def all_relations_verified(self) -> bool:

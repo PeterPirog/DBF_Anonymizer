@@ -476,10 +476,13 @@ def _ancestor_conflict(path: Path) -> bool:
 def _destination_conflict(output: Path, vault: Path) -> bool:
     """Detect path-type conflicts and unsafe existing destination state.
 
-    Vault reuse is intentionally NOT implemented here (future REQ-P2-010); an
-    existing vault target therefore fails closed as a conflict. The ancestor
-    chains of BOTH targets are checked: a file (or otherwise non-directory
-    component) anywhere in the hierarchy makes the destination uncreatable.
+    An existing regular vault file is a structurally valid reuse candidate;
+    its schema and complete dataset/policy/relationship identity are validated
+    fail-closed by the P2-010 vault boundary before execution can transform
+    anything. A directory or other non-file at the vault target remains a
+    conflict. The ancestor chains of BOTH targets are also checked: a file (or
+    otherwise non-directory component) in the hierarchy makes a missing target
+    uncreatable.
 
     All decisions use the raw stat probe (never pathlib predicates):
     MISSING is the only innocent state; an uninspectable path raises
@@ -495,9 +498,11 @@ def _destination_conflict(output: Path, vault: Path) -> bool:
     if output_kind == _PATH_DIRECTORY and any(_iterdir(output)):
         return True  # non-empty directory would overwrite existing state
 
-    # Vault is a file target: only a MISSING target is acceptable.
-    if _probe(vault) != _PATH_MISSING:
-        return True  # existing vault state: reuse unimplemented -> fail closed
+    # Vault is a file target: a missing target or existing regular file is
+    # structurally valid. Identity validation belongs to the vault boundary.
+    vault_kind = _probe(vault)
+    if vault_kind not in (_PATH_MISSING, _PATH_FILE):
+        return True
 
     # Any non-directory in either ancestor chain blocks directory creation.
     return _ancestor_conflict(output) or _ancestor_conflict(vault)
