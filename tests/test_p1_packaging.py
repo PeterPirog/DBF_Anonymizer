@@ -107,16 +107,17 @@ def test_version_sources_agree() -> None:
     assert installed in stdout
 
 
-def test_import_is_side_effect_free_and_does_not_fake_operations() -> None:
+def test_import_is_side_effect_free_and_exposes_the_implemented_surface() -> None:
     assert dbf_anonymizer.__version__ == "1.0.0.dev0"
     assert "Capabilities" in dbf_anonymizer.__all__
     assert "build_plan" in dbf_anonymizer.__all__
     assert "preflight" in dbf_anonymizer.__all__
     assert "pseudonymize" in dbf_anonymizer.__all__
     assert "capabilities" in dbf_anonymizer.__all__
+    assert "verify_dataset" in dbf_anonymizer.__all__
     assert callable(dbf_anonymizer.capabilities)
+    assert callable(dbf_anonymizer.verify_dataset)
     for operation in (
-        "verify_dataset",
         "recover",
         "create_transfer_bundle",
         "verify_transfer_bundle",

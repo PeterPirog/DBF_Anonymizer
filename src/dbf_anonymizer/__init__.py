@@ -8,10 +8,11 @@ side-effect-free ``preflight`` operation from REQ-P1-006, and the
 side-effect-free public capability discovery ``capabilities`` from
 REQ-P1-007.  The long-running read/scan operations support the REQ-P1-008
 bounded structured progress and cooperative cancellation callbacks
-(keyword-only ``progress`` / ``cancel_check`` arguments).  The remaining
-operations (``verify_dataset``, ``recover``, ``create_transfer_bundle`` and
-``verify_transfer_bundle``) are introduced only
-when their owning requirements are implemented; no placeholder success
+(keyword-only ``progress`` / ``cancel_check`` arguments).  The public
+independent dataset verification ``verify_dataset`` is the implemented
+REQ-P5-001 service slice.  The remaining operations (``recover``,
+``create_transfer_bundle`` and ``verify_transfer_bundle``) are introduced
+only when their owning requirements are implemented; no placeholder success
 functions are exported.
 
 The sole DBF/FPT parser and writer boundary for 1.0 remains the published
@@ -61,8 +62,9 @@ from .models import (
     TransferProfile,
     VaultStrategy,
     VerificationResult,
+    VerificationStatus,
 )
-from .api import build_plan, capabilities, preflight, pseudonymize
+from .api import build_plan, capabilities, preflight, pseudonymize, verify_dataset
 
 __version__ = "1.0.0.dev0"
 
@@ -81,6 +83,7 @@ __all__ = [
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",
+    "VerificationStatus",
     "VerificationResult",
     "RecoveryResult",
     "TransferBundleResult",
@@ -89,6 +92,7 @@ __all__ = [
     "build_plan",
     "preflight",
     "pseudonymize",
+    "verify_dataset",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",

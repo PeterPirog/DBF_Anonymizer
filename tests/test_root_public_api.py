@@ -55,6 +55,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "ProgressEvent",
     "PreflightResult",
     "PseudonymizationResult",
+    "VerificationStatus",
     "VerificationResult",
     "RecoveryResult",
     "TransferBundleResult",
@@ -63,6 +64,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "build_plan",
     "preflight",
     "pseudonymize",
+    "verify_dataset",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -88,7 +90,6 @@ EXPECTED_PUBLIC_EXPORTS = {
 }
 
 FUTURE_OPERATION_EXPORTS = {
-    "verify_dataset",
     "recover",
     "create_transfer_bundle",
     "verify_transfer_bundle",
@@ -115,6 +116,13 @@ def test_capabilities_is_public_and_has_a_single_implementation() -> None:
 
     assert dbf_anonymizer.capabilities is api_module.capabilities
     assert dbf_anonymizer.capabilities.__module__ == "dbf_anonymizer.capabilities"
+
+
+def test_verify_dataset_is_public_and_has_a_single_implementation() -> None:
+    import dbf_anonymizer.api as api_module
+
+    assert dbf_anonymizer.verify_dataset is api_module.verify_dataset
+    assert dbf_anonymizer.verify_dataset.__module__ == "dbf_anonymizer.verification"
 
 
 def test_pseudonymize_is_public_and_has_a_single_implementation() -> None:

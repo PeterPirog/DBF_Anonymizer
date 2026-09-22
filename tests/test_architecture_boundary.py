@@ -915,7 +915,10 @@ def test_no_sqlite_database_files_in_package_or_fixtures() -> None:
 #: ``memo_recovery`` storage may be referenced only by the schema, row
 #: recorder and allocation boundary.  The engine may call that allocation
 #: boundary by its public package symbol, but never name the table, read
-#: payloads back or create a second store.
+#: payloads back or create a second store.  The REQ-P5-001 dataset
+#: verification service is the sanctioned READ-ONLY consumer: it reads the
+#: protected recovery identities to prove output/recovery correspondence
+#: through the immutable snapshot reader and never writes.
 MEMO_RECOVERY_MODULES = frozenset(
     {
         "vault/__init__.py",
@@ -923,6 +926,7 @@ MEMO_RECOVERY_MODULES = frozenset(
         "vault/store.py",
         "vault/mappings.py",
         "vault/memo_allocation.py",
+        "verification.py",
     }
 )
 

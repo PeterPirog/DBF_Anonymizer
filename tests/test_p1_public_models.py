@@ -26,6 +26,7 @@ from dbf_anonymizer import (
     TransferBundleResult,
     TransferProfile,
     VerificationResult,
+    VerificationStatus,
     VaultStrategy,
 )
 from dbf_anonymizer.models import PUBLIC_MODEL_TYPES
@@ -151,11 +152,12 @@ def _samples() -> tuple[object, ...]:
             assurance=assurance,
         ),
         VerificationResult(
-            verified=True,
+            status=VerificationStatus.PASS,
             dataset=dataset,
+            operation_id="operation-001",
             table_count=2,
             record_count=15,
-            check_codes=("HASH_OK", "RELATIONS_OK"),
+            check_codes=(),
             assurance=assurance,
         ),
         RecoveryResult(
@@ -228,7 +230,7 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in _samples():
         payload = model.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.1"
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.2"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
@@ -277,7 +279,9 @@ def test_public_schema_has_no_fields_for_original_values_or_privileged_payloads(
         "vault_path",
     }
     for model_type in PUBLIC_MODEL_TYPES:
-        assert forbidden_field_names.isdisjoint(field.name for field in fields(model_type))
+        assert forbidden_field_names.isdisjoint(
+            field.name for field in fields(model_type)  # type: ignore[arg-type]
+        )
     for model in _samples():
         assert forbidden_field_names.isdisjoint(_walk_keys(model.to_dict()))  # type: ignore[union-attr]
 
@@ -365,6 +369,10 @@ def test_relationship_metadata_schema_version_accepts_the_supported_version() ->
 def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
     capabilities = _samples()[0]
     assert isinstance(capabilities, Capabilities)
+    dataset = _samples()[1]
+    assurance = _samples()[5]
+    assert isinstance(dataset, DatasetIdentity)
+    assert isinstance(assurance, RelationalAssurance)
     with pytest.raises(ValueError):
         TablePlan("a.dbf", None, -1, 1, 0, False, False, "DATA_ONLY", False, False, False, 0, 0, 0)
     with pytest.raises(ValueError):
@@ -384,6 +392,65 @@ def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
             warning_codes=(),
             error_codes=("POLICY_INVALID",),
         )
+    with pytest.raises(ValueError):
+        VerificationResult(
+            status=VerificationStatus.PASS,
+            dataset=dataset,
+            operation_id="operation-001",
+            table_count=-1,
+            record_count=1,
+            check_codes=(),
+            assurance=assurance,
+        )
+
+
+def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabulary() -> None:
+    """REQ-P5-001: the authoritative status vocabulary is exactly
+    PASS/PARTIAL/FAIL; ``verified`` is a DERIVED convenience (PASS only),
+    never a second independent truth field."""
+    assert {status.value for status in VerificationStatus} == {
+        "PASS",
+        "PARTIAL",
+        "FAIL",
+    }
+    samples = _samples()
+    dataset = samples[1]
+    assurance = samples[5]
+    assert isinstance(dataset, DatasetIdentity)
+    assert isinstance(assurance, RelationalAssurance)
+    passed = VerificationResult(
+        status=VerificationStatus.PASS,
+        dataset=dataset,
+        operation_id="operation-001",
+        table_count=1,
+        record_count=3,
+        check_codes=(),
+        assurance=assurance,
+    )
+    partial = VerificationResult(
+        status=VerificationStatus.PARTIAL,
+        dataset=dataset,
+        operation_id="operation-001",
+        table_count=1,
+        record_count=3,
+        check_codes=("INDEX_ARTIFACT_UNVERIFIED",),
+        assurance=assurance,
+    )
+    failed = VerificationResult(
+        status=VerificationStatus.FAIL,
+        dataset=dataset,
+        operation_id="operation-001",
+        table_count=1,
+        record_count=3,
+        check_codes=("OUTPUT_FINGERPRINT_MISMATCH",),
+        assurance=assurance,
+    )
+    assert passed.verified is True
+    assert partial.verified is False
+    assert failed.verified is False
+    assert passed.to_dict()["status"] == "PASS"
+    assert partial.to_dict()["status"] == "PARTIAL"
+    assert failed.to_dict()["status"] == "FAIL"
 
 
 def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
@@ -440,8 +507,8 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
             "record_count", "vault_created", "output_fingerprint", "assurance",
         ),
         "VerificationResult": (
-            "schema_version", "model_type", "verified", "dataset", "table_count", "record_count",
-            "check_codes", "assurance",
+            "schema_version", "model_type", "status", "dataset", "operation_id", "table_count",
+            "record_count", "check_codes", "assurance",
         ),
         "RecoveryResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",

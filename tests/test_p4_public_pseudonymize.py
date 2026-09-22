@@ -553,7 +553,7 @@ def test_public_progress_stream_is_one_operation_across_preflight_and_engine(
     """
     from dbf_anonymizer.progress import PROGRESS_QUANTUM_VERSION
 
-    assert PROGRESS_QUANTUM_VERSION == "1.1"
+    assert PROGRESS_QUANTUM_VERSION == "1.2"
 
     plan, _source, _output, _vault = _plan(tmp_path)
     recorder = _ProgressRecorder()

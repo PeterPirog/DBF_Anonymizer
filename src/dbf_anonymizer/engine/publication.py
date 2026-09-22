@@ -76,6 +76,58 @@ def derive_destination_identity(destination: Path) -> str:
     return _digest("dst-", {"path": normalized})
 
 
+def derive_vault_fingerprint(
+    *,
+    schema_version: str,
+    vault_id: str,
+    source_fingerprint: str,
+    policy_fingerprint: str,
+    relationship_fingerprint: str,
+) -> str:
+    """The canonical protected-vault binding fingerprint (``vlt-...``).
+
+    The ONE digest recipe shared by the publication identity builder and the
+    REQ-P5-001 read-only verification (which re-derives the expected vault
+    binding from the immutable snapshot identity without opening a writer).
+    """
+    return _digest(
+        "vlt-",
+        {
+            "schema": schema_version,
+            "vault_id": vault_id,
+            "source": source_fingerprint,
+            "policy": policy_fingerprint,
+            "relationships": relationship_fingerprint,
+        },
+    )
+
+
+def derive_binding_fingerprint(
+    *,
+    source_fingerprint: str,
+    policy_fingerprint: str,
+    relationship_fingerprint: str,
+    vault_fingerprint: str,
+    destination_identity: str,
+) -> str:
+    """The canonical full operation binding fingerprint (``opb-...``).
+
+    The ONE digest recipe shared by the publication identity builder and the
+    REQ-P5-001 read-only verification. The binding is the STRONGER engine
+    check: it additionally binds the ACTUAL vault fingerprint.
+    """
+    return _digest(
+        "opb-",
+        {
+            "source": source_fingerprint,
+            "policy": policy_fingerprint,
+            "relationships": relationship_fingerprint,
+            "vault": vault_fingerprint,
+            "destination": destination_identity,
+        },
+    )
+
+
 def derive_operation_id(
     *,
     source_fingerprint: str,
@@ -113,25 +165,19 @@ def build_publication_identity(
     operation_id: str | None,
 ) -> PublicationIdentity:
     destination_identity = derive_destination_identity(destination)
-    vault_fingerprint = _digest(
-        "vlt-",
-        {
-            "schema": vault.schema_version,
-            "vault_id": vault.vault_id,
-            "source": source_fingerprint,
-            "policy": policy_fingerprint,
-            "relationships": relationship_fingerprint,
-        },
+    vault_fingerprint = derive_vault_fingerprint(
+        schema_version=vault.schema_version,
+        vault_id=vault.vault_id,
+        source_fingerprint=source_fingerprint,
+        policy_fingerprint=policy_fingerprint,
+        relationship_fingerprint=relationship_fingerprint,
     )
-    binding_fingerprint = _digest(
-        "opb-",
-        {
-            "source": source_fingerprint,
-            "policy": policy_fingerprint,
-            "relationships": relationship_fingerprint,
-            "vault": vault_fingerprint,
-            "destination": destination_identity,
-        },
+    binding_fingerprint = derive_binding_fingerprint(
+        source_fingerprint=source_fingerprint,
+        policy_fingerprint=policy_fingerprint,
+        relationship_fingerprint=relationship_fingerprint,
+        vault_fingerprint=vault_fingerprint,
+        destination_identity=destination_identity,
     )
     # ONE deterministic operation-id kernel: an explicit id wins, otherwise
     # the canonical pre-executable derivation applies (stable for retries).
@@ -177,14 +223,25 @@ def _iter_dataset_files(root: Path) -> Iterator[tuple[str, Path]]:
 
 
 def fingerprint_dataset(
-    root: Path, *, checkpoint: Callable[[], None] | None = None
+    root: Path,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+    progress_probe: Callable[[int, int, str], None] | None = None,
 ) -> str:
-    """Hash a complete dataset tree incrementally in canonical path order."""
+    """Hash a complete dataset tree incrementally in canonical path order.
+
+    The optional private progress probe (REQ-P1-008, used by the REQ-P5-001
+    dataset verification service) is called with ``done, total, relative``
+    after each artifact digest — one bounded event per file, never per byte.
+    With ``progress_probe=None`` the pre-existing deterministic behavior and
+    the exact fingerprint bytes are unchanged.
+    """
     if not root.is_dir():
         raise _publication_failure("DATASET_MISSING")
     digest = hashlib.sha256(b"DBF-ANONYMIZER-DATASET/v1\x00")
+    inventory = list(_iter_dataset_files(root))
     count = 0
-    for relative, path in _iter_dataset_files(root):
+    for relative, path in inventory:
         if checkpoint is not None:
             checkpoint()
         count += 1
@@ -201,6 +258,8 @@ def fingerprint_dataset(
                 digest.update(block)
                 if checkpoint is not None:
                     checkpoint()
+        if progress_probe is not None:
+            progress_probe(count, len(inventory), relative)
     digest.update(count.to_bytes(8, "big"))
     return "out-" + digest.hexdigest()
 
