@@ -60,7 +60,7 @@ __all__ = [
 ]
 
 #: Versioned identity of the bounded-progress / cancellation-quanta vocabulary.
-PROGRESS_QUANTUM_VERSION = "1.2"
+PROGRESS_QUANTUM_VERSION = "1.3"
 
 #: Type of the synchronous progress callback (REQ-P1-002 ProgressEvent).
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -79,16 +79,21 @@ class ProgressPhase:
     Phase 4 two-pass engine (REQ-P4-002) realizes its own bounded phases
     ``PASS1_SCAN``/``PASS1_FINALIZE``/``PASS2_WRITE`` on the same bounded
     progress contract, plus ``SOURCE_REVALIDATION`` for the pre-execution
-    trust re-scan, and the REQ-P5-001 dataset verification service realizes
+    trust re-scan; the REQ-P5-001 dataset verification service realizes
     ``VERIFICATION`` (the streaming record/policy scan) plus
     ``VAULT_VERIFICATION`` and ``OUTPUT_VERIFICATION`` for its dedicated
-    read-only vault and output-fingerprint phases.  No operation outside
-    the engine and the verification service emits them.
+    read-only vault and output-fingerprint phases; the REQ-P5-002
+    protected dataset recovery service realizes ``RECOVERY_SCAN`` (the
+    streaming protected-state read + staged fresh write) on the same
+    bounded contract, reusing ``VAULT_VERIFICATION``/``VERIFICATION``/
+    ``PUBLICATION`` for its authority validation, staged self-verification
+    and atomic promotion phases.  No operation outside the engine, the
+    verification service and the recovery service emits them.
 
-    Vocabulary note (version 1.2): ``VAULT_VERIFICATION`` and
-    ``OUTPUT_VERIFICATION`` were added for the public dataset verification
-    service; ``VERIFICATION`` is realized by that service's bounded
-    streaming record/policy scan.
+    Vocabulary note (version 1.3): ``RECOVERY_SCAN`` was added for the
+    protected dataset recovery service (one bounded phase per recovered
+    table), and ``PUBLICATION`` is realized by that service's atomic
+    staging promotion.
     """
 
     OPERATION = "OPERATION"
@@ -103,6 +108,7 @@ class ProgressPhase:
     VERIFICATION = "VERIFICATION"
     VAULT_VERIFICATION = "VAULT_VERIFICATION"
     OUTPUT_VERIFICATION = "OUTPUT_VERIFICATION"
+    RECOVERY_SCAN = "RECOVERY_SCAN"
     PUBLICATION = "PUBLICATION"
     PASS1_SCAN = "PASS1_SCAN"
     PASS1_FINALIZE = "PASS1_FINALIZE"

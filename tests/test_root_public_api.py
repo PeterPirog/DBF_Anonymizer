@@ -57,6 +57,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "PseudonymizationResult",
     "VerificationStatus",
     "VerificationResult",
+    "RawByteEquivalence",
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
@@ -65,6 +66,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "preflight",
     "pseudonymize",
     "verify_dataset",
+    "recover",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -90,7 +92,6 @@ EXPECTED_PUBLIC_EXPORTS = {
 }
 
 FUTURE_OPERATION_EXPORTS = {
-    "recover",
     "create_transfer_bundle",
     "verify_transfer_bundle",
 }
@@ -116,6 +117,13 @@ def test_capabilities_is_public_and_has_a_single_implementation() -> None:
 
     assert dbf_anonymizer.capabilities is api_module.capabilities
     assert dbf_anonymizer.capabilities.__module__ == "dbf_anonymizer.capabilities"
+
+
+def test_recover_is_public_and_has_a_single_implementation() -> None:
+    import dbf_anonymizer.api as api_module
+
+    assert dbf_anonymizer.recover is api_module.recover
+    assert dbf_anonymizer.recover.__module__ == "dbf_anonymizer.recovery"
 
 
 def test_verify_dataset_is_public_and_has_a_single_implementation() -> None:

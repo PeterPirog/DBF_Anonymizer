@@ -34,6 +34,7 @@ from dbf_anonymizer.progress import (
 from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
 )
+from dbf_anonymizer.recovery import recover
 from dbf_anonymizer.verification import verify_dataset
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "preflight",
     "pseudonymize",
     "verify_dataset",
+    "recover",
 ]
 
 _MAX_PUBLIC_WORKERS = 32
