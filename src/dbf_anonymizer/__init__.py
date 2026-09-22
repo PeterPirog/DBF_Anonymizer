@@ -10,10 +10,12 @@ REQ-P1-007.  The long-running read/scan operations support the REQ-P1-008
 bounded structured progress and cooperative cancellation callbacks
 (keyword-only ``progress`` / ``cancel_check`` arguments).  The public
 independent dataset verification ``verify_dataset`` is the implemented
-REQ-P5-001 service slice.  The remaining operations (``recover``,
-``create_transfer_bundle`` and ``verify_transfer_bundle``) are introduced
-only when their owning requirements are implemented; no placeholder success
-functions are exported.
+REQ-P5-001 service slice and the protected canonical dataset recovery
+``recover`` is the implemented REQ-P5-002/REQ-P5-003 service slice.  The
+remaining operations (``create_transfer_bundle`` and
+``verify_transfer_bundle``) are introduced only when their owning
+requirements are implemented; no placeholder success functions are
+exported.
 
 The sole DBF/FPT parser and writer boundary for 1.0 remains the published
 public ``dbfbridge[write]>=1.1.0,<2`` distribution.
@@ -63,8 +65,16 @@ from .models import (
     VaultStrategy,
     VerificationResult,
     VerificationStatus,
+    RawByteEquivalence,
 )
-from .api import build_plan, capabilities, preflight, pseudonymize, verify_dataset
+from .api import (
+    build_plan,
+    capabilities,
+    preflight,
+    pseudonymize,
+    recover,
+    verify_dataset,
+)
 
 __version__ = "1.0.0.dev0"
 
@@ -85,6 +95,7 @@ __all__ = [
     "PseudonymizationResult",
     "VerificationStatus",
     "VerificationResult",
+    "RawByteEquivalence",
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",
@@ -93,6 +104,7 @@ __all__ = [
     "preflight",
     "pseudonymize",
     "verify_dataset",
+    "recover",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",

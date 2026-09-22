@@ -115,10 +115,11 @@ def test_import_is_side_effect_free_and_exposes_the_implemented_surface() -> Non
     assert "pseudonymize" in dbf_anonymizer.__all__
     assert "capabilities" in dbf_anonymizer.__all__
     assert "verify_dataset" in dbf_anonymizer.__all__
+    assert "recover" in dbf_anonymizer.__all__
     assert callable(dbf_anonymizer.capabilities)
     assert callable(dbf_anonymizer.verify_dataset)
+    assert callable(dbf_anonymizer.recover)
     for operation in (
-        "recover",
         "create_transfer_bundle",
         "verify_transfer_bundle",
     ):

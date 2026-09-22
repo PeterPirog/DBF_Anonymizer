@@ -83,14 +83,22 @@ def snapshot() -> Capabilities:
 
     Direct read/write truthfulness requires both the public API symbol and
     the discoverable runtime dependency of the ``dbfbridge[write]`` extra.
-    ``vfp_index_backend`` is false in this standalone implementation (it will
-    be supplied later by the REQ-P6 index backend), and ``recovery`` /
-    ``transfer_bundle`` remain false until their owning requirements exist.
+    The protected canonical dataset recovery (REQ-P5-002/REQ-P5-003) is a
+    REAL implemented service: it is derived from the SAME required direct
+    read/write runtime capability facts (recovery reads the pseudonymized
+    dataset through the direct reader and writes the recovered dataset
+    through the direct writer; no additional backend is involved) — no
+    filesystem probing, no DBF/vault open, no subprocess/COM/network.
+    ``vfp_index_backend`` remains false in this standalone implementation
+    (it will be supplied later by the REQ-P6 index backend) and
+    ``transfer_bundle`` remains false until its owning requirement exists.
     """
     return Capabilities(
         direct_read=direct_read_available(),
         direct_write=direct_write_available(),
-        recovery=False,
+        recovery=(
+            direct_read_available() and direct_write_available()
+        ),
         transfer_bundle=False,
         vfp_index_backend=False,
         dbfbridge_version=_importlib_metadata_version(),

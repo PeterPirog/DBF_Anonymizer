@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.2"
+MODEL_SCHEMA_VERSION = "1.3"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -52,6 +52,22 @@ class VaultStrategy(str, Enum):
 
     NONE = "NONE"
     SINGLE_DATASET_SQLITE = "SINGLE_DATASET_SQLITE"
+
+
+class RawByteEquivalence(str, Enum):
+    """The truthful raw DBF/FPT byte-equivalence fact (REQ-P5-003).
+
+    Recovery success is CANONICAL LOGICAL DATA + SCHEMA EQUIVALENCE, never
+    universal byte-for-byte identity. Raw physical equivalence is reported
+    only when objectively proven (``PROVEN_EQUAL``), explicitly measured to
+    differ (``PROVEN_DIFFERENT``) or truthfully ``NOT_EVALUATED`` where the
+    public fresh writer does not promise byte reconstruction and no
+    comparison oracle exists.
+    """
+
+    PROVEN_EQUAL = "PROVEN_EQUAL"
+    PROVEN_DIFFERENT = "PROVEN_DIFFERENT"
+    NOT_EVALUATED = "NOT_EVALUATED"
 
 
 class VerificationStatus(str, Enum):
@@ -652,18 +668,35 @@ class VerificationResult(PublicModel):
 
 @dataclass(frozen=True, slots=True)
 class RecoveryResult(PublicModel):
+    """The public canonical recovery verdict (REQ-P5-002/REQ-P5-003).
+
+    ``canonical_verified`` is the authoritative success criterion: the
+    recovered dataset is canonical LOGICAL data + schema equivalent to the
+    original (proven by the internal staged self-verification against the
+    protected durable recovery state — never by a successful DBF write
+    alone). ``raw_byte_equivalence`` reports the SEPARATE raw DBF/FPT byte
+    fact truthfully; production recovery never claims raw equivalence
+    without an objective comparison oracle. The recovery ``operation_id``
+    is clearly distinct from the pseudonymization operation it recovers.
+    """
+
     operation_id: str
     dataset: DatasetIdentity
     output_path: str
     table_count: int
     record_count: int
-    verified: bool
+    canonical_verified: bool
+    raw_byte_equivalence: RawByteEquivalence
 
     def __post_init__(self) -> None:
         _validated_code(self.operation_id, field_name="operation_id")
         object.__setattr__(self, "output_path", _normalized_relative_path(self.output_path))
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
+        if not isinstance(self.canonical_verified, bool):
+            raise TypeError("canonical_verified must be a genuine bool")
+        if not isinstance(self.raw_byte_equivalence, RawByteEquivalence):
+            raise TypeError("raw_byte_equivalence must be a RawByteEquivalence")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -673,7 +706,8 @@ class RecoveryResult(PublicModel):
             output_path=self.output_path,
             table_count=self.table_count,
             record_count=self.record_count,
-            verified=self.verified,
+            canonical_verified=self.canonical_verified,
+            raw_byte_equivalence=self.raw_byte_equivalence,
         )
 
 
@@ -739,6 +773,7 @@ __all__ = [
     "PseudonymizationResult",
     "VerificationStatus",
     "VerificationResult",
+    "RawByteEquivalence",
     "RecoveryResult",
     "TransferBundleResult",
     "TransferProfile",

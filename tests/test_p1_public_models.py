@@ -18,6 +18,7 @@ from dbf_anonymizer import (
     PreflightResult,
     ProgressEvent,
     PseudonymizationResult,
+    RawByteEquivalence,
     RecoveryResult,
     RelationalAssurance,
     RelationalAssuranceLevel,
@@ -166,7 +167,8 @@ def _samples() -> tuple[object, ...]:
             output_path="output\\recovered",
             table_count=2,
             record_count=15,
-            verified=True,
+            canonical_verified=True,
+            raw_byte_equivalence=RawByteEquivalence.NOT_EVALUATED,
         ),
         TransferBundleResult(
             bundle_path="transfer\\bundle",
@@ -230,7 +232,7 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in _samples():
         payload = model.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.2"
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.3"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
@@ -512,7 +514,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "RecoveryResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
-            "record_count", "verified",
+            "record_count", "canonical_verified", "raw_byte_equivalence",
         ),
         "TransferBundleResult": (
             "schema_version", "model_type", "bundle_path", "profile", "file_count",

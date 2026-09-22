@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from dbf_anonymizer.discovery import (
     collect_fingerprint_entries,
     compute_source_fingerprint,
+    derive_dataset_id,
     discover_tables,
 )
 from dbf_anonymizer.errors import (
@@ -500,8 +501,8 @@ def build_plan(
         vault_strategy=vault_strategy,
     )
 
-    # 10. Build DatasetIdentity
-    dataset_id = "ds-" + source_fp[:16]
+    # 10. Build DatasetIdentity (the ONE shared canonical identity kernel)
+    dataset_id = derive_dataset_id(source_fp)
     table_paths = tuple(t.relative_path for t in discovered)
     dataset = DatasetIdentity(
         dataset_id=dataset_id,

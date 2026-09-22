@@ -368,3 +368,16 @@ def compute_source_fingerprint(
         ensure_ascii=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def derive_dataset_id(source_fingerprint: str) -> str:
+    """The canonical dataset identity digest (``ds-...``) — ONE shared kernel.
+
+    The pure identity recipe of the public
+    :class:`~dbf_anonymizer.models.DatasetIdentity`: derived ONLY from the
+    canonical source fingerprint so deterministic planning and the
+    source-free REQ-P5-002 recovery can never drift apart. Recovery
+    reconstructs the public dataset identity from the PROTECTED durable
+    dataset row (never from an original source scan).
+    """
+    return "ds-" + source_fingerprint[:16]

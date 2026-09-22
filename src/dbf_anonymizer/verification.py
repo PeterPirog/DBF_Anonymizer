@@ -72,6 +72,7 @@ from dbf_anonymizer.engine.publication import (
     result_from_receipt,
 )
 from dbf_anonymizer.errors import (
+    AnonymizerError,
     CallbackError,
     CancellationError,
     DBFBridgeError,
@@ -185,18 +186,36 @@ class _VerifyVault:
     attempt. Every query is SELECT-only over the immutable committed
     snapshot; storage classes are validated by SQLite TYPE classification,
     never by parsing SQLite text.
+
+    The failure ``operation``/builder are supplied by the owning public
+    service (the REQ-P5-001 verifier and the REQ-P5-002 recovery reader
+    share this ONE read-only implementation).
     """
 
-    def __init__(self, path: Path) -> None:
-        if dictionary_sidecars(path):
-            raise _verification_failure("VAULT_STATE_UNVERIFIABLE")
+    def __init__(
+        self,
+        path: Path,
+        *,
+        operation: str = "verify_dataset",
+        failure: Callable[[str], AnonymizerError] | None = None,
+    ) -> None:
+        self._operation = operation
+        self._failure = failure if failure is not None else _verification_failure
+        try:
+            sidecars = dictionary_sidecars(path)
+        except VaultError:
+            # Uninspectable vault surroundings are a typed unreadable state
+            # attributed to the owning service (never raw OS text).
+            raise self._failure("VAULT_UNREADABLE") from None
+        if sidecars:
+            raise self._failure("VAULT_STATE_UNVERIFIABLE")
         try:
             self._connection = connect_dictionary_readonly(path)
             vault_id, schema_version, fingerprints = read_dictionary_identity(
                 self._connection
             )
         except (sqlite3.DatabaseError, VaultError):
-            raise _verification_failure("VAULT_UNREADABLE") from None
+            raise self._failure("VAULT_UNREADABLE") from None
         self.vault_id = vault_id
         self.schema_version = schema_version
         self.source_fingerprint = fingerprints["source"]
@@ -219,7 +238,7 @@ class _VerifyVault:
         if row is None:
             return None
         if not all(isinstance(value, (str, type(None))) for value in row):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         names = (
             "state",
             "source_fingerprint",
@@ -242,7 +261,7 @@ class _VerifyVault:
             "FROM dataset WHERE singleton = 1"
         ).fetchone()
         if row is None or not all(isinstance(value, str) for value in row):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return (str(row[0]), str(row[1]), str(row[2]))
 
     def table_rows(self) -> dict[str, str]:
@@ -252,7 +271,7 @@ class _VerifyVault:
         tables: dict[str, str] = {}
         for row in rows:
             if not isinstance(row[0], str) or not isinstance(row[1], str):
-                raise _verification_failure("VAULT_UNREADABLE")
+                raise self._failure("VAULT_UNREADABLE")
             tables[str(row[1])] = str(row[0])
         return tables
 
@@ -275,7 +294,7 @@ class _VerifyVault:
                 or not isinstance(row[5], (str, type(None)))
                 or not isinstance(row[6], (str, type(None)))
             ):
-                raise _verification_failure("VAULT_UNREADABLE")
+                raise self._failure("VAULT_UNREADABLE")
         return tuple(
             (
                 str(row[0]),
@@ -297,7 +316,7 @@ class _VerifyVault:
         if row is None:
             return None
         if not isinstance(row[0], str):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return str(row[0])
 
     def text_original(self, domain_id: str, pseudonym_value: str) -> str | None:
@@ -309,7 +328,7 @@ class _VerifyVault:
         if row is None:
             return None
         if row[1] != "text" or row[2] != "text":
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return str(row[0])
 
     def numeric_original(self, domain_id: str, pseudonym_value: str) -> str | None:
@@ -321,7 +340,7 @@ class _VerifyVault:
         if row is None:
             return None
         if row[1] != "text" or row[2] != "text":
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return str(row[0])
 
     def domain_bijection(self, domain_id: str, table: str) -> tuple[int, int, int]:
@@ -333,7 +352,7 @@ class _VerifyVault:
             (domain_id,),
         ).fetchone()
         if row is None or not all(isinstance(value, int) for value in row):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return (int(row[0]), int(row[1]), int(row[2]))
 
     def empty_text_originals(self, domain_id: str) -> bool:
@@ -355,10 +374,10 @@ class _VerifyVault:
         if row is None:
             return None
         if row[2] != "blob" or row[3] != "text":
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         kind = str(row[1])
         if kind not in ("TEXT", "BINARY"):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return (bytes(row[0]), kind)
 
     def temporal_offset(self, domain_id: str | None) -> int | None:
@@ -376,10 +395,10 @@ class _VerifyVault:
         if row is None:
             return None
         if isinstance(row[1], bool) or not isinstance(row[1], int):
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         offset = int(row[1])
         if offset == 0:
-            raise _verification_failure("VAULT_UNREADABLE")
+            raise self._failure("VAULT_UNREADABLE")
         return offset
 
     def domains(self) -> tuple[tuple[str, str], ...]:
@@ -388,7 +407,7 @@ class _VerifyVault:
         ).fetchall()
         for row in rows:
             if not isinstance(row[0], str) or not isinstance(row[1], str):
-                raise _verification_failure("VAULT_UNREADABLE")
+                raise self._failure("VAULT_UNREADABLE")
         return tuple((str(row[0]), str(row[1])) for row in rows)
 
 
