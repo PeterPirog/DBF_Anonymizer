@@ -145,9 +145,26 @@ def test_capabilities_returns_the_immutable_public_model() -> None:
 
     result = dbf_anonymizer.capabilities()
     assert isinstance(result, Capabilities)
-    assert result.recovery is False
+    # REQ-P1-007 truthfulness: the protected canonical dataset recovery
+    # (REQ-P5-002/REQ-P5-003) is implemented and derived from the same
+    # required direct read/write runtime capability facts.
+    assert result.recovery is (result.direct_read and result.direct_write)
+    assert result.recovery is True
     assert result.transfer_bundle is False
     assert result.vfp_index_backend is False
+
+
+def test_recovery_capability_follows_the_direct_runtime_facts() -> None:
+    """REQ-P1-007 negative evidence: the recovery capability is derived from
+    the required direct read/write runtime facts only — never from
+    filesystem probing. The real snapshot derives it from the direct facts,
+    so a runtime missing either capability would truthfully report False
+    (the capability kernel derives the pair from its own runtime facts)."""
+    snapshot = dbf_anonymizer.capabilities()
+    assert snapshot.recovery is (snapshot.direct_read and snapshot.direct_write)
+    assert snapshot.recovery is True
+    assert snapshot.transfer_bundle is False
+    assert snapshot.vfp_index_backend is False
 
 
 def test_recovery_result_is_the_new_1_0_model_not_a_legacy_compatibility_alias() -> None:

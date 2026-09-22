@@ -579,8 +579,15 @@ def test_req_p1_007_isolated_capability_purity(tmp_path: Path) -> None:
     assert caps["json_safe"] is True
     assert caps["path_like_values"] == []
 
-    # Future capabilities stay false until their owning requirements exist.
-    assert caps["recovery"] is False
+    # Truthful capability facts (REQ-P1-007): the protected canonical dataset
+    # recovery (REQ-P5-002/REQ-P5-003) is a REAL implemented service derived
+    # from the same required direct read/write runtime capability facts, so
+    # a supported dbfbridge[write] environment truthfully reports True
+    # without any filesystem probing. Transfer bundles and the VFP index
+    # backend stay false until their owning requirements exist.
+    assert caps["recovery"] == (
+        caps["direct_read"] and caps["direct_write"]
+    )
     assert caps["transfer_bundle"] is False
     assert caps["vfp_index_backend"] is False
 
@@ -662,7 +669,12 @@ def test_capabilities_to_dict_is_deterministic_json_safe_and_leak_free() -> None
     assert json.loads(json.dumps(payload)) == payload
     assert set(payload) == _EXPECTED_CAPABILITY_KEYS
     assert payload["model_type"] == "Capabilities"
-    assert payload["recovery"] is False
+    # REQ-P1-007 truthfulness: the implemented REQ-P5-002/REQ-P5-003
+    # recovery service derives its capability from the same required direct
+    # read/write runtime facts.
+    assert payload["recovery"] == (
+        result.direct_read and result.direct_write
+    )
     assert payload["transfer_bundle"] is False
     assert payload["vfp_index_backend"] is False
     for key, value in payload.items():

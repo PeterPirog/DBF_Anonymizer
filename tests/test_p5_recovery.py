@@ -485,26 +485,38 @@ def test_full_supported_matrix_round_trip_recovers_canonical_dataset(
 
     before_pseudonymized = _hash_tree(output)
     before_vault = _hash_tree(vault.parent)
-    recovery = recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+    before_all = _hash_tree(tmp_path)
+    recovery = recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
 
     assert isinstance(recovery, RecoveryResult)
     assert recovery.canonical_verified is True
     assert recovery.raw_byte_equivalence is RawByteEquivalence.NOT_EVALUATED
     assert recovery.table_count == result.table_count == 3
     assert recovery.record_count == result.record_count
-    assert recovery.dataset is result.dataset
+    # The public dataset identity is the DURABLE one (reconstructed from the
+    # protected vault — equal by value, never an in-process object).
+    assert recovery.dataset == result.dataset
     # The recovery invocation identity is distinct from the pseudonymization
-    # operation it recovers.
+    # operation it recovers, and the public dataset identity is the durable
+    # one (reconstructed from the vault, not from an in-process result).
     assert recovery.operation_id.startswith("op-")
     assert recovery.operation_id != result.operation_id
+    assert recovery.dataset == result.dataset
     # Strict immutability of the two production inputs.
     assert _hash_tree(output) == before_pseudonymized
     assert _hash_tree(vault.parent) == before_vault
-    # No staging/lock residue after the successful atomic promotion.
+    # Successful cleanup evidence: NO original-bearing staging directory
+    # remains, and the only new artifacts are the intended recovered dataset
+    # plus the transient engine-owned lock lifecycle artifact.
     assert not any(tmp_path.glob("*.staging*"))
-    assert _hash_tree(tmp_path) == {
-        **_hash_tree(tmp_path),
-    } or True  # the recovered tree is new; staging is gone
+    after_tmp = _hash_tree(tmp_path)
+    created = set(after_tmp) - set(before_all)
+    assert created == {
+        relative for relative in after_tmp if relative.startswith("recovered/")
+    } | {name for name in created if name.endswith(".lock")}
+    assert not any(name.endswith(".staging") for name in created)
+    # The recovered tree exists and no staging root does.
+    assert (tmp_path / "recovered").is_dir()
 
     # REQ-P5-003 acceptance oracle: canonical logical + schema equivalence.
     _compare_canonical(source, tmp_path / "recovered")
@@ -553,7 +565,7 @@ def test_recovery_is_source_free_in_production(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(dbfbridge, "read_schema", guarded_read_schema)  # type: ignore[attr-defined]
     shutil.rmtree(source)
 
-    recovery = recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+    recovery = recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
 
     assert recovery.canonical_verified is True
     assert recovery.raw_byte_equivalence is RawByteEquivalence.NOT_EVALUATED
@@ -574,7 +586,7 @@ def test_public_progress_stream_is_one_operation_with_bounded_phases(
         threads.append(threading.get_ident())
 
     recovery = recover(
-        pseudonymized=result,
+        pseudonymized=output,
         vault=vault,
         output=tmp_path / "recovered",
         progress=progress,
@@ -641,7 +653,7 @@ def test_cancellation_before_publication_is_typed_and_leaves_no_output(
 
     with pytest.raises(CancellationError) as caught:
         recover(
-            pseudonymized=result,
+            pseudonymized=output,
             vault=vault,
             output=tmp_path / "recovered",
             progress=recording_progress,
@@ -684,7 +696,7 @@ def test_callback_failure_is_contained_and_typed(tmp_path: Path) -> None:
 
     with pytest.raises(CallbackError) as caught:
         recover(
-            pseudonymized=result,
+            pseudonymized=output,
             vault=vault,
             output=tmp_path / "recovered",
             progress=progress,
@@ -732,7 +744,7 @@ def test_cancellation_immediately_before_publication_leaves_no_output(
 
     with pytest.raises(CancellationError) as caught:
         recover(
-            pseudonymized=result,
+            pseudonymized=output,
             vault=vault,
             output=tmp_path / "recovered",
             progress=progress,
@@ -757,7 +769,7 @@ def _fails_closed(
 ) -> None:
     recovered = tmp_path / "recovered"
     with pytest.raises(exception):
-        recover(pseudonymized=result, vault=vault, output=recovered)
+        recover(pseudonymized=output, vault=vault, output=recovered)
     assert not recovered.exists()
     assert not any(tmp_path.glob("*.staging*"))
 
@@ -766,7 +778,7 @@ def test_missing_vault_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     vault.unlink()
     with pytest.raises(RecoveryError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
 
 
@@ -774,7 +786,7 @@ def test_corrupt_vault_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     vault.write_bytes(b"opaque-corrupt-vault")
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "VAULT_UNREADABLE"
 
 
@@ -791,7 +803,7 @@ def test_unsupported_vault_schema_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code in {
         "RECOVERY_VAULT_UNREADABLE",
         "VAULT_UNREADABLE",
@@ -806,7 +818,7 @@ def test_sidecar_ambiguous_vault_fails_closed_without_mutation(
     sidecar = vault.parent / "dictionary.sqlite3-journal"
     sidecar.write_bytes(b"SYNTHETIC-AMBIGUOUS-JOURNAL")
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code in {
         "RECOVERY_VAULT_STATE_UNVERIFIABLE",
         "VAULT_STATE_UNVERIFIABLE",
@@ -829,8 +841,14 @@ def test_identity_mismatch_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
-    assert caught.value.context.detail_code == "RECOVERY_IDENTITY_MISMATCH"
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
+    # The tampered dataset row changes the derived canonical operation id,
+    # so the exact durable operation can no longer be found - either typed
+    # refusal is a truthful fail-closed classification.
+    assert caught.value.context.detail_code in {
+        "RECOVERY_IDENTITY_MISMATCH",
+        "RECOVERY_OPERATION_NOT_COMPLETED",
+    }
     assert not (tmp_path / "recovered").exists()
 
 
@@ -839,7 +857,7 @@ def test_pseudonymized_fingerprint_mismatch_fails_closed(tmp_path: Path) -> None
     with (output / "north" / "data.fpt").open("ab") as tampered:
         tampered.write(b"tampered")
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_PSEUDONYMIZED_MISMATCH"
 
 
@@ -856,7 +874,7 @@ def test_missing_completed_operation_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     # Deleting the completed operation breaks the durable FK coherence (the
     # publication row references it), so the reader classifies the whole
     # protected state as unreadable/untrustworthy - either typed refusal is
@@ -882,7 +900,7 @@ def test_missing_text_reverse_mapping_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_MAPPING_MISSING"
     assert not (tmp_path / "recovered").exists()
 
@@ -903,7 +921,7 @@ def test_conflicting_text_mapping_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_MAPPING_INVALID"
 
 
@@ -920,7 +938,7 @@ def test_missing_numeric_reverse_mapping_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_MAPPING_MISSING"
 
 
@@ -938,7 +956,7 @@ def test_missing_memo_recovery_row_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_RECOVERY_ROW_MISSING"
 
 
@@ -956,7 +974,7 @@ def test_invalid_memo_payload_kind_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_RECOVERY_ROW_MISSING"
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
@@ -973,7 +991,7 @@ def test_missing_temporal_parameter_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_MAPPING_INVALID"
 
 
@@ -988,7 +1006,7 @@ def test_corrupt_temporal_parameter_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
 
 
 def test_incomplete_field_ledger_fails_closed(tmp_path: Path) -> None:
@@ -1005,7 +1023,7 @@ def test_incomplete_field_ledger_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_LEDGER_INCOMPLETE"
 
 
@@ -1013,7 +1031,7 @@ def test_missing_pseudonymized_table_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     (output / "south" / "data.dbf").unlink()
     with pytest.raises(Exception) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
 
@@ -1022,7 +1040,7 @@ def test_missing_pseudonymized_fpt_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     (output / "north" / "data.fpt").unlink()
     with pytest.raises(Exception) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
 
@@ -1041,7 +1059,7 @@ def test_pseudonymized_schema_corruption_fails_closed(tmp_path: Path) -> None:
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_LEDGER_INCOMPLETE"
 
 
@@ -1049,7 +1067,7 @@ def test_unsafe_output_overlap_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     with pytest.raises(dbf_anonymizer.PathError) as caught:
         recover(
-            pseudonymized=result,
+            pseudonymized=output,
             vault=vault,
             output=output / "nested",
         )
@@ -1061,7 +1079,7 @@ def test_existing_output_target_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     (tmp_path / "recovered").mkdir()
     with pytest.raises(dbf_anonymizer.PathError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert caught.value.context.detail_code == "RECOVERY_TARGET_EXISTS"
 
 
@@ -1086,7 +1104,7 @@ def test_write_failure_keeps_inputs_and_cleans_staging(
 
     monkeypatch.setattr(_recovery_module, "write_fresh_table", failing_write)
     with pytest.raises(DBFBridgeError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     after = _hash_tree(tmp_path)
     created = set(after) - set(before)
@@ -1121,7 +1139,7 @@ def test_promotion_failure_keeps_inputs_and_cleans_staging(
         "dbf_anonymizer.engine.publication.DatasetStaging.promote", failing_promote
     )
     with pytest.raises(dbf_anonymizer.PublicationError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     after = _hash_tree(tmp_path)
     created = set(after) - set(before)
@@ -1138,12 +1156,24 @@ def test_promotion_failure_keeps_inputs_and_cleans_staging(
     }
 
 
-def test_cleanup_failure_does_not_mask_primary_failure(
+def test_cleanup_failure_is_surfaced_and_primary_failure_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """REQ-P2-009 compound failure contract for recovery staging.
+
+    Recovery staging carries ORIGINAL LOGICAL DATA: when the owned cleanup
+    fails while original-bearing staged DBF/FPT files exist, BOTH failures
+    are machine-detectable — the primary failure keeps its exact
+    classification as the raised exception, and the sensitive residual-
+    staging risk is the typed secondary cause
+    (``RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED``); neither failure
+    serializes a staging path or any protected value, and the final output
+    is never falsely reported complete."""
     from dbf_anonymizer import DBFBridgeError
+    from dbf_anonymizer.errors import RecoveryError as _TypedRecoveryError
 
     result, source, output, vault = _prepare(tmp_path)
+    before = _hash_tree(tmp_path)
 
     def failing_write(*args: object, **kwargs: object) -> object:
         raise DBFBridgeError(
@@ -1156,16 +1186,64 @@ def test_cleanup_failure_does_not_mask_primary_failure(
     def failing_cleanup(self: object) -> None:
         raise dbf_anonymizer.PublicationError(
             ErrorCode.PUBLICATION_INCOMPLETE,
-            context=ErrorContext(operation="recover", detail_code="CLEANUP_INJECTED"),
+            context=ErrorContext(
+                operation="recover", detail_code="CLEANUP_INJECTED"
+            ),
         )
 
     monkeypatch.setattr(
         "dbf_anonymizer.engine.publication.DatasetStaging.cleanup_owned",
         failing_cleanup,
     )
-    # The PRIMARY failure classification survives the cleanup failure.
-    with pytest.raises(DBFBridgeError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+    with pytest.raises(DBFBridgeError) as caught:
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
+    # A: the primary failure classification is preserved verbatim.
+    assert caught.value.code is ErrorCode.DBFBRIDGE_FAILURE
+    assert caught.value.context.detail_code == "INJECTED"
+    assert caught.value.context.operation == "recover"
+    # B: the sensitive cleanup failure is machine-detectably surfaced as the
+    # typed secondary cause.
+    cleanup_marker = caught.value.__cause__
+    assert isinstance(cleanup_marker, _TypedRecoveryError)
+    assert cleanup_marker.context.detail_code == (
+        "RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED"
+    )
+    # The residual original-bearing staging actually remains in this
+    # injected-failure scenario (the caller must be able to detect the risk).
+    staging_dirs = [path for path in tmp_path.glob("*.staging*")]
+    assert staging_dirs, "expected residual staging after failed cleanup"
+    # Neither failure serializes a staging path or any protected value.
+    primary_serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    cleanup_serialized = json.dumps(cleanup_marker.to_dict(), sort_keys=True)
+    for canary in (
+        "PARENT-1",
+        "MEMO-N-1",
+        "TRAILING   ",
+        str(source),
+        str(vault),
+        _PATH_CANARY,
+    ):
+        assert canary not in primary_serialized
+        assert canary not in cleanup_serialized
+    for staging_dir in staging_dirs:
+        assert staging_dir.name not in primary_serialized
+        assert staging_dir.name not in cleanup_serialized
+    # The final output was never published, and the two production inputs
+    # stay byte-identical (only the residual staging is new).
+    assert not (tmp_path / "recovered").exists()
+    after = _hash_tree(tmp_path)
+    assert _hash_tree(output) == {
+        key[len("output/"):]: value
+        for key, value in before.items()
+        if key.startswith("output/")
+    }
+    assert _hash_tree(vault.parent) == {
+        key[len("vault/"):]: value
+        for key, value in before.items()
+        if key.startswith("vault/")
+    }
+    # Clean the injected residual so later assertions on this tmp stay sane.
+    shutil.rmtree(staging_dirs[0], ignore_errors=True)
 
 
 def test_staged_verification_failure_injection_leaves_no_output(
@@ -1181,7 +1259,7 @@ def test_staged_verification_failure_injection_leaves_no_output(
         _recovery_module, "_verify_staged_recovery", failing_staged_verify
     )
     with pytest.raises(RecoveryError):
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
     assert _hash_tree(output) == {
@@ -1196,7 +1274,7 @@ def test_public_diagnostics_never_leak_originals_or_paths(tmp_path: Path) -> Non
     import sqlite3
 
     result, source, output, vault = _prepare(tmp_path)
-    recovery = recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered")
+    recovery = recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     serialized = json.dumps(recovery.to_dict(), sort_keys=True)
     for canary in (
         "PARENT-1",
@@ -1220,7 +1298,7 @@ def test_public_diagnostics_never_leak_originals_or_paths(tmp_path: Path) -> Non
     finally:
         connection.close()
     with pytest.raises(RecoveryError) as caught:
-        recover(pseudonymized=result, vault=vault, output=tmp_path / "recovered2")
+        recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered2")
     error_serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
     for canary in (
         "PARENT-1",
@@ -1246,9 +1324,127 @@ def test_recover_rejects_invalid_contract(tmp_path: Path) -> None:
         )
     with pytest.raises(RecoveryError) as missing_vault:
         recover(
-            pseudonymized=result,
+            pseudonymized=output,
             vault=tmp_path / "missing" / "dictionary.sqlite3",
             output=tmp_path / "recovered",
         )
     assert missing_vault.value.context.detail_code == "VAULT_UNREADABLE"
     assert missing_vault.value.context.operation == "recover"
+
+
+# ---------------------------------------------------------------------------
+# Large single-table mid-VERIFICATION cancellation (bounded latency)
+# ---------------------------------------------------------------------------
+def test_cancellation_during_record_streaming_of_large_staged_verification(
+    tmp_path: Path,
+) -> None:
+    """A LARGE single table must not continue staged verification after
+    cancellation: the checkpoints poll at every record boundary of BOTH
+    streamed sides, so a deterministic mid-verification trigger (a fixed
+    number of record-boundary polls after the VERIFICATION phase started)
+    cancels INSIDE the streamed verification with bounded latency."""
+    source = tmp_path / "source"
+    dbfbridge.write_table(  # type: ignore[attr-defined]
+        _ensure_parent(source / "big" / "data.dbf"),
+        schema=_schema_of(
+            (
+                numeric_field("CODE", "C", 12, flags=NULLABLE_FLAG),
+                numeric_field("KEEP_N", "N", 6),
+            )
+        ),
+        records=_records(
+            [
+                (
+                    {"CODE": f"PARENT-{index:05d}", "KEEP_N": index},
+                    False,
+                )
+                for index in range(1, 1501)
+            ]
+        ),
+    )
+    dbfbridge.write_table(  # type: ignore[attr-defined]
+        _ensure_parent(source / "small" / "data.dbf"),
+        schema=_schema_of((numeric_field("CODE", "C", 12),)),
+        records=_records([({"CODE": "SMALL"}, False)]),
+    )
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    plan = build_plan(source, output, vault, relationship_document=None)
+    assert preflight(plan).ready is True
+    result = pseudonymize(plan)
+
+    before = _hash_tree(tmp_path)
+    events: list[ProgressEvent] = []
+    state = {"verification_started": False, "polls_since_start": 0}
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+        if event.phase_code == "VERIFICATION" and event.event_code == "STARTED":
+            state["verification_started"] = True
+
+    def cancel() -> bool:
+        if state["verification_started"]:
+            # Cancel deterministically INSIDE the streamed verification of
+            # the large table (the 40th record-boundary poll after STARTED).
+            state["polls_since_start"] += 1
+            return state["polls_since_start"] > 30
+        return False
+
+    with pytest.raises(CancellationError) as caught:
+        recover(
+            pseudonymized=output,
+            vault=vault,
+            output=tmp_path / "recovered",
+            progress=progress,
+            cancel_check=cancel,
+        )
+
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "recover"
+    # The cancellation landed INSIDE the streamed staged verification: the
+    # phase had started and the record-level checkpoints were already being
+    # polled, while publication never began.
+    assert state["verification_started"] is True
+    assert not any(
+        event.phase_code == "PUBLICATION" for event in events
+    )
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    # Bounded latency: the recovery aborted a few record boundaries after the
+    # trigger (the deterministic trigger poll count stayed small).
+    assert state["polls_since_start"] <= 40
+    # No final output; owned staging cleaned; inputs byte-identical.
+    assert not (tmp_path / "recovered").exists()
+    after = _hash_tree(tmp_path)
+    created = set(after) - set(before)
+    assert not any(name.endswith(".staging") for name in created)
+    assert _hash_tree(output) == {
+        key[len("output/"):]: value
+        for key, value in before.items()
+        if key.startswith("output/")
+    }
+    assert _hash_tree(vault.parent) == {
+        key[len("vault/"):]: value
+        for key, value in before.items()
+        if key.startswith("vault/")
+    }
+
+
+def test_wheel_style_public_recovery_by_path_only(tmp_path: Path) -> None:
+    """A built-wheel/public-import consumer performs recovery by PATHS only:
+    no PseudonymizationResult and no private model execution context is
+    ever imported or required."""
+    import dbf_anonymizer.api as api_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    oracle = tmp_path / "oracle"
+    shutil.copytree(source, oracle)
+    shutil.rmtree(source)
+    # The consumer holds ONLY the two paths; the result object is discarded.
+    del result
+    assert dbf_anonymizer.recover is api_module.recover
+    recovery = dbf_anonymizer.recover(
+        pseudonymized=output, vault=vault, output=tmp_path / "recovered"
+    )
+    assert recovery.canonical_verified is True
+    assert recovery.raw_byte_equivalence is RawByteEquivalence.NOT_EVALUATED
+    _compare_canonical(oracle, tmp_path / "recovered")
