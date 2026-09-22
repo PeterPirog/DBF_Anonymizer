@@ -304,7 +304,7 @@ def test_verify_dataset_is_the_public_service_with_the_architecture_signature() 
 
 
 def test_verification_check_code_vocabulary_is_versioned_and_pinned() -> None:
-    assert VERIFICATION_CHECK_CODE_VERSION == "1.0"
+    assert VERIFICATION_CHECK_CODE_VERSION == "1.1"
     assert VERIFICATION_CHECK_CODES == frozenset(
         {
             "SOURCE_FINGERPRINT_MISMATCH",
@@ -331,6 +331,8 @@ def test_verification_check_code_vocabulary_is_versioned_and_pinned() -> None:
             "MEMO_RECOVERY_ROW_MISSING",
             "TEMPORAL_VALUE_MISMATCH",
             "IDENTITY_VALUE_MISMATCH",
+            "POLICY_BINDING_MISSING",
+            "POLICY_BINDING_MISMATCH",
         }
     )
 
@@ -390,12 +392,104 @@ def test_verification_is_strictly_read_only_and_creates_no_artifacts(
 def test_verification_pass_partial_fail_is_deterministic_and_repeatable(
     tmp_path: Path,
 ) -> None:
+    """PASS, PARTIAL and FAIL are all independently demonstrated with
+    deterministic repeatability (REQ-P5-001 truthful semantics).
+
+    The PARTIAL state is the genuine end-to-end one: the output state is
+    otherwise internally consistent (result fingerprint == recomputed
+    fingerprint == durable operation binding == receipt) while an index
+    artifact makes the index-semantic dimension genuinely unverified."""
+    import dataclasses
+    import shutil
+    import sqlite3
+
+    from dbf_anonymizer.engine.publication import (
+        derive_binding_fingerprint,
+        derive_destination_identity,
+        fingerprint_dataset,
+    )
+    from dbf_anonymizer.models import _PseudonymizationExecutionContext
+
     result, source, output, vault = _prepare(tmp_path)
-    first = verify_dataset(result, source=source, vault=vault)
-    second = verify_dataset(result, source=source, vault=vault)
-    assert first == second
-    assert first.to_dict() == second.to_dict()
-    assert first.status is VerificationStatus.PASS
+
+    # --- PASS: a clean verified dataset.
+    passed = verify_dataset(result, source=source, vault=vault)
+    assert passed.status is VerificationStatus.PASS
+    assert passed.check_codes == ()
+    assert verify_dataset(result, source=source, vault=vault) == passed
+
+    # --- PARTIAL: an internally consistent published state whose output
+    # legitimately contains an index artifact the verifier cannot
+    # semantically validate without the absent P6 backend.
+    partial_output = tmp_path / "output-partial"
+    shutil.copytree(output, partial_output)
+    (partial_output / "north" / "data.cdx").write_bytes(b"synthetic-index-artifact")
+    new_fingerprint = fingerprint_dataset(partial_output)
+    partial_result = dataclasses.replace(
+        result,
+        output_fingerprint=new_fingerprint,
+        execution_context=_PseudonymizationExecutionContext(
+            output_root=str(partial_output)
+        ),
+    )
+    destination_identity = derive_destination_identity(partial_output)
+    connection = sqlite3.connect(vault)
+    try:
+        row = connection.execute(
+            "SELECT source_fingerprint, policy_fingerprint, relationship_fingerprint, "
+            "vault_fingerprint, result_json FROM operations WHERE operation_id = ?",
+            (result.operation_id,),
+        ).fetchone()
+        receipt = json.loads(str(row[4]))
+        receipt["output_fingerprint"] = new_fingerprint
+        binding = derive_binding_fingerprint(
+            source_fingerprint=str(row[0]),
+            policy_fingerprint=str(row[1]),
+            relationship_fingerprint=str(row[2]),
+            vault_fingerprint=connection.execute(
+                "SELECT vault_fingerprint FROM operations WHERE operation_id = ?",
+                (result.operation_id,),
+            ).fetchone()[0],
+            destination_identity=destination_identity,
+        )
+        connection.execute(
+            "UPDATE operations SET output_fingerprint = ?, destination_identity = ?, "
+            "binding_fingerprint = ?, result_json = ? WHERE operation_id = ?",
+            (
+                new_fingerprint,
+                destination_identity,
+                binding,
+                json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                result.operation_id,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    partial = verify_dataset(
+        partial_result, source=source, vault=partial_output.parent / "vault" / "dictionary.sqlite3"
+    )
+    assert partial.status is VerificationStatus.PARTIAL
+    assert partial.check_codes == ("INDEX_ARTIFACT_UNVERIFIED",)
+    assert partial.verified is False
+    assert verify_dataset(
+        partial_result, source=source, vault=vault
+    ) == partial
+
+    # --- FAIL: real corruption always wins over the partial dimension.
+    records, deleted_flags = _table_entries(source / "north" / "data.dbf")
+    records[0]["CODE"] = records[1]["CODE"]
+    _rewrite_output(
+        output,
+        "north/data.dbf",
+        _main_fields(),
+        records,
+        deleted_flags=deleted_flags,
+    )
+    failed = verify_dataset(result, source=source, vault=vault)
+    assert failed.status is VerificationStatus.FAIL
+    assert "OUTPUT_FINGERPRINT_MISMATCH" in failed.check_codes
+    assert "TEXT_MAPPING_MISMATCH" in failed.check_codes
 
 
 # ---------------------------------------------------------------------------
@@ -832,3 +926,308 @@ def test_completed_idempotent_retry_keeps_verification_truthful(
     assert first == second
     assert first.status is VerificationStatus.PASS
     assert second.operation_id == result.operation_id
+# ---------------------------------------------------------------------------
+# OUTPUT_VERIFICATION cancellation / callback classification (Defect B)
+# ---------------------------------------------------------------------------
+def test_cancellation_during_output_verification_is_typed_and_side_effect_free(
+    tmp_path: Path,
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    before = _hash_tree(tmp_path)
+    recorder = _Recorder()
+    state = {"cancel": False}
+
+    def progress(event: ProgressEvent) -> None:
+        recorder.events.append(event)
+        if event.phase_code == "OUTPUT_VERIFICATION" and event.event_code == "STARTED":
+            state["cancel"] = True
+
+    with pytest.raises(CancellationError) as caught:
+        verify_dataset(
+            result,
+            source=source,
+            vault=vault,
+            progress=progress,
+            cancel_check=lambda: state["cancel"],
+        )
+
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "verify_dataset"
+    assert recorder.completed() == []
+    assert _hash_tree(tmp_path) == before
+
+
+def test_output_verification_callback_failure_is_contained_and_typed(
+    tmp_path: Path,
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    before = _hash_tree(tmp_path)
+    canary = "PRIVATE-OUTPUT-VERIFY-CANARY-" + _PATH_CANARY
+    received: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        received.append(event)
+        if event.phase_code == "OUTPUT_VERIFICATION" and event.event_code == "STARTED":
+            raise RuntimeError(canary)
+
+    with pytest.raises(CallbackError) as caught:
+        verify_dataset(result, source=source, vault=vault, progress=progress)
+
+    assert caught.value.code is ErrorCode.PROGRESS_CALLBACK_FAILED
+    assert caught.value.context.operation == "verify_dataset"
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value.to_dict())
+    assert received
+    assert _hash_tree(tmp_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Complete durable field-policy ledger (Defect C)
+# ---------------------------------------------------------------------------
+def _fields_rows(vault: Path, table_name: str) -> list[tuple[object, ...]]:
+    import sqlite3
+
+    connection = sqlite3.connect(vault)
+    try:
+        rows = connection.execute(
+            "SELECT f.name, f.dbf_type, f.width, f.encoding, f.transform_action, "
+            "f.mapping_domain_id FROM fields f JOIN tables t ON t.table_id = f.table_id "
+            "WHERE t.relative_path = ? ORDER BY f.name",
+            (table_name,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [tuple(row) for row in rows]
+
+
+def test_field_policy_ledger_is_complete_with_explicit_keep(tmp_path: Path) -> None:
+    """A: every non-system field of every table carries an explicit durable
+    action - the identity fields carry the explicit KEEP action with no
+    mapping domain, and absence of evidence never means KEEP."""
+    result, source, output, vault = _prepare(tmp_path)
+    assert verify_dataset(result, source=source, vault=vault).status is (
+        VerificationStatus.PASS
+    )
+    ledger = dict((row[0], row) for row in _fields_rows(vault, "north/data.dbf"))
+    # Every non-system field of the source schema is explicitly bound.
+    schema_names = {
+        str(field.name)
+        for field in dbfbridge.read_schema(  # type: ignore[attr-defined]
+            source / "north" / "data.dbf"
+        ).fields
+        if str(field.dbf_type).upper() != "0"
+    }
+    assert set(ledger) == schema_names
+    # Explicit KEEP with no transform mapping for the identity fields.
+    assert ledger["KEEP_N"][4] == "KEEP"
+    assert ledger["KEEP_N"][5] is None
+    assert ledger["KEEP_L"][4] == "KEEP"
+    # Transformed fields carry their explicit actions.
+    assert ledger["CODE"][4] == "PSEUDONYMIZE_REVERSIBLE"
+    assert ledger["NUMBER"][4] == "PSEUDONYMIZE_REVERSIBLE"
+    assert ledger["NOTE"][4] == "MASK_REVERSIBLE"
+    assert ledger["WHEN_D"][4] == "SHIFT_REVERSIBLE"
+    assert ledger["SEEN_AT"][4] == "SHIFT_REVERSIBLE"
+    assert ledger["CODE"][5] is not None
+
+
+def test_missing_field_policy_row_fails_and_never_accepts_originals(
+    tmp_path: Path,
+) -> None:
+    """B + E: deleting a field-policy row from an otherwise valid vault
+    produces FAIL (POLICY_BINDING_MISSING); a missing transformed-field
+    binding can NEVER cause an original value to be accepted as a
+    legitimate identity."""
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "DELETE FROM fields WHERE name = 'CODE' AND table_id = "
+            "(SELECT table_id FROM tables WHERE relative_path = 'north/data.dbf')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    assert "POLICY_BINDING_MISSING" in verification.check_codes
+    assert "ORIGINAL_VALUE_SURVIVED" not in verification.check_codes
+
+
+def test_transform_action_downgraded_to_keep_fails(tmp_path: Path) -> None:
+    """C: changing PSEUDONYMIZE_REVERSIBLE to KEEP produces FAIL - the
+    surviving transformed values can no longer be legitimate identity."""
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE fields SET transform_action = 'KEEP', mapping_domain_id = NULL "
+            "WHERE name = 'CODE' AND table_id = "
+            "(SELECT table_id FROM tables WHERE relative_path = 'north/data.dbf')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    assert "IDENTITY_VALUE_MISMATCH" in verification.check_codes
+
+
+def test_keep_upgraded_to_transform_action_fails(tmp_path: Path) -> None:
+    """D: changing an explicit KEEP to a transform action produces FAIL."""
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE fields SET transform_action = 'MASK_REVERSIBLE' "
+            "WHERE name = 'KEEP_N' AND table_id = "
+            "(SELECT table_id FROM tables WHERE relative_path = 'north/data.dbf')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    # A memo action on a field without recovery rows is structurally broken:
+    # the missing recovery identity is the truthful finding.
+    assert "MEMO_RECOVERY_ROW_MISSING" in verification.check_codes
+
+
+# ---------------------------------------------------------------------------
+# Assurance overclaim + vault identity consistency (Defects D/E)
+# ---------------------------------------------------------------------------
+def test_vfp_metadata_verified_without_authority_is_rejected(tmp_path: Path) -> None:
+    """D: ordinary durable relation evidence establishes at most
+    DECLARED_RELATIONS_VERIFIED; a public assurance claiming
+    VFP_METADATA_VERIFIED without authoritative VFP evidence is an
+    overclaim the read-only verifier can never confirm."""
+    import dataclasses
+
+    from dbf_anonymizer import RelationalAssuranceLevel
+
+    result, source, output, vault = _prepare(tmp_path)
+    overclaimed = dataclasses.replace(
+        result,
+        assurance=dataclasses.replace(
+            result.assurance, level=RelationalAssuranceLevel.VFP_METADATA_VERIFIED
+        ),
+    )
+    verification = verify_dataset(overclaimed, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    assert "ASSURANCE_EVIDENCE_MISMATCH" in verification.check_codes
+    assert verification.verified is False
+
+
+def test_dataset_policy_fingerprint_mismatch_fails(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE dataset SET policy_fingerprint = 'pol-tampered' WHERE singleton = 1"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _verify_fails_with(result, source, vault, "VAULT_IDENTITY_MISMATCH")
+
+
+def test_operation_policy_fingerprint_mismatch_fails(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE operations SET policy_fingerprint = 'pol-tampered' "
+            "WHERE operation_id = ?",
+            (result.operation_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _verify_fails_with(result, source, vault, "VAULT_IDENTITY_MISMATCH")
+
+
+def test_operation_relationship_fingerprint_mismatch_fails(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE operations SET relationship_fingerprint = 'rel-tampered' "
+            "WHERE operation_id = ?",
+            (result.operation_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _verify_fails_with(result, source, vault, "VAULT_IDENTITY_MISMATCH")
+
+
+def test_operation_binding_fingerprint_mismatch_fails(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE operations SET binding_fingerprint = 'opb-tampered' "
+            "WHERE operation_id = ?",
+            (result.operation_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _verify_fails_with(result, source, vault, "VAULT_IDENTITY_MISMATCH")
+
+
+# ---------------------------------------------------------------------------
+# Mapping-domain kind validation (audit item)
+# ---------------------------------------------------------------------------
+def test_unknown_domain_kind_fails_closed(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "UPDATE mapping_domains SET domain_kind = 'BOGUS_KIND' "
+            "WHERE domain_kind = 'TEXT'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    assert "VAULT_MAPPING_INVALID" in verification.check_codes
+
+
+def test_read_only_byte_identity_holds_for_fail_and_partial_states(
+    tmp_path: Path,
+) -> None:
+    """Read-only evidence for FAIL: byte identity of source/output/vault
+    before/after a rejected verification (PASS/PARTIAL/cancellation/
+    callback identity is proven by their dedicated tests)."""
+    result, source, output, vault = _prepare(tmp_path)
+    records, deleted_flags = _table_entries(source / "north" / "data.dbf")
+    records[0]["CODE"] = records[1]["CODE"]
+    _rewrite_output(
+        output,
+        "north/data.dbf",
+        _main_fields(),
+        records,
+        deleted_flags=deleted_flags,
+    )
+    before = _hash_tree(tmp_path)
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.FAIL
+    assert _hash_tree(tmp_path) == before

@@ -65,6 +65,9 @@ from dbf_anonymizer.engine.direct_io import (
     stream_table_records,
 )
 from dbf_anonymizer.engine.publication import (
+    derive_binding_fingerprint,
+    derive_destination_identity,
+    derive_vault_fingerprint,
     fingerprint_dataset,
     result_from_receipt,
 )
@@ -98,6 +101,7 @@ from dbf_anonymizer.vault.memo_allocation import mask_memo_value
 from dbf_anonymizer.vault.schema import (
     VAULT_OPERATION_STATE_COMPLETED,
     VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
+    VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
     VAULT_TABLE_DOMAIN_KIND_TEXT,
 )
 
@@ -107,10 +111,14 @@ __all__ = [
 ]
 
 #: Versioned identity of the verification finding-code vocabulary. Every
-#: finding is a stable, bounded, value-free machine code; a clean PASS
-#: carries no finding. The authoritative PASS/PARTIAL/FAIL status lives on
-#: the public :class:`~dbf_anonymizer.models.VerificationResult` model.
-VERIFICATION_CHECK_CODE_VERSION = "1.0"
+#: finding is a stable, bounded, value-free machine code with an explicit
+#: SEVERITY: failures (corruption, privacy/policy violation, missing/changed
+#: required data, mapping/receipt/identity mismatch) always win over
+#: partials (a requested verification dimension is unavailable while every
+#: verified invariant held). A clean PASS carries no finding. The
+#: authoritative PASS/PARTIAL/FAIL status lives on the public
+#: :class:`~dbf_anonymizer.models.VerificationResult` model.
+VERIFICATION_CHECK_CODE_VERSION = "1.1"
 
 #: The exact bounded finding-code vocabulary (pinned by the snapshot test).
 VERIFICATION_CHECK_CODES = frozenset(
@@ -139,7 +147,15 @@ VERIFICATION_CHECK_CODES = frozenset(
         "MEMO_RECOVERY_ROW_MISSING",
         "TEMPORAL_VALUE_MISMATCH",
         "IDENTITY_VALUE_MISMATCH",
+        "POLICY_BINDING_MISSING",
+        "POLICY_BINDING_MISMATCH",
     }
+)
+
+#: The durable field-policy ledger actions (the ONE authoritative record of
+#: what the capability matrix resolved for every non-system field).
+_LEDGER_ACTIONS = frozenset(
+    {"KEEP", "PSEUDONYMIZE_REVERSIBLE", "MASK_REVERSIBLE", "SHIFT_REVERSIBLE"}
 )
 
 #: Index artifacts that only a VFP/index backend (P6) could semantically
@@ -176,11 +192,13 @@ class _VerifyVault:
             raise _verification_failure("VAULT_STATE_UNVERIFIABLE")
         try:
             self._connection = connect_dictionary_readonly(path)
-            _vault_id, _schema_version, fingerprints = read_dictionary_identity(
+            vault_id, schema_version, fingerprints = read_dictionary_identity(
                 self._connection
             )
         except (sqlite3.DatabaseError, VaultError):
             raise _verification_failure("VAULT_UNREADABLE") from None
+        self.vault_id = vault_id
+        self.schema_version = schema_version
         self.source_fingerprint = fingerprints["source"]
         self.policy_fingerprint = fingerprints["policy"]
         self.relationship_fingerprint = fingerprints["relationship"]
@@ -240,9 +258,9 @@ class _VerifyVault:
 
     def field_rows(
         self, table_id: str
-    ) -> tuple[tuple[str, str, str, int, str | None, str | None], ...]:
+    ) -> tuple[tuple[str, str, str, int, str, str | None, str | None], ...]:
         rows = self._connection.execute(
-            "SELECT field_id, name, dbf_type, width, transform_action, "
+            "SELECT field_id, name, dbf_type, width, encoding, transform_action, "
             "mapping_domain_id FROM fields WHERE table_id = ? ORDER BY field_id",
             (table_id,),
         ).fetchall()
@@ -255,10 +273,19 @@ class _VerifyVault:
                 or not isinstance(row[3], int)
                 or not isinstance(row[4], (str, type(None)))
                 or not isinstance(row[5], (str, type(None)))
+                or not isinstance(row[6], (str, type(None)))
             ):
                 raise _verification_failure("VAULT_UNREADABLE")
         return tuple(
-            (str(row[0]), str(row[1]), str(row[2]), int(row[3]), row[4], row[5])
+            (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                int(row[3]),
+                str(row[4]),
+                row[5],
+                row[6],
+            )
             for row in rows
         )
 
@@ -366,21 +393,38 @@ class _VerifyVault:
 
 
 class _Findings:
-    """Deterministic aggregation of stable, value-free finding codes."""
+    """Deterministic severity-aware aggregation of stable finding codes.
 
-    __slots__ = ("_codes",)
+    FAIL findings (corruption, privacy/policy violation, missing or changed
+    required data, mapping/receipt/identity mismatch) always win over
+    PARTIAL findings (an unavailable verification dimension with every
+    verified invariant intact); the authoritative status derivation is
+    FAIL > PARTIAL > PASS, and a FAIL result reports every finding.
+    """
+
+    __slots__ = ("_failures", "_partials")
 
     def __init__(self) -> None:
-        self._codes: set[str] = set()
+        self._failures: set[str] = set()
+        self._partials: set[str] = set()
 
-    def add(self, code: str) -> None:
-        self._codes.add(code)
+    def fail(self, code: str) -> None:
+        self._failures.add(code)
+
+    def partial(self, code: str) -> None:
+        self._partials.add(code)
 
     def codes(self) -> tuple[str, ...]:
-        return tuple(sorted(self._codes))
+        return tuple(sorted(self._failures | self._partials))
+
+    def has_failure(self) -> bool:
+        return bool(self._failures)
+
+    def has_partial(self) -> bool:
+        return bool(self._partials)
 
     def __bool__(self) -> bool:
-        return bool(self._codes)
+        return self.has_failure() or self.has_partial()
 
 
 def _output_table(output_root: Path, relative_path: str) -> DirectSourceTable:
@@ -499,18 +543,17 @@ def verify_dataset(
     finally:
         vault_reader.close()
 
-    # The authoritative PASS/PARTIAL/FAIL status (REQ-P5-001): FAIL wins,
-    # then PARTIAL only for a genuinely unavailable verification dimension,
-    # and a clean verified dataset is a truthful PASS.
-    if findings:
+    # The authoritative PASS/PARTIAL/FAIL status (REQ-P5-001): FAIL always
+    # wins over PARTIAL; PARTIAL is reserved for a genuinely unavailable
+    # verification dimension while every verified invariant held; a clean
+    # verified dataset is a truthful PASS.
+    if findings.has_failure():
         status = VerificationStatus.FAIL
-        check_codes = findings.codes()
-    elif _has_index_artifact(output_root):
+    elif findings.has_partial():
         status = VerificationStatus.PARTIAL
-        check_codes = ("INDEX_ARTIFACT_UNVERIFIED",)
     else:
         status = VerificationStatus.PASS
-        check_codes = ()
+    check_codes = findings.codes()
 
     verification_result = VerificationResult(
         status=status,
@@ -532,13 +575,6 @@ def _iter_output_files(root: Path) -> Sequence[tuple[str, Path]]:
     from dbf_anonymizer.engine.publication import _iter_dataset_files
 
     return tuple(_iter_dataset_files(root))
-
-
-def _has_index_artifact(output_root: Path) -> bool:
-    return any(
-        Path(relative).suffix.lower() in _INDEX_ARTIFACT_SUFFIXES
-        for relative, _path in _iter_output_files(output_root)
-    )
 
 
 def _expected_output_inventory(
@@ -598,7 +634,7 @@ def _verify(
     except OSError:
         raise _verification_failure("SOURCE_UNREADABLE") from None
     if current_source != result.dataset.source_fingerprint:
-        findings.add("SOURCE_FINGERPRINT_MISMATCH")
+        findings.fail("SOURCE_FINGERPRINT_MISMATCH")
 
     # --- TOPOLOGY: expected output inventory from the SOURCE topology --------
     expected_output, expected_memo_companions = _expected_output_inventory(
@@ -611,18 +647,18 @@ def _verify(
     output_paths = {relative for relative, _path in output_inventory}
     for relative in sorted(expected_output - output_paths):
         if relative in expected_memo_companions:
-            findings.add("MEMO_COMPANION_MISSING")
+            findings.fail("MEMO_COMPANION_MISSING")
         else:
-            findings.add("TABLE_MISSING")
+            findings.fail("TABLE_MISSING")
     for relative in sorted(output_paths - expected_output):
         if Path(relative).suffix.lower() in _INDEX_ARTIFACT_SUFFIXES:
-            findings.add("INDEX_ARTIFACT_UNVERIFIED")
+            findings.partial("INDEX_ARTIFACT_UNVERIFIED")
         else:
-            findings.add("UNEXPECTED_OUTPUT_ARTIFACT")
+            findings.fail("UNEXPECTED_OUTPUT_ARTIFACT")
 
     # --- VAULT VERIFICATION: identity, binding, receipt, mappings ------------
     control.start_phase(ProgressPhase.VAULT_VERIFICATION)
-    _verify_vault(result, control, findings, vault_reader)
+    _verify_vault(result, control, findings, vault_reader, output_root)
 
     # --- TABLE + RECORD VERIFICATION (per planned table, streamed) -----------
     control.start_phase(ProgressPhase.TABLE_EVALUATION, total=len(dataset.table_paths))
@@ -664,14 +700,16 @@ def _verify(
                 table_path=rel,
             ),
         )
+    except (CancellationError, CallbackError):
+        raise
     except Exception:
         raise _verification_failure("OUTPUT_UNREADABLE") from None
     if current_output != result.output_fingerprint:
-        findings.add("OUTPUT_FINGERPRINT_MISMATCH")
+        findings.fail("OUTPUT_FINGERPRINT_MISMATCH")
 
     # Aggregated truthfulness: the scanned totals must match the public claim.
     if table_count != result.table_count or record_count != result.record_count:
-        findings.add("RECORD_COUNT_MISMATCH")
+        findings.fail("RECORD_COUNT_MISMATCH")
     return record_count, table_count
 
 
@@ -680,59 +718,111 @@ def _verify_vault(
     control: ProgressController,
     findings: _Findings,
     vault_reader: _VerifyVault,
+    output_root: Path,
 ) -> None:
-    """Read-only durable-state verification (identity, receipt, mappings)."""
+    """Read-only durable-state verification (identity, receipt, mappings).
+
+    Enforces the COMPLETE identity consistency among the vault dataset row,
+    the completed operation row, the receipt, the derived publication
+    binding (recomputed read-only through the shared publication identity
+    kernels) and the public result: source/policy/relationship fingerprints,
+    vault fingerprint, destination identity, binding fingerprint and the
+    output fingerprint must all agree for the SAME operation.
+    """
     dataset_row = vault_reader.dataset_row()
     if dataset_row[0] != result.dataset.source_fingerprint:
-        findings.add("VAULT_IDENTITY_MISMATCH")
+        findings.fail("VAULT_IDENTITY_MISMATCH")
     if dataset_row[2] != result.assurance.relationship_fingerprint:
-        findings.add("VAULT_IDENTITY_MISMATCH")
+        findings.fail("VAULT_IDENTITY_MISMATCH")
 
     operation = vault_reader.completed_operation(result.operation_id)
     if operation is None or operation["state"] != VAULT_OPERATION_STATE_COMPLETED:
-        findings.add("OPERATION_NOT_COMPLETED")
+        findings.fail("OPERATION_NOT_COMPLETED")
         return
-    if operation["source_fingerprint"] != result.dataset.source_fingerprint:
-        findings.add("VAULT_IDENTITY_MISMATCH")
-    if operation["output_fingerprint"] != result.output_fingerprint:
-        findings.add("VAULT_IDENTITY_MISMATCH")
+    # Every stored identity of the SAME operation must agree with the
+    # dataset row and the public claim — policy included.
+    identity_agreements = (
+        (operation["source_fingerprint"], dataset_row[0]),
+        (operation["policy_fingerprint"], dataset_row[1]),
+        (operation["relationship_fingerprint"], dataset_row[2]),
+        (operation["source_fingerprint"], result.dataset.source_fingerprint),
+        (operation["relationship_fingerprint"], result.assurance.relationship_fingerprint),
+        (operation["output_fingerprint"], result.output_fingerprint),
+    )
+    for stored, expected in identity_agreements:
+        if stored is None or stored != expected:
+            findings.fail("VAULT_IDENTITY_MISMATCH")
+
+    # The full publication binding is recomputed READ-ONLY through the ONE
+    # shared publication identity kernels (never duplicated hash recipes).
+    destination_identity = derive_destination_identity(output_root)
+    expected_vault_fingerprint = derive_vault_fingerprint(
+        schema_version=vault_reader.schema_version,
+        vault_id=vault_reader.vault_id,
+        source_fingerprint=dataset_row[0],
+        policy_fingerprint=dataset_row[1],
+        relationship_fingerprint=dataset_row[2],
+    )
+    expected_binding = derive_binding_fingerprint(
+        source_fingerprint=dataset_row[0],
+        policy_fingerprint=dataset_row[1],
+        relationship_fingerprint=dataset_row[2],
+        vault_fingerprint=expected_vault_fingerprint,
+        destination_identity=destination_identity,
+    )
+    if operation["vault_fingerprint"] != expected_vault_fingerprint:
+        findings.fail("VAULT_IDENTITY_MISMATCH")
+    if operation["destination_identity"] != destination_identity:
+        findings.fail("VAULT_IDENTITY_MISMATCH")
+    if operation["binding_fingerprint"] != expected_binding:
+        findings.fail("VAULT_IDENTITY_MISMATCH")
+
     receipt_json = operation["result_json"]
     if receipt_json is None:
-        findings.add("RECEIPT_IDENTITY_MISMATCH")
+        findings.fail("RECEIPT_IDENTITY_MISMATCH")
         return
     try:
         receipt = result_from_receipt(receipt_json)
     except Exception:
-        findings.add("RECEIPT_IDENTITY_MISMATCH")
+        findings.fail("RECEIPT_IDENTITY_MISMATCH")
         return
     if receipt.operation_id != result.operation_id:
-        findings.add("RECEIPT_IDENTITY_MISMATCH")
+        findings.fail("RECEIPT_IDENTITY_MISMATCH")
     if receipt.output_fingerprint != result.output_fingerprint:
-        findings.add("RECEIPT_FINGERPRINT_MISMATCH")
+        findings.fail("RECEIPT_FINGERPRINT_MISMATCH")
 
     # The public relational assurance is cross-validated against the DURABLE
     # receipt evidence (never simply trusted).
     _verify_assurance(result.assurance, receipt.relations, findings)
 
-    # Mapping-domain invariants: bijection per domain + NULL never mapped.
+    # Mapping-domain invariants per kind: bijection + NULL never mapped for
+    # TEXT, bijection for NUMERIC_KEY, non-zero parameter existence for
+    # TEMPORAL, and a fail-closed refusal for unknown/corrupt kinds.
     for domain_id, domain_kind in vault_reader.domains():
         control.check_cancelled()
-        table = (
-            "text_mappings"
-            if domain_kind == VAULT_TABLE_DOMAIN_KIND_TEXT
-            else "numeric_key_mappings"
-        )
-        count, distinct_originals, distinct_pseudonyms = (
-            vault_reader.domain_bijection(domain_id, table)
-        )
-        if count != distinct_originals or count != distinct_pseudonyms:
-            findings.add("VAULT_MAPPING_INVALID")
-        if (
-            domain_kind == VAULT_TABLE_DOMAIN_KIND_TEXT
-            and vault_reader.empty_text_originals(domain_id)
-        ):
-            # NULL/empty is a preserved identity and is never mapped.
-            findings.add("VAULT_MAPPING_INVALID")
+        if domain_kind == VAULT_TABLE_DOMAIN_KIND_TEXT:
+            count, distinct_originals, distinct_pseudonyms = (
+                vault_reader.domain_bijection(domain_id, "text_mappings")
+            )
+            if count != distinct_originals or count != distinct_pseudonyms:
+                findings.fail("VAULT_MAPPING_INVALID")
+            if vault_reader.empty_text_originals(domain_id):
+                # NULL/empty is a preserved identity and is never mapped.
+                findings.fail("VAULT_MAPPING_INVALID")
+        elif domain_kind == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
+            count, distinct_originals, distinct_pseudonyms = (
+                vault_reader.domain_bijection(domain_id, "numeric_key_mappings")
+            )
+            if count != distinct_originals or count != distinct_pseudonyms:
+                findings.fail("VAULT_MAPPING_INVALID")
+        elif domain_kind == VAULT_TABLE_DOMAIN_KIND_TEMPORAL:
+            # The persisted temporal parameter must be a genuine non-zero
+            # reversible shift (typed corruption otherwise).
+            vault_reader.temporal_offset(domain_id)
+        else:
+            # Unknown/corrupt domain kinds can never be silently treated as
+            # numeric or text state.
+            findings.fail("VAULT_MAPPING_INVALID")
         control.bump(ProgressPhase.VAULT_VERIFICATION)
 
 
@@ -755,19 +845,22 @@ def _verify_assurance(
         or (verified + failed) != declared
         or expected_fingerprint != assurance.evidence_fingerprint
     ):
-        findings.add("ASSURANCE_EVIDENCE_MISMATCH")
+        findings.fail("ASSURANCE_EVIDENCE_MISMATCH")
         return
     if declared == 0:
         if assurance.level is not RelationalAssuranceLevel.GLOBAL_EXACT_VALUE:
-            findings.add("ASSURANCE_EVIDENCE_MISMATCH")
+            findings.fail("ASSURANCE_EVIDENCE_MISMATCH")
     elif verified == declared and failed == 0:
-        if assurance.level not in (
-            RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED,
-            RelationalAssuranceLevel.VFP_METADATA_VERIFIED,
-        ):
-            findings.add("ASSURANCE_EVIDENCE_MISMATCH")
+        # Ordinary P3/P4 relation evidence establishes at most
+        # DECLARED_RELATIONS_VERIFIED: VFP_METADATA_VERIFIED without the
+        # authoritative P6 evidence input is an assurance overclaim that
+        # the read-only verifier can never confirm (REQ-P3-007).
+        if assurance.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED:
+            pass
+        else:
+            findings.fail("ASSURANCE_EVIDENCE_MISMATCH")
     elif assurance.level is not RelationalAssuranceLevel.INCOMPLETE:
-        findings.add("ASSURANCE_EVIDENCE_MISMATCH")
+        findings.fail("ASSURANCE_EVIDENCE_MISMATCH")
 
 
 def _verify_table(
@@ -796,7 +889,7 @@ def _verify_table(
         raise _verification_failure("SOURCE_UNREADABLE") from None
     output_table = _output_table(output_root, relative_path)
     if _schema_facts(source_table) != _schema_facts(output_table):
-        findings.add("SCHEMA_MISMATCH")
+        findings.fail("SCHEMA_MISMATCH")
         return 0
 
     memo_policy = "inline" if source_table.has_memo_fields else "skip"
@@ -826,22 +919,27 @@ def _verify_table(
         ) from None
 
     table_id = vault_reader.table_rows().get(relative_path)
-    fields: dict[str, tuple[str, str, str | None, str | None]] = {}
-    if table_id is not None:
-        for field_id, name, dbf_type, _width, action, domain_id in (
-            vault_reader.field_rows(table_id)
-        ):
-            fields[name] = (field_id, dbf_type, action, domain_id)
+    if table_id is None:
+        # No durable table identity: the policy ledger for this table cannot
+        # exist, so no per-field postcondition is verifiable (fail closed).
+        findings.fail("POLICY_BINDING_MISSING")
+        return 0
+    fields = _verify_field_ledger(
+        source_table,
+        vault_reader.field_rows(table_id),
+        vault_reader=vault_reader,
+        findings=findings,
+    )
     scanned = 0
     try:
         for source_record, output_record in zip(source_stream, output_stream):
             checkpoint()
             scanned += 1
             if source_record.physical_index != output_record.physical_index:
-                findings.add("RECORD_ORDER_MISMATCH")
+                findings.fail("RECORD_ORDER_MISMATCH")
                 break
             if source_record.deleted != output_record.deleted:
-                findings.add("DELETED_MARKER_MISMATCH")
+                findings.fail("DELETED_MARKER_MISMATCH")
             _verify_record_values(
                 source_values=source_record.values,
                 output_values=output_record.values,
@@ -855,10 +953,79 @@ def _verify_table(
         extra_source = sum(1 for _record in source_stream)
         extra_output = sum(1 for _record in output_stream)
         if extra_source or extra_output:
-            findings.add("RECORD_COUNT_MISMATCH")
+            findings.fail("RECORD_COUNT_MISMATCH")
     except (CancellationError, CallbackError):
         raise
     return scanned
+
+
+def _verify_field_ledger(
+    source_table: DirectSourceTable,
+    rows: Sequence[tuple[str, str, str, int, str | None, str | None, str | None]],
+    *,
+    vault_reader: _VerifyVault,
+    findings: _Findings,
+) -> dict[str, tuple[str, str, str | None, str | None]]:
+    """The complete durable field-policy ledger check (REQ-P5-001).
+
+    Every non-system field of the source schema MUST carry exactly one
+    explicit durable action — absence of evidence never means KEEP. The
+    binding must be structurally consistent with the source schema facts
+    (type, width, encoding), the action must be one of the bounded ledger
+    actions, and the mapping-domain identity must be present and of the
+    appropriate kind for the action (KEEP/MASK carry none). Violations are
+    stable FAIL findings; no field values are ever exposed.
+    """
+    schema_facts: dict[str, tuple[str, int, str]] = {}
+    for field in source_table.schema.fields:
+        name = str(field.name)
+        if str(field.dbf_type).upper() == "0":
+            continue  # writer-managed system state (_NullFlags)
+        schema_facts[name] = (
+            str(field.dbf_type).upper(),
+            int(field.length),
+            str(source_table.schema.encoding),
+        )
+    bindings: dict[str, tuple[str, str, str | None, str | None]] = {}
+    for field_id, name, dbf_type, width, encoding, action, domain_id in rows:
+        if name in bindings:
+            # Duplicate field bindings can never define one coherent policy.
+            findings.fail("POLICY_BINDING_MISMATCH")
+            continue
+        bindings[name] = (field_id, dbf_type, action, domain_id)
+        if name not in schema_facts:
+            findings.fail("POLICY_BINDING_MISMATCH")
+            continue
+        expected_type, expected_width, expected_encoding = schema_facts[name]
+        if dbf_type != expected_type or width != expected_width or (
+            encoding != expected_encoding
+        ):
+            findings.fail("POLICY_BINDING_MISMATCH")
+        if action not in _LEDGER_ACTIONS:
+            findings.fail("POLICY_BINDING_MISMATCH")
+            continue
+        domain_kind = (
+            vault_reader.domain_kind(domain_id) if domain_id is not None else None
+        )
+        if action == "KEEP" or action == "MASK_REVERSIBLE":
+            if domain_id is not None:
+                findings.fail("POLICY_BINDING_MISMATCH")
+        elif action == "PSEUDONYMIZE_REVERSIBLE":
+            if domain_id is None or domain_kind not in (
+                VAULT_TABLE_DOMAIN_KIND_TEXT,
+                VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
+            ):
+                findings.fail("POLICY_BINDING_MISMATCH")
+        elif action == "SHIFT_REVERSIBLE":
+            if domain_id is not None and domain_kind not in (
+                VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
+            ):
+                findings.fail("POLICY_BINDING_MISMATCH")
+    for name in schema_facts:
+        if name not in bindings:
+            # Absence of evidence is never an identity decision (REQ-P5-001).
+            findings.fail("POLICY_BINDING_MISSING")
+    return bindings
 
 
 def _verify_record_values(
@@ -880,14 +1047,18 @@ def _verify_record_values(
             continue  # writer-owned system fields (the _NullFlags bitmap)
         binding = fields.get(name)
         if binding is None:
-            # Unregistered field: logical identity is the verified postcondition.
-            if source_values.get(name) != output_values.get(name):
-                findings.add("IDENTITY_VALUE_MISMATCH")
+            # Absence of evidence is never an identity decision (REQ-P5-001):
+            # the ledger check has already reported the missing binding, and
+            # no original value can be accepted as a legitimate identity.
+            findings.fail("POLICY_BINDING_MISSING")
             continue
         field_id, field_type, action, domain_id = binding
         source_value = source_values.get(name)
         output_value = output_values.get(name)
-        if action == "MASK_REVERSIBLE":
+        if action == "KEEP":
+            if source_values.get(name) != output_values.get(name):
+                findings.fail("IDENTITY_VALUE_MISMATCH")
+        elif action == "MASK_REVERSIBLE":
             _verify_memo_value(
                 dbf_type=field_type,
                 source_value=source_value,
@@ -900,8 +1071,13 @@ def _verify_record_values(
             )
         elif action == "SHIFT_REVERSIBLE":
             offset = vault_reader.temporal_offset(domain_id)
-            if offset is None or output_value != temporal_shift(source_value, offset):
-                findings.add("TEMPORAL_VALUE_MISMATCH")
+            if offset is None:
+                # An EMPTY finalized temporal domain: logical identity is the
+                # only legitimate state (every observed occurrence was NULL).
+                if output_value != source_value:
+                    findings.fail("TEMPORAL_VALUE_MISMATCH")
+            elif output_value != temporal_shift(source_value, offset):
+                findings.fail("TEMPORAL_VALUE_MISMATCH")
         elif action == "PSEUDONYMIZE_REVERSIBLE":
             if (
                 domain_id is not None
@@ -925,7 +1101,7 @@ def _verify_record_values(
                 )
         else:
             # An unknown durable action is a broken contract, never a pass.
-            findings.add("SCHEMA_MISMATCH")
+            findings.fail("POLICY_BINDING_MISMATCH")
 
 
 def _verify_text_value(
@@ -938,16 +1114,16 @@ def _verify_text_value(
 ) -> None:
     if source_value is None or source_value == _TEXT_EMPTY:
         if output_value != source_value:
-            findings.add("NULL_SEMANTICS_MISMATCH")
+            findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if output_value is None or not isinstance(output_value, str):
-        findings.add("NULL_SEMANTICS_MISMATCH")
+        findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if output_value == source_value:
-        findings.add("ORIGINAL_VALUE_SURVIVED")
+        findings.fail("ORIGINAL_VALUE_SURVIVED")
         return
     if vault_reader.text_original(domain_id, output_value) != source_value:
-        findings.add("TEXT_MAPPING_MISMATCH")
+        findings.fail("TEXT_MAPPING_MISMATCH")
 
 
 def _verify_numeric_value(
@@ -960,21 +1136,21 @@ def _verify_numeric_value(
 ) -> None:
     if source_value is None:
         if output_value is not None:
-            findings.add("NULL_SEMANTICS_MISMATCH")
+            findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if output_value is None:
-        findings.add("NULL_SEMANTICS_MISMATCH")
+        findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if isinstance(output_value, bool) or not isinstance(output_value, int):
-        findings.add("NUMERIC_MAPPING_MISMATCH")
+        findings.fail("NUMERIC_MAPPING_MISMATCH")
         return
     if output_value == source_value:
-        findings.add("ORIGINAL_VALUE_SURVIVED")
+        findings.fail("ORIGINAL_VALUE_SURVIVED")
         return
     if vault_reader.numeric_original(
         domain_id, canonical_integer_text(output_value)
     ) != canonical_integer_text(source_value):
-        findings.add("NUMERIC_MAPPING_MISMATCH")
+        findings.fail("NUMERIC_MAPPING_MISMATCH")
 
 
 def _verify_memo_value(
@@ -990,33 +1166,33 @@ def _verify_memo_value(
 ) -> None:
     if source_value is None:
         if output_value is not None:
-            findings.add("NULL_SEMANTICS_MISMATCH")
+            findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if output_value is None:
-        findings.add("NULL_SEMANTICS_MISMATCH")
+        findings.fail("NULL_SEMANTICS_MISMATCH")
         return
     if table_id is None:
-        findings.add("MEMO_RECOVERY_ROW_MISSING")
+        findings.fail("MEMO_RECOVERY_ROW_MISSING")
         return
     recovery = vault_reader.memo_recovery_row(table_id, physical_index, field_id)
     if recovery is None:
-        findings.add("MEMO_RECOVERY_ROW_MISSING")
+        findings.fail("MEMO_RECOVERY_ROW_MISSING")
         return
     original, payload_kind = recovery
     if payload_kind == "TEXT" and not isinstance(output_value, str):
-        findings.add("MEMO_PAYLOAD_MISMATCH")
+        findings.fail("MEMO_PAYLOAD_MISMATCH")
         return
     if payload_kind == "BINARY" and not isinstance(output_value, bytes):
-        findings.add("MEMO_PAYLOAD_MISMATCH")
+        findings.fail("MEMO_PAYLOAD_MISMATCH")
         return
     original_logical: object = (
         original.decode("utf-8") if payload_kind == "TEXT" else original
     )
     if original_logical != source_value:
-        findings.add("MEMO_PAYLOAD_MISMATCH")
+        findings.fail("MEMO_PAYLOAD_MISMATCH")
         return
     if output_value == original_logical:
-        findings.add("MEMO_PAYLOAD_MISMATCH")
+        findings.fail("MEMO_PAYLOAD_MISMATCH")
         return
     if output_value != mask_memo_value(dbf_type, original_logical):
-        findings.add("MEMO_PAYLOAD_MISMATCH")
+        findings.fail("MEMO_PAYLOAD_MISMATCH")
