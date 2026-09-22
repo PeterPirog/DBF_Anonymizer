@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Sequence
 
 import dbfbridge
@@ -294,18 +294,59 @@ def _normalized_artifact_path(
     *,
     failure: Callable[[str], AnonymizerError] | None = None,
 ) -> str:
-    """The canonical normalized relative artifact path (fail-closed)."""
+    """The canonical normalized relative artifact path (fail-closed).
+
+    The path is interpreted under BOTH pure path grammars — POSIX and
+    Windows — because the bundle is intended to move BETWEEN operating
+    systems: a name that is drive-qualified, rooted, absolute or a UNC
+    reference under either interpretation (including forms that become
+    drive-qualified after slash normalization, e.g. ``C:/evil.dbf``) is
+    refused, as is every traversal form. Valid ordinary relative paths are
+    never rejected.
+    """
     fail = failure if failure is not None else _transfer_failure
     if not relative_path or "\x00" in relative_path:
         raise fail("TRANSFER_MANIFEST_PATH_INVALID")
-    posix = PurePosixPath(relative_path.replace("\\", "/"))
+    if len(relative_path) > _MAX_ARTIFACT_PATH_LENGTH:
+        raise fail("TRANSFER_MANIFEST_PATH_TOO_LONG")
+    slashed = relative_path.replace("\\", "/")
+    posix = PurePosixPath(slashed)
     if posix.is_absolute() or posix.root or any(part == ".." for part in posix.parts):
         raise fail("TRANSFER_MANIFEST_PATH_INVALID")
     if any(part in ("", ".", "..") for part in posix.parts):
         raise fail("TRANSFER_MANIFEST_PATH_INVALID")
-    if len(relative_path) > _MAX_ARTIFACT_PATH_LENGTH:
-        raise fail("TRANSFER_MANIFEST_PATH_TOO_LONG")
+    windows = PureWindowsPath(relative_path)
+    if (
+        windows.drive
+        or windows.root
+        or windows.is_absolute()
+        or any(part == ".." for part in windows.parts)
+    ):
+        # Drive-qualified, rooted, absolute or UNC under the WINDOWS
+        # grammar (covers C:/evil.dbf, C:\\evil.dbf and \\\\host\\share\\x).
+        raise fail("TRANSFER_MANIFEST_PATH_INVALID")
+    if PureWindowsPath(slashed).drive:
+        # A name that becomes drive-qualified after slash normalization.
+        raise fail("TRANSFER_MANIFEST_PATH_INVALID")
     return posix.as_posix()
+
+
+def _casefold_inventory(relative_paths: Sequence[str]) -> dict[str, str]:
+    """The casefold-keyed inventory with EXPLICIT collision detection.
+
+    A plain ``set()`` would silently collapse two ACTUAL files that differ
+    only by case on a case-sensitive filesystem, hiding them from the
+    allowlist comparison (a material REQ-P5-007 defect). This pure helper
+    refuses any duplicate casefold key with a stable typed detail code so
+    the invariant is testable on every platform with synthetic name lists.
+    """
+    by_casefold: dict[str, str] = {}
+    for relative_path in relative_paths:
+        key = relative_path.casefold()
+        if key in by_casefold:
+            raise _standalone_failure("TRANSFER_INVENTORY_CASE_COLLISION")
+        by_casefold[key] = relative_path
+    return by_casefold
 
 
 def _forbidden_artifact_class(relative_path: str) -> str | None:
@@ -483,16 +524,21 @@ def _dbfbridge_version() -> str:
         return "unknown"
 
 
-def _iter_bundle_inventory(bundle_root: Path) -> dict[str, Path]:
+def _iter_bundle_inventory(
+    bundle_root: Path,
+    *,
+    failure: Callable[[str], AnonymizerError] | None = None,
+) -> dict[str, Path]:
     """The canonical bundle inventory (fail-closed on unreadable trees)."""
     from dbf_anonymizer.engine.publication import _iter_dataset_files
 
+    fail = failure if failure is not None else _standalone_failure
     try:
         return {
             relative: path for relative, path in _iter_dataset_files(bundle_root)
         }
     except Exception:
-        raise _standalone_failure("TRANSFER_BUNDLE_UNREADABLE") from None
+        raise fail("TRANSFER_BUNDLE_UNREADABLE") from None
 
 
 def _bundle_identity(
@@ -518,11 +564,11 @@ def _bundle_identity(
 def _bounded_manifest_text(value: object, *, max_length: int) -> str:
     """Validate one hostile manifest scalar as a bounded safe string."""
     if not isinstance(value, str):
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise _owning_failure("TRANSFER_MANIFEST_VALUE_INVALID")
     if len(value) > max_length or "\x00" in value:
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise _owning_failure("TRANSFER_MANIFEST_VALUE_INVALID")
     if any(character.isprintable() is False for character in value):
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise _owning_failure("TRANSFER_MANIFEST_VALUE_INVALID")
     if (
         "\\" in value
         or value.startswith("/")
@@ -530,7 +576,7 @@ def _bounded_manifest_text(value: object, *, max_length: int) -> str:
         or any(part == ".." for part in PurePosixPath(value.lower()).parts)
     ):
         # No absolute-path syntax may hide inside a manifest string.
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise _owning_failure("TRANSFER_MANIFEST_VALUE_INVALID")
     return value
 
 
@@ -538,12 +584,14 @@ def _bounded_manifest_token(value: object) -> str:
     """A bounded machine token (no whitespace, no path syntax)."""
     token = _bounded_manifest_text(value, max_length=_MAX_TOKEN_LENGTH)
     if token != token.strip() or any(character.isspace() for character in token):
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise _owning_failure("TRANSFER_MANIFEST_VALUE_INVALID")
     return token
 
 
 def _validate_manifest_contract(
     manifest: object,
+    *,
+    failure: Callable[[str], AnonymizerError] | None = None,
 ) -> dict[str, dict[str, object]]:
     """The ONE authoritative strict closed-schema manifest validator.
 
@@ -560,11 +608,12 @@ def _validate_manifest_contract(
     renamed to an arbitrary extension can never pass merely because its
     bytes are parseable.
     """
+    fail = failure if failure is not None else _standalone_failure
     if not isinstance(manifest, dict):
-        raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+        raise fail("TRANSFER_MANIFEST_UNREADABLE")
     manifest_keys = set(manifest)
     if manifest_keys != set(_MANIFEST_TOP_LEVEL_KEYS):
-        raise _standalone_failure("TRANSFER_MANIFEST_SCHEMA_INVALID")
+        raise fail("TRANSFER_MANIFEST_SCHEMA_INVALID")
     for scalar in (
         "schema_version",
         "package_version",
@@ -577,82 +626,82 @@ def _validate_manifest_contract(
     ):
         _bounded_manifest_token(manifest[scalar])
     if manifest["schema_version"] != TRANSFER_MANIFEST_SCHEMA_VERSION:
-        raise _standalone_failure("TRANSFER_MANIFEST_SCHEMA_UNSUPPORTED")
+        raise fail("TRANSFER_MANIFEST_SCHEMA_UNSUPPORTED")
     if manifest["profile"] != TransferProfile.DATA_ONLY.value:
-        raise _standalone_failure("TRANSFER_PROFILE_UNSUPPORTED")
+        raise fail("TRANSFER_PROFILE_UNSUPPORTED")
     if manifest["classification"] != "PSEUDONYMIZED":
-        raise _standalone_failure("TRANSFER_CLASSIFICATION_INVALID")
+        raise fail("TRANSFER_CLASSIFICATION_INVALID")
     if manifest["index_state"] != _INDEX_STATE_DATA_ONLY:
-        raise _standalone_failure("TRANSFER_INDEX_STATE_UNTRUTHFUL")
+        raise fail("TRANSFER_INDEX_STATE_UNTRUTHFUL")
     if manifest["verification_status"] not in _ALLOWED_VERIFICATION_STATUSES:
-        raise _standalone_failure("TRANSFER_VERIFICATION_STATUS_INVALID")
+        raise fail("TRANSFER_VERIFICATION_STATUS_INVALID")
     if not manifest["dataset_id"].startswith("ds-") or len(
         manifest["dataset_id"]
     ) != len("ds-") + 16:
-        raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+        raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
     entries = manifest["artifacts"]
     if not isinstance(entries, list) or not entries:
-        raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+        raise fail("TRANSFER_MANIFEST_UNREADABLE")
     if len(entries) > _MAX_MANIFEST_ARTIFACTS:
-        raise _standalone_failure("TRANSFER_MANIFEST_TOO_LARGE")
+        raise fail("TRANSFER_MANIFEST_TOO_LARGE")
     declared: dict[str, dict[str, object]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
-            raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+            raise fail("TRANSFER_MANIFEST_UNREADABLE")
         artifact_type = entry.get("artifact_type")
         if artifact_type == "DBF":
             expected_keys = _MANIFEST_DBF_ARTIFACT_KEYS
         elif artifact_type == "FPT":
             expected_keys = _MANIFEST_FPT_ARTIFACT_KEYS
         else:
-            raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+            raise fail("TRANSFER_MANIFEST_UNREADABLE")
         if artifact_type not in ("DBF", "FPT"):
-            raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+            raise fail("TRANSFER_MANIFEST_UNREADABLE")
         if set(entry) != set(expected_keys):
-            raise _standalone_failure("TRANSFER_MANIFEST_SCHEMA_INVALID")
+            raise fail("TRANSFER_MANIFEST_SCHEMA_INVALID")
         raw_path = entry["path"]
         if not isinstance(raw_path, str):
-            raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
-        artifact_path = _normalized_artifact_path(raw_path, failure=_standalone_failure)
+            raise fail("TRANSFER_MANIFEST_UNREADABLE")
+        artifact_path = _normalized_artifact_path(raw_path, failure=fail)
         if artifact_path == TRANSFER_MANIFEST_FILENAME:
-            raise _standalone_failure("TRANSFER_MANIFEST_PATH_COLLISION")
+            raise fail("TRANSFER_MANIFEST_PATH_COLLISION")
         forbidden = _forbidden_artifact_class(artifact_path)
         if forbidden is not None:
-            raise _standalone_failure("TRANSFER_FORBIDDEN_ARTIFACT")
+            raise fail("TRANSFER_FORBIDDEN_ARTIFACT")
         lowered = artifact_path.casefold()
         # The bidirectional artifact-type/extension binding (REQ-P5-005).
         if artifact_type == "DBF" and not lowered.endswith(".dbf"):
-            raise _standalone_failure("TRANSFER_ARTIFACT_TYPE_MISMATCH")
+            raise fail("TRANSFER_ARTIFACT_TYPE_MISMATCH")
         if artifact_type == "FPT" and not lowered.endswith(".fpt"):
-            raise _standalone_failure("TRANSFER_ARTIFACT_TYPE_MISMATCH")
+            raise fail("TRANSFER_ARTIFACT_TYPE_MISMATCH")
         if lowered.endswith(".dbf") and artifact_type != "DBF":
-            raise _standalone_failure("TRANSFER_ARTIFACT_TYPE_MISMATCH")
+            raise fail("TRANSFER_ARTIFACT_TYPE_MISMATCH")
         if lowered.endswith(".fpt") and artifact_type != "FPT":
-            raise _standalone_failure("TRANSFER_ARTIFACT_TYPE_MISMATCH")
+            raise fail("TRANSFER_ARTIFACT_TYPE_MISMATCH")
         if lowered in declared:
-            raise _standalone_failure("TRANSFER_MANIFEST_PATH_COLLISION")
+            raise fail("TRANSFER_MANIFEST_PATH_COLLISION")
         size = entry["size_bytes"]
         digest = entry["sha256"]
         record_count = entry["record_count"]
         schema_fingerprint = entry["schema_fingerprint"]
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-            raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+            raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         if not isinstance(digest, str) or not digest or len(digest) > _MAX_TOKEN_LENGTH:
-            raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+            raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         if artifact_type == "DBF":
             if (
                 not isinstance(record_count, int)
                 or isinstance(record_count, bool)
                 or record_count < 0
             ):
-                raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+                raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
             if not isinstance(schema_fingerprint, str) or not schema_fingerprint:
-                raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+                raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         else:
             # The FPT entry vocabulary: companion metadata is deliberately
             # null (the logical facts belong to the DBF entry).
             if record_count is not None or schema_fingerprint is not None:
-                raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
+                raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         declared[lowered] = {
             "path": artifact_path,
             "artifact_type": artifact_type,
@@ -662,11 +711,30 @@ def _validate_manifest_contract(
             "schema_fingerprint": schema_fingerprint,
         }
     if len(declared) < 1:
-        raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+        raise fail("TRANSFER_MANIFEST_UNREADABLE")
     return declared
 
 
-def _manifest_assurance(payload: object) -> RelationalAssurance:
+_OWNING_OPERATION: str = "verify_transfer_bundle"
+
+
+def _owning_failure(detail_code: str) -> AnonymizerError:
+    """The owning-operation failure factory of the running core.
+
+    The shared private bundle validator is used by TWO public operations;
+    each supplies its own failure factory so every typed failure carries
+    the OWNING operation context (never the other operation's identity).
+    """
+    if _OWNING_OPERATION == _CREATE_OPERATION:
+        return _transfer_failure(detail_code)
+    return _standalone_failure(detail_code)
+
+
+def _manifest_assurance(
+    payload: object,
+    *,
+    fail: Callable[[str], AnonymizerError],
+) -> RelationalAssurance:
     """Reconstruct the public assurance from the sanitized manifest facts.
 
     Every hostile manifest/model validation failure (unknown level, negative
@@ -674,6 +742,14 @@ def _manifest_assurance(payload: object) -> RelationalAssurance:
     note, missing keys) is converted into the typed privacy-safe transfer
     refusal — a raw ValueError/TypeError can never escape standalone
     verification.
+
+    The sanitized-manifest VALUE contract is strict (REQ-P5-005/REQ-P5-006):
+    ``scope_note`` must be the EXACT authoritative
+    ``RELATIONAL_ASSURANCE_SCOPE_NOTE`` token of the relationship assurance
+    layer (never arbitrary free text that could carry private strings),
+    ``evidence_schema_version`` must be the EXACT currently supported
+    ``EVIDENCE_SCHEMA_VERSION``, and both fingerprints must be ``None`` or
+    exactly 64 lowercase hexadecimal SHA-256 characters.
     """
     if not isinstance(payload, dict):
         raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
@@ -681,40 +757,43 @@ def _manifest_assurance(payload: object) -> RelationalAssurance:
         raise _standalone_failure("TRANSFER_MANIFEST_SCHEMA_INVALID")
     try:
         from dbf_anonymizer.models import RelationalAssuranceLevel
+        from dbf_anonymizer.relationships.assurance import (
+            RELATIONAL_ASSURANCE_SCOPE_NOTE,
+        )
+        from dbf_anonymizer.relationships.verification import (
+            EVIDENCE_SCHEMA_VERSION,
+        )
 
         level = RelationalAssuranceLevel(payload["level"])
         declared = payload["declared_relations"]
         verified = payload["verified_relations"]
         failed = payload["failed_relations"]
         incomplete = payload["incomplete_relations"]
-        counts_ok = all(
-            isinstance(count, int) and not isinstance(count, bool) and count >= 0
-            for count in (declared, verified, failed, incomplete)
-        )
         evidence_fingerprint = payload["evidence_fingerprint"]
         relationship_fingerprint = payload["relationship_fingerprint"]
         evidence_schema_version = payload["evidence_schema_version"]
         scope_note = payload["scope_note"]
-        strings_ok = all(
+        counts_ok = all(
+            isinstance(count, int) and not isinstance(count, bool) and count >= 0
+            for count in (declared, verified, failed, incomplete)
+        )
+        # Every declared relation is classified into EXACTLY one category —
+        # none may disappear from the accounting.
+        totals_complete = counts_ok and (
+            verified + failed + incomplete == declared
+        )
+        fingerprint_ok = all(
             value is None
             or (
                 isinstance(value, str)
-                and 0 < len(value) <= _MAX_SCOPE_NOTE_LENGTH
-                and "\x00" not in value
-                and all(character.isprintable() for character in value)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value)
             )
-            for value in (
-                evidence_fingerprint,
-                relationship_fingerprint,
-                evidence_schema_version,
-                scope_note,
-            )
+            for value in (evidence_fingerprint, relationship_fingerprint)
         )
-        if not (
-            counts_ok
-            and strings_ok
-            and verified + failed + incomplete <= declared
-        ):
+        evidence_version_ok = evidence_schema_version in (None, EVIDENCE_SCHEMA_VERSION)
+        scope_note_ok = scope_note in (None, RELATIONAL_ASSURANCE_SCOPE_NOTE)
+        if not (totals_complete and fingerprint_ok and evidence_version_ok and scope_note_ok):
             raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID")
         return RelationalAssurance(
             level=level,
@@ -731,60 +810,108 @@ def _manifest_assurance(payload: object) -> RelationalAssurance:
         raise _standalone_failure("TRANSFER_MANIFEST_VALUE_INVALID") from None
 
 
+def _reject_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    global _OWNING_OPERATION
+    """Reject DUPLICATE JSON object keys before json.loads collapses them.
+
+    This is an UNTRUSTED transferable JSON boundary: a manifest carrying
+    ``{"classification": "ANONYMOUS", "classification": "PSEUDONYMIZED"}``
+    must never be interpreted according to "last value wins". Duplicates are
+    detected recursively (top level, artifact entries, assurance object)
+    and rejected with a typed, privacy-safe refusal.
+    """
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            if _OWNING_OPERATION == _CREATE_OPERATION:
+                raise _transfer_failure("TRANSFER_MANIFEST_DUPLICATE_KEY")
+            raise _standalone_failure("TRANSFER_MANIFEST_DUPLICATE_KEY")
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(manifest_bytes: bytes) -> dict[str, object]:
+    loaded = json.loads(
+        manifest_bytes.decode("ascii"), object_pairs_hook=_reject_duplicate_keys
+    )
+    if not isinstance(loaded, dict):
+        raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE")
+    return loaded
+
+
 def _verify_bundle_core(
-    bundle_root: Path, *, control: ProgressController
+    bundle_root: Path,
+    *,
+    control: ProgressController,
+    failure: Callable[[str], AnonymizerError] | None = None,
 ) -> tuple[str, RelationalAssurance, int]:
+    global _OWNING_OPERATION
     """The ONE standalone DATA_ONLY bundle validation core (REQ-P5-007).
 
     Runs with ONLY the bundle directory — never the source dataset, the
     protected vault, any recovery mapping or any in-process execution
-    context — through the caller's controller (the public standalone
-    verifier owns its own controller; bundle creation reuses this core
-    under its OWN controller for the pre-promotion staged self-verification
-    so ``verified=True`` is objectively supported before promotion).
+    context — through the caller's controller and the caller's OWNING
+    failure factory (the public standalone verifier attributes every typed
+    failure to ``verify_transfer_bundle``; bundle creation reuses this core
+    under its OWN controller and failure factory for the pre-promotion
+    staged self-verification, so every internal stage is attributed to
+    ``create_transfer_bundle``).
 
     Validates: the strict closed manifest schema (exact top-level /
     artifact-entry / assurance key vocabularies, bounded value validation
     and the bidirectional artifact-type/extension binding), the strict
-    allowlist (exact manifest/inventory equality, case-collision safety),
-    forbidden-artifact absence, every payload hash and size, DBF/FPT
-    readability through the public dbfbridge boundary, record counts,
-    logical schema facts, required FPT companions, no unexpected FPT and
-    the truthful DATA_ONLY index-omission statement. Cancellation is polled
-    at every inventory/hash/record safe point.
+    allowlist (exact manifest/inventory equality with EXPLICIT
+    actual-filesystem case-collision detection), forbidden-artifact
+    absence, every payload hash and size, TRUE DBF/FPT READABILITY through
+    the public dbfbridge boundary (every physical record streamed with memo
+    payloads read inline, deleted records included, record counts proven
+    against the manifest AND the header), logical schema facts, required
+    FPT companions, no unexpected FPT and the truthful DATA_ONLY
+    index-omission statement. Cancellation is polled at every
+    inventory/hash/record safe point.
     """
+    global _OWNING_OPERATION
+    _OWNING_OPERATION = (
+        _CREATE_OPERATION if failure is _transfer_failure else _VERIFY_OPERATION
+    )
+    fail = failure if failure is not None else _standalone_failure
     control.start_phase(ProgressPhase.SOURCE_VERIFICATION)
-    inventory = _iter_bundle_inventory(bundle_root)
+    inventory = _iter_bundle_inventory(bundle_root, failure=fail)
     manifest_relative = TRANSFER_MANIFEST_FILENAME
-    if manifest_relative not in inventory:
-        raise _standalone_failure("TRANSFER_MANIFEST_MISSING")
+    if manifest_relative.casefold() not in {key for key in inventory}:
+        raise fail("TRANSFER_MANIFEST_MISSING")
     for relative_path in inventory:
         control.check_cancelled()
         if relative_path != manifest_relative and _forbidden_artifact_class(
             relative_path
         ):
-            raise _standalone_failure("TRANSFER_FORBIDDEN_ARTIFACT")
+            raise fail("TRANSFER_FORBIDDEN_ARTIFACT")
     manifest_path = inventory[manifest_relative]
     try:
         if manifest_path.stat().st_size > _MAX_MANIFEST_BYTES:
-            raise _standalone_failure("TRANSFER_MANIFEST_TOO_LARGE")
+            raise fail("TRANSFER_MANIFEST_TOO_LARGE")
         manifest_bytes = manifest_path.read_bytes()
-        manifest = json.loads(manifest_bytes.decode("ascii"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise _standalone_failure("TRANSFER_MANIFEST_UNREADABLE") from None
+        manifest = _strict_json_loads(manifest_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise fail("TRANSFER_MANIFEST_UNREADABLE") from None
     except OSError:
-        raise _standalone_failure("TRANSFER_BUNDLE_UNREADABLE") from None
-    declared = _validate_manifest_contract(manifest)
+        raise fail("TRANSFER_BUNDLE_UNREADABLE") from None
+    declared = _validate_manifest_contract(manifest, failure=fail)
 
-    # Strict allowlist: exact manifest/inventory equality (case-collision
-    # safe; the denylist classification already ran over the inventory).
+    # Strict allowlist: exact manifest/inventory equality with EXPLICIT
+    # actual-filesystem case-collision detection (a plain set() would
+    # collapse two real files differing only by case on a case-sensitive
+    # filesystem — a material REQ-P5-007 allowlist defect).
     control.start_phase(ProgressPhase.TABLE_EVALUATION, total=len(declared))
+    actual_by_casefold = _casefold_inventory(tuple(inventory))
     expected_inventory = set(declared) | {manifest_relative.casefold()}
-    actual_inventory = {relative.casefold() for relative in inventory}
-    if actual_inventory != expected_inventory:
-        raise _standalone_failure("TRANSFER_INVENTORY_MISMATCH")
+    if set(actual_by_casefold) != expected_inventory:
+        raise fail("TRANSFER_INVENTORY_MISMATCH")
 
-    # Payload hashes/sizes + DBF/FPT logical facts (bounded, checkpointed).
+    # Payload hashes/sizes + TRUE DBF/FPT logical readability (bounded,
+    # checkpointed; every record and every memo payload is actually read).
     control.start_phase(ProgressPhase.VERIFICATION, total=len(declared))
     companion_expectations: set[str] = set()
     for artifact_path, entry in sorted(declared.items()):
@@ -797,22 +924,38 @@ def _verify_bundle_core(
             computed_size != entry["size_bytes"]
             or computed_digest != entry["sha256"]
         ):
-            raise _standalone_failure("TRANSFER_HASH_MISMATCH")
+            raise fail("TRANSFER_HASH_MISMATCH")
         if entry["artifact_type"] == "DBF":
             table = read_source_table(
                 bundle_root, artifact_path, cancel_check=control.check_cancelled
             )
             if int(table.schema.record_count) != entry["record_count"]:
-                raise _standalone_failure("TRANSFER_RECORD_COUNT_MISMATCH")
+                raise fail("TRANSFER_RECORD_COUNT_MISMATCH")
             if _schema_digest(table) != entry["schema_fingerprint"]:
-                raise _standalone_failure("TRANSFER_SCHEMA_MISMATCH")
+                raise fail("TRANSFER_SCHEMA_MISMATCH")
+            streamed = 0
+            memo_policy = "inline" if table.has_memo_fields else "skip"
+            for record in stream_table_records(
+                table,
+                include_deleted=True,
+                memo_policy=memo_policy,
+                cancel_check=control.check_cancelled,
+            ):
+                # Every physical record (deleted included) and every memo
+                # payload is actually READ through the public boundary; a
+                # corrupted record body or FPT block fails even when the
+                # attacker also updated the manifest hash/size.
+                control.check_cancelled()
+                streamed += 1
+            if streamed != entry["record_count"]:
+                raise fail("TRANSFER_RECORD_COUNT_MISMATCH")
             for field in table.schema.fields:
                 if field.is_memo:
                     companion = str(
                         Path(artifact_path).with_suffix(".fpt").as_posix()
                     )
                     if companion.casefold() not in declared:
-                        raise _standalone_failure("TRANSFER_FPT_COMPANION_MISSING")
+                        raise fail("TRANSFER_FPT_COMPANION_MISSING")
         control.bump(ProgressPhase.VERIFICATION, table_path=artifact_path)
     # No unexpected FPT: every declared FPT must belong to a memo DBF.
     for artifact_path, entry in declared.items():
@@ -829,10 +972,12 @@ def _verify_bundle_core(
         if entry["artifact_type"] == "FPT"
     }
     if declared_fpt_paths - companion_expectations:
-        raise _standalone_failure("TRANSFER_UNEXPECTED_FPT")
+        raise fail("TRANSFER_UNEXPECTED_FPT")
 
     manifest_fingerprint = "bundle-" + hashlib.sha256(manifest_bytes).hexdigest()
-    assurance = _manifest_assurance(manifest.get("assurance"))
+    assurance = _manifest_assurance(
+        manifest.get("assurance"), fail=fail
+    )
     return manifest_fingerprint, assurance, len(declared)
 
 
@@ -918,6 +1063,8 @@ def create_transfer_bundle(
         source_root=Path(context.source_root),
         output_root=working_root,
         vault_path=Path(context.vault_path),
+        failure=_transfer_failure,
+        owning_operation=_CREATE_OPERATION,
     )
     if verification_result.status is VerificationStatus.PASS:
         pass
@@ -1022,9 +1169,15 @@ def create_transfer_bundle(
                 # --- 6. Staged bundle self-verification (BEFORE promotion) --
                 # The SAME private standalone validation core proves the
                 # complete staged bundle so the returned verified=True is
-                # objectively supported by bundle evidence.
+                # objectively supported by bundle evidence; every typed
+                # failure is attributed to the create_transfer_bundle
+                # operation through its own failure factory.
                 control.start_phase(ProgressPhase.VERIFICATION)
-                _verify_bundle_core(staging.dataset_root, control=control)
+                _verify_bundle_core(
+                    staging.dataset_root,
+                    control=control,
+                    failure=_transfer_failure,
+                )
 
                 # --- 7. Atomic promotion ------------------------------------
                 control.start_phase(ProgressPhase.PUBLICATION)
@@ -1103,7 +1256,7 @@ def verify_transfer_bundle(
     )
     control.start_phase(ProgressPhase.OPERATION)
     manifest_fingerprint, assurance, artifact_count = _verify_bundle_core(
-        bundle_root, control=control
+        bundle_root, control=control, failure=_standalone_failure
     )
     bundle_result = TransferBundleResult(
         bundle_path=bundle_root.name,

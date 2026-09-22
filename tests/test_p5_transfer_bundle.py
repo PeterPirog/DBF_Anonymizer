@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 import threading
 from datetime import date, datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ import pytest
 import dbf_anonymizer
 from dbf_anonymizer import (
     CallbackError,
+    ErrorContext as _ErrorContext,
     CancellationError,
     ErrorCode,
     ProgressEvent,
@@ -1455,3 +1457,405 @@ def test_staged_fault_refuses_promotion_and_publishes_nothing(
         for key, value in before.items()
         if key.startswith("vault/")
     }
+
+
+# ---------------------------------------------------------------------------
+# Actual-filesystem case-collision protection + portable path validation
+# ---------------------------------------------------------------------------
+def test_casefold_inventory_helper_detects_collisions() -> None:
+    """Pure-helper regression (platform-independent): two actual names that
+    differ only by case are an explicit collision, never silently
+    collapsed."""
+    from dbf_anonymizer.transfer_bundle import _casefold_inventory
+
+    assert _casefold_inventory(["north/data.dbf", "south/data.fpt"]) == {
+        "north/data.dbf": "north/data.dbf",
+        "south/data.fpt": "south/data.fpt",
+    }
+    for hostile in (
+        ["north/data.dbf", "NORTH/DATA.DBF"],
+        ["transfer-manifest.json", "TRANSFER-MANIFEST.JSON"],
+        ["north/data.fpt", "NORTH/DATA.FPT"],
+    ):
+        with pytest.raises(TransferError) as caught:
+            _casefold_inventory(hostile)
+        assert caught.value.context.detail_code == "TRANSFER_INVENTORY_CASE_COLLISION"
+        assert caught.value.context.operation == "verify_transfer_bundle"
+
+
+def _standalone_probe(detail_code: str) -> TransferError:
+    return TransferError(
+        ErrorCode.TRANSFER_FAILED,
+        context=_ErrorContext(
+            operation="verify_transfer_bundle", detail_code=detail_code
+        ),
+    )
+
+
+def test_normalized_artifact_path_rejects_cross_platform_forms() -> None:
+    """Direct pure-helper regression: the normalizer itself (not an
+    inventory side effect) refuses drive-qualified/rooted/absolute/UNC and
+    traversal forms under BOTH path grammars."""
+    from dbf_anonymizer.transfer_bundle import _normalized_artifact_path
+
+    for hostile in (
+        "C:/evil.dbf",
+        "C:\\evil.dbf",
+        "\\\\host\\\\share\\\\evil.dbf",
+        "/absolute/evil.dbf",
+        "../evil.dbf",
+        "north/../../evil.dbf",
+        "//server/share/evil.dbf",
+        "north/../../../x.dbf",
+    ):
+        with pytest.raises(TransferError) as caught:
+            _normalized_artifact_path(hostile, failure=_standalone_probe)
+        assert (
+            caught.value.context.detail_code == "TRANSFER_MANIFEST_PATH_INVALID"
+        ), hostile
+    for valid in ("north/data.dbf", "archive/data.fpt", "transfer-manifest.json"):
+        assert (
+            _normalized_artifact_path(valid, failure=_standalone_probe) == valid
+        )
+
+
+def test_posix_drive_qualified_actual_path_fails_standalone(
+    tmp_path: Path,
+) -> None:
+    """Where the platform permits a physical ``C:`` directory component, the
+    manifest entry is refused by path normalization BEFORE payload checks."""
+    if sys.platform == "win32":
+        pytest.skip("Windows cannot create a 'C:' directory component")
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    hostile_dir = bundle_root / "C:"
+    hostile_dir.mkdir()
+    (hostile_dir / "evil.dbf").write_bytes(b"evil")
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(bundle_root)
+    assert caught.value.context.detail_code in {
+        "TRANSFER_MANIFEST_PATH_INVALID",
+        "TRANSFER_FORBIDDEN_ARTIFACT",
+    }
+
+
+def test_fpt_case_collision_synthetic_fails(tmp_path: Path) -> None:
+    """FPT case collision (synthetic evidence on every platform)."""
+    from dbf_anonymizer.transfer_bundle import _casefold_inventory
+
+    with pytest.raises(TransferError) as caught:
+        _casefold_inventory(["north/data.fpt", "NORTH/DATA.FPT"])
+    assert caught.value.context.detail_code == "TRANSFER_INVENTORY_CASE_COLLISION"
+
+
+# ---------------------------------------------------------------------------
+# TRUE readability: corruption with RECOMPUTED manifest hashes (blocker C)
+# ---------------------------------------------------------------------------
+def _recompute_manifest(bundle_root: Path) -> None:
+    """Attacker upgrade: corrupt a payload AND refresh its manifest
+    hash/size so hashes PASS — only logical readability can detect it."""
+    manifest_path = bundle_root / "transfer-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+    for entry in manifest["artifacts"]:  # type: ignore[union-attr]
+        payload = bundle_root / str(entry["path"])
+        digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+        entry["sha256"] = digest
+        entry["size_bytes"] = payload.stat().st_size
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+
+
+def test_truncated_dbf_with_recomputed_hash_fails_standalone(
+    tmp_path: Path,
+) -> None:
+    """A DBF whose record area is truncated (header still readable) with a
+    RECOMPUTED manifest hash/size: hashes PASS and only the streamed record
+    read/count detects the defect."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    payload = (bundle_root / "north" / "data.dbf").read_bytes()
+    (bundle_root / "north" / "data.dbf").write_bytes(payload[: len(payload) // 2])
+    _recompute_manifest(bundle_root)
+    with pytest.raises((TransferError, dbf_anonymizer.DBFBridgeError)):
+        verify_transfer_bundle(bundle_root)
+    # The typed classification covers the structured dependency refusal
+    # (an unreadable/truncated table) as well as the streamed count defect;
+    # the bundle was never reported complete either way.
+    assert not (tmp_path / "bundle" / "smuggled.dbf").exists()
+
+
+def test_corrupted_fpt_with_recomputed_hash_fails_standalone(
+    tmp_path: Path,
+) -> None:
+    """An FPT used by a live memo record is corrupted/truncated and the
+    manifest hash/size recomputed: the DBF schema remains readable and only
+    the INLINE memo payload read detects the defect."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    payload = (bundle_root / "north" / "data.fpt").read_bytes()
+    (bundle_root / "north" / "data.fpt").write_bytes(payload[:12])
+    _recompute_manifest(bundle_root)
+    with pytest.raises((TransferError, dbf_anonymizer.DBFBridgeError)):
+        verify_transfer_bundle(bundle_root)
+    # The typed refusal covers the structured dependency failure (an
+    # unreadable memo companion) as well as the streamed-count defect; the
+    # bundle was never reported complete either way.
+
+
+def test_staged_fpt_corruption_with_consistent_manifest_refuses_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staged creation fault: after copy + manifest generation but BEFORE
+    promotion, an FPT is corrupted AND its manifest hash/size updated
+    consistently — the staged self-verification must STILL refuse promotion
+    because the FPT logical read fails inside the streamed verification."""
+    import dbf_anonymizer.transfer_bundle as transfer_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    before = _hash_tree(tmp_path)
+    original_verify = transfer_module._verify_bundle_core
+
+    def corrupting_then_verifying(bundle_root: Path, **kwargs: object) -> object:
+        payload = (bundle_root / "north" / "data.fpt").read_bytes()
+        (bundle_root / "north" / "data.fpt").write_bytes(payload[:10])
+        # The attacker updates the manifest hash/size consistently.
+        manifest_path = bundle_root / "transfer-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+        for entry in manifest["artifacts"]:  # type: ignore[union-attr]
+            if entry["path"] == "north/data.fpt":  # type: ignore[index]
+                entry["sha256"] = hashlib.sha256(
+                    (bundle_root / "north" / "data.fpt").read_bytes()
+                ).hexdigest()
+                entry["size_bytes"] = 12
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="ascii",
+        )
+        return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        transfer_module, "_verify_bundle_core", corrupting_then_verifying
+    )
+    with pytest.raises((TransferError, dbf_anonymizer.DBFBridgeError)):
+        create_transfer_bundle(
+            result, destination=tmp_path / "bundle", profile="DATA_ONLY"
+        )
+    assert not (tmp_path / "bundle").exists()
+    after = _hash_tree(tmp_path)
+    assert not any(name.startswith("bundle/") for name in set(after) - set(before))
+    assert _hash_tree(output) == {
+        key[len("output/"):]: value
+        for key, value in before.items()
+        if key.startswith("output/")
+    }
+
+
+# ---------------------------------------------------------------------------
+# Strict assurance value sanitization (blocker D)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "mutate,canary",
+    [
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"scope_note": "C:\\private\\canary\\vault"}
+            ),
+            "C:\\private\\canary\\vault",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"evidence_fingerprint": "z" * 64}
+            ),
+            "z" * 64,
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"relationship_fingerprint": "g" * 64}
+            ),
+            "g" * 64,
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"evidence_schema_version": "PRIVATE_PATH_CANARY"}
+            ),
+            "PRIVATE_PATH_CANARY",
+        ),
+    ],
+    ids=["scope-note", "evidence-fp", "relationship-fp", "evidence-version"],
+)
+def test_hostile_assurance_values_fail_and_stay_redacted(
+    tmp_path: Path, mutate: Callable[[dict], None], canary: str
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert canary not in serialized
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value)
+
+
+def test_assurance_counts_must_be_complete(tmp_path: Path) -> None:
+    """declared=5 with the three counters summing to 4: a declared relation
+    may never disappear from the accounting."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["assurance"]["declared_relations"] = 5
+        manifest["assurance"]["verified_relations"] = 4
+        manifest["assurance"]["failed_relations"] = 0
+        manifest["assurance"]["incomplete_relations"] = 0
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
+
+
+def test_duplicate_json_keys_fail_standalone(tmp_path: Path) -> None:
+    """Duplicate JSON object keys are rejected BEFORE they are collapsed by
+    json.loads (an ANONYMOUS/PSEUDONYMIZED duplicate must never be
+    interpreted as last-value-wins)."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    duplicated = (
+        '{"classification": "ANONYMOUS", "classification": "PSEUDONYMIZED",'
+        ' "schema_version": "1.0", "package_version": "1.0.0.dev0",'
+        ' "dbfbridge_version": "1.1.1", "profile": "DATA_ONLY",'
+        ' "dataset_id": "ds-0000000000000000", "index_state":'
+        ' "DATA_ONLY_INDEX_OMITTED", "verification_status":'
+        ' "CREATION_SELF_VERIFIED", "artifacts": [{"path": "x.dbf",'
+        ' "artifact_type": "DBF", "size_bytes": 1, "sha256": "0",'
+        ' "record_count": 1, "schema_fingerprint": "sch-0"}], "assurance":'
+        ' {"level": "INCOMPLETE", "declared_relations": 0,'
+        ' "verified_relations": 0, "failed_relations": 0,'
+        ' "incomplete_relations": 0, "evidence_fingerprint": null,'
+        ' "relationship_fingerprint": null, "evidence_schema_version":'
+        ' "1.0", "scope_note": "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"}}'
+    )
+    (tmp_path / "bundle" / "transfer-manifest.json").write_text(
+        duplicated, encoding="ascii"
+    )
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_DUPLICATE_KEY"
+    assert "ANONYMOUS" not in json.dumps(caught.value.to_dict(), sort_keys=True)
+
+
+def test_public_error_attribution_create_vs_verify(tmp_path: Path) -> None:
+    """The shared private bundle verifier core attributes every typed
+    failure to the OWNING public operation: standalone verification failures
+    say verify_transfer_bundle; staged self-verification failures inside
+    creation say create_transfer_bundle."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    _tamper_manifest(
+        tmp_path / "bundle",
+        lambda manifest: manifest.update({"extra": 1}),
+    )
+    with pytest.raises(TransferError) as verify_failure:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert verify_failure.value.context.operation == "verify_transfer_bundle"
+
+    import dbf_anonymizer.transfer_bundle as transfer_module
+
+    original_verify = transfer_module._verify_bundle_core
+
+    def corrupting_then_verifying(bundle_root: Path, **kwargs: object) -> object:
+        manifest_path = bundle_root / "transfer-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+        manifest["extra"] = 1
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="ascii",
+        )
+        return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            transfer_module, "_verify_bundle_core", corrupting_then_verifying
+        )
+        with pytest.raises(TransferError) as create_failure:
+            create_transfer_bundle(
+                result, destination=tmp_path / "bundle2", profile="DATA_ONLY"
+            )
+    finally:
+        monkeypatch.undo()
+    # The staged self-verification failure is attributed to the OWNING
+    # create_transfer_bundle operation (never verify_transfer_bundle).
+    assert create_failure.value.context.operation == "create_transfer_bundle"
+    assert create_failure.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+
+
+def test_complete_public_workflow_without_private_imports(tmp_path: Path) -> None:
+    """REQ-P1-004 consumer evidence: the COMPLETE workflow executes through
+    PUBLIC imports only (no private implementation module is imported):
+    build_plan -> preflight -> pseudonymize -> verify_dataset ->
+    create_transfer_bundle -> verify_transfer_bundle -> recover."""
+    import dbf_anonymizer as public
+
+    source = tmp_path / "source"
+    _write_dataset(source)
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    plan = public.build_plan(
+        source, output, vault, relationship_document=_relationship_document()
+    )
+    assert public.preflight(plan).ready is True
+    result = public.pseudonymize(plan)
+    verification = public.verify_dataset(result, source=source, vault=vault)
+    assert verification.status is public.VerificationStatus.PASS
+    bundle = public.create_transfer_bundle(
+        result, destination=tmp_path / "bundle", profile="DATA_ONLY"
+    )
+    assert bundle.verified is True
+    standalone = public.verify_transfer_bundle(tmp_path / "bundle")
+    assert standalone.verified is True
+    recovery = public.recover(
+        pseudonymized=output, vault=vault, output=tmp_path / "recovered"
+    )
+    assert recovery.canonical_verified is True
+    # Truthful capability facts for the complete surface.
+    caps = public.capabilities()
+    assert caps.recovery is True
+    assert caps.transfer_bundle is True
+    assert caps.vfp_index_backend is False
+    # The recovered dataset is canonically equal to the original oracle:
+    # public dbfbridge logical reads compare topology/schema/records.
+    assert sorted(_hash_tree(source)) == sorted(_hash_tree(tmp_path / "recovered"))
+    for relative in _hash_tree(source):
+        if not relative.endswith(".dbf"):
+            continue
+        original = tuple(
+            (
+                record.physical_index,
+                record.deleted,
+                tuple(sorted(record.values.items())),
+            )
+            for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
+                source / relative, include_deleted=True, memo="inline"
+            )
+        )
+        recovered = tuple(
+            (
+                record.physical_index,
+                record.deleted,
+                tuple(sorted(record.values.items())),
+            )
+            for record in dbfbridge.iter_records(  # type: ignore[attr-defined]
+                tmp_path / "recovered" / relative,
+                include_deleted=True,
+                memo="inline",
+            )
+        )
+        assert original == recovered

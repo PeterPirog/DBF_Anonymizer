@@ -499,6 +499,8 @@ def _verify_dataset_core(
     source_root: Path,
     output_root: Path,
     vault_path: Path,
+    failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
 ) -> VerificationResult:
     """The ONE P5-001 verification pipeline through a SUPPLIED controller.
 
@@ -507,13 +509,20 @@ def _verify_dataset_core(
     public verdict WITHOUT emitting any terminal completion: the public
     ``verify_dataset`` wrapper owns its single terminal event, and the
     internal REQ-P5-004 verified-dataset precondition of bundle creation
-    reuses this core under the CREATE operation's controller (cancellation
-    and callback failures stay attributed to the owning public operation).
+    reuses this core under the CREATE operation's controller and OWNING
+    failure factory (every typed inability stays attributed to the
+    create_transfer_bundle operation; cancellation and callback failures
+    stay attributed to the owning public operation as well).
     """
+    fail = failure if failure is not None else _verification_failure
     findings = _Findings()
     record_count = 0
     table_count = 0
-    vault_reader = _VerifyVault(vault_path)
+    vault_reader = _VerifyVault(
+        vault_path,
+        operation=owning_operation,
+        failure=fail,
+    )
     try:
         record_count, table_count = _verify(
             result=result,
@@ -522,6 +531,7 @@ def _verify_dataset_core(
             source_root=source_root,
             output_root=output_root,
             vault_reader=vault_reader,
+            failure=fail,
         )
     finally:
         vault_reader.close()
@@ -655,8 +665,10 @@ def _verify(
     source_root: Path,
     output_root: Path,
     vault_reader: _VerifyVault,
+    failure: Callable[[str], AnonymizerError] | None = None,
 ) -> tuple[int, int]:
     """The bounded read-only verification pipeline (deterministic order)."""
+    fail = failure if failure is not None else _verification_failure
     dataset: DatasetIdentity = result.dataset
     record_count = 0
     table_count = 0
@@ -679,7 +691,7 @@ def _verify(
     except (CancellationError, CallbackError):
         raise
     except OSError:
-        raise _verification_failure("SOURCE_UNREADABLE") from None
+        raise fail("SOURCE_UNREADABLE") from None
     if current_source != result.dataset.source_fingerprint:
         findings.fail("SOURCE_FINGERPRINT_MISMATCH")
 
@@ -690,7 +702,7 @@ def _verify(
     try:
         output_inventory = _iter_output_files(output_root)
     except Exception:
-        raise _verification_failure("OUTPUT_UNREADABLE") from None
+        raise fail("OUTPUT_UNREADABLE") from None
     output_paths = {relative for relative, _path in output_inventory}
     for relative in sorted(expected_output - output_paths):
         if relative in expected_memo_companions:
@@ -731,6 +743,7 @@ def _verify(
             vault_reader=vault_reader,
             findings=findings,
             checkpoint=control.check_cancelled,
+            failure=fail,
         )
         control.bump(ProgressPhase.TABLE_EVALUATION, table_path=relative_path)
 
@@ -750,7 +763,7 @@ def _verify(
     except (CancellationError, CallbackError):
         raise
     except Exception:
-        raise _verification_failure("OUTPUT_UNREADABLE") from None
+        raise fail("OUTPUT_UNREADABLE") from None
     if current_output != result.output_fingerprint:
         findings.fail("OUTPUT_FINGERPRINT_MISMATCH")
 
@@ -918,6 +931,7 @@ def _verify_table(
     vault_reader: _VerifyVault,
     findings: _Findings,
     checkpoint: Callable[[], None],
+    failure: Callable[[str], AnonymizerError] | None = None,
 ) -> int:
     """One streamed source/output table comparison (O(1) memory).
 
@@ -926,6 +940,7 @@ def _verify_table(
     counts, NULL semantics and every transformed-field postcondition derived
     from the durable policy application (text/numeric/memo/temporal).
     """
+    fail = failure if failure is not None else _verification_failure
     try:
         source_table = read_source_table(
             source_root, relative_path, cancel_check=checkpoint
@@ -933,7 +948,7 @@ def _verify_table(
     except (CancellationError, CallbackError):
         raise
     except Exception:
-        raise _verification_failure("SOURCE_UNREADABLE") from None
+        raise fail("SOURCE_UNREADABLE") from None
     output_table = _output_table(output_root, relative_path)
     if _schema_facts(source_table) != _schema_facts(output_table):
         findings.fail("SCHEMA_MISMATCH")
