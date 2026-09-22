@@ -79,6 +79,7 @@ def check_wheel(wheel: Path) -> None:
         "dbf_anonymizer/errors.py",
         "dbf_anonymizer/verification.py",
         "dbf_anonymizer/recovery.py",
+        "dbf_anonymizer/transfer_bundle.py",
         "dbf_anonymizer/py.typed",
     }
     missing = [name for name in required_members if not any(n == name for n in members)]

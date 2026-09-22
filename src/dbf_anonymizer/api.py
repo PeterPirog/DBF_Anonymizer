@@ -35,6 +35,10 @@ from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
 )
 from dbf_anonymizer.recovery import recover
+from dbf_anonymizer.transfer_bundle import (
+    create_transfer_bundle,
+    verify_transfer_bundle,
+)
 from dbf_anonymizer.verification import verify_dataset
 
 __all__ = [
@@ -44,6 +48,8 @@ __all__ = [
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
 ]
 
 _MAX_PUBLIC_WORKERS = 32

@@ -588,7 +588,9 @@ def test_req_p1_007_isolated_capability_purity(tmp_path: Path) -> None:
     assert caps["recovery"] == (
         caps["direct_read"] and caps["direct_write"]
     )
-    assert caps["transfer_bundle"] is False
+    assert caps["transfer_bundle"] == (
+        caps["direct_read"] and caps["direct_write"]
+    )
     assert caps["vfp_index_backend"] is False
 
     # The isolated discovery must agree with the parent-process environment
@@ -675,7 +677,9 @@ def test_capabilities_to_dict_is_deterministic_json_safe_and_leak_free() -> None
     assert payload["recovery"] == (
         result.direct_read and result.direct_write
     )
-    assert payload["transfer_bundle"] is False
+    assert payload["transfer_bundle"] == (
+        result.direct_read and result.direct_write
+    )
     assert payload["vfp_index_backend"] is False
     for key, value in payload.items():
         if isinstance(value, str):

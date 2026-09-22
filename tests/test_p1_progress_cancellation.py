@@ -1086,17 +1086,16 @@ def test_cancellation_and_failure_events_stay_within_bounded_payloads(
 
 def test_public_surface_stays_exactly_the_current_contract() -> None:
     # No unfinished operation was faked; ProgressEvent stays public as before.
-    # REQ-P5-001 made the public verify_dataset service real and REQ-P5-002
-    # made the public recover service real; the remaining future operations
-    # stay absent (no success placeholders).
-    for operation in (
-        "create_transfer_bundle",
-        "verify_transfer_bundle",
-    ):
-        assert not hasattr(dbf_anonymizer, operation)
+    # REQ-P5-001 (verify_dataset), REQ-P5-002/003 (recover) and
+    # REQ-P5-004..007 (create_transfer_bundle/verify_transfer_bundle) are all
+    # REAL implemented public services; no success placeholders exist.
     assert callable(dbf_anonymizer.verify_dataset)
     assert callable(dbf_anonymizer.recover)
+    assert callable(dbf_anonymizer.create_transfer_bundle)
+    assert callable(dbf_anonymizer.verify_transfer_bundle)
     assert "ProgressEvent" in dbf_anonymizer.__all__
     assert "CallbackError" in dbf_anonymizer.__all__
     assert "pseudonymize" in dbf_anonymizer.__all__
     assert "recover" in dbf_anonymizer.__all__
+    assert "create_transfer_bundle" in dbf_anonymizer.__all__
+    assert "verify_transfer_bundle" in dbf_anonymizer.__all__

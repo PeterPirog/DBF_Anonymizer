@@ -116,14 +116,22 @@ def test_import_is_side_effect_free_and_exposes_the_implemented_surface() -> Non
     assert "capabilities" in dbf_anonymizer.__all__
     assert "verify_dataset" in dbf_anonymizer.__all__
     assert "recover" in dbf_anonymizer.__all__
+    assert "create_transfer_bundle" in dbf_anonymizer.__all__
+    assert "verify_transfer_bundle" in dbf_anonymizer.__all__
     assert callable(dbf_anonymizer.capabilities)
     assert callable(dbf_anonymizer.verify_dataset)
     assert callable(dbf_anonymizer.recover)
+    assert callable(dbf_anonymizer.create_transfer_bundle)
+    assert callable(dbf_anonymizer.verify_transfer_bundle)
+    # Every architecture-required public operation is REAL; no placeholder
+    # success functions exist (the future-operation list is empty).
     for operation in (
+        "verify_dataset",
+        "recover",
         "create_transfer_bundle",
         "verify_transfer_bundle",
     ):
-        assert not hasattr(dbf_anonymizer, operation)
+        assert callable(getattr(dbf_anonymizer, operation))
 
 
 def test_module_execution_entry_delegates_without_duplication() -> None:
