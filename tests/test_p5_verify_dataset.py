@@ -429,7 +429,9 @@ def test_verification_pass_partial_fail_is_deterministic_and_repeatable(
         result,
         output_fingerprint=new_fingerprint,
         execution_context=_PseudonymizationExecutionContext(
-            output_root=str(partial_output)
+            output_root=str(partial_output),
+            source_root=str(tmp_path / "source"),
+            vault_path=str(tmp_path / "vault" / "dictionary.sqlite3"),
         ),
     )
     destination_identity = derive_destination_identity(partial_output)

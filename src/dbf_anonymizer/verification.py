@@ -492,60 +492,24 @@ def _schema_facts(
     return (fields, encoding, language_driver)
 
 
-def verify_dataset(
+def _verify_dataset_core(
     result: PseudonymizationResult,
     *,
-    source: str | Path,
-    vault: str | Path,
-    progress: ProgressCallback | None = None,
-    cancel_check: CancelCheck | None = None,
+    control: ProgressController,
+    source_root: Path,
+    output_root: Path,
+    vault_path: Path,
 ) -> VerificationResult:
-    """Independently verify one completed pseudonymization (REQ-P5-001).
+    """The ONE P5-001 verification pipeline through a SUPPLIED controller.
 
-    Strictly read-only: the source dataset, the pseudonymized output, the
-    protected vault and its sidecars are never modified, and no staging,
-    lock or verification artifact is created. The source fingerprint is
-    recomputed with the canonical kernel, the output dataset fingerprint
-    with the publication kernel, the record streams are compared through
-    the public dbfbridge boundary against the durable per-field policy
-    application registered in the vault, the mapping bijections and the
-    completed operation receipt are validated read-only, and the public
-    relational assurance is cross-validated against that durable receipt
-    evidence — the PASS/PARTIAL/FAIL verdict is derived from evidence,
-    never from preference.
-
-    REQ-P1-008: ONE :class:`ProgressController`
-    (``operation="verify_dataset"``) seeded with the verified operation's
-    canonical id drives the bounded phases; cancellation is polled at every
-    scan safe point (source hashing, table iteration, record streaming,
-    memo verification, output hashing) and raises the typed
-    :class:`~dbf_anonymizer.errors.CancellationError` with no terminal
-    completion and no mutation. Callback failures remain contained and
-    privacy-safe, attributed to the ``verify_dataset`` operation.
-
-    An inability to verify (unreadable source, missing or ambiguous vault
-    state) raises the existing typed
-    :class:`~dbf_anonymizer.errors.VerificationError` contract; every
-    dataset-level finding is a truthful FAIL/PARTIAL result with stable,
-    versioned check codes.
+    Drives every read-only verification stage through the caller's
+    :class:`~dbf_anonymizer.progress.ProgressController` and returns the
+    public verdict WITHOUT emitting any terminal completion: the public
+    ``verify_dataset`` wrapper owns its single terminal event, and the
+    internal REQ-P5-004 verified-dataset precondition of bundle creation
+    reuses this core under the CREATE operation's controller (cancellation
+    and callback failures stay attributed to the owning public operation).
     """
-    if not isinstance(result, PseudonymizationResult):
-        raise TypeError("verify_dataset requires a PseudonymizationResult")
-    context = result.execution_context
-    if context is None:
-        raise _verification_failure("VERIFY_RESULT_CONTEXT_MISSING")
-    source_root = Path(source)
-    output_root = Path(context.output_root)
-    vault_path = Path(vault)
-
-    control = ProgressController(
-        operation=_VERIFY_OPERATION,
-        progress=progress,
-        cancel_check=cancel_check,
-        operation_id=result.operation_id,
-    )
-    control.start_phase(ProgressPhase.OPERATION)
-
     findings = _Findings()
     record_count = 0
     table_count = 0
@@ -583,9 +547,73 @@ def verify_dataset(
         check_codes=check_codes,
         assurance=result.assurance,
     )
+    return verification_result
+
+
+def verify_dataset(
+    result: PseudonymizationResult,
+    *,
+    source: str | Path,
+    vault: str | Path,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> VerificationResult:
+    """Independently verify one completed pseudonymization (REQ-P5-001).
+
+    Strictly read-only: the source dataset, the pseudonymized output, the
+    protected vault and its sidecars are never modified, and no staging,
+    lock or verification artifact is created. The source fingerprint is
+    recomputed with the canonical kernel, the output dataset fingerprint
+    with the publication kernel, the record streams are compared through
+    the public dbfbridge boundary against the durable per-field policy
+    application registered in the vault, the mapping bijections and the
+    completed operation receipt are validated read-only, and the public
+    relational assurance is cross-validated against that durable receipt
+    evidence — the PASS/PARTIAL/FAIL verdict is derived from evidence,
+    never from preference.
+
+    REQ-P1-008: ONE :class:`ProgressController`
+    (``operation="verify_dataset"``) seeded with the verified operation's
+    canonical id drives the bounded phases; cancellation is polled at every
+    scan safe point (source hashing, table iteration, record streaming,
+    memo verification, output hashing) and raises the typed
+    :class:`~dbf_anonymizer.errors.CancellationError` with no terminal
+    completion and no mutation. Callback failures remain contained and
+    privacy-safe, attributed to the ``verify_dataset`` operation.
+
+    An inability to verify (unreadable source, missing or ambiguous vault
+    state) raises the existing typed
+    :class:`~dbf_anonymizer.errors.VerificationError` contract; every
+    dataset-level finding is a truthful FAIL/PARTIAL result with stable,
+    versioned check codes. The evaluation itself is the shared internal
+    core :func:`_verify_dataset_core` through this wrapper's controller.
+    """
+    if not isinstance(result, PseudonymizationResult):
+        raise TypeError("verify_dataset requires a PseudonymizationResult")
+    context = result.execution_context
+    if context is None:
+        raise _verification_failure("VERIFY_RESULT_CONTEXT_MISSING")
+    source_root = Path(source)
+    output_root = Path(context.output_root)
+    vault_path = Path(vault)
+
+    control = ProgressController(
+        operation=_VERIFY_OPERATION,
+        progress=progress,
+        cancel_check=cancel_check,
+        operation_id=result.operation_id,
+    )
+    control.start_phase(ProgressPhase.OPERATION)
+    verification_result = _verify_dataset_core(
+        result,
+        control=control,
+        source_root=source_root,
+        output_root=output_root,
+        vault_path=vault_path,
+    )
     # The single terminal completion is emitted only now — after the public
     # result genuinely exists (never after cancellation).
-    control.complete(completed=table_count)
+    control.complete(completed=verification_result.table_count)
     return verification_result
 
 

@@ -575,11 +575,16 @@ class PreflightResult(PublicModel):
 class _PseudonymizationExecutionContext:
     """Runtime-only location of one published pseudonymized dataset.
 
-    The absolute path is retained only in memory for later service operations.
-    It is excluded from public serialization, representation and equality.
+    The absolute paths are retained only in memory for later service
+    operations in the SAME trusted environment (the internal REQ-P5-004
+    verified-dataset precondition of bundle creation reuses them; recovery
+    is path-based and needs nothing). Everything is excluded from public
+    serialization, representation and equality.
     """
 
     output_root: str
+    source_root: str
+    vault_path: str
 
     def __repr__(self) -> str:
         return "<_PseudonymizationExecutionContext>"

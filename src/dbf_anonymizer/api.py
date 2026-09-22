@@ -193,7 +193,9 @@ def pseudonymize(
         output_fingerprint=result.output_fingerprint,
         assurance=assurance,
         execution_context=_PseudonymizationExecutionContext(
-            output_root=context.output_root
+            output_root=context.output_root,
+            source_root=context.source_root,
+            vault_path=context.vault_path,
         ),
     )
     # The PUBLIC operation owns its single terminal completion: emitted only

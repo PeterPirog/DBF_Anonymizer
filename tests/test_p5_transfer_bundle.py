@@ -410,7 +410,12 @@ def test_hostile_working_dataset_extra_artifacts_fail_closed(
     (output / "north" / "unknown.bin").write_bytes(b"unknown")
     with pytest.raises(TransferError) as caught:
         _create(result, tmp_path)
-    assert caught.value.context.detail_code == "TRANSFER_WORKING_DATASET_MISMATCH"
+    # The internal P5-001 verification precondition fires FIRST: the
+    # injected hostile artifacts are classified as unexpected output
+    # artifacts by the authoritative verifier, so the working dataset is no
+    # longer an objectively verified publication (no silent rewriting of
+    # the P4 identity model, no bundle, no staging residue).
+    assert caught.value.context.detail_code == "TRANSFER_DATASET_NOT_VERIFIED"
     assert caught.value.context.operation == "create_transfer_bundle"
     assert not (tmp_path / "bundle").exists()
     assert not any(tmp_path.glob("*.staging*"))
@@ -1035,3 +1040,418 @@ def test_public_result_serialization_stays_privacy_safe(tmp_path: Path) -> None:
     verification_serialized = json.dumps(verification.to_dict(), sort_keys=True)
     for canary in ("PARENT-1", "MEMO-N-1", str(source), str(vault), _PATH_CANARY):
         assert canary not in verification_serialized
+
+
+# ---------------------------------------------------------------------------
+# Strict closed manifest schema (REQ-P5-005/REQ-P5-006 blockers)
+# ---------------------------------------------------------------------------
+def _tamper_manifest(bundle_root: Path, mutate: Callable[[dict], None]) -> None:
+    manifest_path = bundle_root / "transfer-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+    mutate(manifest)
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_key,extra_value",
+    [
+        ("vault_path", "C:\\protected\\dictionary.sqlite3"),
+        ("original_value", "PARENT-CONFIDENTIAL-42"),
+        ("temporal_offset", 1234),
+        ("reverse_mapping", {"CODE": "SECRET"}),
+        ("debug", {"trace": True}),
+        ("private_metadata", "x"),
+    ],
+)
+def test_top_level_unknown_manifest_keys_fail_standalone(
+    tmp_path: Path, extra_key: str, extra_value: object
+) -> None:
+    """A hostile transferred manifest can NEVER add private fields and still
+    verify: schema 1.0 requires EXACTLY the allowed top-level keys."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest[extra_key] = extra_value
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+    assert caught.value.context.operation == "verify_transfer_bundle"
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    for canary in (
+        "PARENT-CONFIDENTIAL-42",
+        "SECRET",
+        "dictionary.sqlite3",
+    ):
+        assert canary not in serialized
+        assert canary not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "extra_key,extra_value",
+    [
+        ("original_value", "SECRET"),
+        ("private_path", "C:\\secret\\x"),
+        ("vault_path", "C:\\protected\\dictionary.sqlite3"),
+        ("mapping", {"a": "b"}),
+        ("offset", 1234),
+        ("debug", True),
+    ],
+)
+def test_artifact_entry_unknown_keys_fail_standalone(
+    tmp_path: Path, extra_key: str, extra_value: object
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["artifacts"][0][extra_key] = extra_value  # type: ignore[index]
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert "SECRET" not in serialized
+
+
+def test_assurance_unknown_key_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["assurance"]["reverse_mapping"] = "SECRET"
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+    assert "SECRET" not in json.dumps(caught.value.to_dict(), sort_keys=True)
+
+
+def test_missing_top_level_key_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest.pop("dataset_id")
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+
+
+def test_missing_artifact_key_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["artifacts"][0].pop("sha256")  # type: ignore[index]
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+
+
+def test_missing_assurance_key_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["assurance"].pop("declared_relations")
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_SCHEMA_INVALID"
+
+
+def test_wrong_verification_status_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["verification_status"] = "UNVERIFIED"
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_VERIFICATION_STATUS_INVALID"
+
+
+def test_wrong_scalar_types_fail_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["package_version"] = 1
+        manifest["dbfbridge_version"] = ["1.1.1"]
+        manifest["dataset_id"] = None
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
+
+
+def test_absolute_path_in_dataset_id_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["dataset_id"] = "C:\\evil\\dataset"
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError):
+        verify_transfer_bundle(tmp_path / "bundle")
+
+
+def test_renamed_dbf_payload_with_dbf_type_fails_standalone(tmp_path: Path) -> None:
+    """The bidirectional artifact-type/extension binding (REQ-P5-005): a
+    valid DBF renamed to an arbitrary extension can never be accepted merely
+    because dbfbridge can parse its bytes — DATA_ONLY allows DBF/FPT by
+    artifact CLASS, not by parseability."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    renamed = bundle_root / "north" / "payload.db"
+    (bundle_root / "north" / "data.dbf").rename(renamed)
+    manifest = _read_manifest(bundle_root)
+    for entry in manifest["artifacts"]:  # type: ignore[union-attr]
+        if entry["path"] == "north/data.dbf":  # type: ignore[index]
+            entry["path"] = "north/payload.db"  # type: ignore[index]
+    (bundle_root / "transfer-manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+    _assert_standalone_fails(tmp_path)
+
+
+def test_fpt_extension_type_mismatch_fails_standalone(tmp_path: Path) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    manifest = _read_manifest(bundle_root)
+    for entry in manifest["artifacts"]:  # type: ignore[union-attr]
+        if entry["path"] == "north/data.fpt":  # type: ignore[index]
+            entry["artifact_type"] = "DBF"  # type: ignore[index]
+    (bundle_root / "transfer-manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+    _assert_standalone_fails(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Malformed assurance stays typed (no raw ValueError/TypeError escapes)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest["assurance"].update(
+            {"level": "TOTALLY_UNKNOWN_LEVEL"}
+        ),
+        lambda manifest: manifest["assurance"].update({"declared_relations": -3}),
+        lambda manifest: manifest["assurance"].update({"verified_relations": True}),
+        lambda manifest: manifest["assurance"].update({"verified_relations": 99}),
+        lambda manifest: manifest["assurance"].update({"evidence_fingerprint": 12345}),
+        lambda manifest: manifest["assurance"].update({"scope_note": "x\x00y"}),
+        lambda manifest: manifest["assurance"].update({"level": None}),
+    ],
+    ids=[
+        "unknown-level",
+        "negative-count",
+        "boolean-count",
+        "inconsistent-totals",
+        "malformed-fingerprint",
+        "malformed-scope-note",
+        "non-string-level",
+    ],
+)
+def test_malformed_assurance_is_typed_not_raw(
+    tmp_path: Path, mutate: Callable[[dict], None]
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.code is ErrorCode.TRANSFER_FAILED
+    assert caught.value.context.detail_code in {
+        "TRANSFER_MANIFEST_VALUE_INVALID",
+        "TRANSFER_MANIFEST_UNREADABLE",
+    }
+    assert caught.value.context.operation == "verify_transfer_bundle"
+
+
+def test_oversized_manifest_fails_before_parsing(tmp_path: Path) -> None:
+    """The untrusted manifest input boundary: a huge hostile manifest is
+    rejected by the bounded byte limit BEFORE json parsing."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    manifest_path = tmp_path / "bundle" / "transfer-manifest.json"
+    padding = "x" * 1_100_000
+    manifest_path.write_bytes(('{"padding": "' + padding + '"}').encode("ascii"))
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_TOO_LARGE"
+
+
+# ---------------------------------------------------------------------------
+# Verified-dataset precondition (create enforces P5-001 itself)
+# ---------------------------------------------------------------------------
+def test_creation_refuses_when_output_dbf_is_corrupted(tmp_path: Path) -> None:
+    """Deliberate pseudonymized output corruption: create refuses BEFORE any
+    final bundle publication (the internal P5-001 verification detects the
+    tampering)."""
+    result, source, output, vault = _prepare(tmp_path)
+    with (output / "north" / "data.fpt").open("r+b") as tampered:
+        tampered.seek(20)
+        tampered.write(b"\xff\xfe")
+    with pytest.raises(TransferError) as caught:
+        _create(result, tmp_path)
+    assert caught.value.context.detail_code == "TRANSFER_DATASET_NOT_VERIFIED"
+    assert not (tmp_path / "bundle").exists()
+    assert not any(tmp_path.glob("*.staging*"))
+
+
+def test_creation_refuses_after_vault_mapping_corruption(tmp_path: Path) -> None:
+    import sqlite3
+
+    result, source, output, vault = _prepare(tmp_path)
+    connection = sqlite3.connect(vault)
+    try:
+        connection.execute(
+            "DELETE FROM text_mappings WHERE original_value = 'PARENT-1'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(TransferError) as caught:
+        _create(result, tmp_path)
+    # The internal P5-001 verification detects the mapping/privacy violation.
+    assert caught.value.context.detail_code == "TRANSFER_DATASET_NOT_VERIFIED"
+    assert not (tmp_path / "bundle").exists()
+    assert not any(tmp_path.glob("*.staging*"))
+
+
+def test_creation_refuses_after_source_change(tmp_path: Path) -> None:
+    """Source changed since pseudonymization: the P5-001 source-immutability
+    verification refuses the export (create itself enforces the
+    precondition, not just the test setup)."""
+    result, source, output, vault = _prepare(tmp_path)
+    with (source / "north" / "data.dbf").open("ab") as changed:
+        changed.write(b"changed-after-pseudonymization")
+    with pytest.raises(TransferError) as caught:
+        _create(result, tmp_path)
+    assert caught.value.context.detail_code == "TRANSFER_DATASET_NOT_VERIFIED"
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_cancellation_during_internal_verification_is_create_owned(
+    tmp_path: Path,
+) -> None:
+    """Cancellation during create's INTERNAL P5-001 verification surfaces as
+    OPERATION_CANCELLED with operation=create_transfer_bundle (never
+    verify_dataset), no final bundle and no COMPLETED event."""
+    result, source, output, vault = _prepare(tmp_path)
+    events: list[ProgressEvent] = []
+    state = {"cancel": False}
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+        if event.phase_code == "VAULT_VERIFICATION" and event.event_code == "STARTED":
+            state["cancel"] = True
+
+    with pytest.raises(CancellationError) as caught:
+        create_transfer_bundle(
+            result,
+            destination=tmp_path / "bundle",
+            progress=progress,
+            cancel_check=lambda: state["cancel"],
+        )
+
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "create_transfer_bundle"
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert not (tmp_path / "bundle").exists()
+    assert not any(tmp_path.glob("*.staging*"))
+
+
+# ---------------------------------------------------------------------------
+# Staged bundle self-verification (verified=True is bundle-evidenced)
+# ---------------------------------------------------------------------------
+def _inject_staged_fault(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deterministic fault injection AFTER payload copy but BEFORE promotion:
+    corrupt the staged tree, then run the REAL standalone validation core so
+    creation must detect the fault through bundle evidence."""
+    import dbf_anonymizer.transfer_bundle as transfer_module
+
+    original_verify = transfer_module._verify_bundle_core
+
+    def corrupting_then_verifying(bundle_root: Path, **kwargs: object) -> object:
+        if kind == "dbf-byte":
+            with (bundle_root / "north" / "data.dbf").open("ab") as tampered:
+                tampered.write(b"tampered")
+        elif kind == "fpt-byte":
+            with (bundle_root / "north" / "data.fpt").open("r+b") as tampered:
+                tampered.seek(12)
+                tampered.write(b"\xff")
+        elif kind == "manifest":
+            manifest_path = bundle_root / "transfer-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            manifest["artifacts"][0]["sha256"] = "0" * 64  # type: ignore[index]
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+                encoding="ascii",
+            )
+        elif kind == "extra":
+            (bundle_root / "smuggled.dbf").write_bytes(b"smuggled")
+        elif kind == "missing-fpt":
+            (bundle_root / "north" / "data.fpt").unlink()
+        else:
+            raise AssertionError(kind)
+        return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        transfer_module, "_verify_bundle_core", corrupting_then_verifying
+    )
+
+
+@pytest.mark.parametrize(
+    "kind", ["dbf-byte", "fpt-byte", "manifest", "extra", "missing-fpt"]
+)
+def test_staged_fault_refuses_promotion_and_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    before = _hash_tree(tmp_path)
+    _inject_staged_fault(kind, monkeypatch)
+    with pytest.raises(TransferError):
+        create_transfer_bundle(
+            result, destination=tmp_path / "bundle", profile="DATA_ONLY"
+        )
+    # The staged verification detected the corruption: nothing was promoted.
+    assert not (tmp_path / "bundle").exists()
+    after = _hash_tree(tmp_path)
+    created = set(after) - set(before)
+    assert not any(name.startswith("bundle/") for name in created)
+    assert _hash_tree(output) == {
+        key[len("output/"):]: value
+        for key, value in before.items()
+        if key.startswith("output/")
+    }
+    assert _hash_tree(vault.parent) == {
+        key[len("vault/"):]: value
+        for key, value in before.items()
+        if key.startswith("vault/")
+    }
