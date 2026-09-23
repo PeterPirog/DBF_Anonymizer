@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from dbf_anonymizer.engine import run_two_pass
 from dbf_anonymizer.engine.locking import DestinationLock
 from dbf_anonymizer.engine import publication as publication_module
 from dbf_anonymizer.engine.state import PASS1_STATE_FILENAME, spool_artifacts
-from dbf_anonymizer.errors import ErrorCode
+from dbf_anonymizer.errors import ErrorCode, ErrorContext
 from dbf_anonymizer.vault.store import VaultDatabase, new_writer_token
 from tests.support.numeric_tables import numeric_field, write_numeric_table
 
@@ -636,4 +637,266 @@ def test_cancellation_after_table_staging_leaves_no_completed_publication(
     assert not output.exists()
     assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
     assert _vault_counts(plan, vault)[0] == 0
+    assert _hash_tree(source) == source_before
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 case C: reconciliation evidence order (review defect D)
+# ---------------------------------------------------------------------------
+def _completed_operation_with_residual(tmp_path: Path):
+    """A crash after the durable completion receipt but BEFORE private
+    metadata cleanup: a completed vault operation, a published output and
+    the residual private staging root with its PROMOTED crash state."""
+    plan, source, output, vault = _plan(tmp_path)
+
+    def inject(point: str) -> None:
+        if point == "AFTER_OPERATION_COMPLETE":
+            raise RuntimeError("crash before metadata cleanup")
+
+    with pytest.raises(RuntimeError, match="crash before metadata cleanup"):
+        run_two_pass(plan, workers=2, fault_inject=inject)
+    staging_roots = tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+    assert len(staging_roots) == 1
+    staging_root = staging_roots[0]
+    state_path = staging_root / "transaction.json"
+    assert state_path.is_file()
+    state = json.loads(state_path.read_text(encoding="ascii"))
+    assert state["phase"] == "PROMOTED"
+    assert state["schema_version"] == "1.1"
+    return plan, source, output, vault, staging_root
+
+
+def _rewrite_crash_state(staging_root: Path, state: dict[str, object]) -> None:
+    (staging_root / "transaction.json").write_text(
+        json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        encoding="ascii",
+    )
+
+
+def test_completed_retry_reconciles_only_proven_coherent_staging(
+    tmp_path: Path,
+) -> None:
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(
+        tmp_path
+    )
+    # An interrupted crash-state update leaves the deterministic private
+    # temporary file behind; the PREVIOUS valid PROMOTED state stays intact.
+    (staging_root / ".transaction.json.tmp").write_bytes(b"partial-update")
+    output_before = _hash_tree(output)
+    retry = run_two_pass(plan, workers=2)
+    assert retry.reused_existing is True
+    assert _hash_tree(output) == output_before
+    # The objectively owned coherent residual metadata was fully removed.
+    assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+
+
+def _ambiguous_cases(state: dict[str, object]) -> dict[str, tuple[object, str]]:
+    """Each ambiguous crash-state mutation with its stable typed code."""
+    def mutated(key: str, value: object) -> dict[str, object]:
+        altered = dict(state)
+        altered[key] = value
+        return altered
+
+    missing_fingerprint = dict(state)
+    missing_fingerprint.pop("output_fingerprint", None)
+    return {
+        "wrong-schema-version": (
+            mutated("schema_version", "9.9"),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "wrong-phase": (
+            mutated("phase", "READY_TO_PROMOTE"),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "wrong-operation-id": (
+            mutated("operation_id", "vop-" + "0" * 32),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "wrong-destination-identity": (
+            mutated("destination_identity", "dst-" + "0" * 64),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "wrong-binding-fingerprint": (
+            mutated("binding_fingerprint", "opb-" + "0" * 64),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "wrong-output-fingerprint": (
+            mutated("output_fingerprint", "out-" + "0" * 64),
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "missing-output-fingerprint": (
+            missing_fingerprint,
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "corrupt-json": (
+            None,
+            "COMPLETED_STAGING_STATE_INVALID",
+        ),
+        "missing-state-file": (
+            "DELETE",
+            "COMPLETED_STAGING_STATE_MISSING",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "wrong-schema-version",
+        "wrong-phase",
+        "wrong-operation-id",
+        "wrong-destination-identity",
+        "wrong-binding-fingerprint",
+        "wrong-output-fingerprint",
+        "missing-output-fingerprint",
+        "corrupt-json",
+        "missing-state-file",
+    ],
+)
+def test_completed_retry_fails_closed_on_ambiguous_crash_state(
+    tmp_path: Path, case: str
+) -> None:
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(
+        tmp_path
+    )
+    state_path = staging_root / "transaction.json"
+    original_state = json.loads(state_path.read_text(encoding="ascii"))
+    original_bytes = state_path.read_bytes()
+    output_before = _hash_tree(output)
+    mutation, expected_code = _ambiguous_cases(original_state)[case]
+
+    if mutation == "DELETE":
+        state_path.unlink()
+        # An interrupted update left only the deterministic private temp:
+        # the ambiguous orphan state must be classified, never deleted.
+        (staging_root / ".transaction.json.tmp").write_bytes(b"partial")
+    elif mutation is None:
+        state_path.write_bytes(b"{corrupt-json")
+    else:
+        _rewrite_crash_state(staging_root, mutation)  # type: ignore[arg-type]
+
+    with pytest.raises(PublicationError) as stale:
+        run_two_pass(plan, workers=2)
+    assert stale.value.code is ErrorCode.PUBLICATION_INCOMPLETE
+    assert stale.value.context.detail_code == expected_code
+    # FAIL CLOSED: the ambiguous crash state was NOT deleted and the
+    # completed output was NOT modified.
+    assert staging_root.exists()
+    assert _hash_tree(output) == output_before
+
+
+def test_reconciliation_refuses_unrecognized_residual_payload(
+    tmp_path: Path,
+) -> None:
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(
+        tmp_path
+    )
+    state_path = staging_root / "transaction.json"
+    original_state = json.loads(state_path.read_text(encoding="ascii"))
+    output_before = _hash_tree(output)
+
+    # A PROMOTED dataset was MOVED to the destination: any payload-like
+    # residual entry contradicts the proven state and is refused.
+    (staging_root / "leftover-payload.dbf").write_bytes(b"UNEXPECTED-PAYLOAD")
+    with pytest.raises(PublicationError) as stale:
+        run_two_pass(plan, workers=2)
+    assert stale.value.context.detail_code == "COMPLETED_STAGING_UNRECOGNIZED"
+    assert staging_root.exists()
+    assert json.loads(state_path.read_text(encoding="ascii")) == original_state
+    assert _hash_tree(output) == output_before
+
+    # A non-empty tables directory is equally incoherent with PROMOTED.
+    shutil.rmtree(staging_root)
+    staging_root.mkdir()
+    (staging_root / "tables").mkdir()
+    (staging_root / "tables" / "00000000").mkdir()
+    (staging_root / "tables" / "00000000" / "stale.dbf").write_bytes(b"stale")
+    _rewrite_crash_state(staging_root, original_state)
+    with pytest.raises(PublicationError) as tables_stale:
+        run_two_pass(plan, workers=2)
+    assert tables_stale.value.context.detail_code == "COMPLETED_STAGING_UNRECOGNIZED"
+    assert staging_root.exists()
+    assert _hash_tree(output) == output_before
+
+
+def test_completed_retry_validates_destination_before_reconciling(
+    tmp_path: Path,
+) -> None:
+    """Evidence order: the residual private staging is reconciled ONLY after
+    the final destination matched the authoritative completed fingerprint —
+    a corrupted output fails closed WITHOUT deleting the crash state."""
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(
+        tmp_path
+    )
+    state_path = staging_root / "transaction.json"
+    original_state = json.loads(state_path.read_text(encoding="ascii"))
+    target = output / "north" / "data.dbf"
+    payload = bytearray(target.read_bytes())
+    payload[0] = (payload[0] + 1) % 256
+    target.write_bytes(bytes(payload))
+
+    with pytest.raises(PublicationError) as stale:
+        run_two_pass(plan, workers=2)
+    assert stale.value.context.detail_code == "COMPLETED_OUTPUT_MISMATCH"
+    # The ambiguous crash state was NOT deleted by the mismatched attempt.
+    assert staging_root.exists()
+    assert json.loads(state_path.read_text(encoding="ascii")) == original_state
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 durability window: controller checkpoint wiring + typed
+# cancellation inside the staged-payload fsync region (REQ-P1-008).
+# ---------------------------------------------------------------------------
+def test_payload_fsync_passes_controller_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-P1-008 regression: run_two_pass passes ITS controller
+    cancellation probe into the staged-payload durability scan."""
+    plan, source, output, vault = _plan(tmp_path)
+    captured: dict[str, object] = {}
+    real_fsync_tree = publication_module.fsync_tree
+
+    def spy(directory: object, **kwargs: object) -> object:
+        captured["checkpoint"] = kwargs.get("checkpoint")
+        return real_fsync_tree(directory, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(publication_module, "fsync_tree", spy)
+    run_two_pass(plan, workers=1)
+    assert callable(captured["checkpoint"])
+    assert output.is_dir()
+
+
+def test_cancellation_inside_payload_fsync_is_typed_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation raised at a durability checkpoint BEFORE the atomic
+    promotion publishes nothing, cleans only the owned pre-promotion
+    staging, preserves source/vault invariants and keeps the typed
+    OPERATION_CANCELLED semantics."""
+    plan, source, output, vault = _plan(tmp_path)
+    source_before = _hash_tree(source)
+    events: list[object] = []
+
+    def progress(event: object) -> None:
+        events.append(event)
+
+    def cancelled_fsync(directory: object, **kwargs: object) -> int:
+        raise CancellationError(
+            ErrorCode.OPERATION_CANCELLED,
+            context=ErrorContext(
+                operation="two_pass", detail_code="CANCELLED_BY_CHECK"
+            ),
+        )
+
+    monkeypatch.setattr(publication_module, "fsync_tree", cancelled_fsync)
+    with pytest.raises(CancellationError) as cancelled:
+        run_two_pass(plan, workers=1, progress=progress)
+    assert cancelled.value.code is ErrorCode.OPERATION_CANCELLED
+    assert not any(
+        getattr(event, "event_code", None) == "COMPLETED" for event in events
+    )
+    assert not output.exists()
+    assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+    assert _vault_counts(plan, vault)[0] == 0
+    assert spool_artifacts(vault.parent) == []
     assert _hash_tree(source) == source_before

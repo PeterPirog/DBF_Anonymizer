@@ -322,7 +322,8 @@ class DatasetStaging:
                 "destination_identity": self.identity.destination_identity,
             }
             # REQ-P5-008: the crash-recovery transaction state is persisted
-            # durably (fsync the file; directory entry where the platform
+            # durably and ATOMICALLY (same-directory temporary file →
+            # fsync → os.replace; directory entry where the platform
             # supports it) BEFORE any payload byte is written.
             write_durable_bytes(
                 root / "transaction.json",
@@ -370,13 +371,19 @@ class DatasetStaging:
         """Flush + fsync every staged regular file, then persist directory
         entries where the platform supports it (REQ-P5-008 step 5/6).
 
+        REQ-P1-008: the optional cooperative checkpoint is polled at the
+        bounded durability safe points (between regular files and between
+        directories); callers driving a public long-running operation pass
+        the SAME controller probe used everywhere else.
+
         Returns the number of files fsynced. Directory-entry persistence is
         truthful per platform (POSIX: synced; Windows: unsupported and
-        reported as such — never claimed).
+        reported as such — never claimed). A genuine durability failure is
+        a typed durability failure (never silently downgraded).
         """
         if not self.dataset_root.is_dir():
             raise _publication_failure("STAGED_PAYLOAD_MISSING")
-        return fsync_tree(self.dataset_root)
+        return fsync_tree(self.dataset_root, checkpoint=checkpoint)
 
     def mark_ready_to_promote(
         self,
@@ -405,8 +412,17 @@ class DatasetStaging:
         )
 
     def _write_phase(self, phase: str, *, output_fingerprint: str | None) -> None:
-        """Atomically persist one crash-state phase (fsync file + directory
-        where the platform supports it)."""
+        """Atomically REPLACE one crash-state phase record.
+
+        The complete new record is written to a same-directory temporary
+        file, flushed, fsynced as a regular file, and only then atomically
+        swapped in via :func:`~dbf_anonymizer.durability.write_durable_bytes`
+        (temporary file → fsync → ``os.replace`` → parent directory entry
+        where the platform supports it). The previous valid crash state
+        therefore remains intact until the atomic replace, and no temporary
+        file remains on normal success — an interrupted update can never
+        truncate or empty the durable transaction state.
+        """
         if self._recorded_fingerprint is None and output_fingerprint is not None:
             self._recorded_fingerprint = output_fingerprint
         payload: dict[str, object] = {
@@ -490,47 +506,99 @@ class DatasetStaging:
             raise _publication_failure("STAGING_CLEANUP_FAILED") from None
 
 
+def _staging_residual_is_owned(root: Path) -> bool:
+    """Whether a post-promotion staging root contains ONLY objectively owned
+    residual metadata — the empty ``tables/`` directory, the crash-state
+    record, the deterministic private temporary file of an interrupted
+    crash-state update — and no payload (a PROMOTED dataset was MOVED to the
+    destination, so any payload entry would contradict the proven state).
+    """
+    try:
+        with os.scandir(root) as entries:
+            names = sorted(entry.name for entry in entries)
+    except OSError:
+        return False
+    for name in names:
+        entry = root / name
+        if name == "transaction.json":
+            if not entry.is_file() or entry.is_symlink():
+                return False
+            continue
+        if name == "tables":
+            if not entry.is_dir() or entry.is_symlink():
+                return False
+            try:
+                with os.scandir(entry) as residual:
+                    if next(iter(residual), None) is not None:
+                        return False
+            except OSError:
+                return False
+            continue
+        if name == ".transaction.json.tmp" and entry.is_file() and not entry.is_symlink():
+            continue
+        return False
+    return True
+
+
 def reconcile_completed_staging_residual(
     identity: PublicationIdentity,
     operation_id: str,
     destination_identity: str,
+    *,
+    output_fingerprint: str,
 ) -> None:
     """Reconcile a crash after the durable completion receipt but before
     private metadata cleanup (REQ-P5-008 case C).
 
-    The operation IS completed — the vault receipt proves it.  The private
-    crash-state metadata (``transaction.json`` inside the staging root) must
-    not destroy a genuinely completed output. This recognizes the
-    interrupted cleanup: verifies the crash state says PROMOTED for the
-    SAME operation and destination, then removes the residual private
-    metadata so the idempotent completed retry can proceed. An unresolvable
-    residual is refused fail-closed with a stable typed classification.
+    The caller must ALREADY have fully proven the completed operation
+    (structurally valid COMPLETED vault state, a schema-valid durable
+    receipt and a final destination whose complete dataset fingerprint
+    matches the authoritative completed output fingerprint). Before any
+    residual private metadata is removed, the private crash-state record
+    itself must be objectively owned and coherent:
+
+    * exact crash-state ``schema_version``;
+    * ``phase == PROMOTED``;
+    * matching operation id, destination identity and binding fingerprint;
+    * a crash-state ``output_fingerprint`` that equals the authoritative
+      completed output fingerprint;
+    * only the expected post-promotion residual entries inside the staging
+      root (empty ``tables/``, the crash-state record, the deterministic
+      private temporary file of an interrupted crash-state update) and no
+      payload.
+
+    Any missing, malformed or mismatched element fails CLOSED with a stable
+    typed detail code: the ambiguous crash state is NOT deleted and the
+    completed output is NOT modified. Only after every element is proven is
+    the objectively owned residual metadata removed so the idempotent
+    completed retry can proceed.
     """
     state_path = identity.staging_root / "transaction.json"
+    if not state_path.is_file():
+        # The residual staging cannot prove which phase it reached: fail
+        # closed rather than deleting an ambiguous state.
+        raise _publication_failure("COMPLETED_STAGING_STATE_MISSING")
     try:
         payload = json.loads(state_path.read_text(encoding="ascii"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        # Unreadable residual: fail-closed rather than deleting an
-        # ambiguous state.
-        raise _publication_failure(
-            "COMPLETED_OPERATION_HAS_STAGING"
-        ) from None
-    if not isinstance(payload, dict):
-        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
-    if (
-        payload.get("phase") != PUBLICATION_TXN_PHASE_PROMOTED
-        or payload.get("operation_id") != operation_id
-        or payload.get("destination_identity") != destination_identity
-    ):
-        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
+        raise _publication_failure("COMPLETED_STAGING_STATE_INVALID") from None
+    coherent = (
+        isinstance(payload, dict)
+        and payload.get("schema_version") == PUBLICATION_TXN_STATE_SCHEMA_VERSION
+        and payload.get("phase") == PUBLICATION_TXN_PHASE_PROMOTED
+        and payload.get("operation_id") == operation_id
+        and payload.get("destination_identity") == destination_identity
+        and payload.get("binding_fingerprint") == identity.binding_fingerprint
+        and payload.get("output_fingerprint") == output_fingerprint
+    )
+    if not coherent:
+        raise _publication_failure("COMPLETED_STAGING_STATE_INVALID")
+    if not _staging_residual_is_owned(identity.staging_root):
+        raise _publication_failure("COMPLETED_STAGING_UNRECOGNIZED")
     # The crash state proves the metadata cleanup was the ONLY step left;
-    # remove the residual private metadata now.
+    # remove the objectively owned, coherent residual metadata now.
     try:
-        tables = identity.staging_root / "tables"
-        if tables.exists():
-            tables.rmdir()
-        state_path.unlink()
-        identity.staging_root.rmdir()
+        shutil.rmtree(identity.staging_root)
     except OSError:
         # Non-critical: the completed state stands regardless.
         pass

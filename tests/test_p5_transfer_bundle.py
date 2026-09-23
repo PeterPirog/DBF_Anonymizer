@@ -319,19 +319,17 @@ def test_clean_data_only_bundle_creation_and_standalone_pass(
     inventory = sorted(_hash_tree(tmp_path / "bundle"))
     assert inventory == paths + ["transfer-manifest.json"]
     # The bundle creation left the working dataset and the vault untouched;
-    # the only new artifacts are the bundle payload, the manifest, the
-    # transient engine-owned lock artifact and the engine-owned
-    # non-payload transaction marker of the P4 staging lifecycle (no
-    # DBF/FPT/manifest payload remains inside staging after promotion).
+    # the only new artifacts are the bundle payload and the transient
+    # engine-owned lock artifact. The successful private staging lifecycle
+    # leaves NO residue at all (REQ-P5-008 step 13: the staging root with
+    # its crash-state record is removed after the genuine promotion).
     created = set(_hash_tree(tmp_path)) - set(before_bundle)
     bundle_files = {
         relative for relative in created if relative.startswith("bundle/")
     }
     lock_files = {name for name in created if name.endswith(".lock")}
-    staging_residue = {name for name in created if ".staging" in name}
-    assert created == bundle_files | lock_files | staging_residue
-    for name in staging_residue:
-        assert name.endswith("transaction.json")
+    assert created == bundle_files | lock_files
+    assert not any(".staging" in name for name in created)
 
     # Standalone verification of the COPIED bundle with source AND vault gone.
     copied = tmp_path / "copied"
@@ -940,9 +938,11 @@ def test_cancellation_during_bundle_creation_is_typed_and_side_effect_free(
     assert not (tmp_path / "bundle").exists()
     after = _hash_tree(tmp_path)
     created = set(after) - set(before)
-    assert not any(name.endswith(".staging") for name in created) or all(
-        name.endswith("transaction.json") for name in created if ".staging" in name
-    )
+    # Cancellation before the atomic promotion publishes nothing and leaves
+    # NO private staging residue: only owned pre-promotion staging was
+    # created and it is fully cleaned by the typed cancellation path.
+    assert not any(name.endswith(".staging") for name in created)
+    assert not any(".staging" in name for name in created)
     assert _hash_tree(output) == {
         key[len("output/"):]: value
         for key, value in before.items()
@@ -2254,3 +2254,68 @@ def test_hostile_relationship_fingerprint_tokens_fail_standalone(
     assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
     serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
     assert "C:\\private\\canary" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 durability window: controller checkpoint wiring + typed
+# cancellation inside the staged-payload fsync region (REQ-P1-008).
+# ---------------------------------------------------------------------------
+def test_bundle_payload_fsync_passes_controller_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-P1-008 regression: create_transfer_bundle passes ITS controller
+    cancellation probe into the staged-payload durability scan."""
+    from dbf_anonymizer.engine import publication as publication_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    captured: dict[str, object] = {}
+    real_fsync_tree = publication_module.fsync_tree
+
+    def spy(directory: object, **kwargs: object) -> object:
+        captured["checkpoint"] = kwargs.get("checkpoint")
+        return real_fsync_tree(directory, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(publication_module, "fsync_tree", spy)
+    bundle = _create(result, tmp_path)
+    assert bundle.verified is True
+    assert callable(captured["checkpoint"])
+
+
+def test_cancellation_inside_payload_fsync_is_typed_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation raised at a durability checkpoint BEFORE the atomic
+    promotion publishes nothing, cleans the owned staging and keeps the
+    typed OPERATION_CANCELLED semantics."""
+    from dbf_anonymizer.engine import publication as publication_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    output_before = _hash_tree(output)
+    vault_before = _hash_tree(vault.parent)
+    events: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+
+    def cancelled_fsync(directory: object, **kwargs: object) -> int:
+        raise CancellationError(
+            ErrorCode.OPERATION_CANCELLED,
+            context=_ErrorContext(
+                operation="create_transfer_bundle", detail_code="CANCELLED_BY_CHECK"
+            ),
+        )
+
+    monkeypatch.setattr(publication_module, "fsync_tree", cancelled_fsync)
+    with pytest.raises(CancellationError) as caught:
+        create_transfer_bundle(
+            result,
+            destination=tmp_path / "bundle",
+            progress=progress,
+        )
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "create_transfer_bundle"
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert not (tmp_path / "bundle").exists()
+    assert not any(tmp_path.glob("*.staging*"))
+    assert _hash_tree(output) == output_before
+    assert _hash_tree(vault.parent) == vault_before

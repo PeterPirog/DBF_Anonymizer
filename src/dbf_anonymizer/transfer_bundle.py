@@ -1073,6 +1073,9 @@ def create_transfer_bundle(
     finalization and atomic publication); cancellation before the atomic
     promotion leaves no completed bundle and cleaned owned staging; the
     single terminal completion is emitted only after genuine publication.
+    A successful creation removes the private staging root completely
+    (REQ-P5-008 step 13): no ``.dbf-anonymizer-*.staging`` residue remains
+    after a normal successful DATA_ONLY creation.
     """
     if not isinstance(result, PseudonymizationResult):
         raise TypeError("create_transfer_bundle requires a PseudonymizationResult")
@@ -1216,8 +1219,11 @@ def create_transfer_bundle(
                 ).hexdigest()
 
                 # --- 5b. REQ-P5-008 steps 5/6: flush + fsync every staged
-                # file and persist directory entries where supported.
-                staging.persist_payload()
+                # file and persist directory entries where supported, with
+                # cooperative cancellation checkpoints between files and
+                # directories (REQ-P1-008 — never an uncancellable
+                # durability region).
+                staging.persist_payload(checkpoint=control.check_cancelled)
                 staging.record_staged_fingerprint(manifest_fingerprint)
 
                 # --- 6. Staged bundle self-verification (BEFORE promotion) --
@@ -1248,6 +1254,12 @@ def create_transfer_bundle(
                 # (private staging namespace) so reconciliation can classify
                 # a crash after replace.
                 staging.mark_promoted()
+                # REQ-P5-008 step 13: the successful operation leaves NO
+                # private staging residue — the crash-state record and the
+                # empty residual directories are removed AFTER the durable
+                # promotion (a failure here keeps the completed bundle
+                # standing and is surfaced typed, never silently ignored).
+                staging.remove_metadata_after_promotion()
             except BaseException as primary:
                 if isinstance(primary, Exception):
                     try:

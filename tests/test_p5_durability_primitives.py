@@ -1,9 +1,13 @@
 """REQ-P5-008 — unit tests for platform-truthful durability primitives.
 
 Covers durable regular-file flush, directory sync semantics, atomic
-replace, fault injection boundaries, failure wrapping, no path/value
-leakage from exceptions, platform-specific truthful behavior, and no
-accidental operation outside supplied paths.
+replace, crash-safe crash-state replacement (previous content intact until
+the atomic replace, no temporary residue on success), fault injection
+boundaries, typed failure propagation (genuine durability failures are
+never silently downgraded), cooperative cancellation checkpoints between
+files/directories, failure wrapping, no path/value leakage from exceptions,
+platform-specific truthful behavior, and no accidental operation outside
+supplied paths.
 
 Only approved synthetic fixtures and disposable ``tmp_path`` data are used
 by this suite; no production data.
@@ -11,6 +15,8 @@ by this suite; no production data.
 
 from __future__ import annotations
 
+import errno
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +30,7 @@ from dbf_anonymizer.durability import (
     sync_directory,
     write_durable_bytes,
 )
+from dbf_anonymizer.errors import ErrorCode, PublicationError
 
 
 class TestFlushAndFsync:
@@ -53,9 +60,20 @@ class TestSyncDirectory:
         else:
             assert result is True
 
-    def test_sync_directory_nonexistent_returns_false(self) -> None:
-        result = sync_directory(Path(__file__).parent / "missing-dir-does-not-exist")
-        assert result is False
+    def test_sync_directory_missing_directory_is_a_typed_failure(self) -> None:
+        """A missing directory is a GENUINE open I/O failure, not an
+        unsupported primitive: it surfaces typed (never silently downgraded
+        to a completed claim) on every platform."""
+        from dbf_anonymizer.errors import ErrorCode, PublicationError
+
+        with pytest.raises(PublicationError) as excinfo:
+            sync_directory(
+                Path(__file__).parent / "missing-dir-does-not-exist"
+            )
+        assert excinfo.value.code is ErrorCode.PUBLICATION_INCOMPLETE
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED"
+        )
 
 
 class TestAtomicReplace:
@@ -84,19 +102,206 @@ class TestWriteDurableBytes:
         write_durable_bytes(path, b"deep-content")
         assert path.read_bytes() == b"deep-content"
 
+    def test_success_leaves_no_temporary_file(self, tmp_path: Path) -> None:
+        """REQ-P5-008 defect A: the atomic crash-state replacement leaves no
+        temporary transaction file on normal success."""
+        path = tmp_path / "transaction.json"
+        write_durable_bytes(path, b"first")
+        write_durable_bytes(path, b"second")
+        assert path.read_bytes() == b"second"
+        assert [entry.name for entry in tmp_path.iterdir()] == ["transaction.json"]
 
-class TestFsyncTree:
-    def test_fsync_tree_counts_files(self, tmp_path: Path) -> None:
+    def test_previous_content_intact_until_atomic_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure during the atomic replace (the simulated crash window)
+        leaves the previous valid transaction state intact."""
+        path = tmp_path / "transaction.json"
+        write_durable_bytes(path, b"previous-valid-state")
+        real_replace = os.replace
+
+        def interrupted_replace(source: object, destination: object) -> None:
+            if Path(str(destination)) == path:
+                raise OSError("simulated crash during replace")
+            real_replace(source, destination)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "replace", interrupted_replace)
+        with pytest.raises(PublicationError) as excinfo:
+            write_durable_bytes(path, b"replacement-state")
+        assert excinfo.value.context.detail_code == "DURABILITY_FILE_WRITE_FAILED"
+        # The previous valid state survived the interrupted replacement.
+        assert path.read_bytes() == b"previous-valid-state"
+        # A HANDLED failure never leaves private temporary residue either.
+        assert [entry.name for entry in tmp_path.iterdir()] == ["transaction.json"]
+
+    def test_write_failure_keeps_previous_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure while writing/fsyncing the temporary file leaves the
+        previous valid content untouched (fail-closed crash-state update)."""
+        path = tmp_path / "transaction.json"
+        write_durable_bytes(path, b"previous-valid-state")
+        def failing_fsync(fd: object) -> None:
+            raise OSError(errno.EIO, "simulated fsync failure")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        with pytest.raises(PublicationError) as excinfo:
+            write_durable_bytes(path, b"replacement")
+        assert excinfo.value.context.detail_code == "DURABILITY_FILE_WRITE_FAILED"
+        assert path.read_bytes() == b"previous-valid-state"
+        assert [entry.name for entry in tmp_path.iterdir()] == ["transaction.json"]
+
+    def test_no_path_or_value_leakage_in_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "PRIVATE-canary-name.json"
+        write_durable_bytes(path, b"PREVIOUS-PRIVATE-STATE")
+        real_replace = os.replace
+
+        def failing_replace(source: object, destination: object) -> None:
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+        with pytest.raises(PublicationError) as excinfo:
+            write_durable_bytes(path, b"NEW-PRIVATE-STATE")
+        serialized = repr(excinfo.value.to_dict())
+        assert "PRIVATE-canary-name" not in serialized
+        assert "NEW-PRIVATE-STATE" not in serialized
+        assert "PREVIOUS-PRIVATE-STATE" not in serialized
+        assert str(tmp_path) not in serialized
+
+
+class TestGenuineDurabilityFailuresAreTyped:
+    """Defect B: genuine I/O failures are NEVER silently downgraded to
+    'not performed' or to a completed claim; unsupported primitives are
+    never confused with failures."""
+
+    def test_missing_directory_open_failure_is_typed(self) -> None:
+        with pytest.raises(PublicationError) as excinfo:
+            sync_directory(Path(__file__).parent / "missing-dir-does-not-exist")
+        assert excinfo.value.code is ErrorCode.PUBLICATION_INCOMPLETE
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED"
+        )
+
+    def test_fsync_open_failure_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_open(path: object, *flags: object) -> int:
+            raise FileNotFoundError(errno.ENOENT, "simulated open failure")
+
+        monkeypatch.setattr(os, "open", failing_open)
+        with pytest.raises(PublicationError) as excinfo:
+            sync_directory(tmp_path)
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED"
+        )
+
+    def test_fsync_directory_genuine_failure_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if sys.platform == "win32":
+            pytest.skip("Windows cannot open directories for fsync at all")
+        def failing_fsync(fd: object) -> None:
+            raise OSError(errno.EIO, "simulated directory fsync failure")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        with pytest.raises(PublicationError) as excinfo:
+            sync_directory(tmp_path)
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED"
+        )
+
+    def test_fsync_einval_is_reported_as_unsupported_not_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if sys.platform == "win32":
+            pytest.skip("Windows cannot open directories for fsync at all")
+
+        def einval_fsync(fd: object) -> None:
+            raise OSError(errno.EINVAL, "primitive not supported here")
+
+        monkeypatch.setattr(os, "fsync", einval_fsync)
+        assert sync_directory(tmp_path) is False
+
+    def test_atomic_replace_propagates_directory_sync_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_open(path: object, *flags: object) -> int:
+            raise FileNotFoundError(errno.ENOENT, "simulated open failure")
+
+        monkeypatch.setattr(os, "open", failing_open)
+        source = tmp_path / "new.bin"
+        source.write_bytes(b"moved")
+        destination = tmp_path / "deep" / "target.bin"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(PublicationError) as excinfo:
+            atomic_replace(source, destination)
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED"
+        )
+        # The replace itself still happened; only the durability failure
+        # surfaced typed.
+        assert destination.read_bytes() == b"moved"
+        assert not source.exists()
+
+    def test_fsync_tree_regular_file_failure_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "a.txt").write_bytes(b"a")
+        (tmp_path / "b.txt").write_bytes(b"b")
+        def failing_fsync(fd: object) -> None:
+            raise OSError(errno.EIO, "simulated file fsync failure")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        with pytest.raises(PublicationError) as excinfo:
+            fsync_tree(tmp_path)
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_FILE_SYNC_FAILED"
+        )
+
+
+class TestFsyncTreeCooperativeCheckpoints:
+    """REQ-P1-008: durability scanning is never an uncancellable region."""
+
+    def test_checkpoint_polled_between_files_and_directories(
+        self, tmp_path: Path
+    ) -> None:
         (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "deeper").mkdir()
         (tmp_path / "a.txt").write_bytes(b"a")
         (tmp_path / "b.txt").write_bytes(b"b")
         (tmp_path / "sub" / "c.txt").write_bytes(b"c")
-        count = fsync_tree(tmp_path)
-        assert count == 3
+        polls: list[int] = []
 
-    def test_fsync_tree_empty_dir(self, tmp_path: Path) -> None:
-        count = fsync_tree(tmp_path)
-        assert count == 0
+        def checkpoint() -> None:
+            polls.append(len(polls))
+
+        count = fsync_tree(tmp_path, checkpoint=checkpoint)
+        assert count == 3
+        # Files: 3 polls; bottom-up directory entries (sub/deeper, sub,
+        # tmp_path) + the final root entry: 4 polls.
+        assert len(polls) == 7
+
+    def test_checkpoint_cancellation_propagates_typed(
+        self, tmp_path: Path
+    ) -> None:
+        from dbf_anonymizer import CancellationError
+        from dbf_anonymizer.errors import ErrorCode, ErrorContext
+
+        (tmp_path / "a.txt").write_bytes(b"a")
+        (tmp_path / "b.txt").write_bytes(b"b")
+
+        def cancel_on_first_file() -> None:
+            raise CancellationError(
+                ErrorCode.OPERATION_CANCELLED,
+                context=ErrorContext(
+                    operation="probe", detail_code="CANCELLED_BY_CHECK"
+                ),
+            )
+
+        with pytest.raises(CancellationError):
+            fsync_tree(tmp_path, checkpoint=cancel_on_first_file)
 
 
 class TestPlatformTruthfulness:

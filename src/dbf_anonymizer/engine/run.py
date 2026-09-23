@@ -192,19 +192,11 @@ def _existing_completed_result(
         raise _publication_failure("STALE_OPERATION_DETECTED")
     if operation.get("state") != VAULT_OPERATION_STATE_COMPLETED:
         raise _publication_failure("OPERATION_STATE_UNKNOWN")
-    if identity.staging_root.exists():
-        # REQ-P5-008 case C: a crash after the durable completion receipt
-        # but before private metadata cleanup. The operation IS completed
-        # (the vault receipt proves it) — the private crash-state metadata
-        # must not destroy a genuinely completed output. Recognize the
-        # interrupted cleanup and reconcile by removing the residual
-        # private metadata, then proceed with the idempotent completed
-        # retry.
-        reconcile_completed_staging_residual(
-            identity,
-            str(operation.get("operation_id") or ""),
-            identity.destination_identity,
-        )
+    # The completed operation is classified ONLY from complete evidence:
+    # the durable receipt must exist, parse under the expected schema and
+    # match the stored authoritative fingerprint, and the final destination
+    # must exist and match that same authoritative fingerprint — ALL of
+    # that BEFORE any residual private staging metadata is removed.
     stored_fingerprint = operation.get("output_fingerprint")
     receipt = operation.get("result_json")
     if stored_fingerprint is None or receipt is None:
@@ -220,6 +212,24 @@ def _existing_completed_result(
         or result.output_fingerprint != stored_fingerprint
     ):
         raise _publication_failure("OPERATION_RECEIPT_MISMATCH")
+    if identity.staging_root.exists():
+        # REQ-P5-008 case C: a crash after the durable completion receipt
+        # but before private metadata cleanup. The completed output is now
+        # FULLY proven (receipt schema, receipt/operation identity and the
+        # destination fingerprint) — only now may the residual private
+        # metadata be reconciled, and only when the crash state itself is
+        # objectively owned and coherent (exact schema version, PROMOTED
+        # phase, matching operation/destination/binding identities and an
+        # output fingerprint equal to the authoritative completed one).
+        # Any missing, malformed or mismatched element fails CLOSED: the
+        # ambiguous crash state is kept and the completed output is not
+        # modified.
+        reconcile_completed_staging_residual(
+            identity,
+            identity.operation_id,
+            identity.destination_identity,
+            output_fingerprint=stored_fingerprint,
+        )
     return result
 
 
@@ -1001,8 +1011,11 @@ def run_two_pass(
                             vault_fingerprint=identity.vault_fingerprint,
                         )
                     # REQ-P5-008 step 5/6: flush + fsync every staged file
-                    # and persist directory entries where supported.
-                    staging.persist_payload()
+                    # and persist directory entries where supported, with
+                    # cooperative cancellation checkpoints between files
+                    # and directories (REQ-P1-008 — never an uncancellable
+                    # durability region).
+                    staging.persist_payload(checkpoint=control.check_cancelled)
                     staging.record_staged_fingerprint(output_fingerprint)
                     if fault_inject is not None:
                         fault_inject("AFTER_PAYLOAD_FSYNC")
