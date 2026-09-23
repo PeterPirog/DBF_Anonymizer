@@ -1468,7 +1468,9 @@ def test_casefold_inventory_helper_detects_collisions() -> None:
     collapsed."""
     from dbf_anonymizer.transfer_bundle import _casefold_inventory
 
-    assert _casefold_inventory(["north/data.dbf", "south/data.fpt"]) == {
+    assert _casefold_inventory(
+        ["north/data.dbf", "south/data.fpt"], failure=_standalone_probe
+    ) == {
         "north/data.dbf": "north/data.dbf",
         "south/data.fpt": "south/data.fpt",
     }
@@ -1478,7 +1480,7 @@ def test_casefold_inventory_helper_detects_collisions() -> None:
         ["north/data.fpt", "NORTH/DATA.FPT"],
     ):
         with pytest.raises(TransferError) as caught:
-            _casefold_inventory(hostile)
+            _casefold_inventory(hostile, failure=_standalone_probe)
         assert caught.value.context.detail_code == "TRANSFER_INVENTORY_CASE_COLLISION"
         assert caught.value.context.operation == "verify_transfer_bundle"
 
@@ -1545,7 +1547,9 @@ def test_fpt_case_collision_synthetic_fails(tmp_path: Path) -> None:
     from dbf_anonymizer.transfer_bundle import _casefold_inventory
 
     with pytest.raises(TransferError) as caught:
-        _casefold_inventory(["north/data.fpt", "NORTH/DATA.FPT"])
+        _casefold_inventory(
+            ["north/data.fpt", "NORTH/DATA.FPT"], failure=_standalone_probe
+        )
     assert caught.value.context.detail_code == "TRANSFER_INVENTORY_CASE_COLLISION"
 
 
@@ -1859,3 +1863,299 @@ def test_complete_public_workflow_without_private_imports(tmp_path: Path) -> Non
             )
         )
         assert original == recovered
+
+
+# ---------------------------------------------------------------------------
+# POSIX drive-qualified manifest entry (path normalization, not inventory)
+# ---------------------------------------------------------------------------
+def test_posix_drive_qualified_manifest_entry_fails_by_path_normalization(
+    tmp_path: Path,
+) -> None:
+    """The test proves the PATH-NORMALIZATION contract, not an inventory
+    side effect: a manifest entry whose path is drive-qualified under the
+    Windows grammar is refused by _normalized_artifact_path BEFORE payload
+    verification, even when a matching physical artifact exists on POSIX."""
+    if sys.platform == "win32":
+        pytest.skip("Windows cannot create a 'C:' directory component")
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    bundle_root = tmp_path / "bundle"
+    hostile_dir = bundle_root / "C:"
+    hostile_dir.mkdir()
+    evil_payload = (bundle_root / "north" / "data.dbf").read_bytes()
+    (hostile_dir / "evil.dbf").write_bytes(evil_payload)
+    # Add the matching manifest entry with TRUTHFUL size/hash/count/schema
+    # fields so the manifest/inventory equality PASSES and only the portable
+    # path normalization can refuse the bundle.
+    manifest_path = bundle_root / "transfer-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+    payload_digest = hashlib.sha256(evil_payload).hexdigest()
+    schema_digest = None
+    for entry in manifest["artifacts"]:  # type: ignore[union-attr]
+        if entry["path"] == "north/data.dbf":  # type: ignore[index]
+            schema_digest = entry["schema_fingerprint"]
+    manifest["artifacts"].append(  # type: ignore[union-attr]
+        {
+            "path": "C:/evil.dbf",
+            "artifact_type": "DBF",
+            "size_bytes": len(evil_payload),
+            "sha256": payload_digest,
+            "record_count": 1,
+            "schema_fingerprint": schema_digest,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(bundle_root)
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_PATH_INVALID"
+    assert caught.value.context.operation == "verify_transfer_bundle"
+
+
+# ---------------------------------------------------------------------------
+# Strict assurance EXACT value/level-count contracts (blocker D round 4)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "mutate,description",
+    [
+        (
+            lambda manifest: manifest["assurance"].update({"scope_note": None}),
+            "scope-note-null",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"evidence_schema_version": None}
+            ),
+            "evidence-version-null",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {
+                    "level": "GLOBAL_EXACT_VALUE",
+                    "declared_relations": 1,
+                    "verified_relations": 1,
+                    "failed_relations": 0,
+                    "incomplete_relations": 0,
+                }
+            ),
+            "global-exact-with-declared-1",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {
+                    "level": "DECLARED_RELATIONS_VERIFIED",
+                    "declared_relations": 3,
+                    "verified_relations": 3,
+                    "failed_relations": 0,
+                    "incomplete_relations": 1,
+                }
+            ),
+            "declared-verified-with-incomplete-1",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {
+                    "level": "VFP_METADATA_VERIFIED",
+                    "declared_relations": 0,
+                    "verified_relations": 0,
+                    "failed_relations": 0,
+                    "incomplete_relations": 0,
+                }
+            ),
+            "vfp-metadata-with-declared-0",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {
+                    "level": "INCOMPLETE",
+                    "declared_relations": 3,
+                    "verified_relations": 3,
+                    "failed_relations": 0,
+                    "incomplete_relations": 0,
+                }
+            ),
+            "incomplete-carrying-complete-pattern",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"evidence_fingerprint": "g" * 64}
+            ),
+            "nonhex-fingerprint",
+        ),
+        (
+            lambda manifest: manifest["assurance"].update(
+                {"scope_note": "C:\\private\\canary\\vault"}
+            ),
+            "private-path-canary",
+        ),
+    ],
+    ids=[
+        "scope-note-null",
+        "evidence-version-null",
+        "global-exact-with-declared-1",
+        "declared-verified-with-incomplete-1",
+        "vfp-metadata-with-declared-0",
+        "incomplete-carrying-complete-pattern",
+        "nonhex-fingerprint",
+        "private-path-canary",
+    ],
+)
+def test_strict_assurance_contracts_fail_standalone(
+    tmp_path: Path, mutate: Callable[[dict], None], description: str
+) -> None:
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert "PRIVATE_PATH_CANARY" not in serialized
+    assert "C:\\private" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# Concurrency regression: no cross-call operation attribution contamination
+# ---------------------------------------------------------------------------
+def test_concurrent_create_and_verify_error_attribution_is_isolated(
+    tmp_path: Path,
+) -> None:
+    """Deterministic concurrency regression (threading.Barrier
+    interleaving, no sleep as the correctness mechanism): a CREATE-owned
+    staged self-verification failure and a VERIFY-owned standalone
+    failure running SIMULTANEOUSLY through one dispatcher wrapper must
+    NEVER cross-contaminate their operation contexts. Also asserts the
+    module carries no shared mutable operation-routing symbol."""
+    import dbf_anonymizer.transfer_bundle as transfer_module
+
+    # No shared mutable operation-routing symbol may exist in the module.
+    module_source = Path(transfer_module.__file__ or ".").read_text(
+        encoding="utf-8"
+    )
+    assert "_OWNING_OPERATION" not in module_source
+    assert "_owning_failure" not in module_source
+
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+    verify_bundle = tmp_path / "bundle-verify"
+    shutil.copytree(tmp_path / "bundle", verify_bundle)
+    original_verify = transfer_module._verify_bundle_core
+
+    def hostile_dispatcher(bundle_root: Path, **kwargs: object) -> object:
+        # Dispatch on the CALLER's bundle root: the create-owned staged
+        # verification runs against bundle-create; the standalone
+        # verification runs against bundle-verify. Each injects a
+        # DIFFERENT typed manifest defect, then runs the REAL core.
+        # Dispatch on the OWNING failure factory the caller injected: the
+        # create-owned staged verification passes _transfer_failure; the
+        # standalone verifier passes _standalone_failure. Deterministic
+        # and race-free.
+        if kwargs.get("failure") is transfer_module._transfer_failure:
+            hostile_manifest(bundle_root, "smuggled_field")
+        else:
+            hostile_manifest(bundle_root, "other_field")
+        return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
+
+    def hostile_manifest(bundle_root: Path, marker: str) -> None:
+        manifest_path = bundle_root / "transfer-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+        manifest[marker] = 1
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="ascii",
+        )
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            transfer_module, "_verify_bundle_core", hostile_dispatcher
+        )
+        outcomes: dict[str, str] = {}
+        errors: dict[str, BaseException] = {}
+        barrier = threading.Barrier(2)
+
+        def run_create() -> None:
+            try:
+                barrier.wait(timeout=30)
+                with pytest.raises(TransferError) as caught:
+                    create_transfer_bundle(
+                        result,
+                        destination=tmp_path / "bundle-create",
+                        profile="DATA_ONLY",
+                    )
+                outcomes["create"] = caught.value.context.operation
+            except BaseException as error:  # pragma: no cover - surfaced
+                errors["create"] = error
+
+        def run_verify() -> None:
+            try:
+                barrier.wait(timeout=30)
+                with pytest.raises(TransferError) as caught:
+                    verify_transfer_bundle(verify_bundle)
+                outcomes["verify"] = caught.value.context.operation
+            except BaseException as error:  # pragma: no cover - surfaced
+                errors["verify"] = error
+
+        threads = (
+            threading.Thread(target=run_verify),
+            threading.Thread(target=run_create),
+        )
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        assert not errors, errors
+        # NO cross-call contamination: each public operation keeps its own
+        # context identity even while the SHARED private core is active in
+        # both threads simultaneously.
+        assert outcomes["create"] == "create_transfer_bundle"
+        assert outcomes["verify"] == "verify_transfer_bundle"
+
+        # Repeating the interleaving proves the isolation is deterministic
+        # (no residual state from the previous round can flip ownership).
+        for _round in range(3):
+            shutil.rmtree(tmp_path / "bundle-create", ignore_errors=True)
+            if verify_bundle.exists():
+                shutil.rmtree(verify_bundle)
+            shutil.copytree(tmp_path / "bundle", verify_bundle)
+            round_outcomes: dict[str, str] = {}
+            round_errors: dict[str, BaseException] = {}
+            round_barrier = threading.Barrier(2)
+
+            def run_create_round() -> None:
+                try:
+                    round_barrier.wait(timeout=30)
+                    with pytest.raises(TransferError) as caught:
+                        create_transfer_bundle(
+                            result,
+                            destination=tmp_path / "bundle-create",
+                            profile="DATA_ONLY",
+                        )
+                    round_outcomes["create"] = caught.value.context.operation
+                except BaseException as error:  # pragma: no cover - surfaced
+                    round_errors["create"] = error
+
+            def run_verify_round() -> None:
+                try:
+                    round_barrier.wait(timeout=30)
+                    with pytest.raises(TransferError) as caught:
+                        verify_transfer_bundle(verify_bundle)
+                    round_outcomes["verify"] = caught.value.context.operation
+                except BaseException as error:  # pragma: no cover - surfaced
+                    round_errors["verify"] = error
+
+            threads = (
+                threading.Thread(target=run_verify_round),
+                threading.Thread(target=run_create_round),
+            )
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+            assert not round_errors, round_errors
+            assert round_outcomes["create"] == "create_transfer_bundle"
+            assert round_outcomes["verify"] == "verify_transfer_bundle"
+    finally:
+        monkeypatch.undo()
