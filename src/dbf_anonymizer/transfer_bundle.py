@@ -744,10 +744,14 @@ def _manifest_assurance(
     The sanitized-manifest VALUE contract is strict (REQ-P5-005/REQ-P5-006):
     ``scope_note`` must be the EXACT authoritative
     ``RELATIONAL_ASSURANCE_SCOPE_NOTE`` token of the relationship assurance
-    layer (never arbitrary free text that could carry private strings),
+    layer (never arbitrary free text that could carry private strings) and
     ``evidence_schema_version`` must be the EXACT currently supported
-    ``EVIDENCE_SCHEMA_VERSION``, and both fingerprints must be ``None`` or
-    exactly 64 lowercase hexadecimal SHA-256 characters.
+    ``EVIDENCE_SCHEMA_VERSION``. The two fingerprints follow SEPARATE
+    contracts: ``evidence_fingerprint`` is None or the canonical
+    64-lowercase-hex P3 evidence digest, while ``relationship_fingerprint``
+    is the canonical bounded public relationship token (shared with the
+    RelationshipMetadata producer boundary; ordinary non-hex tokens are
+    legitimate, hostile path/unbounded forms are refused).
     """
     if not isinstance(payload, dict):
         raise fail("TRANSFER_MANIFEST_UNREADABLE")
@@ -794,24 +798,20 @@ def _manifest_assurance(
             and len(evidence_fingerprint) == 64
             and all(character in "0123456789abcdef" for character in evidence_fingerprint)
         )
-        relationship_fp_ok = (
-            isinstance(relationship_fingerprint, str)
-            and 0 < len(relationship_fingerprint) <= _MAX_TOKEN_LENGTH
-            and relationship_fingerprint.strip() == relationship_fingerprint
-            and not any(character.isspace() for character in relationship_fingerprint)
-            and "\x00" not in relationship_fingerprint
-            and all(character.isprintable() for character in relationship_fingerprint)
-            and "\\" not in relationship_fingerprint
-            and not relationship_fingerprint.startswith("/")
-            and not PurePosixPath(relationship_fingerprint.lower()).is_absolute()
-            and not any(
-                part == ".."
-                for part in PurePosixPath(relationship_fingerprint.lower()).parts
+        # The ONE canonical shared validator (REQ-P3-001 producer/verifier
+        # coherence): the same contract enforced by the public
+        # RelationshipMetadata boundary, with the owned failure factory.
+        from dbf_anonymizer.models import validate_relationship_fingerprint
+
+        try:
+            validate_relationship_fingerprint(
+                relationship_fingerprint,
+                field_name="relationship_fingerprint",
+                failure=fail,
             )
-            and not PureWindowsPath(relationship_fingerprint).drive
-            and not PureWindowsPath(relationship_fingerprint).root
-            and not PureWindowsPath(relationship_fingerprint).is_absolute()
-        )
+            relationship_fp_ok = True
+        except AnonymizerError:
+            relationship_fp_ok = False
         # The canonical producer ALWAYS supplies the authoritative values:
         # no silent null acceptance for schema 1.0 manifests.
         evidence_version_ok = evidence_schema_version == EVIDENCE_SCHEMA_VERSION

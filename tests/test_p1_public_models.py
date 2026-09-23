@@ -524,3 +524,63 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
             "schema_version", "model_type", "table_path", "field_name", "dbf_type", "status",
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Canonical relationship-fingerprint contract (round-6 coherence)
+# ---------------------------------------------------------------------------
+def test_relationship_fingerprint_rejects_hostile_tokens_at_public_boundary() -> None:
+    """The ONE canonical contract is enforced at the PUBLIC typed input
+    boundary: hostile unbounded/path-bearing relationship fingerprints are
+    refused by RelationshipMetadata itself (never surviving to a later
+    transfer stage), with the rejected value absent from the message."""
+    hostile_tokens = (
+        "",
+        " leading-space",
+        "trailing-space ",
+        "internal space",
+        "with-nul\x00",
+        "with-control\x07char",
+        "C:\\private\\vault",
+        "/absolute/path",
+        "../relative/path",
+        "x" * 129,
+        "C:\\private\\canary\\vault\\token",
+    )
+    for hostile in hostile_tokens:
+        with pytest.raises((ValueError, TypeError)) as caught:
+            RelationshipMetadata(
+                metadata_schema_version="1.1",
+                provenance="none",
+                relationship_fingerprint=hostile,
+                relation_count=0,
+                authoritative=False,
+            )
+        # The rejected value never appears in the public exception
+        # message (empty/short tokens are vacuously substrings of any
+        # message, so only substantive hostiles are asserted).
+        if len(hostile) >= 8:
+            assert hostile not in str(caught.value)
+        assert "C:" not in str(caught.value)
+
+
+def test_relationship_fingerprint_accepts_legitimate_tokens() -> None:
+    """Ordinary stable non-hex tokens AND canonical 64-lowercase-hex
+    document digests are both accepted by the public boundary."""
+    metadata = RelationshipMetadata(
+        metadata_schema_version="1.1",
+        provenance="none",
+        relationship_fingerprint="relationship-token-v1",
+        relation_count=0,
+        authoritative=False,
+    )
+    assert metadata.relationship_fingerprint == "relationship-token-v1"
+    hex_digest = "a" * 64
+    metadata_hex = RelationshipMetadata(
+        metadata_schema_version="1.1",
+        provenance="none",
+        relationship_fingerprint=hex_digest,
+        relation_count=0,
+        authoritative=False,
+    )
+    assert metadata_hex.relationship_fingerprint == hex_digest
