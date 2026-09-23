@@ -446,8 +446,20 @@ class _Findings:
         return self.has_failure() or self.has_partial()
 
 
-def _output_table(output_root: Path, relative_path: str) -> DirectSourceTable:
-    """Bind one OUTPUT table through the public Direct Read boundary."""
+def _output_table(
+    output_root: Path,
+    relative_path: str,
+    *,
+    owning_operation: str = "verify_dataset",
+) -> DirectSourceTable:
+    """Bind one OUTPUT table through the public Direct Read boundary.
+
+    ``owning_operation`` is the OWNING public operation of the running
+    verification (``verify_dataset`` for the standalone verifier,
+    ``create_transfer_bundle`` when the REQ-P5-004 verified-dataset
+    precondition reuses this internal core) — dependency errors keep the
+    dbfbridge machine code and family but carry the true owner.
+    """
     absolute = output_root / relative_path
     try:
         schema = dbfbridge.read_schema(absolute)  # type: ignore[attr-defined]
@@ -457,7 +469,7 @@ def _output_table(output_root: Path, relative_path: str) -> DirectSourceTable:
         raise DBFBridgeError.from_exception(
             exc,
             context=ErrorContext(
-                operation=_VERIFY_OPERATION,
+                operation=owning_operation,
                 table_path=relative_path,
                 detail_code="VERIFY_OUTPUT_SCHEMA_UNREADABLE",
             ),
@@ -532,6 +544,7 @@ def _verify_dataset_core(
             output_root=output_root,
             vault_reader=vault_reader,
             failure=fail,
+            owning_operation=owning_operation,
         )
     finally:
         vault_reader.close()
@@ -666,6 +679,7 @@ def _verify(
     output_root: Path,
     vault_reader: _VerifyVault,
     failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
 ) -> tuple[int, int]:
     """The bounded read-only verification pipeline (deterministic order)."""
     fail = failure if failure is not None else _verification_failure
@@ -744,6 +758,7 @@ def _verify(
             findings=findings,
             checkpoint=control.check_cancelled,
             failure=fail,
+            owning_operation=owning_operation,
         )
         control.bump(ProgressPhase.TABLE_EVALUATION, table_path=relative_path)
 
@@ -932,6 +947,7 @@ def _verify_table(
     findings: _Findings,
     checkpoint: Callable[[], None],
     failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
 ) -> int:
     """One streamed source/output table comparison (O(1) memory).
 
@@ -949,7 +965,7 @@ def _verify_table(
         raise
     except Exception:
         raise fail("SOURCE_UNREADABLE") from None
-    output_table = _output_table(output_root, relative_path)
+    output_table = _output_table(output_root, relative_path, owning_operation=owning_operation)
     if _schema_facts(source_table) != _schema_facts(output_table):
         findings.fail("SCHEMA_MISMATCH")
         return 0
@@ -974,7 +990,7 @@ def _verify_table(
         raise DBFBridgeError.from_exception(
             exc,
             context=ErrorContext(
-                operation=_VERIFY_OPERATION,
+                operation=owning_operation,
                 table_path=relative_path,
                 detail_code="VERIFY_RECORD_STREAM_UNREADABLE",
             ),

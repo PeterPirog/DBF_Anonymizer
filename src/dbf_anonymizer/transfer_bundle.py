@@ -780,20 +780,49 @@ def _manifest_assurance(
         totals_complete = counts_ok and (
             verified + failed + incomplete == declared
         )
-        fingerprint_ok = all(
-            value is None
-            or (
-                isinstance(value, str)
-                and len(value) == 64
-                and all(character in "0123456789abcdef" for character in value)
+        # SEPARATE contracts (REQ-P5-005/REQ-P5-006 blocker A): the
+        # evidence_fingerprint is produced by the canonical P3 evidence
+        # digest kernel and is objectively 64-lowercase-hex (or None for
+        # the no-relation payload); the relationship_fingerprint is the
+        # PUBLIC bounded machine-code token accepted by
+        # RelationshipMetadata/_validated_code — it must NEVER be
+        # narrowed to raw 64-hex (legitimate non-hex public tokens exist,
+        # e.g. "relationship-token-v1"), but hostile path/free-text
+        # forms are still refused.
+        evidence_fp_ok = evidence_fingerprint is None or (
+            isinstance(evidence_fingerprint, str)
+            and len(evidence_fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in evidence_fingerprint)
+        )
+        relationship_fp_ok = (
+            isinstance(relationship_fingerprint, str)
+            and 0 < len(relationship_fingerprint) <= _MAX_TOKEN_LENGTH
+            and relationship_fingerprint.strip() == relationship_fingerprint
+            and not any(character.isspace() for character in relationship_fingerprint)
+            and "\x00" not in relationship_fingerprint
+            and all(character.isprintable() for character in relationship_fingerprint)
+            and "\\" not in relationship_fingerprint
+            and not relationship_fingerprint.startswith("/")
+            and not PurePosixPath(relationship_fingerprint.lower()).is_absolute()
+            and not any(
+                part == ".."
+                for part in PurePosixPath(relationship_fingerprint.lower()).parts
             )
-            for value in (evidence_fingerprint, relationship_fingerprint)
+            and not PureWindowsPath(relationship_fingerprint).drive
+            and not PureWindowsPath(relationship_fingerprint).root
+            and not PureWindowsPath(relationship_fingerprint).is_absolute()
         )
         # The canonical producer ALWAYS supplies the authoritative values:
         # no silent null acceptance for schema 1.0 manifests.
         evidence_version_ok = evidence_schema_version == EVIDENCE_SCHEMA_VERSION
         scope_note_ok = scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
-        if not (totals_complete and fingerprint_ok and evidence_version_ok and scope_note_ok):
+        if not (
+            totals_complete
+            and evidence_fp_ok
+            and relationship_fp_ok
+            and evidence_version_ok
+            and scope_note_ok
+        ):
             raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         # Structural level/count consistency (canonical P3 semantics; no
         # source/vault relational re-proof — only the transferred

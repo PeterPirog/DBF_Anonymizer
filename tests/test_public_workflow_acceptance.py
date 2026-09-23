@@ -226,8 +226,11 @@ def test_complete_public_consumer_workflow(tmp_path: Path) -> None:
 
     capabilities -> build_plan -> preflight -> pseudonymize -> verify_dataset
     -> create_transfer_bundle -> verify_transfer_bundle (standalone, copied
-    bundle with source AND vault absent) -> recover — followed by the
-    canonical logical oracle comparison through public dbfbridge reads.
+    bundle with source absent) -> recover — followed by the canonical
+    logical oracle comparison through public dbfbridge reads. This shape
+    uses the parsed relationship_document whose canonical cryptographic
+    relationship fingerprint (64-lowercase-hex, the authoritative
+    document-digest kernel) continues to pass unchanged.
     """
     # The public surface carries all eight architecture-required operations.
     for operation in (
@@ -354,34 +357,46 @@ def test_complete_public_consumer_workflow_no_relationship_document(
 
 
 def test_public_relationship_metadata_bundle_round_trip(tmp_path: Path) -> None:
-    """A public RelationshipMetadata path accepted by P3 without a
-    relationship document round-trips through the transfer bundle: the
-    canonical producer's relationship_fingerprint shape is preserved."""
+    """A genuinely public RelationshipMetadata object with a LEGAL NON-HEX
+    bounded token round-trips through the transfer bundle (REQ-P5-005/006
+    blocker A): the transfer boundary must accept every fingerprint the
+    public P3 model accepts - never narrowed to raw 64-hex."""
+    metadata = public.RelationshipMetadata(
+        metadata_schema_version="1.1",
+        provenance="none",
+        # Intentionally NON-hex: detects accidental reintroduction of the
+        # 64-lowercase-hex restriction at the transfer boundary.
+        relationship_fingerprint="relationship-token-v1",
+        relation_count=0,
+        authoritative=False,
+    )
     source = tmp_path / "source"
     _write_dataset(source)
     output = tmp_path / "output"
     vault = tmp_path / "vault" / "dictionary.sqlite3"
-    plan = public.build_plan(source, output, vault, relationship_document=None)
+    plan = public.build_plan(source, output, vault, relationships=metadata)
+    assert public.preflight(plan).ready is True
     result = public.pseudonymize(plan)
+    # The producer carries the EXACT public token through the workflow.
+    assert result.assurance.relationship_fingerprint == (
+        metadata.relationship_fingerprint
+    )
     bundle = public.create_transfer_bundle(
         result, destination=tmp_path / "bundle", profile="DATA_ONLY"
     )
     standalone = public.verify_transfer_bundle(tmp_path / "bundle")
     assert standalone.verified is True
-    # The transferred relationship_fingerprint is EXACTLY the producer's
-    # (the canonical bounded token accepted by the public P3 model — never
-    # narrowed to a raw-hex-only contract).
+    assert standalone.assurance.relationship_fingerprint == (
+        metadata.relationship_fingerprint
+    )
     assert standalone.assurance.relationship_fingerprint == (
         result.assurance.relationship_fingerprint
     )
     assert standalone.assurance.relationship_fingerprint is not None
-    assert len(standalone.assurance.relationship_fingerprint) >= 8
     assert "\\" not in (standalone.assurance.relationship_fingerprint or "")
     assert (standalone.assurance.relationship_fingerprint or "").strip() == (
-        standalone.assurance.relationship_fingerprint
+        standalone.assurance.relationship_fingerprint or ""
     )
-
-
 def test_standalone_verification_needs_no_vault_or_source(tmp_path: Path) -> None:
     """Standalone verification NEVER searches for or requests a vault, and
     never needs the source: prove it succeeds with both completely absent

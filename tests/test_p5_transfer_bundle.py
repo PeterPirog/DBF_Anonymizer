@@ -1677,12 +1677,10 @@ def test_staged_fpt_corruption_with_consistent_manifest_refuses_promotion(
             ),
             "z" * 64,
         ),
-        (
-            lambda manifest: manifest["assurance"].update(
-                {"relationship_fingerprint": "g" * 64}
-            ),
-            "g" * 64,
-        ),
+        # NOTE: the relationship_fingerprint is deliberately NOT held to the
+        # hex contract (round-5 blocker A): the public P3 RelationshipMetadata
+        # contract accepts bounded non-hex tokens; hostile non-hex forms are
+        # covered by test_hostile_relationship_fingerprint_tokens_fail_...
         (
             lambda manifest: manifest["assurance"].update(
                 {"evidence_schema_version": "PRIVATE_PATH_CANARY"}
@@ -1690,7 +1688,7 @@ def test_staged_fpt_corruption_with_consistent_manifest_refuses_promotion(
             "PRIVATE_PATH_CANARY",
         ),
     ],
-    ids=["scope-note", "evidence-fp", "relationship-fp", "evidence-version"],
+    ids=["scope-note", "evidence-fp", "evidence-version"],
 )
 def test_hostile_assurance_values_fail_and_stay_redacted(
     tmp_path: Path, mutate: Callable[[dict], None], canary: str
@@ -2159,3 +2157,100 @@ def test_concurrent_create_and_verify_error_attribution_is_isolated(
             assert round_outcomes["verify"] == "verify_transfer_bundle"
     finally:
         monkeypatch.undo()
+
+# ---------------------------------------------------------------------------
+# Separate relationship/evidence fingerprint contracts (round-5 blocker A)
+# ---------------------------------------------------------------------------
+def test_relationship_fingerprint_accepts_nonhex_public_token(tmp_path: Path) -> None:
+    """The transfer boundary accepts every fingerprint the PUBLIC P3
+    RelationshipMetadata contract accepts: the non-hex bounded token
+    round-trips end to end (never narrowed to raw 64-hex)."""
+    import dbf_anonymizer as public
+
+    result, source, output, vault = _prepare(tmp_path)
+    metadata = public.RelationshipMetadata(
+        metadata_schema_version="1.1",
+        provenance="none",
+        relationship_fingerprint="relationship-token-v1",
+        relation_count=0,
+        authoritative=False,
+    )
+    plan = public.build_plan(
+        source,
+        tmp_path / "output-nh",
+        tmp_path / "vault-nh" / "dictionary.sqlite3",
+        relationships=metadata,
+    )
+    assert preflight(plan).ready is True
+    producer_result = pseudonymize(plan)
+    assert producer_result.assurance.relationship_fingerprint == (
+        "relationship-token-v1"
+    )
+    bundle = create_transfer_bundle(
+        producer_result, destination=tmp_path / "bundle-nh", profile="DATA_ONLY"
+    )
+    standalone = verify_transfer_bundle(tmp_path / "bundle-nh")
+    assert standalone.verified is True
+    assert standalone.assurance.relationship_fingerprint == "relationship-token-v1"
+
+
+def test_document_derived_cryptographic_fingerprint_still_passes(
+    tmp_path: Path,
+) -> None:
+    """The canonical document-digest kernel's 64-lowercase-hex cryptographic
+    relationship fingerprint continues to pass unchanged."""
+    result, source, output, vault = _prepare(tmp_path)
+    bundle = _create(result, tmp_path)
+    standalone = verify_transfer_bundle(tmp_path / "bundle")
+    assert standalone.verified is True
+    fingerprint = standalone.assurance.relationship_fingerprint or ""
+    assert len(fingerprint) == 64
+    assert all(character in "0123456789abcdef" for character in fingerprint)
+
+
+@pytest.mark.parametrize(
+    "hostile_token",
+    [
+        "",
+        " leading-space",
+        "trailing-space ",
+        "internal space",
+        "with-nul\x00",
+        "with-control\x07char",
+        "C:\\private\\vault",
+        "/absolute/path/token",
+        "../../relative/token",
+        "x" * 129,
+        "C:\\private\\canary\\vault\\token",
+    ],
+    ids=[
+        "empty",
+        "leading-space",
+        "trailing-space",
+        "internal-space",
+        "nul",
+        "control-char",
+        "windows-absolute",
+        "posix-absolute",
+        "traversal",
+        "over-limit",
+        "private-path-canary",
+    ],
+)
+def test_hostile_relationship_fingerprint_tokens_fail_standalone(
+    tmp_path: Path, hostile_token: str
+) -> None:
+    """Hostile relationship_fingerprint values fail closed WITHOUT the
+    64-hex shortcut: the bounded-token contract itself rejects them."""
+    result, source, output, vault = _prepare(tmp_path)
+    _create(result, tmp_path)
+
+    def mutate(manifest: dict) -> None:
+        manifest["assurance"]["relationship_fingerprint"] = hostile_token
+
+    _tamper_manifest(tmp_path / "bundle", mutate)
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(tmp_path / "bundle")
+    assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert "C:\\private\\canary" not in serialized
