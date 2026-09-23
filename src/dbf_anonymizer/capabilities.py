@@ -41,11 +41,12 @@ def capabilities() -> Capabilities:
     executed, no subprocess, COM object or network endpoint is touched and no
     optional VFP backend is imported or activated.
 
-    The protected canonical dataset recovery (``recovery``) is ``True``
-    exactly when the implemented REQ-P5-002/REQ-P5-003 service's required
+    The protected canonical dataset recovery (``recovery``) and the safe
+    standalone DATA_ONLY transfer bundle (``transfer_bundle``) are ``True``
+    exactly when the implemented REQ-P5-002..P5-007 services' required
     runtime facts hold (direct read AND direct write — derived from the same
     public dbfbridge capability facts, never from filesystem probing).
-    ``transfer_bundle`` and ``vfp_index_backend`` are ``False`` until their
-    owning requirements are implemented.
+    ``vfp_index_backend`` is ``False`` until its owning requirement is
+    implemented.
     """
     return snapshot()

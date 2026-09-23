@@ -21,7 +21,7 @@ from typing import ClassVar
 from .models import JsonDict
 
 ERROR_SCHEMA_VERSION = "1.0"
-ERROR_REGISTRY_VERSION = "1.3"
+ERROR_REGISTRY_VERSION = "1.4"
 
 
 class ErrorCategory(str, Enum):
@@ -36,6 +36,7 @@ class ErrorCategory(str, Enum):
     PUBLICATION = "publication"
     VERIFICATION = "verification"
     RECOVERY = "recovery"
+    TRANSFER = "transfer"
     CANCELLATION = "cancellation"
     CALLBACK = "callback"
 
@@ -75,6 +76,7 @@ class ErrorCode(str, Enum):
 
     RECOVERY_FAILED = "RECOVERY_FAILED"
     RECOVERY_NOT_PERMITTED = "RECOVERY_NOT_PERMITTED"
+    TRANSFER_FAILED = "TRANSFER_FAILED"
 
     OPERATION_CANCELLED = "OPERATION_CANCELLED"
 
@@ -208,6 +210,11 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCode.RECOVERY_NOT_PERMITTED,
         ErrorCategory.RECOVERY,
         "Recovery is disabled by the active host or operation policy.",
+    ),
+    ErrorDefinition(
+        ErrorCode.TRANSFER_FAILED,
+        ErrorCategory.TRANSFER,
+        "The transfer bundle is not a valid, complete DATA_ONLY export.",
     ),
     ErrorDefinition(
         ErrorCode.OPERATION_CANCELLED,
@@ -412,6 +419,10 @@ class VerificationError(AnonymizerError):
 
 class RecoveryError(AnonymizerError):
     category = ErrorCategory.RECOVERY
+
+
+class TransferError(AnonymizerError):
+    category = ErrorCategory.TRANSFER
 
 
 class CancellationError(AnonymizerError):

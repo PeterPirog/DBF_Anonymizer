@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, Callable, ClassVar, TypeAlias
 
 MODEL_SCHEMA_VERSION = "1.3"
 
@@ -111,6 +111,74 @@ def _normalized_relative_path(value: str) -> str:
 def _validated_code(value: str, *, field_name: str) -> str:
     if not value or value.strip() != value or any(ch.isspace() for ch in value):
         raise ValueError(f"{field_name} must be a non-empty whitespace-free code")
+    return value
+
+
+#: The ONE canonical relationship-fingerprint contract, shared by the
+#: public :class:`RelationshipMetadata` producer boundary and the
+#: REQ-P5-005..P5-007 standalone transfer verifier (single definition, no
+#: producer/verifier drift). The contract accepts every legitimate
+#: bounded stable token the public P3 model accepts — canonical
+#: 64-lowercase-hex relationship-document digests AND ordinary stable
+#: non-hex tokens such as ``relationship-token-v1`` — and refuses
+#: hostile unbounded/path-bearing forms at the PUBLIC typed input
+#: boundary so they can never survive into a later transfer stage.
+_RELATIONSHIP_FINGERPRINT_MAX_LENGTH = 128
+
+
+def validate_relationship_fingerprint(
+    value: object,
+    *,
+    field_name: str,
+    failure: Callable[[str], Exception] | None = None,
+) -> str:
+    """The canonical relationship-fingerprint validator (REQ-P3-001,
+    REQ-P5-005/006).
+
+    Contract: actual ``str``; non-empty; at most 128 characters; no
+    leading/trailing whitespace; no whitespace anywhere; no NUL; only
+    printable characters; no Windows drive/root/absolute path, no POSIX
+    absolute path, no parent traversal and no backslash form capable of
+    carrying a private Windows path. Ordinary stable non-hex tokens and
+    canonical 64-lowercase-hex document digests are both accepted.
+
+    ``failure`` converts the refusal into the caller's typed error
+    family (the public producer raises ``ValueError`` with the field
+    name; the transfer verifier raises its privacy-safe
+    ``TransferError``) — the hostile value itself NEVER appears in the
+    message.
+    """
+
+    def refuse() -> Exception:
+        if failure is not None:
+            error: Exception = failure("TRANSFER_MANIFEST_VALUE_INVALID")
+            return error
+        return ValueError(
+            f"{field_name} must be a non-empty bounded "
+            f"relationship-fingerprint token"
+        )
+
+    if not isinstance(value, str):
+        raise refuse()
+    if (
+        not value
+        or len(value) > _RELATIONSHIP_FINGERPRINT_MAX_LENGTH
+        or value.strip() != value
+        or any(character.isspace() for character in value)
+        or "\x00" in value
+        or any(character.isprintable() is False for character in value)
+        or "\\" in value
+        or value.startswith("/")
+        or PurePosixPath(value.lower()).is_absolute()
+        or any(
+            part == ".."
+            for part in PurePosixPath(value.lower()).parts
+        )
+        or PureWindowsPath(value).drive
+        or PureWindowsPath(value).root
+        or PureWindowsPath(value).is_absolute()
+    ):
+        raise refuse()
     return value
 
 
@@ -320,7 +388,14 @@ class RelationshipMetadata(PublicModel):
             self.metadata_schema_version, field_name="metadata_schema_version"
         )
         _validated_code(self.provenance, field_name="provenance")
-        _validated_code(self.relationship_fingerprint, field_name="relationship_fingerprint")
+        # REQ-P5-005/006 producer/verifier coherence: the canonical
+        # relationship-fingerprint contract is enforced at the PUBLIC typed
+        # input boundary (shared with the transfer verifier) so hostile
+        # unbounded/path-bearing values can never survive into a later
+        # transfer stage.
+        validate_relationship_fingerprint(
+            self.relationship_fingerprint, field_name="relationship_fingerprint"
+        )
         _non_negative(self.relation_count, field_name="relation_count")
         if not isinstance(self.authoritative, bool):
             # Authority is a genuine boolean FACT, never a truthy string, a
@@ -575,11 +650,16 @@ class PreflightResult(PublicModel):
 class _PseudonymizationExecutionContext:
     """Runtime-only location of one published pseudonymized dataset.
 
-    The absolute path is retained only in memory for later service operations.
-    It is excluded from public serialization, representation and equality.
+    The absolute paths are retained only in memory for later service
+    operations in the SAME trusted environment (the internal REQ-P5-004
+    verified-dataset precondition of bundle creation reuses them; recovery
+    is path-based and needs nothing). Everything is excluded from public
+    serialization, representation and equality.
     """
 
     output_root: str
+    source_root: str
+    vault_path: str
 
     def __repr__(self) -> str:
         return "<_PseudonymizationExecutionContext>"

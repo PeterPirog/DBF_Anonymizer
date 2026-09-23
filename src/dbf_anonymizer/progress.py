@@ -60,7 +60,7 @@ __all__ = [
 ]
 
 #: Versioned identity of the bounded-progress / cancellation-quanta vocabulary.
-PROGRESS_QUANTUM_VERSION = "1.3"
+PROGRESS_QUANTUM_VERSION = "1.4"
 
 #: Type of the synchronous progress callback (REQ-P1-002 ProgressEvent).
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -87,13 +87,16 @@ class ProgressPhase:
     streaming protected-state read + staged fresh write) on the same
     bounded contract, reusing ``VAULT_VERIFICATION``/``VERIFICATION``/
     ``PUBLICATION`` for its authority validation, staged self-verification
-    and atomic promotion phases.  No operation outside the engine, the
-    verification service and the recovery service emits them.
+    and atomic promotion phases; the REQ-P5-004..P5-007 transfer-bundle
+    cluster realizes ``TRANSFER_SCAN`` (the per-artifact allowlist copy +
+    hash) for both bundle creation and standalone verification, reusing
+    ``SOURCE_VERIFICATION``/``TABLE_EVALUATION``/``VERIFICATION``/
+    ``PUBLICATION`` for its remaining bounded phases.  No operation outside
+    the engine, the verification service, the recovery service and the
+    transfer-bundle service emits them.
 
-    Vocabulary note (version 1.3): ``RECOVERY_SCAN`` was added for the
-    protected dataset recovery service (one bounded phase per recovered
-    table), and ``PUBLICATION`` is realized by that service's atomic
-    staging promotion.
+    Vocabulary note (version 1.4): ``TRANSFER_SCAN`` was added for the
+    safe standalone DATA_ONLY transfer-bundle cluster.
     """
 
     OPERATION = "OPERATION"
@@ -109,6 +112,7 @@ class ProgressPhase:
     VAULT_VERIFICATION = "VAULT_VERIFICATION"
     OUTPUT_VERIFICATION = "OUTPUT_VERIFICATION"
     RECOVERY_SCAN = "RECOVERY_SCAN"
+    TRANSFER_SCAN = "TRANSFER_SCAN"
     PUBLICATION = "PUBLICATION"
     PASS1_SCAN = "PASS1_SCAN"
     PASS1_FINALIZE = "PASS1_FINALIZE"

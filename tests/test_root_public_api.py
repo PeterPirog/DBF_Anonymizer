@@ -67,6 +67,10 @@ EXPECTED_PUBLIC_EXPORTS = {
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -85,16 +89,14 @@ EXPECTED_PUBLIC_EXPORTS = {
     "PublicationError",
     "VerificationError",
     "RecoveryError",
+    "TransferError",
     "CancellationError",
     # REQ-P1-008: the contained, classified callback-failure type is public so
     # consumers can catch callback failures without importing private modules.
     "CallbackError",
 }
 
-FUTURE_OPERATION_EXPORTS = {
-    "create_transfer_bundle",
-    "verify_transfer_bundle",
-}
+FUTURE_OPERATION_EXPORTS: set[str] = set()
 
 
 def test_obsolete_0_3_operations_are_not_exported() -> None:
@@ -150,7 +152,7 @@ def test_capabilities_returns_the_immutable_public_model() -> None:
     # required direct read/write runtime capability facts.
     assert result.recovery is (result.direct_read and result.direct_write)
     assert result.recovery is True
-    assert result.transfer_bundle is False
+    assert result.transfer_bundle is True
     assert result.vfp_index_backend is False
 
 
@@ -163,7 +165,7 @@ def test_recovery_capability_follows_the_direct_runtime_facts() -> None:
     snapshot = dbf_anonymizer.capabilities()
     assert snapshot.recovery is (snapshot.direct_read and snapshot.direct_write)
     assert snapshot.recovery is True
-    assert snapshot.transfer_bundle is False
+    assert snapshot.transfer_bundle is True
     assert snapshot.vfp_index_backend is False
 
 

@@ -9,13 +9,12 @@ side-effect-free public capability discovery ``capabilities`` from
 REQ-P1-007.  The long-running read/scan operations support the REQ-P1-008
 bounded structured progress and cooperative cancellation callbacks
 (keyword-only ``progress`` / ``cancel_check`` arguments).  The public
-independent dataset verification ``verify_dataset`` is the implemented
-REQ-P5-001 service slice and the protected canonical dataset recovery
-``recover`` is the implemented REQ-P5-002/REQ-P5-003 service slice.  The
-remaining operations (``create_transfer_bundle`` and
-``verify_transfer_bundle``) are introduced only when their owning
-requirements are implemented; no placeholder success functions are
-exported.
+independent dataset verification ``verify_dataset`` (REQ-P5-001), the
+protected canonical dataset recovery ``recover`` (REQ-P5-002/REQ-P5-003)
+and the safe standalone DATA_ONLY transfer bundle
+``create_transfer_bundle`` / ``verify_transfer_bundle``
+(REQ-P5-004..REQ-P5-007) are the implemented public service slices; no
+placeholder success functions are exported.
 
 The sole DBF/FPT parser and writer boundary for 1.0 remains the published
 public ``dbfbridge[write]>=1.1.0,<2`` distribution.
@@ -40,6 +39,7 @@ from .errors import (
     PolicyError,
     PublicationError,
     RecoveryError,
+    TransferError,
     RelationshipError,
     VaultError,
     VerificationError,
@@ -70,10 +70,12 @@ from .models import (
 from .api import (
     build_plan,
     capabilities,
+    create_transfer_bundle,
     preflight,
     pseudonymize,
     recover,
     verify_dataset,
+    verify_transfer_bundle,
 )
 
 __version__ = "1.0.0.dev0"
@@ -105,6 +107,8 @@ __all__ = [
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "create_transfer_bundle",
+    "verify_transfer_bundle",
     "capabilities",
     "ERROR_SCHEMA_VERSION",
     "ERROR_REGISTRY_VERSION",
@@ -123,6 +127,7 @@ __all__ = [
     "PublicationError",
     "VerificationError",
     "RecoveryError",
+    "TransferError",
     "CancellationError",
     "CallbackError",
 ]

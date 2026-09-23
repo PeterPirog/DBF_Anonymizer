@@ -446,8 +446,20 @@ class _Findings:
         return self.has_failure() or self.has_partial()
 
 
-def _output_table(output_root: Path, relative_path: str) -> DirectSourceTable:
-    """Bind one OUTPUT table through the public Direct Read boundary."""
+def _output_table(
+    output_root: Path,
+    relative_path: str,
+    *,
+    owning_operation: str = "verify_dataset",
+) -> DirectSourceTable:
+    """Bind one OUTPUT table through the public Direct Read boundary.
+
+    ``owning_operation`` is the OWNING public operation of the running
+    verification (``verify_dataset`` for the standalone verifier,
+    ``create_transfer_bundle`` when the REQ-P5-004 verified-dataset
+    precondition reuses this internal core) — dependency errors keep the
+    dbfbridge machine code and family but carry the true owner.
+    """
     absolute = output_root / relative_path
     try:
         schema = dbfbridge.read_schema(absolute)  # type: ignore[attr-defined]
@@ -457,7 +469,7 @@ def _output_table(output_root: Path, relative_path: str) -> DirectSourceTable:
         raise DBFBridgeError.from_exception(
             exc,
             context=ErrorContext(
-                operation=_VERIFY_OPERATION,
+                operation=owning_operation,
                 table_path=relative_path,
                 detail_code="VERIFY_OUTPUT_SCHEMA_UNREADABLE",
             ),
@@ -490,6 +502,75 @@ def _schema_facts(
     encoding = str(getattr(table.schema, "encoding", ""))
     language_driver = int(getattr(table.schema, "language_driver", -1))
     return (fields, encoding, language_driver)
+
+
+def _verify_dataset_core(
+    result: PseudonymizationResult,
+    *,
+    control: ProgressController,
+    source_root: Path,
+    output_root: Path,
+    vault_path: Path,
+    failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
+) -> VerificationResult:
+    """The ONE P5-001 verification pipeline through a SUPPLIED controller.
+
+    Drives every read-only verification stage through the caller's
+    :class:`~dbf_anonymizer.progress.ProgressController` and returns the
+    public verdict WITHOUT emitting any terminal completion: the public
+    ``verify_dataset`` wrapper owns its single terminal event, and the
+    internal REQ-P5-004 verified-dataset precondition of bundle creation
+    reuses this core under the CREATE operation's controller and OWNING
+    failure factory (every typed inability stays attributed to the
+    create_transfer_bundle operation; cancellation and callback failures
+    stay attributed to the owning public operation as well).
+    """
+    fail = failure if failure is not None else _verification_failure
+    findings = _Findings()
+    record_count = 0
+    table_count = 0
+    vault_reader = _VerifyVault(
+        vault_path,
+        operation=owning_operation,
+        failure=fail,
+    )
+    try:
+        record_count, table_count = _verify(
+            result=result,
+            control=control,
+            findings=findings,
+            source_root=source_root,
+            output_root=output_root,
+            vault_reader=vault_reader,
+            failure=fail,
+            owning_operation=owning_operation,
+        )
+    finally:
+        vault_reader.close()
+
+    # The authoritative PASS/PARTIAL/FAIL status (REQ-P5-001): FAIL always
+    # wins over PARTIAL; PARTIAL is reserved for a genuinely unavailable
+    # verification dimension while every verified invariant held; a clean
+    # verified dataset is a truthful PASS.
+    if findings.has_failure():
+        status = VerificationStatus.FAIL
+    elif findings.has_partial():
+        status = VerificationStatus.PARTIAL
+    else:
+        status = VerificationStatus.PASS
+    check_codes = findings.codes()
+
+    verification_result = VerificationResult(
+        status=status,
+        dataset=result.dataset,
+        operation_id=result.operation_id,
+        table_count=table_count,
+        record_count=record_count,
+        check_codes=check_codes,
+        assurance=result.assurance,
+    )
+    return verification_result
 
 
 def verify_dataset(
@@ -527,7 +608,8 @@ def verify_dataset(
     state) raises the existing typed
     :class:`~dbf_anonymizer.errors.VerificationError` contract; every
     dataset-level finding is a truthful FAIL/PARTIAL result with stable,
-    versioned check codes.
+    versioned check codes. The evaluation itself is the shared internal
+    core :func:`_verify_dataset_core` through this wrapper's controller.
     """
     if not isinstance(result, PseudonymizationResult):
         raise TypeError("verify_dataset requires a PseudonymizationResult")
@@ -545,47 +627,16 @@ def verify_dataset(
         operation_id=result.operation_id,
     )
     control.start_phase(ProgressPhase.OPERATION)
-
-    findings = _Findings()
-    record_count = 0
-    table_count = 0
-    vault_reader = _VerifyVault(vault_path)
-    try:
-        record_count, table_count = _verify(
-            result=result,
-            control=control,
-            findings=findings,
-            source_root=source_root,
-            output_root=output_root,
-            vault_reader=vault_reader,
-        )
-    finally:
-        vault_reader.close()
-
-    # The authoritative PASS/PARTIAL/FAIL status (REQ-P5-001): FAIL always
-    # wins over PARTIAL; PARTIAL is reserved for a genuinely unavailable
-    # verification dimension while every verified invariant held; a clean
-    # verified dataset is a truthful PASS.
-    if findings.has_failure():
-        status = VerificationStatus.FAIL
-    elif findings.has_partial():
-        status = VerificationStatus.PARTIAL
-    else:
-        status = VerificationStatus.PASS
-    check_codes = findings.codes()
-
-    verification_result = VerificationResult(
-        status=status,
-        dataset=result.dataset,
-        operation_id=result.operation_id,
-        table_count=table_count,
-        record_count=record_count,
-        check_codes=check_codes,
-        assurance=result.assurance,
+    verification_result = _verify_dataset_core(
+        result,
+        control=control,
+        source_root=source_root,
+        output_root=output_root,
+        vault_path=vault_path,
     )
     # The single terminal completion is emitted only now — after the public
     # result genuinely exists (never after cancellation).
-    control.complete(completed=table_count)
+    control.complete(completed=verification_result.table_count)
     return verification_result
 
 
@@ -627,8 +678,11 @@ def _verify(
     source_root: Path,
     output_root: Path,
     vault_reader: _VerifyVault,
+    failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
 ) -> tuple[int, int]:
     """The bounded read-only verification pipeline (deterministic order)."""
+    fail = failure if failure is not None else _verification_failure
     dataset: DatasetIdentity = result.dataset
     record_count = 0
     table_count = 0
@@ -651,7 +705,7 @@ def _verify(
     except (CancellationError, CallbackError):
         raise
     except OSError:
-        raise _verification_failure("SOURCE_UNREADABLE") from None
+        raise fail("SOURCE_UNREADABLE") from None
     if current_source != result.dataset.source_fingerprint:
         findings.fail("SOURCE_FINGERPRINT_MISMATCH")
 
@@ -662,7 +716,7 @@ def _verify(
     try:
         output_inventory = _iter_output_files(output_root)
     except Exception:
-        raise _verification_failure("OUTPUT_UNREADABLE") from None
+        raise fail("OUTPUT_UNREADABLE") from None
     output_paths = {relative for relative, _path in output_inventory}
     for relative in sorted(expected_output - output_paths):
         if relative in expected_memo_companions:
@@ -703,6 +757,8 @@ def _verify(
             vault_reader=vault_reader,
             findings=findings,
             checkpoint=control.check_cancelled,
+            failure=fail,
+            owning_operation=owning_operation,
         )
         control.bump(ProgressPhase.TABLE_EVALUATION, table_path=relative_path)
 
@@ -722,7 +778,7 @@ def _verify(
     except (CancellationError, CallbackError):
         raise
     except Exception:
-        raise _verification_failure("OUTPUT_UNREADABLE") from None
+        raise fail("OUTPUT_UNREADABLE") from None
     if current_output != result.output_fingerprint:
         findings.fail("OUTPUT_FINGERPRINT_MISMATCH")
 
@@ -890,6 +946,8 @@ def _verify_table(
     vault_reader: _VerifyVault,
     findings: _Findings,
     checkpoint: Callable[[], None],
+    failure: Callable[[str], AnonymizerError] | None = None,
+    owning_operation: str = "verify_dataset",
 ) -> int:
     """One streamed source/output table comparison (O(1) memory).
 
@@ -898,6 +956,7 @@ def _verify_table(
     counts, NULL semantics and every transformed-field postcondition derived
     from the durable policy application (text/numeric/memo/temporal).
     """
+    fail = failure if failure is not None else _verification_failure
     try:
         source_table = read_source_table(
             source_root, relative_path, cancel_check=checkpoint
@@ -905,8 +964,8 @@ def _verify_table(
     except (CancellationError, CallbackError):
         raise
     except Exception:
-        raise _verification_failure("SOURCE_UNREADABLE") from None
-    output_table = _output_table(output_root, relative_path)
+        raise fail("SOURCE_UNREADABLE") from None
+    output_table = _output_table(output_root, relative_path, owning_operation=owning_operation)
     if _schema_facts(source_table) != _schema_facts(output_table):
         findings.fail("SCHEMA_MISMATCH")
         return 0
@@ -931,7 +990,7 @@ def _verify_table(
         raise DBFBridgeError.from_exception(
             exc,
             context=ErrorContext(
-                operation=_VERIFY_OPERATION,
+                operation=owning_operation,
                 table_path=relative_path,
                 detail_code="VERIFY_RECORD_STREAM_UNREADABLE",
             ),

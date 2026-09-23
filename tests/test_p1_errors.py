@@ -28,12 +28,13 @@ from dbf_anonymizer import (
     PublicationError,
     RecoveryError,
     RelationshipError,
+    TransferError,
     VaultError,
     VerificationError,
 )
 
 
-_ERROR_CODES_FOR_REGISTRY_1_3 = (
+_ERROR_CODES_FOR_REGISTRY_1_4 = (
     "PATH_INVALID",
     "PATH_NOT_FOUND",
     "PATH_OVERLAP",
@@ -58,6 +59,7 @@ _ERROR_CODES_FOR_REGISTRY_1_3 = (
     "VERIFICATION_FAILED",
     "RECOVERY_FAILED",
     "RECOVERY_NOT_PERMITTED",
+    "TRANSFER_FAILED",
     "OPERATION_CANCELLED",
     "PROGRESS_CALLBACK_FAILED",
     "CANCEL_CALLBACK_FAILED",
@@ -69,12 +71,14 @@ def test_error_registry_is_versioned_complete_and_unique() -> None:
     # REQ-P1-008 advanced the registry to 1.1 (PROGRESS_CALLBACK_FAILED and
     # CANCEL_CALLBACK_FAILED); REQ-P2-002/REQ-P2-003 advanced it additively to
     # 1.2 with the protected-vault codes; REQ-P2-006 advanced it additively to
-    # 1.3 with MAPPING_CONSTRAINT_INFEASIBLE. Existing codes are never changed.
-    assert ERROR_REGISTRY_VERSION == "1.3"
+    # 1.3 with MAPPING_CONSTRAINT_INFEASIBLE. REQ-P5-004..P5-007 advanced it
+    # additively to 1.4 with the transfer-bundle family. Existing codes are
+    # never changed.
+    assert ERROR_REGISTRY_VERSION == "1.4"
     registered_codes = [definition.code for definition in ERROR_REGISTRY]
-    assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_3
+    assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_4
     assert (
-        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_3
+        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_4
     )
     assert len(registered_codes) == len(set(registered_codes))
     assert set(registered_codes) == set(ErrorCode)
@@ -95,6 +99,7 @@ def test_representative_error_for_every_required_category() -> None:
         (PublicationError, ErrorCode.PUBLICATION_FAILED, ErrorCategory.PUBLICATION),
         (VerificationError, ErrorCode.VERIFICATION_FAILED, ErrorCategory.VERIFICATION),
         (RecoveryError, ErrorCode.RECOVERY_FAILED, ErrorCategory.RECOVERY),
+        (TransferError, ErrorCode.TRANSFER_FAILED, ErrorCategory.TRANSFER),
         (CancellationError, ErrorCode.OPERATION_CANCELLED, ErrorCategory.CANCELLATION),
     )
     for error_type, code, category in cases:
