@@ -27,7 +27,15 @@ primitives whose behavior is TRUTHFUL about the underlying platform:
 
 * :func:`atomic_replace` performs a same-filesystem atomic ``os.replace``
   and then persists the destination parent directory entry where the
-  platform supports it; genuine durability failures propagate typed.
+  platform supports it. The two steps are truthfully separated: a genuine
+  parent-directory durability failure that happens AFTER the rename already
+  succeeded is raised as the typed
+  :class:`PostRenameDurabilityError` carrying the objective machine fact
+  ``renamed is True`` — the destination already holds the moved payload,
+  so this failure must NEVER be classified as "nothing was promoted". A
+  failure of ``os.replace`` itself (raised as ``OSError``) means the
+  rename did NOT happen (the primitive is atomic: it either completes or
+  raises with no partial effect).
 * :func:`write_durable_bytes` creates/replaces a regular file through ONE
   coherent crash-safe primitive: a same-directory temporary file receives
   the complete bytes, is flushed and fsynced, and only then atomically
@@ -63,6 +71,7 @@ __all__ = [
     "atomic_replace",
     "write_durable_bytes",
     "fsync_tree",
+    "PostRenameDurabilityError",
     "DURABILITY_OPERATION",
 ]
 
@@ -78,6 +87,30 @@ def _durability_failure(detail_code: str) -> PublicationError:
         ErrorCode.PUBLICATION_INCOMPLETE,
         context=ErrorContext(operation=DURABILITY_OPERATION, detail_code=detail_code),
     )
+
+
+class PostRenameDurabilityError(PublicationError):
+    """A genuine directory-durability failure raised AFTER the atomic
+    rename/replace of :func:`atomic_replace` already succeeded.
+
+    The machine fact :attr:`renamed` is ``True`` by construction: the
+    destination already holds the moved payload, the source path no longer
+    exists and the publication transition has factually happened. Callers
+    must never treat this failure as "nothing was promoted", must never run
+    pre-promotion cleanup over the residual evidence and must never delete
+    the created destination unless ownership and state objectively prove
+    that operation safe.
+    """
+
+    #: The objective rename fact carried by this typed failure.
+    renamed: bool
+
+    def __init__(self, *, detail_code: str) -> None:
+        super().__init__(
+            ErrorCode.PUBLICATION_INCOMPLETE,
+            context=ErrorContext(operation=DURABILITY_OPERATION, detail_code=detail_code),
+        )
+        self.renamed = True
 
 
 def flush_stream(stream: object) -> None:
@@ -136,12 +169,30 @@ def sync_directory(path: Path) -> bool:
 def atomic_replace(source: Path, destination: Path) -> bool:
     """Atomically replace destination with source (same filesystem).
 
-    The destination parent directory entry is persisted where the platform
-    supports it; a genuine durability failure propagates as a typed
-    durability failure instead of being silently downgraded.
+    Two truthfully separated steps:
+
+    1. the atomic rename — ``os.replace`` either completes (the destination
+       now holds the moved payload) or raises ``OSError`` with no partial
+       effect (the rename did not happen);
+    2. the destination parent directory-entry persistence — performed where
+       the platform supports it and returning ``True`` when actually
+       synced, ``False`` when the platform genuinely does not support the
+       primitive (truthfully reported, never claimed).
+
+    A genuine parent-directory durability failure raised AFTER step 1
+    already succeeded is wrapped into :class:`PostRenameDurabilityError`
+    (``renamed is True``, detail
+    ``DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME``) chaining the
+    underlying typed sync failure, so the objective rename fact can never
+    be lost by callers that only see a durability failure.
     """
     os.replace(source, destination)
-    return sync_directory(destination.parent)
+    try:
+        return sync_directory(destination.parent)
+    except PublicationError as sync_failure:
+        raise PostRenameDurabilityError(
+            detail_code="DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
+        ) from sync_failure
 
 
 def write_durable_bytes(path: Path, data: bytes) -> bool:

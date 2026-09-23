@@ -253,12 +253,26 @@ def test_promotion_failure_never_exposes_partial_dataset(
     assert _vault_counts(plan, vault)[0] == 0
 
 
-def test_fault_after_promotion_is_stale_not_silently_retried(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "fault_point",
+    [
+        "AFTER_STAGING_PROMOTION",
+        "AFTER_PROMOTED_STATE",
+    ],
+)
+def test_fault_after_promotion_is_stale_not_silently_retried(
+    tmp_path: Path, fault_point: str
+) -> None:
+    """Boundaries D/E: a fault after the rename — before or after the
+    durable PROMOTED crash state — leaves a deterministically stale state:
+    the destination exists, the private evidence is preserved and the retry
+    fails closed (never re-pseudonymizing, never accepting an unknown
+    target)."""
     plan, source, output, vault = _plan(tmp_path)
     before = _hash_tree(source)
 
     def inject(point: str) -> None:
-        if point == "AFTER_STAGING_PROMOTION":
+        if point == fault_point:
             raise RuntimeError("post-promotion fault")
 
     with pytest.raises(RuntimeError, match="post-promotion fault"):
@@ -900,3 +914,121 @@ def test_cancellation_inside_payload_fsync_is_typed_and_leaves_nothing(
     assert _vault_counts(plan, vault)[0] == 0
     assert spool_artifacts(vault.parent) == []
     assert _hash_tree(source) == source_before
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 boundary C: the atomic rename succeeded and the destination
+# parent directory sync then failed — never classified as pre-promotion.
+# ---------------------------------------------------------------------------
+def _fail_destination_parent_sync(
+    monkeypatch: pytest.MonkeyPatch, destination_parent: Path
+) -> None:
+    """Deterministically inject a genuine directory-sync failure for exactly
+    the destination parent directory (AFTER the real atomic rename)."""
+    from dbf_anonymizer import durability as durability_module
+    from dbf_anonymizer.errors import ErrorContext, PublicationError
+
+    real_sync = durability_module.sync_directory
+
+    def failing_sync(path: object) -> bool:
+        if Path(str(path)) == destination_parent:
+            raise PublicationError(
+                ErrorCode.PUBLICATION_INCOMPLETE,
+                context=ErrorContext(
+                    operation="durability",
+                    detail_code="DURABILITY_DIRECTORY_SYNC_FAILED",
+                ),
+            )
+        return real_sync(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(durability_module, "sync_directory", failing_sync)
+
+
+def test_promotion_sync_failure_after_rename_is_never_pre_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real atomic os.replace succeeds; the destination-parent directory
+    sync then genuinely fails. The operation must return the typed
+    post-rename failure, must NOT run pre-promotion cleanup and must keep
+    every piece of classification evidence (staging crash state + STARTED
+    vault operation + existing destination)."""
+    from dbf_anonymizer.durability import PostRenameDurabilityError
+
+    plan, source, output, vault = _plan(tmp_path)
+    source_before = _hash_tree(source)
+    events: list[object] = []
+
+    def progress(event: object) -> None:
+        events.append(event)
+
+    _fail_destination_parent_sync(monkeypatch, tmp_path)
+    with pytest.raises(PublicationError) as promoted_failure:
+        run_two_pass(plan, workers=1, progress=progress)
+    assert isinstance(promoted_failure.value, PostRenameDurabilityError)
+    assert promoted_failure.value.renamed is True
+    assert promoted_failure.value.context.detail_code == (
+        "DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
+    )
+    # The rename HAS occurred: the final destination exists.
+    assert output.is_dir()
+    # No pre-promotion cleanup ran: the private crash-state evidence
+    # (READY_TO_PROMOTE + operation binding) remains in place.
+    staging_roots = tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+    assert len(staging_roots) == 1
+    crash_state = json.loads(
+        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
+    )
+    assert crash_state["phase"] == "READY_TO_PROMOTE"
+    assert crash_state["schema_version"] == "1.1"
+    with VaultDatabase.open(
+        vault,
+        expected_source_fingerprint=plan.dataset.source_fingerprint,
+        expected_policy_fingerprint=plan.policy.policy_fingerprint,
+        expected_relationship_fingerprint=(
+            plan.relationships.relationship_fingerprint
+        ),
+    ) as reopened:
+        assert [row["state"] for row in reopened.operations()] == ["STARTED"]
+    # No false COMPLETED result/event/receipt was emitted.
+    assert not any(
+        getattr(event, "event_code", None) == "COMPLETED" for event in events
+    )
+    assert _hash_tree(source) == source_before
+    # The public failure stays typed and privacy-safe.
+    serialized = json.dumps(promoted_failure.value.to_dict(), sort_keys=True)
+    assert MEMO_CANARY not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_retry_after_post_rename_sync_failure_is_deterministic_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subsequent invocation classifies the post-rename state
+    deterministically: stale and fail-closed — never re-pseudonymizing the
+    destination, never silently accepting an unknown target, never deleting
+    the preserved evidence."""
+    plan, source, output, vault = _plan(tmp_path)
+    source_before = _hash_tree(source)
+    _fail_destination_parent_sync(monkeypatch, tmp_path)
+    with pytest.raises(PublicationError):
+        run_two_pass(plan, workers=1)
+    monkeypatch.undo()
+    destination_state = _hash_tree(output)
+    staging_roots = tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
+    crash_state_before = (staging_roots[0] / "transaction.json").read_bytes()
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("retry entered a transformation pass")
+
+    monkeypatch.setattr(run_module, "run_pass_one", forbidden)
+    monkeypatch.setattr(run_module, "run_pass_two", forbidden)
+    with pytest.raises(PublicationError) as stale:
+        run_two_pass(plan, workers=1)
+    assert stale.value.code is ErrorCode.PUBLICATION_INCOMPLETE
+    assert stale.value.context.detail_code == "STALE_OPERATION_DETECTED"
+    # The destination, the source and the preserved evidence are unchanged.
+    assert _hash_tree(output) == destination_state
+    assert _hash_tree(source) == source_before
+    assert (
+        staging_roots[0] / "transaction.json"
+    ).read_bytes() == crash_state_before

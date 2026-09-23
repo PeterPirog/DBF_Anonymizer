@@ -1069,7 +1069,16 @@ def run_two_pass(
                     if fault_inject is not None:
                         fault_inject("AFTER_METADATA_CLEANUP")
                 except BaseException as original:
-                    if operation_started and not staging.promoted:
+                    # Pre-promotion cleanup only: once the atomic rename HAS
+                    # occurred (staging.renamed) the final destination exists
+                    # and the residual staging carries the crash-state
+                    # evidence required to classify the interrupted
+                    # publication deterministically — it must never be
+                    # removed and the vault operation must not be abandoned
+                    # (the STARTED row plus READY_TO_PROMOTE/PROMOTED crash
+                    # state is what makes the state deterministically stale
+                    # instead of unowned).
+                    if operation_started and not staging.renamed:
                         try:
                             staging.cleanup_owned()
                             if evidence_root is not None:

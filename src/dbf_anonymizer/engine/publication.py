@@ -11,7 +11,12 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
-from dbf_anonymizer.durability import atomic_replace, fsync_tree, write_durable_bytes
+from dbf_anonymizer.durability import (
+    PostRenameDurabilityError,
+    atomic_replace,
+    fsync_tree,
+    write_durable_bytes,
+)
 from dbf_anonymizer.engine.directives import RelationPassSummary, TwoPassResult
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PathError, PublicationError
 from dbf_anonymizer.vault.store import VaultDatabase
@@ -287,19 +292,56 @@ class DatasetStaging:
     crash-recovery state (``transaction.json``) — the staged payload and the
     private crash state live in the same private namespace and are never
     part of any transferable final tree.
+
+    The truthful publication transition is recorded on this object as
+    separate, monotonic facts (never collapsed into one boolean):
+
+    1. staging created (``_created``) + RUNNING crash state durably
+       persisted;
+    2. payload fully written, fsynced, verified + READY_TO_PROMOTE crash
+       state durably persisted;
+    3. atomic rename/replace HAS OCCURRED (:attr:`renamed`) — the
+       destination now holds the moved payload (recorded BEFORE the
+       parent-directory durability step completes, so a genuine post-rename
+       durability failure is never classified as "nothing was promoted");
+    4. the destination parent-directory durability step completed, or was
+       truthfully classified as unsupported by the platform (Windows);
+    5. PROMOTED crash state durably recorded (:attr:`promoted`);
+    6. the durable completion receipt/authoritative completion state
+       exists (the caller's vault operation row);
+    7. only then may the private staging metadata be removed.
     """
 
-    __slots__ = ("identity", "_created", "_promoted", "_recorded_fingerprint")
+    __slots__ = (
+        "identity",
+        "_created",
+        "_renamed",
+        "_promoted",
+        "_recorded_fingerprint",
+    )
 
     def __init__(self, identity: PublicationIdentity) -> None:
         self.identity = identity
         self._created = False
+        self._renamed = False
         self._promoted = False
         self._recorded_fingerprint: str | None = None
 
     @property
     def dataset_root(self) -> Path:
         return self.identity.staging_root / "dataset"
+
+    @property
+    def renamed(self) -> bool:
+        """Whether the atomic rename/replace HAS ALREADY occurred.
+
+        The destination now holds the moved payload and the source staging
+        dataset no longer exists. This fact is recorded the moment
+        :func:`os.replace` succeeded — even when the destination parent
+        directory durability step afterwards fails — and it must never be
+        treated as "nothing was promoted".
+        """
+        return self._renamed
 
     @property
     def promoted(self) -> bool:
@@ -472,14 +514,34 @@ class DatasetStaging:
             raise _publication_failure("STAGING_CLEANUP_FAILED") from None
 
     def promote(self) -> None:
+        """Atomically promote the staged payload (REQ-P5-008 step 10).
+
+        The objective rename fact (:attr:`renamed`) is recorded the moment
+        ``os.replace`` has succeeded — BEFORE the destination parent
+        directory durability step completes — so a genuine post-rename
+        durability failure propagates with ``renamed is True`` and can
+        never be classified as "nothing was promoted" by any caller. A
+        failure of the rename itself (``OSError``) means nothing was
+        renamed (the primitive is atomic) and keeps the pre-promotion
+        classification.
+        """
         if self.identity.destination.exists():
             raise _target_conflict("TARGET_ALREADY_EXISTS")
         try:
             # REQ-P5-008: same-filesystem atomic replace + destination
             # parent-directory persistence where the platform supports it.
             atomic_replace(self.dataset_root, self.identity.destination)
+        except PostRenameDurabilityError:
+            # The rename HAS occurred (the destination now holds the moved
+            # payload); only the parent-directory durability step failed.
+            # Record the objective rename fact BEFORE the typed failure
+            # propagates: no caller may classify this as pre-promotion and
+            # destroy the crash-state evidence.
+            self._renamed = True
+            raise
         except OSError:
             raise _publication_failure("STAGING_PROMOTION_FAILED") from None
+        self._renamed = True
         self._promoted = True
 
     def remove_metadata_after_promotion(self) -> None:
@@ -495,8 +557,18 @@ class DatasetStaging:
             raise _publication_failure("STAGING_CLEANUP_FAILED") from None
 
     def cleanup_owned(self) -> None:
-        """Remove only staging created by this live owner before promotion."""
-        if not self._created or self._promoted:
+        """Remove only staging created by this live owner BEFORE any atomic
+        rename has occurred.
+
+        After a successful rename (:attr:`renamed`) the final destination
+        exists and the residual staging root carries the private crash-state
+        evidence required to classify the interrupted publication
+        deterministically — removing it would destroy that evidence, so this
+        cleanup is a no-op from the rename fact on. (Deleting the renamed
+        destination itself is NOT this object's decision; classification and
+        any safe resolution stay with the reconciliation contract.)
+        """
+        if not self._created or self._renamed:
             return
         try:
             shutil.rmtree(self.identity.staging_root)

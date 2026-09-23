@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
+import dbf_anonymizer.durability as durability_module
 from dbf_anonymizer.durability import (
+    PostRenameDurabilityError,
     atomic_replace,
     fsync_stream,
     flush_stream,
@@ -30,7 +32,7 @@ from dbf_anonymizer.durability import (
     sync_directory,
     write_durable_bytes,
 )
-from dbf_anonymizer.errors import ErrorCode, PublicationError
+from dbf_anonymizer.errors import ErrorCode, ErrorContext, PublicationError
 
 
 class TestFlushAndFsync:
@@ -235,15 +237,63 @@ class TestGenuineDurabilityFailuresAreTyped:
         source.write_bytes(b"moved")
         destination = tmp_path / "deep" / "target.bin"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with pytest.raises(PublicationError) as excinfo:
+        with pytest.raises(PostRenameDurabilityError) as excinfo:
             atomic_replace(source, destination)
+        # The typed failure carries the OBJECTIVE rename fact: the rename
+        # already happened, so this is never "nothing was promoted".
+        assert excinfo.value.renamed is True
         assert excinfo.value.context.detail_code == (
-            "DURABILITY_DIRECTORY_SYNC_FAILED"
+            "DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
         )
         # The replace itself still happened; only the durability failure
         # surfaced typed.
         assert destination.read_bytes() == b"moved"
         assert not source.exists()
+
+    def test_post_rename_sync_failure_wraps_the_typed_sync_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The post-rename wrapper chains the underlying typed directory-sync
+        failure (typed boundary, no raw exception escape)."""
+        def failing_sync(path: object) -> bool:
+            raise PublicationError(
+                ErrorCode.PUBLICATION_INCOMPLETE,
+                context=ErrorContext(
+                    operation="durability",
+                    detail_code="DURABILITY_DIRECTORY_SYNC_FAILED",
+                ),
+            )
+
+        monkeypatch.setattr(durability_module, "sync_directory", failing_sync)
+        source = tmp_path / "moved.bin"
+        source.write_bytes(b"payload")
+        destination = tmp_path / "target.bin"
+        with pytest.raises(PostRenameDurabilityError) as excinfo:
+            atomic_replace(source, destination)
+        assert excinfo.value.renamed is True
+        assert excinfo.value.context.detail_code == (
+            "DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
+        )
+        assert destination.read_bytes() == b"payload"
+        assert not source.exists()
+
+    def test_replace_failure_carries_no_rename_fact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boundary B: a failure OF os.replace itself means the rename did
+        NOT happen (the primitive is atomic) — no rename fact may be
+        manufactured."""
+        def failing_replace(source: object, destination: object) -> None:
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+        source = tmp_path / "kept.bin"
+        source.write_bytes(b"intact")
+        destination = tmp_path / "target.bin"
+        with pytest.raises(OSError):
+            atomic_replace(source, destination)
+        assert source.read_bytes() == b"intact"
+        assert not destination.exists()
 
     def test_fsync_tree_regular_file_failure_is_typed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
