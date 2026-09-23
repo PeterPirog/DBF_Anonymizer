@@ -28,6 +28,7 @@ state belongs to P4-009).
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -60,6 +61,7 @@ from dbf_anonymizer.engine.publication import (
     PublicationIdentity,
     build_publication_identity,
     fingerprint_dataset,
+    reconcile_completed_staging_residual,
     result_from_receipt,
     result_receipt,
 )
@@ -191,7 +193,18 @@ def _existing_completed_result(
     if operation.get("state") != VAULT_OPERATION_STATE_COMPLETED:
         raise _publication_failure("OPERATION_STATE_UNKNOWN")
     if identity.staging_root.exists():
-        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
+        # REQ-P5-008 case C: a crash after the durable completion receipt
+        # but before private metadata cleanup. The operation IS completed
+        # (the vault receipt proves it) — the private crash-state metadata
+        # must not destroy a genuinely completed output. Recognize the
+        # interrupted cleanup and reconcile by removing the residual
+        # private metadata, then proceed with the idempotent completed
+        # retry.
+        reconcile_completed_staging_residual(
+            identity,
+            str(operation.get("operation_id") or ""),
+            identity.destination_identity,
+        )
     stored_fingerprint = operation.get("output_fingerprint")
     receipt = operation.get("result_json")
     if stored_fingerprint is None or receipt is None:
@@ -987,15 +1000,42 @@ def run_two_pass(
                             output_fingerprint=output_fingerprint,
                             vault_fingerprint=identity.vault_fingerprint,
                         )
+                    # REQ-P5-008 step 5/6: flush + fsync every staged file
+                    # and persist directory entries where supported.
+                    staging.persist_payload()
+                    staging.record_staged_fingerprint(output_fingerprint)
+                    if fault_inject is not None:
+                        fault_inject("AFTER_PAYLOAD_FSYNC")
                     if fault_inject is not None:
                         fault_inject("AFTER_STAGED_STATE")
+                    # REQ-P5-008 step 8: durable READY_TO_PROMOTE state.
+                    if fault_inject is not None:
+                        fault_inject("BEFORE_READY_TO_PROMOTE")
+                    staging.mark_ready_to_promote(
+                        payload_fingerprint=output_fingerprint
+                    )
+                    if fault_inject is not None:
+                        fault_inject("AFTER_READY_TO_PROMOTE")
                     control.check_cancelled()
                     if fault_inject is not None:
                         fault_inject("BEFORE_STAGING_PROMOTION")
+                    # REQ-P5-008 step 10: atomic promotion.
+                    if fault_inject is not None:
+                        fault_inject("DURING_PROMOTION")
                     staging.promote()
                     if fault_inject is not None:
                         fault_inject("AFTER_STAGING_PROMOTION")
-                    staging.remove_metadata_after_promotion()
+                    # REQ-P5-008 step 11: persist the PROMOTED crash state
+                    # (private staging namespace) so reconciliation can
+                    # classify a crash after replace.
+                    staging.mark_promoted()
+                    if fault_inject is not None:
+                        fault_inject("AFTER_PROMOTED_STATE")
+                    # REQ-P5-008 step 9: the durable completion receipt
+                    # below is authoritative; step 13 (private metadata
+                    # cleanup) follows AFTER the receipt so a genuinely
+                    # completed operation can never appear incomplete
+                    # merely because cleanup was interrupted.
                     with writer_vault.transaction():
                         writer_vault.record_publication(
                             identity.operation_id,
@@ -1010,6 +1050,11 @@ def run_two_pass(
                         )
                     if fault_inject is not None:
                         fault_inject("AFTER_OPERATION_COMPLETE")
+                    # REQ-P5-008 step 13: private metadata cleanup AFTER
+                    # the receipt.
+                    staging.remove_metadata_after_promotion()
+                    if fault_inject is not None:
+                        fault_inject("AFTER_METADATA_CLEANUP")
                 except BaseException as original:
                     if operation_started and not staging.promoted:
                         try:

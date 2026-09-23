@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+from dbf_anonymizer.durability import atomic_replace, fsync_tree, write_durable_bytes
 from dbf_anonymizer.engine.directives import RelationPassSummary, TwoPassResult
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PathError, PublicationError
 from dbf_anonymizer.vault.store import VaultDatabase
@@ -29,6 +30,21 @@ FaultInjector = Callable[[str], None]
 #: The INTERNAL operation-receipt schema. Any structural change bumps this
 #: version; unknown versions are rejected fail-closed on read-back.
 RECEIPT_SCHEMA_VERSION = "1.1"
+
+#: Versioned identity of the PRIVATE publication crash-state record
+#: (``transaction.json`` inside the staging root — never part of any
+#: transferable final tree).
+PUBLICATION_TXN_STATE_SCHEMA_VERSION = "1.1"
+PUBLICATION_TXN_PHASE_RUNNING = "RUNNING"
+PUBLICATION_TXN_PHASE_READY_TO_PROMOTE = "READY_TO_PROMOTE"
+PUBLICATION_TXN_PHASE_PROMOTED = "PROMOTED"
+
+__all__ = tuple(__all__) + (  # type: ignore[assignment]
+    "PUBLICATION_TXN_STATE_SCHEMA_VERSION",
+    "PUBLICATION_TXN_PHASE_RUNNING",
+    "PUBLICATION_TXN_PHASE_READY_TO_PROMOTE",
+    "PUBLICATION_TXN_PHASE_PROMOTED",
+)
 
 
 def _publication_failure(detail_code: str) -> PublicationError:
@@ -265,14 +281,21 @@ def fingerprint_dataset(
 
 
 class DatasetStaging:
-    """Owner-scoped per-table and complete-dataset staging on one filesystem."""
+    """Owner-scoped per-table and complete-dataset staging on one filesystem.
 
-    __slots__ = ("identity", "_created", "_promoted")
+    REQ-P5-008: the staging root also carries the PRIVATE durable
+    crash-recovery state (``transaction.json``) — the staged payload and the
+    private crash state live in the same private namespace and are never
+    part of any transferable final tree.
+    """
+
+    __slots__ = ("identity", "_created", "_promoted", "_recorded_fingerprint")
 
     def __init__(self, identity: PublicationIdentity) -> None:
         self.identity = identity
         self._created = False
         self._promoted = False
+        self._recorded_fingerprint: str | None = None
 
     @property
     def dataset_root(self) -> Path:
@@ -292,14 +315,21 @@ class DatasetStaging:
             (root / "tables").mkdir(mode=0o700)
             self.dataset_root.mkdir(mode=0o700)
             marker = {
-                "schema_version": "1.0",
+                "schema_version": PUBLICATION_TXN_STATE_SCHEMA_VERSION,
+                "phase": PUBLICATION_TXN_PHASE_RUNNING,
                 "operation_id": self.identity.operation_id,
                 "binding_fingerprint": self.identity.binding_fingerprint,
                 "destination_identity": self.identity.destination_identity,
             }
-            with (root / "transaction.json").open("x", encoding="ascii") as stream:
-                json.dump(marker, stream, sort_keys=True, separators=(",", ":"))
-                stream.write("\n")
+            # REQ-P5-008: the crash-recovery transaction state is persisted
+            # durably (fsync the file; directory entry where the platform
+            # supports it) BEFORE any payload byte is written.
+            write_durable_bytes(
+                root / "transaction.json",
+                json.dumps(
+                    marker, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                ).encode("ascii"),
+            )
         except FileExistsError:
             raise _publication_failure("STALE_STAGING_DETECTED") from None
         except OSError:
@@ -331,11 +361,107 @@ class DatasetStaging:
         except OSError:
             raise _publication_failure("TABLE_ASSEMBLY_FAILED") from None
 
+    def record_staged_fingerprint(self, output_fingerprint: str) -> None:
+        """Remember the verified staged fingerprint for later crash-state
+        records (PROMOTED phase) and reconciliation."""
+        self._recorded_fingerprint = output_fingerprint
+
+    def persist_payload(self, *, checkpoint: Callable[[], None] | None = None) -> int:
+        """Flush + fsync every staged regular file, then persist directory
+        entries where the platform supports it (REQ-P5-008 step 5/6).
+
+        Returns the number of files fsynced. Directory-entry persistence is
+        truthful per platform (POSIX: synced; Windows: unsupported and
+        reported as such — never claimed).
+        """
+        if not self.dataset_root.is_dir():
+            raise _publication_failure("STAGED_PAYLOAD_MISSING")
+        return fsync_tree(self.dataset_root)
+
+    def mark_ready_to_promote(
+        self,
+        *,
+        payload_fingerprint: str,
+    ) -> None:
+        """Persist the durable READY_TO_PROMOTE crash state (step 8).
+
+        The staged payload has been fully written, fsynced and verified; the
+        crash-state record is atomically updated (fsync file + directory
+        where supported) so an interruption can never leave the payload
+        mistaken for an unverified partial artifact.
+        """
+        self._write_phase(
+            PUBLICATION_TXN_PHASE_READY_TO_PROMOTE,
+            output_fingerprint=payload_fingerprint,
+        )
+
+    def mark_promoted(self) -> None:
+        """Persist the PROMOTED crash state after the atomic replace
+        (the rename is already done; the private state records it)."""
+        self._promoted = True
+        self._write_phase(
+            PUBLICATION_TXN_PHASE_PROMOTED,
+            output_fingerprint=self._recorded_fingerprint,
+        )
+
+    def _write_phase(self, phase: str, *, output_fingerprint: str | None) -> None:
+        """Atomically persist one crash-state phase (fsync file + directory
+        where the platform supports it)."""
+        if self._recorded_fingerprint is None and output_fingerprint is not None:
+            self._recorded_fingerprint = output_fingerprint
+        payload: dict[str, object] = {
+            "schema_version": PUBLICATION_TXN_STATE_SCHEMA_VERSION,
+            "phase": phase,
+            "operation_id": self.identity.operation_id,
+            "binding_fingerprint": self.identity.binding_fingerprint,
+            "destination_identity": self.identity.destination_identity,
+        }
+        if self._recorded_fingerprint is not None:
+            payload["output_fingerprint"] = self._recorded_fingerprint
+        write_durable_bytes(
+            self.identity.staging_root / "transaction.json",
+            json.dumps(
+                payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("ascii"),
+        )
+
+    def transaction_state(self) -> dict[str, object] | None:
+        """Read the durable crash-recovery state of this staging root."""
+        path = self.identity.staging_root / "transaction.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="ascii"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def cleanup_durable_state(self) -> None:
+        """Remove private crash-state metadata AFTER genuine completion
+        (step 13). A failure here must never make a genuinely completed
+        operation appear incomplete — callers treat cleanup failure as
+        non-fatal for the committed result."""
+        if not self._promoted:
+            raise _publication_failure("PROMOTION_NOT_COMPLETE")
+        try:
+            tables = self.identity.staging_root / "tables"
+            if tables.exists():
+                tables.rmdir()
+            (self.identity.staging_root / "transaction.json").unlink()
+            self.identity.staging_root.rmdir()
+        except FileNotFoundError:
+            # Non-critical cleanup already done; the completed state stands.
+            return
+        except OSError:
+            raise _publication_failure("STAGING_CLEANUP_FAILED") from None
+
     def promote(self) -> None:
         if self.identity.destination.exists():
             raise _target_conflict("TARGET_ALREADY_EXISTS")
         try:
-            os.replace(self.dataset_root, self.identity.destination)
+            # REQ-P5-008: same-filesystem atomic replace + destination
+            # parent-directory persistence where the platform supports it.
+            atomic_replace(self.dataset_root, self.identity.destination)
         except OSError:
             raise _publication_failure("STAGING_PROMOTION_FAILED") from None
         self._promoted = True
@@ -362,6 +488,52 @@ class DatasetStaging:
             return
         except OSError:
             raise _publication_failure("STAGING_CLEANUP_FAILED") from None
+
+
+def reconcile_completed_staging_residual(
+    identity: PublicationIdentity,
+    operation_id: str,
+    destination_identity: str,
+) -> None:
+    """Reconcile a crash after the durable completion receipt but before
+    private metadata cleanup (REQ-P5-008 case C).
+
+    The operation IS completed — the vault receipt proves it.  The private
+    crash-state metadata (``transaction.json`` inside the staging root) must
+    not destroy a genuinely completed output. This recognizes the
+    interrupted cleanup: verifies the crash state says PROMOTED for the
+    SAME operation and destination, then removes the residual private
+    metadata so the idempotent completed retry can proceed. An unresolvable
+    residual is refused fail-closed with a stable typed classification.
+    """
+    state_path = identity.staging_root / "transaction.json"
+    try:
+        payload = json.loads(state_path.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # Unreadable residual: fail-closed rather than deleting an
+        # ambiguous state.
+        raise _publication_failure(
+            "COMPLETED_OPERATION_HAS_STAGING"
+        ) from None
+    if not isinstance(payload, dict):
+        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
+    if (
+        payload.get("phase") != PUBLICATION_TXN_PHASE_PROMOTED
+        or payload.get("operation_id") != operation_id
+        or payload.get("destination_identity") != destination_identity
+    ):
+        raise _publication_failure("COMPLETED_OPERATION_HAS_STAGING")
+    # The crash state proves the metadata cleanup was the ONLY step left;
+    # remove the residual private metadata now.
+    try:
+        tables = identity.staging_root / "tables"
+        if tables.exists():
+            tables.rmdir()
+        state_path.unlink()
+        identity.staging_root.rmdir()
+    except OSError:
+        # Non-critical: the completed state stands regardless.
+        pass
 
 
 def result_receipt(result: TwoPassResult) -> str:
