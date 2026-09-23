@@ -31,6 +31,7 @@ from dbf_anonymizer import (
     ErrorContext as _ErrorContext,
     CancellationError,
     ErrorCode,
+    PathError,
     ProgressEvent,
     PseudonymizationResult,
     RawByteEquivalence,
@@ -319,19 +320,17 @@ def test_clean_data_only_bundle_creation_and_standalone_pass(
     inventory = sorted(_hash_tree(tmp_path / "bundle"))
     assert inventory == paths + ["transfer-manifest.json"]
     # The bundle creation left the working dataset and the vault untouched;
-    # the only new artifacts are the bundle payload, the manifest, the
-    # transient engine-owned lock artifact and the engine-owned
-    # non-payload transaction marker of the P4 staging lifecycle (no
-    # DBF/FPT/manifest payload remains inside staging after promotion).
+    # the only new artifacts are the bundle payload and the transient
+    # engine-owned lock artifact. The successful private staging lifecycle
+    # leaves NO residue at all (REQ-P5-008 step 13: the staging root with
+    # its crash-state record is removed after the genuine promotion).
     created = set(_hash_tree(tmp_path)) - set(before_bundle)
     bundle_files = {
         relative for relative in created if relative.startswith("bundle/")
     }
     lock_files = {name for name in created if name.endswith(".lock")}
-    staging_residue = {name for name in created if ".staging" in name}
-    assert created == bundle_files | lock_files | staging_residue
-    for name in staging_residue:
-        assert name.endswith("transaction.json")
+    assert created == bundle_files | lock_files
+    assert not any(".staging" in name for name in created)
 
     # Standalone verification of the COPIED bundle with source AND vault gone.
     copied = tmp_path / "copied"
@@ -940,9 +939,11 @@ def test_cancellation_during_bundle_creation_is_typed_and_side_effect_free(
     assert not (tmp_path / "bundle").exists()
     after = _hash_tree(tmp_path)
     created = set(after) - set(before)
-    assert not any(name.endswith(".staging") for name in created) or all(
-        name.endswith("transaction.json") for name in created if ".staging" in name
-    )
+    # Cancellation before the atomic promotion publishes nothing and leaves
+    # NO private staging residue: only owned pre-promotion staging was
+    # created and it is fully cleaned by the typed cancellation path.
+    assert not any(name.endswith(".staging") for name in created)
+    assert not any(".staging" in name for name in created)
     assert _hash_tree(output) == {
         key[len("output/"):]: value
         for key, value in before.items()
@@ -2254,3 +2255,260 @@ def test_hostile_relationship_fingerprint_tokens_fail_standalone(
     assert caught.value.context.detail_code == "TRANSFER_MANIFEST_VALUE_INVALID"
     serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
     assert "C:\\private\\canary" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 durability window: controller checkpoint wiring + typed
+# cancellation inside the staged-payload fsync region (REQ-P1-008).
+# ---------------------------------------------------------------------------
+def test_bundle_payload_fsync_passes_controller_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-P1-008 regression: create_transfer_bundle passes ITS controller
+    cancellation probe into the staged-payload durability scan."""
+    from dbf_anonymizer.engine import publication as publication_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    captured: dict[str, object] = {}
+    real_fsync_tree = publication_module.fsync_tree
+
+    def spy(directory: object, **kwargs: object) -> object:
+        captured["checkpoint"] = kwargs.get("checkpoint")
+        return real_fsync_tree(directory, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(publication_module, "fsync_tree", spy)
+    bundle = _create(result, tmp_path)
+    assert bundle.verified is True
+    assert callable(captured["checkpoint"])
+
+
+def test_cancellation_inside_payload_fsync_is_typed_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation raised at a durability checkpoint BEFORE the atomic
+    promotion publishes nothing, cleans the owned staging and keeps the
+    typed OPERATION_CANCELLED semantics."""
+    from dbf_anonymizer.engine import publication as publication_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    output_before = _hash_tree(output)
+    vault_before = _hash_tree(vault.parent)
+    events: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+
+    def cancelled_fsync(directory: object, **kwargs: object) -> int:
+        raise CancellationError(
+            ErrorCode.OPERATION_CANCELLED,
+            context=_ErrorContext(
+                operation="create_transfer_bundle", detail_code="CANCELLED_BY_CHECK"
+            ),
+        )
+
+    monkeypatch.setattr(publication_module, "fsync_tree", cancelled_fsync)
+    with pytest.raises(CancellationError) as caught:
+        create_transfer_bundle(
+            result,
+            destination=tmp_path / "bundle",
+            progress=progress,
+        )
+    assert caught.value.code is ErrorCode.OPERATION_CANCELLED
+    assert caught.value.context.operation == "create_transfer_bundle"
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert not (tmp_path / "bundle").exists()
+    assert not any(tmp_path.glob("*.staging*"))
+    assert _hash_tree(output) == output_before
+    assert _hash_tree(vault.parent) == vault_before
+
+
+# ---------------------------------------------------------------------------
+# REQ-P5-008 publication transition boundaries for the bundle flow:
+# the atomic rename fact is never collapsed into "nothing was promoted".
+# ---------------------------------------------------------------------------
+def _fail_destination_parent_sync(
+    monkeypatch: pytest.MonkeyPatch, destination_parent: Path
+) -> None:
+    """Deterministically inject a genuine directory-sync failure for exactly
+    the destination parent directory (AFTER the real atomic rename)."""
+    from dbf_anonymizer import durability as durability_module
+    from dbf_anonymizer.errors import ErrorContext, PublicationError
+
+    real_sync = durability_module.sync_directory
+
+    def failing_sync(path: object) -> bool:
+        if Path(str(path)) == destination_parent:
+            raise PublicationError(
+                ErrorCode.PUBLICATION_INCOMPLETE,
+                context=ErrorContext(
+                    operation="durability",
+                    detail_code="DURABILITY_DIRECTORY_SYNC_FAILED",
+                ),
+            )
+        return real_sync(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(durability_module, "sync_directory", failing_sync)
+
+
+_BUNDLE_INVENTORY = [
+    "archive/data.dbf",
+    "archive/data.fpt",
+    "north/data.dbf",
+    "north/data.fpt",
+    "south/data.dbf",
+    "south/data.fpt",
+    "transfer-manifest.json",
+]
+
+
+def test_bundle_replace_failure_never_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary B: a failure OF os.replace itself means nothing was renamed
+    and nothing was published; owned pre-rename staging is cleaned and the
+    typed failure carries no rename fact."""
+    import os as os_module
+
+    from dbf_anonymizer.errors import PublicationError
+
+    result, source, output, vault = _prepare(tmp_path)
+    output_before = _hash_tree(output)
+    vault_before = _hash_tree(vault.parent)
+    events: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+
+    real_replace = os_module.replace
+    destination_root = tmp_path / "bundle"
+
+    def failing_replace(source_path: object, destination_path: object) -> None:
+        if Path(str(destination_path)) == destination_root:
+            raise OSError("simulated bundle rename failure")
+        real_replace(source_path, destination_path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os_module, "replace", failing_replace)
+    with pytest.raises(PublicationError) as caught:
+        create_transfer_bundle(
+            result,
+            destination=destination_root,
+            progress=progress,
+        )
+    assert caught.value.context.detail_code == "STAGING_PROMOTION_FAILED"
+    assert not destination_root.exists()
+    assert not any(tmp_path.glob("*.staging*"))
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert _hash_tree(output) == output_before
+    assert _hash_tree(vault.parent) == vault_before
+
+
+def test_bundle_sync_failure_after_rename_is_never_pre_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary C for the bundle flow: the real atomic os.replace succeeds
+    and the destination-parent directory sync then genuinely fails. The
+    public API returns the typed post-rename failure (never a false
+    completion), the renamed destination exists with EXACTLY the allowlisted
+    bundle payload, and the private crash state stays objectively
+    classifiable."""
+    from dbf_anonymizer.durability import PostRenameDurabilityError
+    from dbf_anonymizer.errors import PublicationError
+
+    result, source, output, vault = _prepare(tmp_path)
+    output_before = _hash_tree(output)
+    vault_before = _hash_tree(vault.parent)
+    events: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+
+    destination_root = tmp_path / "bundle"
+    _fail_destination_parent_sync(monkeypatch, tmp_path)
+    with pytest.raises(PublicationError) as caught:
+        create_transfer_bundle(
+            result,
+            destination=destination_root,
+            progress=progress,
+        )
+    assert isinstance(caught.value, PostRenameDurabilityError)
+    assert caught.value.renamed is True
+    assert caught.value.context.detail_code == (
+        "DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
+    )
+    # The rename HAS occurred: the final bundle destination exists.
+    assert destination_root.is_dir()
+    # The renamed bundle contains EXACTLY the allowlisted payload plus the
+    # sanitized manifest — no vault/recovery material, no staging residue.
+    inventory = sorted(_hash_tree(destination_root))
+    assert inventory == _BUNDLE_INVENTORY
+    for name in inventory:
+        lowered = name.lower()
+        assert "dictionary" not in lowered
+        assert not lowered.endswith((".sqlite3", "-wal", "-shm", ".journal"))
+    # The crash/publication state stays objectively classifiable: the
+    # private staging root with its READY_TO_PROMOTE record was NOT removed.
+    staging_roots = tuple(tmp_path.glob("*.staging"))
+    assert len(staging_roots) == 1
+    crash_state = json.loads(
+        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
+    )
+    assert crash_state["phase"] == "READY_TO_PROMOTE"
+    assert crash_state["schema_version"] == "1.1"
+    # No false COMPLETED event was emitted; source-side state is untouched.
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert _hash_tree(output) == output_before
+    assert _hash_tree(vault.parent) == vault_before
+    serialized = json.dumps(caught.value.to_dict(), sort_keys=True)
+    assert str(tmp_path) not in serialized
+    # Subsequent handling is deterministic and fail-closed.
+    with pytest.raises(PathError) as subsequent:
+        create_transfer_bundle(result, destination=destination_root)
+    assert subsequent.value.context.detail_code == "TRANSFER_TARGET_EXISTS"
+    assert destination_root.is_dir()
+
+
+def test_bundle_crash_after_rename_before_promoted_state_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary D for the bundle flow: the rename succeeded, the durable
+    PROMOTED crash state was not yet written. The destination exists, the
+    evidence is preserved and a subsequent invocation is deterministic and
+    fail-closed."""
+    from dbf_anonymizer.engine import publication as publication_module
+
+    result, source, output, vault = _prepare(tmp_path)
+    output_before = _hash_tree(output)
+    vault_before = _hash_tree(vault.parent)
+    events: list[ProgressEvent] = []
+
+    def progress(event: ProgressEvent) -> None:
+        events.append(event)
+
+    destination_root = tmp_path / "bundle"
+
+    def interrupted_mark(self: object) -> None:
+        raise RuntimeError("simulated crash before the PROMOTED state")
+
+    monkeypatch.setattr(
+        publication_module.DatasetStaging, "mark_promoted", interrupted_mark
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        create_transfer_bundle(
+            result,
+            destination=destination_root,
+            progress=progress,
+        )
+    assert destination_root.is_dir()
+    staging_roots = tuple(tmp_path.glob("*.staging"))
+    assert len(staging_roots) == 1
+    crash_state = json.loads(
+        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
+    )
+    assert crash_state["phase"] == "READY_TO_PROMOTE"
+    assert not any(event.event_code == "COMPLETED" for event in events)
+    assert _hash_tree(output) == output_before
+    assert _hash_tree(vault.parent) == vault_before
+    with pytest.raises(PathError) as subsequent:
+        create_transfer_bundle(result, destination=destination_root)
+    assert subsequent.value.context.detail_code == "TRANSFER_TARGET_EXISTS"
+    assert destination_root.is_dir()

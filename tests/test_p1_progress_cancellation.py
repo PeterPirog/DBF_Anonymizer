@@ -27,8 +27,10 @@ long-running operations (``build_plan`` / ``preflight``):
   stays byte-identical with zero created output/vault state (REQ-P0-004).
 
 WRITE / VERIFICATION / PUBLICATION safe points and no-partial-publication
-behavior are NOT claimed here: those operations do not exist yet (their
-owning P4/P5 requirements will reuse this layer).  Only approved synthetic
+behavior are realized by the implemented public service set (the P4 two-pass
+engine and the P5 verification / recovery / transfer services reuse this
+layer; see their dedicated suites for the complete safe-point evidence).
+Only approved synthetic
 fixtures and disposable ``tmp_path`` data are used; no production data.
 """
 

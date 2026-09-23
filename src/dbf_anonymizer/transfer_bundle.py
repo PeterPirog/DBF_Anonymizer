@@ -1073,6 +1073,9 @@ def create_transfer_bundle(
     finalization and atomic publication); cancellation before the atomic
     promotion leaves no completed bundle and cleaned owned staging; the
     single terminal completion is emitted only after genuine publication.
+    A successful creation removes the private staging root completely
+    (REQ-P5-008 step 13): no ``.dbf-anonymizer-*.staging`` residue remains
+    after a normal successful DATA_ONLY creation.
     """
     if not isinstance(result, PseudonymizationResult):
         raise TypeError("create_transfer_bundle requires a PseudonymizationResult")
@@ -1215,6 +1218,14 @@ def create_transfer_bundle(
                     manifest_bytes
                 ).hexdigest()
 
+                # --- 5b. REQ-P5-008 steps 5/6: flush + fsync every staged
+                # file and persist directory entries where supported, with
+                # cooperative cancellation checkpoints between files and
+                # directories (REQ-P1-008 — never an uncancellable
+                # durability region).
+                staging.persist_payload(checkpoint=control.check_cancelled)
+                staging.record_staged_fingerprint(manifest_fingerprint)
+
                 # --- 6. Staged bundle self-verification (BEFORE promotion) --
                 # The SAME private standalone validation core proves the
                 # complete staged bundle so the returned verified=True is
@@ -1229,12 +1240,26 @@ def create_transfer_bundle(
                 )
 
                 # --- 7. Atomic promotion ------------------------------------
+                # REQ-P5-008 step 8: durable READY_TO_PROMOTE state.
+                staging.mark_ready_to_promote(
+                    payload_fingerprint=manifest_fingerprint
+                )
                 control.start_phase(ProgressPhase.PUBLICATION)
                 # The last cancellation checkpoint immediately before the
                 # atomic promotion; the committed publication is never
                 # reclassified by a late poll.
                 control.check_cancelled()
                 staging.promote()
+                # REQ-P5-008 step 11: persist the PROMOTED crash state
+                # (private staging namespace) so reconciliation can classify
+                # a crash after replace.
+                staging.mark_promoted()
+                # REQ-P5-008 step 13: the successful operation leaves NO
+                # private staging residue — the crash-state record and the
+                # empty residual directories are removed AFTER the durable
+                # promotion (a failure here keeps the completed bundle
+                # standing and is surfaced typed, never silently ignored).
+                staging.remove_metadata_after_promotion()
             except BaseException as primary:
                 if isinstance(primary, Exception):
                     try:
