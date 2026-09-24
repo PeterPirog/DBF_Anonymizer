@@ -1,0 +1,283 @@
+"""REQ-P6-001 — the injected Windows/VFP index-backend protocol evidence.
+
+Proves the synchronous, transport-neutral, typed backend boundary: no
+import-time COM/subprocess/network dependency, standalone DATA_ONLY
+operation with ``index_backend=None``, deterministic test-double injection
+with consumed typed capability/result models, fail-closed unknown/malformed
+backend contracts, stable privacy-safe backend-failure conversion, JSON-safe
+bounded serialization and the established public API/boundary purity.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import dbf_anonymizer  # noqa: E402
+import tools.final_pipeline_benchmark  # noqa: E402,F401  (pipeline seam check)
+from dbf_anonymizer import (  # noqa: E402
+    INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+    INDEX_ARTIFACT_CLASSES,
+    INDEX_BACKEND_RESULT_STATUSES,
+    IndexBackend,
+    IndexBackendCapability,
+    IndexBackendError,
+    IndexBackendResult,
+    IndexRebuildRequest,
+    VerificationStatus,
+    build_plan,
+    preflight,
+    pseudonymize,
+    verify_dataset,
+)
+from dbf_anonymizer.index_backend import (  # noqa: E402
+    run_backend_rebuild,
+    validate_backend_capabilities,
+)
+from tests.support.deterministic_index_backend import (  # noqa: E402
+    DeterministicIndexBackend,
+)
+from tests.support.numeric_tables import (  # noqa: E402
+    numeric_field,
+    write_numeric_table,
+)
+
+_PRIVATE_DIAGNOSTIC = "private C:/secrets/backend.dbc diagnostic"
+
+
+def _tiny_plan(tmp_path: Path):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    write_numeric_tables(source)
+    return build_plan(str(source), str(output), str(vault))
+
+
+def write_numeric_tables(source: Path) -> None:
+    from tests.support.numeric_tables import write_numeric_table
+
+    write_numeric_table(
+        source,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "C", 14), numeric_field("AMT", "N", 9)),
+        [
+            {"CUST_ID": f"CUST{index:09d}", "AMT": index}
+            for index in range(30)
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic test-double backend: typed capabilities/results consumed
+# ---------------------------------------------------------------------------
+def test_deterministic_test_double_is_a_valid_public_backend() -> None:
+    backend = DeterministicIndexBackend()
+    # The runtime-checkable public protocol accepts the double.
+    assert isinstance(backend, IndexBackend)
+    capability = validate_backend_capabilities(backend)
+    assert backend.capabilities_calls == 1
+    assert capability.backend_id == "deterministic-test-double"
+    assert capability.protocol_schema_version == INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION
+    assert capability.vfp_runtime_available is False
+    payload = capability.to_dict()
+    reparsed = json.loads(json.dumps(payload, sort_keys=True))
+    assert reparsed == payload
+
+    request = IndexRebuildRequest(
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/customers.dbf",
+        definition="TAG CUSTOMER KEY CUSTOMER",
+    )
+    result = run_backend_rebuild(backend, request)
+    assert isinstance(result, IndexBackendResult)
+    assert result.status == "REBUILT"
+    assert backend.rebuild_requests == (request,)
+    assert result.to_dict() == json.loads(json.dumps(result.to_dict()))
+
+
+def test_injected_backend_is_consumed_by_the_public_service(
+    tmp_path: Path,
+) -> None:
+    """The REAL standalone pipeline runs unchanged with a backend injected
+    and its typed capabilities are consumed exactly once, fail-closed."""
+    plan = _tiny_plan(tmp_path)
+    backend = DeterministicIndexBackend()
+    result = pseudonymize(plan, index_backend=backend)
+    assert result.record_count == 30
+    assert backend.capabilities_calls == 1
+    verification = verify_dataset(result, source=tmp_path / "source",
+                                  vault=tmp_path / "vault" / "dictionary.sqlite3")
+    assert verification.status is VerificationStatus.PASS
+
+
+def test_public_service_rejects_non_protocol_objects(tmp_path: Path) -> None:
+    plan = _tiny_plan(tmp_path)
+    with pytest.raises(TypeError):
+        pseudonymize(plan, index_backend=object())  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed malformed / unknown backend contracts
+# ---------------------------------------------------------------------------
+class _ForeignCapabilityBackend(DeterministicIndexBackend):
+    def capabilities(self) -> object:
+        return {"backend_id": "foreign", "protocol_schema_version": "9.9"}
+
+
+class _UnknownProtocolBackend(DeterministicIndexBackend):
+    def capabilities(self) -> object:  # type: ignore[override]
+        raise ValueError(_PRIVATE_DIAGNOSTIC)
+
+
+class _ForeignResultBackend(DeterministicIndexBackend):
+    def rebuild_index(self, request: IndexRebuildRequest) -> object:
+        return {"status": "MAGIC"}
+
+
+def test_malformed_capability_schema_fails_closed() -> None:
+    with pytest.raises(IndexBackendError) as caught:
+        validate_backend_capabilities(_ForeignCapabilityBackend())
+    assert caught.value.context.detail_code == "INDEX_BACKEND_CAPABILITY_MALFORMED"
+    # The raw foreign payload never reaches the typed failure context.
+    assert "9.9" not in str(caught.value)
+
+
+def test_unknown_protocol_schema_version_fails_closed() -> None:
+    from dbf_anonymizer.models import IndexBackendCapability
+
+    with pytest.raises(ValueError):
+        IndexBackendCapability(
+            backend_id="unknown-schema",
+            backend_schema_version="1.0",
+            protocol_schema_version="9.9",
+            supports_structural_cdx_rebuild=True,
+            supports_standalone_idx_rebuild=True,
+            vfp_runtime_available=True,
+        )
+
+
+def test_backend_exception_becomes_a_stable_privacy_safe_error() -> None:
+    backend = _UnknownProtocolBackend()
+    with pytest.raises(IndexBackendError) as caught:
+        validate_backend_capabilities(backend)
+    # The typed error carries the registry-controlled message only.
+    assert caught.value.context.detail_code == "INDEX_BACKEND_CAPABILITIES_FAILED"
+    assert _PRIVATE_DIAGNOSTIC not in str(caught.value)
+    assert _PRIVATE_DIAGNOSTIC not in repr(caught.value)
+
+
+def test_run_backend_rebuild_wraps_failures_and_foreign_results() -> None:
+    backend = DeterministicIndexBackend()
+    backend.fail_rebuild_with = RuntimeError(_PRIVATE_DIAGNOSTIC)
+    request = IndexRebuildRequest(
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/customers.dbf",
+        definition="TAG KEY",
+    )
+    with pytest.raises(IndexBackendError) as caught:
+        run_backend_rebuild(backend, request)
+    assert caught.value.context.detail_code == "INDEX_BACKEND_REBUILD_FAILED"
+    assert _PRIVATE_DIAGNOSTIC not in str(caught.value)
+
+    foreign = _ForeignResultBackend()
+    with pytest.raises(IndexBackendError) as caught:
+        run_backend_rebuild(foreign, request)
+    assert caught.value.context.detail_code == "INDEX_BACKEND_RESULT_MALFORMED"
+
+
+def test_require_backend_support_fails_closed() -> None:
+    from dbf_anonymizer.index_backend import require_backend_support
+
+    capability = DeterministicIndexBackend(
+        supports_standalone_idx_rebuild=False
+    ).capabilities()
+    with pytest.raises(IndexBackendError) as caught:
+        require_backend_support(capability, "STANDALONE_IDX")
+    assert caught.value.context.detail_code == "INDEX_BACKEND_SUPPORT_MISSING"
+    require_backend_support(capability, "STRUCTURAL_CDX")  # declared: passes
+
+
+def test_request_and_result_models_are_bounded_and_closed() -> None:
+    with pytest.raises(ValueError):
+        IndexRebuildRequest(
+            protocol_schema_version="9.9",
+            artifact_class="STRUCTURAL_CDX",
+            table_path="north/customers.dbf",
+            definition="TAG x",
+        )
+    with pytest.raises(ValueError):
+        IndexRebuildRequest(
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="FOREIGN_CLASS",
+            table_path="north/customers.dbf",
+            definition="TAG x",
+        )
+    with pytest.raises(ValueError):
+        IndexRebuildRequest(
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="STRUCTURAL_CDX",
+            table_path="C:\\absolute\\path.dbf",
+            definition="TAG x",
+        )
+    with pytest.raises(ValueError):
+        IndexRebuildRequest(
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="STRUCTURAL_CDX",
+            table_path="north/customers.dbf",
+            definition="x" * 65537,
+        )
+    with pytest.raises(ValueError):
+        IndexBackendResult(
+            backend_id="x",
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="STRUCTURAL_CDX",
+            table_path="north/customers.dbf",
+            status="INVENTED",
+            detail_code="OK",
+        )
+    assert INDEX_ARTIFACT_CLASSES == ("STRUCTURAL_CDX", "STANDALONE_IDX")
+    assert INDEX_BACKEND_RESULT_STATUSES == ("REBUILT", "REFUSED", "FAILED")
+
+
+def test_backend_none_keeps_data_only_fully_standalone(tmp_path: Path) -> None:
+    """The default DATA_ONLY pipeline requires NO backend at all."""
+    plan = _tiny_plan(tmp_path)
+    check = preflight(plan)
+    assert check.ready
+    assert "DATA_ONLY_STANDALONE" in check.check_codes
+    result = pseudonymize(plan)  # index_backend defaults to None
+    assert result.record_count == 30
+    assert plan.output_profile is dbf_anonymizer.TransferProfile.DATA_ONLY
+    verification = verify_dataset(result, source=tmp_path / "source",
+                                  vault=tmp_path / "vault" / "dictionary.sqlite3")
+    assert verification.status is VerificationStatus.PASS
+
+
+def test_root_exports_are_import_time_pure() -> None:
+    """Root export surface exposes the protocol; the boundary module imports
+    no transport, subprocess, network or toolchain machinery (AST proof)."""
+    import ast
+
+    assert dbf_anonymizer.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.0"
+    assert "IndexBackend" in dbf_anonymizer.__all__
+    import dbf_anonymizer.index_backend as module
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    imported_roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    allowed_roots = {"__future__", "dbf_anonymizer", "dataclasses", "typing"}
+    assert imported_roots <= allowed_roots, sorted(imported_roots)

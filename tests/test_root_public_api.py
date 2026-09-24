@@ -43,6 +43,15 @@ OBSOLETE_0_3_EXPORTS = (
 EXPECTED_PUBLIC_EXPORTS = {
     "MODEL_SCHEMA_VERSION",
     "IDENTITY_PRIVACY_REVIEW_REQUIRED",
+    # REQ-P6-001: the injected Windows/VFP index-backend protocol boundary.
+    "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
+    "INDEX_ARTIFACT_CLASSES",
+    "INDEX_BACKEND_RESULT_STATUSES",
+    "IndexBackend",
+    "IndexBackendCapability",
+    "IndexRebuildRequest",
+    "IndexBackendResult",
+    "IndexBackendError",
     "Capabilities",
     "DatasetIdentity",
     "NumericIdentityReview",
@@ -90,6 +99,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "VerificationError",
     "RecoveryError",
     "TransferError",
+    "IndexBackendError",
     "CancellationError",
     # REQ-P1-008: the contained, classified callback-failure type is public so
     # consumers can catch callback failures without importing private modules.

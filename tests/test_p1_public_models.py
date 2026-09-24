@@ -217,6 +217,10 @@ def test_all_required_models_are_public_root_imports() -> None:
         "VerificationResult",
         "RecoveryResult",
         "TransferBundleResult",
+        # REQ-P6-001: the injected index-backend protocol models.
+        "IndexBackendCapability",
+        "IndexRebuildRequest",
+        "IndexBackendResult",
     }
     assert {model.__name__ for model in PUBLIC_MODEL_TYPES} == expected
 
@@ -232,7 +236,8 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in _samples():
         payload = model.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.3"
+        # REQ-P6-001 advanced the public model schema additively to 1.4.
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.4"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 

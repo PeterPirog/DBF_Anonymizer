@@ -122,7 +122,9 @@ __all__ = [
 ]
 
 #: Versioned identity of the sanitized public bundle manifest schema.
-TRANSFER_MANIFEST_SCHEMA_VERSION = "1.0"
+#: 1.1 (REQ-P6-002) adds the closed ``data_state`` vocabulary stating the
+#: truthful STANDALONE reduced-semantics nature of the DATA_ONLY dataset.
+TRANSFER_MANIFEST_SCHEMA_VERSION = "1.1"
 
 #: The manifest is the ONLY non-payload artifact inside a DATA_ONLY bundle.
 TRANSFER_MANIFEST_FILENAME = "transfer-manifest.json"
@@ -130,6 +132,12 @@ TRANSFER_MANIFEST_FILENAME = "transfer-manifest.json"
 #: The truthful index statement of a DATA_ONLY bundle: no index artifact is
 #: transferable as valid until authoritative P6 validation exists.
 _INDEX_STATE_DATA_ONLY = "DATA_ONLY_INDEX_OMITTED"
+
+#: The truthful DATA_ONLY dataset statement (REQ-P6-002): the bundle payload
+#: is a STANDALONE fresh DBF/FPT dataset with structural-CDX/DBC coupling
+#: removed and REDUCED application semantics; no VFP index validity and no
+#: DBC rules/triggers/relations are claimed.
+_DATA_STATE_STANDALONE = "STANDALONE_REDUCED_SEMANTICS"
 
 #: The exact creation-verification status vocabulary of schema 1.0: the
 #: producing service self-verified the staged bundle before promotion, and
@@ -151,6 +159,7 @@ _MANIFEST_TOP_LEVEL_KEYS = frozenset(
         "classification",
         "dataset_id",
         "index_state",
+        "data_state",
         "verification_status",
         "artifacts",
         "assurance",
@@ -481,6 +490,7 @@ def _build_manifest(
         "classification": "PSEUDONYMIZED",
         "dataset_id": result.dataset.dataset_id,
         "index_state": _INDEX_STATE_DATA_ONLY,
+        "data_state": _DATA_STATE_STANDALONE,
         "verification_status": _VERIFICATION_STATUS_CREATED,
         "artifacts": [
             {
@@ -635,6 +645,7 @@ def _validate_manifest_contract(
         "classification",
         "dataset_id",
         "index_state",
+        "data_state",
         "verification_status",
     ):
         _bounded_manifest_token(manifest[scalar], failure=fail)
@@ -646,6 +657,8 @@ def _validate_manifest_contract(
         raise fail("TRANSFER_CLASSIFICATION_INVALID")
     if manifest["index_state"] != _INDEX_STATE_DATA_ONLY:
         raise fail("TRANSFER_INDEX_STATE_UNTRUTHFUL")
+    if manifest["data_state"] != _DATA_STATE_STANDALONE:
+        raise fail("TRANSFER_DATA_STATE_UNTRUTHFUL")
     if manifest["verification_status"] not in _ALLOWED_VERIFICATION_STATUSES:
         raise fail("TRANSFER_VERIFICATION_STATUS_INVALID")
     if not manifest["dataset_id"].startswith("ds-") or len(
