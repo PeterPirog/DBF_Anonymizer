@@ -77,14 +77,6 @@ def _float_of(report: dict[str, object], field: str) -> float:
     return float(value)
 
 
-def _assert_privacy_safe(text: str) -> None:
-    assert "\\" not in text
-    assert "C:/" not in text
-    assert "C:\\" not in text
-    for token in _FORBIDDEN_TOKENS:
-        assert token not in text, token
-
-
 @pytest.fixture(scope="module")
 def benchmark(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
     """One tiny deterministic benchmark run shared by schema/privacy/bytes tests."""
@@ -323,7 +315,11 @@ def test_report_contains_no_absolute_paths(benchmark: SimpleNamespace) -> None:
     serialized = _serialized(benchmark.report)
     assert "\\" not in serialized
     assert str(benchmark.workspace) not in serialized
-    assert benchmark.workspace.drive.lower() not in serialized.lower()
+    # POSIX roots have an empty drive component; an empty substring would
+    # match every position, so the drive check applies only when one exists.
+    drive = benchmark.workspace.drive
+    if drive:
+        assert drive.lower() not in serialized.lower()
 
 
 def test_report_never_leaks_originals_memos_or_recovery_parameters(
