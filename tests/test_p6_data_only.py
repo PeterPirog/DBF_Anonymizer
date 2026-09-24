@@ -21,6 +21,7 @@ F. deleted records, NULL values, memo masking and declared PK/FK
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -61,6 +62,17 @@ def _copy_fixture(source_root: Path, fixture_relative: str, relative: str) -> No
     destination = source_root / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(_FIXTURE_VFP / fixture_relative, destination)
+
+
+def _hash_source_tree(source_root: Path) -> dict[str, str]:
+    """Hash every source artifact, including hostile unknown sidecars."""
+    return {
+        path.relative_to(source_root).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(source_root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _pipeline(tmp_path: Path, copies: tuple[tuple[str, str], ...]):
@@ -211,19 +223,48 @@ def test_standalone_idx_is_not_copied_and_no_rebuild_is_claimed(
 def test_hostile_combined_source_exports_only_approved_standalone_payload(
     tmp_path: Path,
 ) -> None:
-    plan, result, source, output, vault = _pipeline(
-        tmp_path,
-        (("structural/indexed_table.dbf", "combined/indexed_table.dbf"),
-         ("structural/indexed_table.cdx", "combined/indexed_table.cdx"),
-         ("idx/standalone_idx_table.dbf", "combined/standalone_idx_table.dbf"),
-         ("idx/code_idx.idx", "combined/code_idx.idx"),
-         ("dbc/dbc_bound_table.dbf", "combined/dbc_bound_table.dbf")),
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    copies = (
+        ("structural/indexed_table.dbf", "combined/indexed_table.dbf"),
+        ("structural/indexed_table.cdx", "combined/indexed_table.cdx"),
+        ("idx/standalone_idx_table.dbf", "combined/standalone_idx_table.dbf"),
+        ("idx/code_idx.idx", "combined/code_idx.idx"),
+        ("dbc/dbc_bound_table.dbf", "combined/dbc_bound_table.dbf"),
+        ("fixture.dbc", "fixture.dbc"),
+        ("fixture.dct", "fixture.dct"),
+        ("fixture.dcx", "fixture.dcx"),
     )
-    # Hostile unrelated sidecars next to the tables (unknown extensions and
-    # protected-state lookalikes) are NEVER exportable.
+    for fixture_relative, relative in copies:
+        _copy_fixture(source, fixture_relative, relative)
+    write_numeric_table(
+        source,
+        "combined/memo_table.dbf",
+        (numeric_field("KEY", "C", 12), numeric_field("NOTE", "M", 4)),
+        [
+            {"KEY": f"MEMO{index:08d}", "NOTE": f"PRIVATE-MEMO-{index}"}
+            for index in range(4)
+        ],
+    )
+
+    # Every hostile artifact exists BEFORE planning and execution.
     (source / "combined" / "notes.txt").write_bytes(b"unknown sidecar")
     (source / "combined" / "dictionary.sqlite3").write_bytes(b"hostile vault")
     (source / "combined" / "leftover.tmp").write_bytes(b"temp")
+    source_before = _hash_source_tree(source)
+    assert {
+        ".dbf", ".fpt", ".cdx", ".idx", ".dbc", ".dct", ".dcx",
+        ".txt", ".sqlite3", ".tmp",
+    } <= {Path(relative).suffix.lower() for relative in source_before}
+
+    plan = build_plan(str(source), str(output), str(vault))
+    check = preflight(plan)
+    assert check.ready, check.error_codes
+    result = pseudonymize(plan)
+    verification = verify_dataset(result, source=source, vault=vault)
+    assert verification.status is VerificationStatus.PASS
+    assert _hash_source_tree(source) == source_before
 
     # No stale structural/DBC artifact reached the working output tree.
     for suffix in _FORBIDDEN_IN_DATA_ONLY:
@@ -232,8 +273,35 @@ def test_hostile_combined_source_exports_only_approved_standalone_payload(
     assert output_files == [
         "dbc_bound_table.dbf",
         "indexed_table.dbf",
+        "memo_table.dbf",
+        "memo_table.fpt",
         "standalone_idx_table.dbf",
     ]
+
+    bundle_root = tmp_path / "bundle"
+    bundle = create_transfer_bundle(result, destination=str(bundle_root))
+    assert bundle.verified is True
+    verified = verify_transfer_bundle(str(bundle_root))
+    assert verified.verified is True
+    bundle_files = sorted(
+        path.relative_to(bundle_root).as_posix()
+        for path in bundle_root.rglob("*")
+        if path.is_file()
+    )
+    assert bundle_files == [
+        "combined/dbc_bound_table.dbf",
+        "combined/indexed_table.dbf",
+        "combined/memo_table.dbf",
+        "combined/memo_table.fpt",
+        "combined/standalone_idx_table.dbf",
+        "transfer-manifest.json",
+    ]
+
+    stale = bundle_root / "combined" / "injected.cdx"
+    stale.write_bytes(b"stale index")
+    with pytest.raises(TransferError) as caught:
+        verify_transfer_bundle(str(bundle_root))
+    assert caught.value.context.detail_code == "TRANSFER_FORBIDDEN_ARTIFACT"
 
 
 # ---------------------------------------------------------------------------

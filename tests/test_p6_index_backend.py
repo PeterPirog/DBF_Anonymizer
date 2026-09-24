@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,6 @@ from dbf_anonymizer import (  # noqa: E402
     IndexBackendCapability,
     IndexBackendError,
     IndexBackendResult,
-    IndexRebuildRequest,
     VerificationStatus,
     build_plan,
     preflight,
@@ -38,6 +38,7 @@ from dbf_anonymizer import (  # noqa: E402
     verify_dataset,
 )
 from dbf_anonymizer.index_backend import (  # noqa: E402
+    IndexRebuildRequest,
     run_backend_rebuild,
     validate_backend_capabilities,
 )
@@ -49,7 +50,12 @@ from tests.support.numeric_tables import (  # noqa: E402
     write_numeric_table,
 )
 
-_PRIVATE_DIAGNOSTIC = "private C:/secrets/backend.dbc diagnostic"
+_PRIVATE_CANARIES = (
+    "ORIGINAL-CANARY-987654",
+    "C:\\synthetic-private\\secret.dbc",
+    "synthetic-secret-token",
+)
+_PRIVATE_DIAGNOSTIC = " | ".join(_PRIVATE_CANARIES)
 
 
 def _tiny_plan(tmp_path: Path):
@@ -142,6 +148,18 @@ class _ForeignResultBackend(DeterministicIndexBackend):
         return {"status": "MAGIC"}
 
 
+class _HostileTypedCapabilityBackend(DeterministicIndexBackend):
+    def capabilities(self) -> IndexBackendCapability:
+        raise IndexBackendError(
+            dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED,
+            context=dbf_anonymizer.ErrorContext(
+                operation="index_backend",
+                table_path="ORIGINAL-CANARY-987654.dbf",
+                detail_code="synthetic-secret-token",
+            ),
+        )
+
+
 def test_malformed_capability_schema_fails_closed() -> None:
     with pytest.raises(IndexBackendError) as caught:
         validate_backend_capabilities(_ForeignCapabilityBackend())
@@ -168,10 +186,41 @@ def test_backend_exception_becomes_a_stable_privacy_safe_error() -> None:
     backend = _UnknownProtocolBackend()
     with pytest.raises(IndexBackendError) as caught:
         validate_backend_capabilities(backend)
-    # The typed error carries the registry-controlled message only.
-    assert caught.value.context.detail_code == "INDEX_BACKEND_CAPABILITIES_FAILED"
-    assert _PRIVATE_DIAGNOSTIC not in str(caught.value)
-    assert _PRIVATE_DIAGNOSTIC not in repr(caught.value)
+    error = caught.value
+    # The typed error carries the registry-controlled message only, and the
+    # untrusted exception is suppressed from the normal traceback chain.
+    assert error.code.value == "INDEX_BACKEND_FAILED"
+    assert error.context.detail_code == "INDEX_BACKEND_CAPABILITIES_FAILED"
+    rendered = (
+        str(error),
+        repr(error),
+        json.dumps(error.to_dict(), sort_keys=True),
+        "".join(traceback.format_exception(error)),
+        json.dumps(error.context.to_dict(), sort_keys=True),
+    )
+    assert error.__cause__ is None
+    for canary in _PRIVATE_CANARIES:
+        assert all(canary not in surface for surface in rendered)
+
+
+def test_backend_cannot_smuggle_a_typed_error_context() -> None:
+    with pytest.raises(IndexBackendError) as caught:
+        validate_backend_capabilities(_HostileTypedCapabilityBackend())
+    error = caught.value
+    assert error.context.to_dict() == {
+        "operation": "index_backend",
+        "artifact_path": None,
+        "table_path": None,
+        "policy_rule": None,
+        "relationship_id": None,
+        "detail_code": "INDEX_BACKEND_CAPABILITIES_FAILED",
+    }
+    assert error.__cause__ is None
+    rendered = json.dumps(error.to_dict(), sort_keys=True) + "".join(
+        traceback.format_exception(error)
+    )
+    assert "ORIGINAL-CANARY-987654" not in rendered
+    assert "synthetic-secret-token" not in rendered
 
 
 def test_run_backend_rebuild_wraps_failures_and_foreign_results() -> None:
@@ -185,8 +234,19 @@ def test_run_backend_rebuild_wraps_failures_and_foreign_results() -> None:
     )
     with pytest.raises(IndexBackendError) as caught:
         run_backend_rebuild(backend, request)
-    assert caught.value.context.detail_code == "INDEX_BACKEND_REBUILD_FAILED"
-    assert _PRIVATE_DIAGNOSTIC not in str(caught.value)
+    error = caught.value
+    assert error.code.value == "INDEX_BACKEND_FAILED"
+    assert error.context.detail_code == "INDEX_BACKEND_REBUILD_FAILED"
+    rendered = (
+        str(error),
+        repr(error),
+        json.dumps(error.to_dict(), sort_keys=True),
+        "".join(traceback.format_exception(error)),
+        json.dumps(error.context.to_dict(), sort_keys=True),
+    )
+    assert error.__cause__ is None
+    for canary in _PRIVATE_CANARIES:
+        assert all(canary not in surface for surface in rendered)
 
     foreign = _ForeignResultBackend()
     with pytest.raises(IndexBackendError) as caught:
@@ -206,7 +266,7 @@ def test_require_backend_support_fails_closed() -> None:
     require_backend_support(capability, "STRUCTURAL_CDX")  # declared: passes
 
 
-def test_request_and_result_models_are_bounded_and_closed() -> None:
+def test_request_and_result_contracts_are_bounded_and_closed() -> None:
     with pytest.raises(ValueError):
         IndexRebuildRequest(
             protocol_schema_version="9.9",
@@ -246,6 +306,39 @@ def test_request_and_result_models_are_bounded_and_closed() -> None:
         )
     assert INDEX_ARTIFACT_CLASSES == ("STRUCTURAL_CDX", "STANDALONE_IDX")
     assert INDEX_BACKEND_RESULT_STATUSES == ("REBUILT", "REFUSED", "FAILED")
+
+
+def test_index_definition_has_no_public_json_serialization_route() -> None:
+    from dbf_anonymizer.models import PUBLIC_MODEL_TYPES, PublicModel
+
+    definition = " | ".join(_PRIVATE_CANARIES)
+    request = IndexRebuildRequest(
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/customers.dbf",
+        definition=definition,
+    )
+    assert not isinstance(request, PublicModel)
+    assert IndexRebuildRequest not in PUBLIC_MODEL_TYPES
+    assert not hasattr(request, "to_dict")
+    assert "IndexRebuildRequest" not in dbf_anonymizer.__all__
+    assert not hasattr(dbf_anonymizer, "IndexRebuildRequest")
+
+    backend = DeterministicIndexBackend()
+    capability = validate_backend_capabilities(backend)
+    result = run_backend_rebuild(backend, request)
+    error = dbf_anonymizer.IndexBackendError(
+        dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED,
+        context=dbf_anonymizer.ErrorContext(
+            operation="index_backend", detail_code="INDEX_BACKEND_REBUILD_FAILED"
+        ),
+    )
+    public_json = json.dumps(
+        [capability.to_dict(), result.to_dict(), error.to_dict()], sort_keys=True
+    )
+    assert backend.rebuild_requests == (request,)
+    for canary in _PRIVATE_CANARIES:
+        assert canary not in public_json
 
 
 def test_backend_none_keeps_data_only_fully_standalone(tmp_path: Path) -> None:

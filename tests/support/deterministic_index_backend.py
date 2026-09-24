@@ -11,9 +11,9 @@ from __future__ import annotations
 from dbf_anonymizer.models import (
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     IndexBackendCapability,
-    IndexRebuildRequest,
     IndexBackendResult,
 )
+from dbf_anonymizer.index_backend import IndexRebuildRequest
 
 
 class DeterministicIndexBackend:

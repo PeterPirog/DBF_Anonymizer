@@ -38,8 +38,8 @@ from dbf_anonymizer.models import (
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     INDEX_ARTIFACT_CLASSES,
     IndexBackendCapability,
-    IndexRebuildRequest,
     IndexBackendResult,
+    _normalized_relative_path,
 )
 
 __all__ = [
@@ -59,6 +59,42 @@ __all__ = [
 ]
 
 _BACKEND_OPERATION = "index_backend"
+_MAX_INDEX_DEFINITION_LENGTH = 65536
+
+
+@dataclass(frozen=True, slots=True)
+class IndexRebuildRequest:
+    """Protected process-local input for one authoritative index operation.
+
+    This is deliberately NOT a ``PublicModel`` and has no ``to_dict`` method.
+    Its raw ``definition`` belongs only to the future P6-003 protected-staging
+    lifecycle and may be passed in process to an injected backend. It must
+    never enter public JSON, manifests, results, progress, errors or logs.
+    """
+
+    protocol_schema_version: str
+    artifact_class: str
+    table_path: str
+    definition: str
+
+    def __post_init__(self) -> None:
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
+            raise ValueError(
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+            )
+        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
+            raise ValueError(
+                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
+            )
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        if not isinstance(self.definition, str):
+            raise TypeError("definition must be text")
+        if not self.definition or len(self.definition) > _MAX_INDEX_DEFINITION_LENGTH:
+            raise ValueError(
+                "definition must be non-empty text of at most "
+                f"{_MAX_INDEX_DEFINITION_LENGTH} characters"
+            )
 
 
 def index_backend_failure(
@@ -107,10 +143,8 @@ def validate_backend_capabilities(
     """
     try:
         capability = backend.capabilities()
-    except IndexBackendError:
-        raise
-    except Exception as exc:
-        raise index_backend_failure("INDEX_BACKEND_CAPABILITIES_FAILED") from exc
+    except Exception:
+        raise index_backend_failure("INDEX_BACKEND_CAPABILITIES_FAILED") from None
     if not isinstance(capability, IndexBackendCapability):
         # The closed model constructor already rejects unknown protocol
         # schema versions and mis-typed fields; a foreign object is not
@@ -147,10 +181,8 @@ def run_backend_rebuild(
     """
     try:
         result = backend.rebuild_index(request)
-    except IndexBackendError:
-        raise
-    except Exception as exc:
-        raise index_backend_failure("INDEX_BACKEND_REBUILD_FAILED") from exc
+    except Exception:
+        raise index_backend_failure("INDEX_BACKEND_REBUILD_FAILED") from None
     if not isinstance(result, IndexBackendResult):
         raise index_backend_failure("INDEX_BACKEND_RESULT_MALFORMED")
     return result

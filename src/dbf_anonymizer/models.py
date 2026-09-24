@@ -21,9 +21,6 @@ MODEL_SCHEMA_VERSION = "1.4"
 #: A backend capability/result that declares any other version fails closed.
 INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.0"
 
-#: Bounded size of one protected-staging index definition handed to a backend.
-_MAX_INDEX_DEFINITION_LENGTH = 65536
-
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonDict: TypeAlias = dict[str, JsonValue]
@@ -839,51 +836,6 @@ INDEX_BACKEND_RESULT_STATUSES: tuple[str, ...] = (
 
 
 @dataclass(frozen=True, slots=True)
-class IndexRebuildRequest(PublicModel):
-    """Bounded request for one authoritative index artifact (REQ-P6-001).
-
-    ``table_path`` is the normalized RELATIVE dataset path only.  The
-    ``definition`` payload is the protected-staging index definition content
-    that P6-003 hands to the backend; it is bounded text and is never part
-    of any manifest, log or progress event.
-    """
-
-    protocol_schema_version: str
-    artifact_class: str
-    table_path: str
-    definition: str
-
-    def __post_init__(self) -> None:
-        _validated_code(
-            self.protocol_schema_version, field_name="protocol_schema_version"
-        )
-        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
-            raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
-            )
-        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
-        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
-        if not self.definition or len(self.definition) > _MAX_INDEX_DEFINITION_LENGTH:
-            raise ValueError(
-                "definition must be non-empty text of at most "
-                f"{_MAX_INDEX_DEFINITION_LENGTH} characters"
-            )
-
-    def to_dict(self) -> JsonDict:
-        return _payload(
-            "IndexRebuildRequest",
-            protocol_schema_version=self.protocol_schema_version,
-            artifact_class=self.artifact_class,
-            table_path=self.table_path,
-            definition=self.definition,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class IndexBackendCapability(PublicModel):
     """JSON-safe capability statement of ONE injected backend (REQ-P6-001).
 
@@ -987,7 +939,6 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     RecoveryResult,
     TransferBundleResult,
     IndexBackendCapability,
-    IndexRebuildRequest,
     IndexBackendResult,
 )
 
@@ -1019,6 +970,5 @@ __all__ = [
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
     "IndexBackendCapability",
-    "IndexRebuildRequest",
     "IndexBackendResult",
 ]

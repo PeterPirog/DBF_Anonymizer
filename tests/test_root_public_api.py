@@ -49,7 +49,6 @@ EXPECTED_PUBLIC_EXPORTS = {
     "INDEX_BACKEND_RESULT_STATUSES",
     "IndexBackend",
     "IndexBackendCapability",
-    "IndexRebuildRequest",
     "IndexBackendResult",
     "IndexBackendError",
     "Capabilities",
@@ -117,6 +116,10 @@ def test_obsolete_0_3_operations_are_not_exported() -> None:
 
 def test_public_surface_is_exactly_the_current_1_0_contract() -> None:
     assert set(dbf_anonymizer.__all__) == EXPECTED_PUBLIC_EXPORTS
+
+
+def test_public_export_list_has_no_duplicates() -> None:
+    assert len(dbf_anonymizer.__all__) == len(set(dbf_anonymizer.__all__))
 
 
 def test_future_operations_are_not_faked_before_their_requirements() -> None:

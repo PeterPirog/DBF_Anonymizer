@@ -219,7 +219,6 @@ def test_all_required_models_are_public_root_imports() -> None:
         "TransferBundleResult",
         # REQ-P6-001: the injected index-backend protocol models.
         "IndexBackendCapability",
-        "IndexRebuildRequest",
         "IndexBackendResult",
     }
     assert {model.__name__ for model in PUBLIC_MODEL_TYPES} == expected
