@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -322,6 +323,62 @@ def test_report_contains_no_absolute_paths(benchmark: SimpleNamespace) -> None:
         assert drive.lower() not in serialized.lower()
 
 
+# ---------------------------------------------------------------------------
+# C. the closed schema rejects non-finite and mis-typed numbers
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "field",
+    (
+        "wall_seconds",
+        "records_per_second",
+        "sqlite_seconds",
+        "dbf_fpt_write_seconds",
+        "verification_seconds",
+    ),
+)
+@pytest.mark.parametrize(
+    "bad_value", (float("nan"), float("inf"), float("-inf"), float(-1.0))
+)
+def test_report_rejects_non_finite_and_negative_timing_fields(
+    benchmark: SimpleNamespace, field: str, bad_value: float
+) -> None:
+    report = dict(benchmark.report)
+    report[field] = bad_value
+    with pytest.raises(bench.BenchmarkError):
+        bench._validate_report_shape(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (
+        ("record_count", True),  # bool must not pass as an int
+        ("record_count", 110.0),  # float must not pass as an int
+        ("source_bytes", False),
+        ("temporary_peak_bytes", -1),
+        ("workers", 1.5),
+    ),
+)
+def test_report_rejects_mistyped_integer_fields(
+    benchmark: SimpleNamespace, field: str, bad_value: object
+) -> None:
+    report = dict(benchmark.report)
+    report[field] = bad_value
+    with pytest.raises(bench.BenchmarkError):
+        bench._validate_report_shape(report)
+
+
+def test_serialized_report_is_strict_machine_json(benchmark: SimpleNamespace) -> None:
+    """The machine artifact must be STRICT JSON: no NaN/Infinity tokens can
+    ever be emitted for a validated report (defense in depth with the
+    schema-level rejection above)."""
+    serialized = json.dumps(
+        benchmark.report, sort_keys=True, ensure_ascii=True, allow_nan=False
+    )
+    assert "NaN" not in serialized
+    assert "Infinity" not in serialized
+    assert json.loads(serialized) == benchmark.report
+
+
 def test_report_never_leaks_originals_memos_or_recovery_parameters(
     benchmark: SimpleNamespace,
 ) -> None:
@@ -439,10 +496,270 @@ def test_temporary_peak_bytes_is_observed_using_the_documented_rule(
     temporary_peak = _int_of(report, "temporary_peak_bytes")
     assert temporary_peak > 0
     # The documented rule observes engine-owned transient artifacts (staging
-    # trees, engine lock files, the pass1 spool and evidence shards) — the
-    # final output and vault sizes are explicitly excluded.
+    # trees AND regular lock files, the pass1 spool file with its sidecars
+    # and evidence shard directories) — the final output and vault sizes are
+    # explicitly excluded.
     assert temporary_peak != _int_of(report, "output_bytes")
     assert temporary_peak != _int_of(report, "vault_bytes")
+
+
+# ---------------------------------------------------------------------------
+# L2. deterministic transient observer: regular files AND directories
+# ---------------------------------------------------------------------------
+def test_transient_observer_counts_regular_files_and_directories_exactly(
+    tmp_path: Path,
+) -> None:
+    """Isolated synthetic observer workspace with KNOWN sizes: every class of
+    engine-owned transient artifact must contribute its exact bytes —
+    regular spool/sidecar/lock files INCLUDED — while final output, source
+    and the durable vault file must contribute NOTHING."""
+    destination_parent = tmp_path
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    # Vault side: regular spool file + its three sidecars (transient).
+    (vault / "pass1-state.sqlite3").write_bytes(b"x" * 1000)
+    (vault / "pass1-state.sqlite3-wal").write_bytes(b"x" * 400)
+    (vault / "pass1-state.sqlite3-shm").write_bytes(b"x" * 200)
+    (vault / "pass1-state.sqlite3-journal").write_bytes(b"x" * 150)
+    # The durable vault file is NEVER transient.
+    (vault / "dictionary.sqlite3").write_bytes(b"x" * 7777)
+    # Evidence shard DIRECTORY (transient).
+    evidence = vault / ".pass2-evidence-op0001"
+    evidence.mkdir()
+    (evidence / "shard-a.bin").write_bytes(b"x" * 3000)
+
+    # Destination side: staging DIRECTORY (transient) with known payload.
+    staging = destination_parent / ".dbf-anonymizer-ab12cd34.staging"
+    (staging / "dataset" / "north").mkdir(parents=True)
+    (staging / "dataset" / "north" / "customers.dbf").write_bytes(b"x" * 1234)
+    (staging / "dataset" / "south").mkdir()
+    (staging / "dataset" / "south" / "orders.dbf").write_bytes(b"x" * 4321)
+    # Regular engine lock artifact (transient regular FILE).
+    (destination_parent / ".dbf-anonymizer-op0001.lock").write_bytes(b"x" * 64)
+    # Final output and source trees are NEVER transient.
+    output = destination_parent / "output"
+    output.mkdir()
+    (output / "customers.dbf").write_bytes(b"x" * 9999)
+    source = destination_parent / "source"
+    source.mkdir()
+    (source / "customers.dbf").write_bytes(b"x" * 8888)
+
+    sampler = bench._TransientSampler(destination_parent, vault)
+    observed = sampler._observed_bytes()
+    # 1000 + 400 + 200 + 150 (spool + sidecars, regular files)
+    # + 3000 (evidence directory) + 1234 + 4321 (staging directory tree)
+    # + 64 (regular lock file) = 10369.
+    assert observed == 10369
+    # And a single entry observation classifies both artifact kinds.
+    assert bench._transient_entry_bytes(vault / "pass1-state.sqlite3") == 1000
+    assert bench._transient_entry_bytes(evidence) == 3000
+
+
+def test_disappearing_transient_file_does_not_corrupt_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spool/sidecar file vanishing between directory listing and stat
+    (ordinary engine cleanup race) contributes nothing instead of raising."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    spool = vault / "pass1-state.sqlite3"
+    spool.write_bytes(b"x" * 500)
+    real_stat = Path.stat
+    races = {"count": 0}
+
+    def racing_stat(self: Path, **kwargs: object) -> object:
+        races["count"] += 1
+        if races["count"] == 1:
+            raise FileNotFoundError(2, "file vanished mid-sample")
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    assert bench._transient_entry_bytes(spool) == 0
+    monkeypatch.undo()
+    # A later sample observes the surviving file normally.
+    assert bench._transient_entry_bytes(spool) == 500
+
+
+def test_disappearing_transient_directory_does_not_corrupt_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staging directory vanishing between listing and enumeration
+    (ordinary engine cleanup race) contributes nothing instead of raising."""
+    staging = tmp_path / ".dbf-anonymizer-deadbeef.staging"
+    staging.mkdir()
+    (staging / "table.dbf").write_bytes(b"x" * 256)
+
+    def racing_scandir(path: object) -> object:
+        raise FileNotFoundError(2, "staging vanished mid-sample")
+
+    monkeypatch.setattr(bench.os, "scandir", racing_scandir)
+    assert bench._transient_entry_bytes(staging) == 0
+    monkeypatch.undo()
+    assert bench._transient_entry_bytes(staging) == 256
+
+
+# ---------------------------------------------------------------------------
+# B2. sqlite_seconds covers the FULL SQLite API activity (no blind spots)
+# ---------------------------------------------------------------------------
+class _FakeMonotonicClock:
+    """Deterministic monotonic clock for threshold-free timing evidence.
+
+    Every ``now()`` read advances by exactly 1 ms, so each timed API call
+    (one start read + one stop read) contributes EXACTLY 1 ms regardless of
+    the real duration of the operation.
+    """
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        return self.reads * 0.001
+
+
+def _fake_clock_collector() -> tuple[bench._SqliteCollector, _FakeMonotonicClock]:
+    collector = bench._SqliteCollector()
+    clock = _FakeMonotonicClock()
+    collector._clock = clock
+    return collector, clock
+
+
+def test_connect_execute_commit_rollback_and_close_are_observed() -> None:
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    # ONE timed open so far.
+    assert abs(collector.total_seconds - 0.001) < 1e-12
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE t (v INTEGER)")
+    connection.commit()
+    connection.rollback()
+    cursor.close()
+    connection.close()
+    # open + execute + commit + rollback + cursor.close + connection.close
+    assert abs(collector.total_seconds - 0.006) < 1e-12
+
+
+def test_transaction_exit_is_observed_exactly_once() -> None:
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE t (v INTEGER)")
+    collector.total_seconds = 0.0
+    with connection:
+        cursor.execute("INSERT INTO t VALUES (1)")
+    # The transaction exit is ONE timed API call (its internal commit is
+    # part of that call — no internal double counting).
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+
+
+def test_fetchone_fetchmany_fetchall_are_observed() -> None:
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE t (v INTEGER)")
+    cursor.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(10)])
+    connection.commit()
+    collector.total_seconds = 0.0
+    assert len(cursor.fetchall()) == 0  # INSERT has no result rows
+    assert abs(collector.total_seconds - 0.001) < 1e-12
+    collector.total_seconds = 0.0
+    rows = connection.execute("SELECT v FROM t ORDER BY v").fetchall()
+    assert [row[0] for row in rows] == list(range(10))
+    # execute + fetchall
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+    collector.total_seconds = 0.0
+    first = connection.execute("SELECT v FROM t ORDER BY v").fetchone()
+    assert first == (0,)
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+    collector.total_seconds = 0.0
+    many = connection.execute("SELECT v FROM t ORDER BY v").fetchmany(4)
+    assert [row[0] for row in many] == [0, 1, 2, 3]
+    # execute + fetchmany
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+
+
+def test_cursor_iteration_row_stepping_is_observed() -> None:
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE t (v INTEGER)")
+    cursor.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(10)])
+    connection.commit()
+    select = connection.execute("SELECT v FROM t ORDER BY v")
+    collector.total_seconds = 0.0
+    rows = list(select)
+    assert [row[0] for row in rows] == list(range(10))
+    # 10 row-stepping next() calls plus the final raising next() — every
+    # step of the iteration is timed (list() consumes until StopIteration).
+    assert abs(collector.total_seconds - 0.011) < 1e-12
+
+
+def test_wrappers_preserve_real_return_semantics() -> None:
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE t (v INTEGER)")
+    cursor.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(10)])
+    # sqlite3 cursors are their own iterators; the wrapper stays the iterator.
+    select = connection.execute("SELECT v FROM t ORDER BY v")
+    assert isinstance(select, bench._TimedCursor)
+    assert select.fetchone() == (0,)
+    assert [row[0] for row in select.fetchmany(3)] == [1, 2, 3]
+    assert [row[0] for row in select.fetchall()] == list(range(4, 10))
+    # executemany returns the cursor itself; the wrapper preserves that.
+    assert cursor.executemany("INSERT INTO t VALUES (?)", [(100,)]) is cursor
+    # commit/rollback return None exactly like the real API.
+    assert connection.commit() is None
+    assert connection.rollback() is None
+    # Forwarded attributes still reach the real cursor.
+    assert cursor.rowcount == 1
+    connection.close()
+
+
+def test_execute_fetchall_chain_is_timed_exactly_twice() -> None:
+    """No double counting: the production pattern
+    ``connection.execute(...).fetchall()`` is EXACTLY two timed API calls
+    (the execute and the fetch), regardless of who created the cursor."""
+    collector, _clock = _fake_clock_collector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    setup = connection.cursor()
+    setup.execute("CREATE TABLE t (v INTEGER)")
+    setup.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(10)])
+    connection.commit()
+    collector.total_seconds = 0.0
+    rows = connection.execute("SELECT v FROM t ORDER BY v").fetchall()
+    assert [row[0] for row in rows] == list(range(10))
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+    cursor = connection.cursor()
+    collector.total_seconds = 0.0
+    rows = cursor.execute("SELECT v FROM t ORDER BY v").fetchall()
+    assert [row[0] for row in rows] == list(range(10))
+    assert abs(collector.total_seconds - 0.002) < 1e-12
+    connection.close()
+
+
+def test_production_execute_fetchall_pattern_reaches_sqlite_seconds() -> None:
+    """Integration regression on REAL SQLite with the real clock: the
+    production ``connection.execute(...).fetchall()`` pattern must let BOTH
+    the execute contribution and the fetch contribution reach the
+    cumulative sqlite_seconds total."""
+    collector = bench._SqliteCollector()
+    connection = bench._timed_connect(sqlite3.connect, collector)(":memory:")
+    setup = connection.cursor()
+    setup.execute("CREATE TABLE t (v INTEGER)")
+    setup.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(5000)])
+    connection.commit()
+    assert collector.total_seconds > 0
+    before_fetch = collector.total_seconds
+    cursor = connection.execute("SELECT v FROM t")
+    after_execute = collector.total_seconds
+    fetched = cursor.fetchall()
+    after_fetch = collector.total_seconds
+    assert len(fetched) == 5000
+    assert after_execute - before_fetch > 0
+    assert after_fetch - after_execute > 0
+    connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +816,10 @@ def test_committed_baseline_is_closed_schema_and_privacy_safe() -> None:
     assert report["index_backend_seconds"] is None
     serialized = json.dumps(report, sort_keys=True, ensure_ascii=True)
     assert "\\" not in serialized
+    # Strict machine JSON: no non-finite tokens in the committed artifact.
+    raw_json_text = baseline_json.read_text(encoding="utf-8")
+    assert "NaN" not in raw_json_text
+    assert "Infinity" not in raw_json_text
     for token in _FORBIDDEN_TOKENS:
         assert token not in serialized
     # The committed summary is exactly the deterministic rendering of the
@@ -555,6 +876,9 @@ def test_cli_writes_machine_and_human_artifacts_from_a_disposable_workspace(
     # ensure_ascii JSON escaping renders any leaked backslash path component
     # as a doubled backslash; the closed result carries no such component.
     assert "\\\\" not in serialized
+    # Strict machine JSON artifact: no non-finite tokens.
+    assert "NaN" not in serialized
+    assert "Infinity" not in serialized
     for token in _FORBIDDEN_TOKENS:
         assert token not in serialized
         assert token not in summary.read_text(encoding="utf-8")

@@ -22,13 +22,19 @@ Metric definitions (truthful, documented, never fabricated):
   DBF/FPT writing performed by the production pass2 kernel
   (``write_fresh_table``), observed through a timing wrapper around that
   SAME production function (never an artificial writer loop).
-* ``sqlite_seconds`` — cumulative wall time of the actual SQLite activity
-  (statement execution, ``executemany``/``executescript``, commit,
-  rollback and transaction exit) of EVERY ``sqlite3`` connection created
-  during the measured window. All DBF_Anonymizer SQLite/vault/spool
-  activity enters through ``sqlite3.connect``, which is the ONE clean
-  instrumentation boundary. It is measured, never estimated as
-  ``total_wall - write_time``.
+* ``sqlite_seconds`` — CUMULATIVE wall time spent inside the SQLite API
+  operations the measured DBF_Anonymizer pipeline actually performs during
+  pseudonymize + verify_dataset, including connection creation/open,
+  connection and cursor ``execute``/``executemany``/``executescript``,
+  ``fetchone``/``fetchmany``/``fetchall``, cursor iteration/row stepping,
+  cursor ``close``, ``commit``, ``rollback``, connection transaction exit
+  and connection ``close``.  Every connection enters through
+  ``sqlite3.connect`` (the ONE clean instrumentation boundary) and every
+  cursor handed out stays wrapped, so later fetch/stepping work remains
+  timed.  Worker threads run concurrently, so this is cumulative ACTIVITY
+  time that can legitimately exceed ``wall_seconds``; it is never an
+  exclusive process wall time and is measured, never estimated by
+  subtraction.
 * ``verification_seconds`` — ``time.perf_counter`` around the public
   ``verify_dataset`` operation (not included in ``wall_seconds``).
 * ``peak_memory_bytes`` — ``tracemalloc`` peak of Python allocations
@@ -37,11 +43,14 @@ Metric definitions (truthful, documented, never fabricated):
   ctypes/psapi); it is a lower bound on true process RSS.
 * ``temporary_peak_bytes`` — the maximum over samples taken every 25 ms of
   the total byte size of all ENGINE-OWNED TRANSIENT artifacts: the staging
-  trees and engine lock files matching ``.dbf-anonymizer-*`` beside the
-  destination, plus the pass1 spool state files (``pass1-state.sqlite3``
-  and sidecars) and ``.pass2-evidence-*`` shard directories beside the
-  vault. Final output and vault bytes are EXCLUDED; artifacts deleted
-  during the run count only while observed, so this sampled peak is a
+  trees AND regular lock artifacts matching ``.dbf-anonymizer-*`` beside
+  the destination, plus the pass1 spool state file (``pass1-state.sqlite3``)
+  and its ``-wal``/``-shm``/``-journal`` sidecars (regular files) and the
+  ``.pass2-evidence-*`` shard directories beside the vault.  A regular
+  file contributes its ``st_size``; a directory contributes the recursive
+  sum of its regular files; artifacts that vanish during sampling
+  contribute what was observable instead of failing the run.  Final output
+  and durable vault bytes are EXCLUDED, so this sampled peak is a
   documented approximation of the transient footprint, never the final
   output size.
 * ``index_backend_applicable`` / ``index_backend_seconds`` — P6 does not
@@ -79,9 +88,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform as platform_module
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -209,9 +220,8 @@ def _tree_bytes(root: Path) -> int:
     return total
 
 
-def _tree_bytes_observed(root: Path) -> int:
-    """Total byte size of regular files under root, tolerating entries that
-    vanish while the sampler walks them (concurrent engine cleanup).
+def _transient_tree_bytes(root: Path) -> int:
+    """Recursive byte sum of regular files under a transient DIRECTORY.
 
     The walk holds each directory enumeration handle for the SHORTEST
     possible time (one ``os.scandir`` block per directory, closed before any
@@ -221,6 +231,9 @@ def _tree_bytes_observed(root: Path) -> int:
     atomic promotion rename fail transiently on Windows (``WinError 5``),
     which would be the instrumentation CHANGING observed production
     behavior — this walk shape keeps that interference window negligible.
+    Entries that vanish during the walk (concurrent engine cleanup) are
+    tolerated and contribute nothing instead of failing the measurement.
+    Symlinks/reparse aliases are never followed.
     """
     total = 0
     stack = [root]
@@ -239,6 +252,30 @@ def _tree_bytes_observed(root: Path) -> int:
         except OSError:
             continue
     return total
+
+
+def _transient_entry_bytes(entry: Path) -> int:
+    """Bytes of ONE engine-owned transient artifact, file OR directory.
+
+    The production engine owns both kinds of transient artifacts: regular
+    files (the ``pass1-state.sqlite3`` spool, its ``-wal``/``-shm``/
+    ``-journal`` sidecars, regular engine lock files) and directories
+    (staging trees and ``.pass2-evidence-*`` shard directories).  A regular
+    file contributes its actual ``st_size``; a directory contributes the
+    recursive sum of its regular files; an artifact that disappears
+    concurrently (``FileNotFoundError``/``OSError`` race with ordinary
+    engine cleanup) contributes nothing instead of corrupting the run.
+    Symlinks/reparse-like aliases are never followed.
+    """
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except OSError:
+        return 0
+    if stat.S_ISDIR(info.st_mode):
+        return _transient_tree_bytes(entry)
+    if stat.S_ISREG(info.st_mode):
+        return info.st_size
+    return 0
 
 
 def _tree_hashes(root: Path) -> dict[str, str]:
@@ -330,13 +367,24 @@ def write_benchmark_workload(
 # Optional, harness-local instrumentation
 # ---------------------------------------------------------------------------
 class _SqliteCollector:
-    """Thread-safe cumulative SQLite wall-time collector."""
+    """Thread-safe cumulative SQLite API wall-time collector.
 
-    __slots__ = ("_lock", "total_seconds")
+    ``sqlite_seconds`` is CUMULATIVE activity time: worker threads run
+    concurrently, so the total can legitimately EXCEED ``wall_seconds``.
+    It is never an exclusive process wall time and never derived by
+    subtraction.  The clock is injectable so tests can produce
+    deterministic, threshold-free evidence with a monotonic fake clock.
+    """
+
+    __slots__ = ("_clock", "_lock", "total_seconds")
 
     def __init__(self) -> None:
+        self._clock = time.perf_counter
         self._lock = threading.Lock()
         self.total_seconds = 0.0
+
+    def now(self) -> float:
+        return self._clock()
 
     def add(self, seconds: float) -> None:
         with self._lock:
@@ -344,45 +392,124 @@ class _SqliteCollector:
 
 
 class _TimedCursor:
-    __slots__ = ("_cursor", "_collector")
+    """Times every SQLite cursor API call, including fetch and stepping.
+
+    ``sqlite3.Cursor.execute``/``executemany``/``executescript`` return the
+    cursor ITSELF, so the wrapper must return itself for those calls —
+    otherwise a later ``.fetchall()`` on the returned object would bypass
+    the timing wrapper.  Unlisted attribute access is forwarded unchanged.
+    """
+
+    __slots__ = ("_collector", "_cursor")
 
     def __init__(self, cursor: Any, collector: _SqliteCollector) -> None:
         object.__setattr__(self, "_cursor", cursor)
         object.__setattr__(self, "_collector", collector)
 
     def execute(self, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
-            return self._cursor.execute(*args, **kwargs)
+            result = self._cursor.execute(*args, **kwargs)
+            # sqlite3.Cursor.execute returns the cursor itself: keep the
+            # caller inside the timed wrapper (real return semantics).
+            return self if result is self._cursor else result
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def executemany(self, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
-            return self._cursor.executemany(*args, **kwargs)
+            result = self._cursor.executemany(*args, **kwargs)
+            return self if result is self._cursor else result
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def executescript(self, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
-            return self._cursor.executescript(*args, **kwargs)
+            result = self._cursor.executescript(*args, **kwargs)
+            return self if result is self._cursor else result
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
+
+    def fetchone(self, *args: Any, **kwargs: Any) -> Any:
+        started = self._collector.now()
+        try:
+            return self._cursor.fetchone(*args, **kwargs)
+        finally:
+            self._collector.add(self._collector.now() - started)
+
+    def fetchmany(self, *args: Any, **kwargs: Any) -> Any:
+        started = self._collector.now()
+        try:
+            return self._cursor.fetchmany(*args, **kwargs)
+        finally:
+            self._collector.add(self._collector.now() - started)
+
+    def fetchall(self, *args: Any, **kwargs: Any) -> Any:
+        started = self._collector.now()
+        try:
+            return self._cursor.fetchall(*args, **kwargs)
+        finally:
+            self._collector.add(self._collector.now() - started)
+
+    def close(self) -> None:
+        started = self._collector.now()
+        try:
+            return self._cursor.close()
+        finally:
+            self._collector.add(self._collector.now() - started)
+
+    def __iter__(self) -> "_TimedCursor":
+        # sqlite3.Cursor is its own iterator; row stepping happens in
+        # __next__, which is timed below (cursor iteration coverage).
+        return self
+
+    def __next__(self) -> Any:
+        started = self._collector.now()
+        try:
+            return next(self._cursor)
+        finally:
+            self._collector.add(self._collector.now() - started)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("_cursor", "_collector"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._cursor, name, value)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(object.__getattribute__(self, "_cursor"), name)
+
+
+def _timed_connect(
+    real_connect: Any, collector: _SqliteCollector
+) -> Any:
+    """Build the instrumented ``sqlite3.connect`` replacement.
+
+    The connection OPEN itself is part of ``sqlite_seconds``.
+    """
+
+    def connecting(*args: Any, **kwargs: Any) -> Any:
+        started = collector.now()
+        try:
+            return _TimedConnection(real_connect(*args, **kwargs), collector)
+        finally:
+            collector.add(collector.now() - started)
+
+    return connecting
 
 
 class _TimedConnection:
     """A forwarding proxy that TIMES the real production SQLite activity.
 
     Every method still calls the REAL sqlite3 connection/cursor: the
-    pipeline semantics are unchanged; only wall time is observed.
+    pipeline semantics are unchanged; only wall time is observed.  Cursor
+    objects handed out remain wrapped so their later fetch/iteration work
+    is timed as well.  Connection open and close are part of the metric.
     """
 
-    __slots__ = ("_connection", "_collector")
+    __slots__ = ("_collector", "_connection")
 
     def __init__(self, connection: Any, collector: _SqliteCollector) -> None:
         object.__setattr__(self, "_connection", connection)
@@ -392,50 +519,57 @@ class _TimedConnection:
         return _TimedCursor(self._connection.cursor(*args, **kwargs), self._collector)
 
     def execute(self, *args: Any, **kwargs: Any) -> _TimedCursor:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
             return _TimedCursor(self._connection.execute(*args, **kwargs), self._collector)
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def executemany(self, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
             return self._connection.executemany(*args, **kwargs)
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def executescript(self, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
             return self._connection.executescript(*args, **kwargs)
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def commit(self) -> None:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
-            self._connection.commit()
+            return self._connection.commit()
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def rollback(self) -> None:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
-            self._connection.rollback()
+            return self._connection.rollback()
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
+
+    def close(self) -> None:
+        started = self._collector.now()
+        try:
+            return self._connection.close()
+        finally:
+            self._collector.add(self._collector.now() - started)
 
     def __enter__(self) -> "_TimedConnection":
         self._connection.__enter__()
         return self
 
     def __exit__(self, *args: Any) -> Any:
-        started = time.perf_counter()
+        started = self._collector.now()
         try:
             return self._connection.__exit__(*args)
         finally:
-            self._collector.add(time.perf_counter() - started)
+            self._collector.add(self._collector.now() - started)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in ("_connection", "_collector"):
@@ -485,7 +619,7 @@ class _TransientSampler:
         try:
             for entry in self._destination_parent.iterdir():
                 if entry.name.startswith(_ENGINE_TRANSIENT_PREFIX):
-                    total += _tree_bytes_observed(entry)
+                    total += _transient_entry_bytes(entry)
         except OSError:
             pass
         try:
@@ -493,7 +627,7 @@ class _TransientSampler:
                 if entry.name == PASS1_STATE_FILENAME or entry.name.startswith(
                     PASS1_STATE_FILENAME + "-"
                 ) or entry.name.startswith(PASS2_EVIDENCE_PREFIX):
-                    total += _tree_bytes_observed(entry)
+                    total += _transient_entry_bytes(entry)
         except OSError:
             pass
         return total
@@ -630,10 +764,7 @@ def _run_benchmark_once(
     sqlite_collector = _SqliteCollector()
     write_collector = _WriteCollector()
 
-    real_connect = sqlite3.connect
-
-    def connecting(*args: Any, **kwargs: Any) -> Any:
-        return _TimedConnection(real_connect(*args, **kwargs), sqlite_collector)
+    connecting = _timed_connect(sqlite3.connect, sqlite_collector)
 
     real_write_fresh_table = pass2_module.write_fresh_table
 
@@ -645,6 +776,7 @@ def _run_benchmark_once(
             write_collector.add(time.perf_counter() - started)
 
     sampler = _TransientSampler(workspace, vault_dir)
+    real_connect = sqlite3.connect
     try:
         sqlite3.connect = connecting
         pass2_module.write_fresh_table = timed_write_fresh_table
@@ -751,8 +883,8 @@ def _validate_report_shape(report: dict[str, object]) -> None:
                  "output_bytes", "vault_bytes", "sqlite_bytes",
                  "temporary_peak_bytes", "peak_memory_bytes"):
         value = report[name]
-        if not isinstance(value, int) or value < 0:
-            raise BenchmarkError(f"non-finite or negative numeric field: {name}")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise BenchmarkError(f"non-integer or negative numeric field: {name}")
     for name in (
         "wall_seconds",
         "records_per_second",
@@ -761,8 +893,12 @@ def _validate_report_shape(report: dict[str, object]) -> None:
         "verification_seconds",
     ):
         value = report[name]
-        if not isinstance(value, (int, float)) or value < 0:
-            raise BenchmarkError(f"non-finite or negative timing field: {name}")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise BenchmarkError(f"non-numeric timing field: {name}")
+        if not math.isfinite(float(value)):
+            raise BenchmarkError(f"non-finite timing field: {name}")
+        if float(value) < 0:
+            raise BenchmarkError(f"negative timing field: {name}")
     if report["index_backend_applicable"] is not False:
         raise BenchmarkError("index backend must be explicitly not applicable without P6")
     if report["index_backend_seconds"] is not None:
@@ -772,7 +908,7 @@ def _validate_report_shape(report: dict[str, object]) -> None:
     if not isinstance(records_per_second_value, (int, float)) or not isinstance(
         wall_seconds_value, (int, float)
     ):
-        raise BenchmarkError("non-finite timing field")
+        raise BenchmarkError("non-numeric timing field")
     record_count_value = report["record_count"]
     if not isinstance(record_count_value, int):
         raise BenchmarkError("non-integer record count")
@@ -827,11 +963,11 @@ def render_markdown(report: dict[str, object]) -> str:
         f"- output bytes: {report['output_bytes']}",
         f"- vault bytes: {report['vault_bytes']}",
         f"- sqlite bytes: {report['sqlite_bytes']}",
-        f"- temporary peak bytes (sampled engine-owned transient artifacts): {report['temporary_peak_bytes']}",
+        f"- temporary peak bytes (sampled engine-owned transient artifacts, files and directories): {report['temporary_peak_bytes']}",
         "",
         "## Timing",
         "",
-        f"- sqlite time (vault/spool/evidence activity, measured): {report['sqlite_seconds']} s",
+        f"- sqlite time (CUMULATIVE SQLite API activity: open, execute, fetch, row stepping, commit, close — measured): {report['sqlite_seconds']} s",
         f"- DBF/FPT fresh write time (pass2 kernel, measured): {report['dbf_fpt_write_seconds']} s",
         f"- verification (public verify_dataset): {report['verification_seconds']} s",
         "",
@@ -865,7 +1001,11 @@ def main(argv: list[str] | None = None) -> int:
             archived=arguments.archived,
             workers=arguments.workers,
         )
-    machine = json.dumps(run.report, sort_keys=True, indent=2, ensure_ascii=True)
+    # allow_nan=False: the machine artifact is STRICT JSON — schema drift can
+    # never silently emit NaN/Infinity (the closed schema rejects them too).
+    machine = json.dumps(
+        run.report, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False
+    )
     summary = render_markdown(run.report)
     if arguments.output:
         output_path = Path(arguments.output)

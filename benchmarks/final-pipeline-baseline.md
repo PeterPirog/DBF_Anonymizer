@@ -25,25 +25,25 @@
 
 ## Throughput
 
-- wall (pseudonymize): 658.516652 s
-- records per second: 7.28911
+- wall (pseudonymize): 706.662381 s
+- records per second: 6.792494
 
 ## Memory
 
-- peak memory (tracemalloc, pseudonymize + verification): 2776175 bytes
+- peak memory (tracemalloc, pseudonymize + verification): 2708110 bytes
 
 ## Storage
 
 - output bytes: 521243
-- vault bytes: 1720320
-- sqlite bytes: 1720320
-- temporary peak bytes (sampled engine-owned transient artifacts): 701750
+- vault bytes: 1716224
+- sqlite bytes: 1716224
+- temporary peak bytes (sampled engine-owned transient artifacts, files and directories): 2282807
 
 ## Timing
 
-- sqlite time (vault/spool/evidence activity, measured): 474.637022 s
-- DBF/FPT fresh write time (pass2 kernel, measured): 6.047244 s
-- verification (public verify_dataset): 0.873175 s
+- sqlite time (CUMULATIVE SQLite API activity: open, execute, fetch, row stepping, commit, close — measured): 531.316517 s
+- DBF/FPT fresh write time (pass2 kernel, measured): 6.163725 s
+- verification (public verify_dataset): 0.880296 s
 
 ## Index backend
 
