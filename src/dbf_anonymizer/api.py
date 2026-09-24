@@ -113,9 +113,9 @@ def pseudonymize(
     BEFORE any transformation work: an unknown protocol schema version, a
     malformed contract or a backend failure becomes the stable typed
     privacy-safe :class:`~dbf_anonymizer.errors.IndexBackendError`.  The
-    default DATA_ONLY profile never requires a backend; a profile that
-    requires authoritative index work fails truthfully while the real
-    rebuild integration does not exist yet (REQ-P6-003).
+    default DATA_ONLY profile never requires a backend. VFP_INDEXED uses the
+    validated backend operation-scoped for protected-staging rebuild and
+    objective open/count/tag verification (REQ-P6-003).
 
     ONE invocation is ONE logical operation with ONE canonical operation id
     (REQ-P1-008): the durable publication identity, the vault operation row,
@@ -189,7 +189,16 @@ def pseudonymize(
     # controller: bounded progress for the potentially long read-only scan
     # stages, and NO preflight terminal completion (the public service owns
     # the invocation's single COMPLETED event).
-    check = _evaluate_plan_readonly(plan, control)
+    check = _evaluate_plan_readonly(
+        plan,
+        control,
+        injected_backend_capability=(
+            backend_contract.capability
+            if backend_contract is not None
+            and plan.output_profile is TransferProfile.VFP_INDEXED
+            else None
+        ),
+    )
     if not check.ready:
         retry_only = (
             set(check.error_codes) == {PreflightCode.DESTINATION_CONFLICT}

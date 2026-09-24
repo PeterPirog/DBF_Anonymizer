@@ -58,6 +58,7 @@ class TableDirective:
     temporal_fields: tuple[str, ...]
     relation_fields: tuple[str, ...] = ()
     structural_cdx: bool = False
+    record_count: int = 0
 
 
 @dataclass(frozen=True)

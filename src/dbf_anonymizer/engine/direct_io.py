@@ -205,9 +205,9 @@ def standalone_output_schema(schema: TableSchema) -> TableSchema:
 
     The reduced application semantics (no structural index validity, no DBC
     semantics) are reported by the planning/preflight/transfer layers; the
-    authoritative ``VFP_INDEXED`` rebuild strategy (REQ-P6-003) will hand
-    index definitions to the injected backend separately from this data
-    schema.
+    authoritative ``VFP_INDEXED`` rebuild strategy (REQ-P6-003) delegates
+    source-definition discovery and staged-table rebuild to the injected
+    backend separately from this data schema.
     """
     return dataclasses.replace(
         schema,
@@ -238,8 +238,8 @@ def vfp_indexed_output_schema(schema: TableSchema) -> TableSchema:
       copied from the source DBF and no private dbfbridge module is used:
       the public ``dbfbridge.write_table`` owns every written byte.
 
-    The authoritative index definitions are handed to the injected backend
-    separately from this data schema.
+    The authoritative backend reads source definitions and applies them to
+    the protected staged table separately from this data schema.
     """
     return dataclasses.replace(
         schema,

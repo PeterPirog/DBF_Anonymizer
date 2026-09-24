@@ -27,6 +27,7 @@ Design invariants of this boundary:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from dbf_anonymizer.errors import (
@@ -37,10 +38,11 @@ from dbf_anonymizer.errors import (
 from dbf_anonymizer.models import (
     INDEX_ARTIFACT_CLASSES,
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+    INDEX_BACKEND_RESULT_STATUSES,
+    INDEX_VERIFICATION_DETAIL_CODES,
     INDEX_VERIFICATION_STATUSES,
     IndexBackendCapability,
     IndexBackendResult,
-    IndexVerificationRequest,
     IndexVerificationResult,
     _normalized_relative_path,
 )
@@ -54,6 +56,7 @@ __all__ = [
     "IndexBackend",
     "IndexBackendCapability",
     "IndexRebuildRequest",
+    "IndexRebuildOutcome",
     "IndexBackendResult",
     "IndexBackendError",
     "IndexBackendContract",
@@ -64,11 +67,47 @@ __all__ = [
     "require_backend_verification",
     "run_backend_verification",
     "IndexVerificationRequest",
+    "IndexVerificationOutcome",
     "IndexVerificationResult",
+    "require_backend_runtime",
 ]
 
 _BACKEND_OPERATION = "index_backend"
-_MAX_INDEX_DEFINITION_LENGTH = 65536
+_MAX_TAG_COUNT = 256
+_MAX_TAG_NAME_LENGTH = 128
+
+
+def _validated_tag_inventory(
+    tags: object, *, field_name: str, allow_empty: bool = False
+) -> tuple[str, ...]:
+    if not isinstance(tags, tuple):
+        raise TypeError(f"{field_name} must be a tuple of strings")
+    minimum = 0 if allow_empty else 1
+    if len(tags) < minimum or len(tags) > _MAX_TAG_COUNT:
+        raise ValueError(
+            f"{field_name} must contain from {minimum} to {_MAX_TAG_COUNT} tags"
+        )
+    normalized: list[str] = []
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise TypeError(f"each {field_name} item must be a string")
+        if not tag or len(tag) > _MAX_TAG_NAME_LENGTH:
+            raise ValueError(
+                f"each {field_name} item must contain from 1 to "
+                f"{_MAX_TAG_NAME_LENGTH} characters"
+            )
+        normalized.append(tag.upper())
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} must not contain duplicate tags")
+    return tuple(normalized)
+
+
+def _validated_absolute_path(path: object, *, field_name: str) -> Path:
+    if not isinstance(path, Path):
+        raise TypeError(f"{field_name} must be a pathlib.Path")
+    if not path.is_absolute():
+        raise ValueError(f"{field_name} must be absolute")
+    return path
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,15 +115,17 @@ class IndexRebuildRequest:
     """Protected process-local input for one authoritative index operation.
 
     This is deliberately NOT a ``PublicModel`` and has no ``to_dict`` method.
-    Its raw ``definition`` belongs only to the future P6-003 protected-staging
-    lifecycle and may be passed in process to an injected backend. It must
-    never enter public JSON, manifests, results, progress, errors or logs.
+    The authoritative backend reads definitions from ``source_table_path``
+    and applies them to ``staged_table_path``. DBF_Anonymizer neither parses
+    CDX nor receives raw definitions. Both absolute paths stay process-local
+    and must never enter public JSON, manifests, results, progress or errors.
     """
 
     protocol_schema_version: str
     artifact_class: str
     table_path: str
-    definition: str
+    source_table_path: Path
+    staged_table_path: Path
 
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
@@ -97,13 +138,113 @@ class IndexRebuildRequest:
                 "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
             )
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
-        if not isinstance(self.definition, str):
-            raise TypeError("definition must be text")
-        if not self.definition or len(self.definition) > _MAX_INDEX_DEFINITION_LENGTH:
+        object.__setattr__(
+            self,
+            "source_table_path",
+            _validated_absolute_path(
+                self.source_table_path, field_name="source_table_path"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "staged_table_path",
+            _validated_absolute_path(
+                self.staged_table_path, field_name="staged_table_path"
+            ),
+        )
+        if self.source_table_path == self.staged_table_path:
+            raise ValueError("source_table_path and staged_table_path must differ")
+
+
+@dataclass(frozen=True, slots=True)
+class IndexRebuildOutcome:
+    """Process-local rebuild verdict plus source-derived tag expectations."""
+
+    result: IndexBackendResult
+    expected_tag_inventory: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, IndexBackendResult):
+            raise TypeError("result must be an IndexBackendResult")
+        object.__setattr__(
+            self,
+            "expected_tag_inventory",
+            _validated_tag_inventory(
+                self.expected_tag_inventory,
+                field_name="expected_tag_inventory",
+                allow_empty=self.result.status != "REBUILT",
+            ),
+        )
+        if self.result.status == "REBUILT" and not self.expected_tag_inventory:
+            raise ValueError("REBUILT requires expected tag inventory")
+        if self.result.status != "REBUILT" and self.expected_tag_inventory:
+            raise ValueError("non-REBUILT outcomes must not claim expected tags")
+
+
+@dataclass(frozen=True, slots=True)
+class IndexVerificationRequest:
+    """Process-local request to inspect the rebuilt staged table and index."""
+
+    protocol_schema_version: str
+    artifact_class: str
+    table_path: str
+    staged_table_path: Path
+
+    def __post_init__(self) -> None:
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "definition must be non-empty text of at most "
-                f"{_MAX_INDEX_DEFINITION_LENGTH} characters"
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
+        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
+            raise ValueError(
+                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
+            )
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        object.__setattr__(
+            self,
+            "staged_table_path",
+            _validated_absolute_path(
+                self.staged_table_path, field_name="staged_table_path"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IndexVerificationOutcome:
+    """Process-local objective evidence from opening the rebuilt staged table."""
+
+    result: IndexVerificationResult
+    table_opened: bool
+    actual_record_count: int
+    actual_tag_inventory: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, IndexVerificationResult):
+            raise TypeError("result must be an IndexVerificationResult")
+        if not isinstance(self.table_opened, bool):
+            raise TypeError("table_opened must be a genuine bool")
+        if (
+            isinstance(self.actual_record_count, bool)
+            or not isinstance(self.actual_record_count, int)
+            or self.actual_record_count < 0
+        ):
+            raise TypeError("actual_record_count must be a non-negative int")
+        object.__setattr__(
+            self,
+            "actual_tag_inventory",
+            _validated_tag_inventory(
+                self.actual_tag_inventory,
+                field_name="actual_tag_inventory",
+                allow_empty=self.result.status != "VERIFIED",
+            ),
+        )
+        if self.result.status in {"VERIFIED", "MISMATCH"} and not self.table_opened:
+            raise ValueError(
+                f"{self.result.status} requires table_opened evidence"
+            )
+        if self.result.detail_code == "OPEN_FAILED" and self.table_opened:
+            raise ValueError("OPEN_FAILED requires table_opened=False")
 
 
 def index_backend_failure(
@@ -135,11 +276,11 @@ class IndexBackend(Protocol):
         """Return the backend's validated capability statement."""
         ...
 
-    def rebuild_index(self, request: IndexRebuildRequest) -> IndexBackendResult:
+    def rebuild_index(self, request: IndexRebuildRequest) -> IndexRebuildOutcome:
         """Perform one authoritative index artifact operation."""
         ...
 
-    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationResult:
+    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationOutcome:
         """Perform one authoritative index verification operation.
 
         Verifies that the rebuilt index matches the expected state:
@@ -191,7 +332,7 @@ def require_backend_support(
 def run_backend_rebuild(
     backend: IndexBackend,
     request: IndexRebuildRequest,
-) -> IndexBackendResult:
+) -> IndexRebuildOutcome:
     """Run one backend rebuild call behind the typed, privacy-safe boundary.
 
     The result is validated through the closed public model constructor
@@ -202,8 +343,15 @@ def run_backend_rebuild(
         result = backend.rebuild_index(request)
     except Exception:
         raise index_backend_failure("INDEX_BACKEND_REBUILD_FAILED") from None
-    if not isinstance(result, IndexBackendResult):
+    if not isinstance(result, IndexRebuildOutcome):
         raise index_backend_failure("INDEX_BACKEND_RESULT_MALFORMED")
+    verdict = result.result
+    if (
+        verdict.protocol_schema_version != request.protocol_schema_version
+        or verdict.artifact_class != request.artifact_class
+        or verdict.table_path != request.table_path
+    ):
+        raise index_backend_failure("INDEX_BACKEND_RESULT_MISMATCH")
     return result
 
 
@@ -218,10 +366,16 @@ def require_backend_verification(
         raise index_backend_failure("INDEX_BACKEND_VERIFICATION_SUPPORT_MISSING")
 
 
+def require_backend_runtime(capability: IndexBackendCapability) -> None:
+    """Fail closed when no authoritative VFP-compatible runtime is available."""
+    if not capability.vfp_runtime_available:
+        raise index_backend_failure("INDEX_BACKEND_RUNTIME_UNAVAILABLE")
+
+
 def run_backend_verification(
     backend: IndexBackend,
     request: IndexVerificationRequest,
-) -> IndexVerificationResult:
+) -> IndexVerificationOutcome:
     """Run one backend verification call behind the typed, privacy-safe boundary.
 
     The result is validated through the closed public model constructor
@@ -232,8 +386,15 @@ def run_backend_verification(
         result = backend.verify_index(request)
     except Exception:
         raise index_backend_failure("INDEX_BACKEND_VERIFICATION_FAILED") from None
-    if not isinstance(result, IndexVerificationResult):
+    if not isinstance(result, IndexVerificationOutcome):
         raise index_backend_failure("INDEX_BACKEND_VERIFICATION_RESULT_MALFORMED")
+    verdict = result.result
+    if (
+        verdict.protocol_schema_version != request.protocol_schema_version
+        or verdict.artifact_class != request.artifact_class
+        or verdict.table_path != request.table_path
+    ):
+        raise index_backend_failure("INDEX_BACKEND_VERIFICATION_RESULT_MISMATCH")
     return result
 
 

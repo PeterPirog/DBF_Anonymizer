@@ -40,7 +40,11 @@ from dbf_anonymizer import (  # noqa: E402
     verify_dataset,
 )
 from dbf_anonymizer.index_backend import (  # noqa: E402
+    IndexRebuildOutcome,
     IndexRebuildRequest,
+    IndexVerificationOutcome,
+    IndexVerificationRequest,
+    require_backend_runtime,
     run_backend_rebuild,
     validate_backend_capabilities,
 )
@@ -82,10 +86,24 @@ def write_numeric_tables(source: Path) -> None:
     )
 
 
+def _protected_request(tmp_path: Path) -> IndexRebuildRequest:
+    source = tmp_path / "source"
+    staging = tmp_path / "protected-staging"
+    write_numeric_tables(source)
+    write_numeric_tables(staging)
+    return IndexRebuildRequest(
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/customers.dbf",
+        source_table_path=(source / "north/customers.dbf").resolve(),
+        staged_table_path=(staging / "north/customers.dbf").resolve(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Deterministic test-double backend: typed capabilities/results consumed
 # ---------------------------------------------------------------------------
-def test_deterministic_test_double_is_a_valid_public_backend() -> None:
+def test_deterministic_test_double_is_a_valid_public_backend(tmp_path: Path) -> None:
     backend = DeterministicIndexBackend()
     # The runtime-checkable public protocol accepts the double.
     assert isinstance(backend, IndexBackend)
@@ -93,22 +111,20 @@ def test_deterministic_test_double_is_a_valid_public_backend() -> None:
     assert backend.capabilities_calls == 1
     assert capability.backend_id == "deterministic-test-double"
     assert capability.protocol_schema_version == INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION
-    assert capability.vfp_runtime_available is False
+    assert capability.vfp_runtime_available is True
     payload = capability.to_dict()
     reparsed = json.loads(json.dumps(payload, sort_keys=True))
     assert reparsed == payload
 
-    request = IndexRebuildRequest(
-        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
-        artifact_class="STRUCTURAL_CDX",
-        table_path="north/customers.dbf",
-        definition="TAG CUSTOMER KEY CUSTOMER",
-    )
-    result = run_backend_rebuild(backend, request)
-    assert isinstance(result, IndexBackendResult)
-    assert result.status == "REBUILT"
+    request = _protected_request(tmp_path)
+    outcome = run_backend_rebuild(backend, request)
+    assert isinstance(outcome, IndexRebuildOutcome)
+    assert outcome.result.status == "REBUILT"
+    assert outcome.expected_tag_inventory == ("SYNTHCODE", "SYNTHNOTE")
     assert backend.rebuild_requests == (request,)
-    assert result.to_dict() == json.loads(json.dumps(result.to_dict()))
+    assert outcome.result.to_dict() == json.loads(
+        json.dumps(outcome.result.to_dict())
+    )
 
 
 def test_injected_backend_is_consumed_by_the_public_service(
@@ -140,7 +156,7 @@ class _ForeignCapabilityBackend(DeterministicIndexBackend):
         return {"backend_id": "foreign", "protocol_schema_version": "9.9"}
 
     def verify_index(self, request) -> object:
-        return {"status": "MAGIC"}
+        return {"status": "MAGIC", "table_opened": True, "actual_record_count": 0, "actual_tag_inventory": ()}
 
 
 class _UnknownProtocolBackend(DeterministicIndexBackend):
@@ -156,7 +172,7 @@ class _ForeignResultBackend(DeterministicIndexBackend):
         return {"status": "MAGIC"}
 
     def verify_index(self, request) -> object:
-        return {"status": "MAGIC"}
+        return {"status": "MAGIC", "table_opened": True, "actual_record_count": 0, "actual_tag_inventory": ()}
 
 
 class _HostileTypedCapabilityBackend(DeterministicIndexBackend):
@@ -245,15 +261,12 @@ def test_backend_cannot_smuggle_a_typed_error_context() -> None:
     assert "synthetic-secret-token" not in rendered
 
 
-def test_run_backend_rebuild_wraps_failures_and_foreign_results() -> None:
+def test_run_backend_rebuild_wraps_failures_and_foreign_results(
+    tmp_path: Path,
+) -> None:
     backend = DeterministicIndexBackend()
     backend.fail_rebuild_with = RuntimeError(_PRIVATE_DIAGNOSTIC)
-    request = IndexRebuildRequest(
-        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
-        artifact_class="STRUCTURAL_CDX",
-        table_path="north/customers.dbf",
-        definition="TAG KEY",
-    )
+    request = _protected_request(tmp_path)
     with pytest.raises(IndexBackendError) as caught:
         run_backend_rebuild(backend, request)
     error = caught.value
@@ -277,7 +290,10 @@ def test_run_backend_rebuild_wraps_failures_and_foreign_results() -> None:
 
 
 def test_require_backend_support_fails_closed() -> None:
-    from dbf_anonymizer.index_backend import require_backend_support
+    from dbf_anonymizer.index_backend import (
+        require_backend_support,
+        require_backend_verification,
+    )
 
     capability = DeterministicIndexBackend(
         supports_standalone_idx_rebuild=False
@@ -286,36 +302,50 @@ def test_require_backend_support_fails_closed() -> None:
         require_backend_support(capability, "STANDALONE_IDX")
     assert caught.value.context.detail_code == "INDEX_BACKEND_SUPPORT_MISSING"
     require_backend_support(capability, "STRUCTURAL_CDX")  # declared: passes
+    unavailable = DeterministicIndexBackend(
+        supports_verification=False, vfp_runtime_available=False
+    ).capabilities()
+    with pytest.raises(IndexBackendError):
+        require_backend_verification(unavailable, "STRUCTURAL_CDX")
+    with pytest.raises(IndexBackendError):
+        require_backend_runtime(unavailable)
 
 
-def test_request_and_result_contracts_are_bounded_and_closed() -> None:
+def test_request_and_result_contracts_are_bounded_and_closed(
+    tmp_path: Path,
+) -> None:
+    valid = _protected_request(tmp_path)
     with pytest.raises(ValueError):
         IndexRebuildRequest(
             protocol_schema_version="9.9",
             artifact_class="STRUCTURAL_CDX",
             table_path="north/customers.dbf",
-            definition="TAG x",
+            source_table_path=valid.source_table_path,
+            staged_table_path=valid.staged_table_path,
         )
     with pytest.raises(ValueError):
         IndexRebuildRequest(
             protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
             artifact_class="FOREIGN_CLASS",
             table_path="north/customers.dbf",
-            definition="TAG x",
+            source_table_path=valid.source_table_path,
+            staged_table_path=valid.staged_table_path,
         )
     with pytest.raises(ValueError):
         IndexRebuildRequest(
             protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
             artifact_class="STRUCTURAL_CDX",
             table_path="C:\\absolute\\path.dbf",
-            definition="TAG x",
+            source_table_path=valid.source_table_path,
+            staged_table_path=valid.staged_table_path,
         )
     with pytest.raises(ValueError):
         IndexRebuildRequest(
             protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
             artifact_class="STRUCTURAL_CDX",
             table_path="north/customers.dbf",
-            definition="x" * 65537,
+            source_table_path=valid.source_table_path,
+            staged_table_path=valid.source_table_path,
         )
     with pytest.raises(ValueError):
         IndexBackendResult(
@@ -326,29 +356,54 @@ def test_request_and_result_contracts_are_bounded_and_closed() -> None:
             status="INVENTED",
             detail_code="OK",
         )
+    with pytest.raises(ValueError):
+        IndexBackendResult(
+            backend_id="x",
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="STRUCTURAL_CDX",
+            table_path="north/customers.dbf",
+            status="REBUILT",
+            detail_code="INTERNAL_ERROR",
+        )
+    with pytest.raises(ValueError):
+        IndexVerificationResult(
+            backend_id="x",
+            protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+            artifact_class="STRUCTURAL_CDX",
+            table_path="north/customers.dbf",
+            status="VERIFIED",
+            detail_code="TAG_INVENTORY_MISMATCH",
+        )
     assert INDEX_ARTIFACT_CLASSES == ("STRUCTURAL_CDX", "STANDALONE_IDX")
     assert INDEX_BACKEND_RESULT_STATUSES == ("REBUILT", "REFUSED", "FAILED")
 
 
-def test_index_definition_has_no_public_json_serialization_route() -> None:
+def test_protected_backend_requests_and_evidence_have_no_public_json_route(
+    tmp_path: Path,
+) -> None:
     from dbf_anonymizer.models import PUBLIC_MODEL_TYPES, PublicModel
 
-    definition = " | ".join(_PRIVATE_CANARIES)
-    request = IndexRebuildRequest(
+    request = _protected_request(tmp_path)
+    verification_request = IndexVerificationRequest(
         protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
         artifact_class="STRUCTURAL_CDX",
         table_path="north/customers.dbf",
-        definition=definition,
+        staged_table_path=request.staged_table_path,
     )
     assert not isinstance(request, PublicModel)
+    assert not isinstance(verification_request, PublicModel)
     assert IndexRebuildRequest not in PUBLIC_MODEL_TYPES
+    assert IndexVerificationRequest not in PUBLIC_MODEL_TYPES
     assert not hasattr(request, "to_dict")
+    assert not hasattr(verification_request, "to_dict")
     assert "IndexRebuildRequest" not in dbf_anonymizer.__all__
     assert not hasattr(dbf_anonymizer, "IndexRebuildRequest")
 
     backend = DeterministicIndexBackend()
     capability = validate_backend_capabilities(backend)
-    result = run_backend_rebuild(backend, request)
+    outcome = run_backend_rebuild(backend, request)
+    assert not isinstance(outcome, PublicModel)
+    assert not hasattr(outcome, "to_dict")
     error = dbf_anonymizer.IndexBackendError(
         dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED,
         context=dbf_anonymizer.ErrorContext(
@@ -356,7 +411,7 @@ def test_index_definition_has_no_public_json_serialization_route() -> None:
         ),
     )
     public_json = json.dumps(
-        [capability.to_dict(), result.to_dict(), error.to_dict()], sort_keys=True
+        [capability.to_dict(), outcome.result.to_dict(), error.to_dict()], sort_keys=True
     )
     assert backend.rebuild_requests == (request,)
     for canary in _PRIVATE_CANARIES:
@@ -394,5 +449,11 @@ def test_root_exports_are_import_time_pure() -> None:
                 imported_roots.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported_roots.add(node.module.split(".")[0])
-    allowed_roots = {"__future__", "dbf_anonymizer", "dataclasses", "typing"}
+    allowed_roots = {
+        "__future__",
+        "dbf_anonymizer",
+        "dataclasses",
+        "pathlib",
+        "typing",
+    }
     assert imported_roots <= allowed_roots, sorted(imported_roots)

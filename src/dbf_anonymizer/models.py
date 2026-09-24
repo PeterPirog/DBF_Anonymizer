@@ -834,6 +834,13 @@ INDEX_BACKEND_RESULT_STATUSES: tuple[str, ...] = (
     "FAILED",
 )
 
+#: Bounded rebuild detail codes and their closed status pairing.
+INDEX_BACKEND_RESULT_DETAIL_CODES: tuple[str, ...] = (
+    "REBUILT_OK",
+    "REFUSED",
+    "INTERNAL_ERROR",
+)
+
 #: Bounded truthful verification outcomes.
 INDEX_VERIFICATION_STATUSES: tuple[str, ...] = (
     "VERIFIED",
@@ -843,6 +850,7 @@ INDEX_VERIFICATION_STATUSES: tuple[str, ...] = (
 
 #: Bounded verification detail codes.
 INDEX_VERIFICATION_DETAIL_CODES: tuple[str, ...] = (
+    "VERIFIED_OK",
     "OPEN_FAILED",
     "RECORD_COUNT_MISMATCH",
     "TAG_INVENTORY_MISMATCH",
@@ -927,7 +935,15 @@ class IndexBackendResult(PublicModel):
             raise ValueError(
                 "status must be one of " + ", ".join(INDEX_BACKEND_RESULT_STATUSES)
             )
-        _validated_code(self.detail_code, field_name="detail_code")
+        expected_detail = {
+            "REBUILT": "REBUILT_OK",
+            "REFUSED": "REFUSED",
+            "FAILED": "INTERNAL_ERROR",
+        }[self.status]
+        if self.detail_code != expected_detail:
+            raise ValueError(
+                f"detail_code must be {expected_detail} when status is {self.status}"
+            )
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -942,44 +958,12 @@ class IndexBackendResult(PublicModel):
 
 
 @dataclass(frozen=True, slots=True)
-class IndexVerificationRequest(PublicModel):
-    """Protected process-local input for one authoritative index verification.
-
-    This is deliberately NOT a ``PublicModel`` and has no ``to_dict`` method.
-    Its raw ``expected_tags`` belongs only to the protected-staging
-    lifecycle and may be passed in process to an injected backend. It must
-    never enter public JSON, manifests, results, progress, errors or logs.
-    """
-
-    protocol_schema_version: str
-    artifact_class: str
-    table_path: str
-    expected_record_count: int
-    expected_tags: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
-            raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
-            )
-        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
-        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
-        if not isinstance(self.expected_record_count, int) or self.expected_record_count < 0:
-            raise TypeError("expected_record_count must be a non-negative int")
-        if not isinstance(self.expected_tags, tuple):
-            raise TypeError("expected_tags must be a tuple of strings")
-        for tag in self.expected_tags:
-            if not isinstance(tag, str):
-                raise TypeError("each expected tag must be a string")
-
-
-@dataclass(frozen=True, slots=True)
 class IndexVerificationResult(PublicModel):
-    """JSON-safe verdict of one authoritative index verification (REQ-P6-003)."""
+    """JSON-safe verdict of one authoritative index verification (REQ-P6-003).
+
+    Objective record/tag evidence remains in the process-local backend
+    outcome. This public verdict contains no protected paths or tag names.
+    """
 
     backend_id: str
     protocol_schema_version: str
@@ -1007,6 +991,17 @@ class IndexVerificationResult(PublicModel):
         if self.detail_code not in INDEX_VERIFICATION_DETAIL_CODES:
             raise ValueError(
                 "detail_code must be one of " + ", ".join(INDEX_VERIFICATION_DETAIL_CODES)
+            )
+        allowed_details = {
+            "VERIFIED": frozenset(("VERIFIED_OK",)),
+            "MISMATCH": frozenset(
+                ("RECORD_COUNT_MISMATCH", "TAG_INVENTORY_MISMATCH")
+            ),
+            "FAILED": frozenset(("OPEN_FAILED", "INTERNAL_ERROR")),
+        }[self.status]
+        if self.detail_code not in allowed_details:
+            raise ValueError(
+                f"detail_code {self.detail_code} is invalid for status {self.status}"
             )
 
     def to_dict(self) -> JsonDict:
@@ -1068,10 +1063,10 @@ __all__ = [
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
+    "INDEX_BACKEND_RESULT_DETAIL_CODES",
     "INDEX_VERIFICATION_STATUSES",
     "INDEX_VERIFICATION_DETAIL_CODES",
     "IndexBackendCapability",
     "IndexBackendResult",
-    "IndexVerificationRequest",
     "IndexVerificationResult",
 ]

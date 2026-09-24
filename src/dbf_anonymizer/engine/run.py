@@ -83,6 +83,9 @@ from dbf_anonymizer.errors import (
 )
 from dbf_anonymizer.index_backend import (
     IndexBackendContract,
+    IndexRebuildRequest,
+    IndexVerificationRequest,
+    require_backend_runtime,
     run_backend_rebuild,
     run_backend_verification,
     require_backend_support,
@@ -394,6 +397,7 @@ def build_engine_plan(
                 memo_fields=tuple(memo_fields),
                 temporal_fields=tuple(temporal_fields),
                 structural_cdx=schema.has_structural_cdx,
+                record_count=int(schema.record_count),
             )
         )
         if schema.has_structural_cdx:
@@ -466,6 +470,7 @@ def build_engine_plan(
                         )
                     ),
                     structural_cdx=directive.structural_cdx,
+                    record_count=directive.record_count,
                 )
             )
         tables = updated_tables
@@ -781,6 +786,7 @@ def _cleanup_engine_resources(
 def _run_vfp_indexed_rebuild_and_verify(
     engine_plan: EnginePlan,
     *,
+    source_root: Path,
     staging: DatasetStaging,
     backend_contract: IndexBackendContract,
     control: ProgressController,
@@ -797,15 +803,19 @@ def _run_vfp_indexed_rebuild_and_verify(
 
     Any failure fails closed with no publication.
     """
-    from dbf_anonymizer.index_backend import IndexRebuildRequest, IndexVerificationRequest
+    try:
+        dataset_root = staging.dataset_root.resolve(strict=True)
+    except OSError:
+        raise _path_failure("ENGINE_VFP_INDEXED_STAGING_UNAVAILABLE") from None
+    capability = backend_contract.capability
+    require_backend_support(capability, "STRUCTURAL_CDX")
+    require_backend_verification(capability, "STRUCTURAL_CDX")
+    require_backend_runtime(capability)
 
-    # Get the staging dataset root where fresh DBF/FPT files were written
-    dataset_root = staging.dataset_root
+    directives = {table.relative_path: table for table in engine_plan.tables}
 
     for table_path in engine_plan.structural_cdx_tables:
         control.check_cancelled()
-
-        # Rebuild structural CDX
         control.progress(
             ProgressPhase.INDEX_REBUILD,
             completed=0,
@@ -813,17 +823,43 @@ def _run_vfp_indexed_rebuild_and_verify(
             table_path=table_path,
         )
 
+        try:
+            source_table_path = (source_root / table_path).resolve(strict=True)
+            staged_table_path = (dataset_root / table_path).resolve(strict=True)
+        except OSError:
+            raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
+        try:
+            staged_table_path.relative_to(dataset_root)
+        except ValueError:
+            raise _path_failure("ENGINE_VFP_INDEXED_STAGED_TARGET_INVALID") from None
+        if source_table_path == staged_table_path:
+            raise _path_failure("ENGINE_VFP_INDEXED_STAGED_TARGET_INVALID")
+        directive = directives.get(table_path)
+        if directive is None:
+            raise _path_failure("ENGINE_VFP_INDEXED_TABLE_DIRECTIVE_MISSING")
+
         rebuild_request = IndexRebuildRequest(
             protocol_schema_version=backend_contract.capability.protocol_schema_version,
             artifact_class="STRUCTURAL_CDX",
             table_path=table_path,
-            definition="",  # Definitions are sourced from protected staging by backend
+            source_table_path=source_table_path,
+            staged_table_path=staged_table_path,
         )
-        rebuild_result = run_backend_rebuild(backend_contract.backend, rebuild_request)
+        rebuild_outcome = run_backend_rebuild(
+            backend_contract.backend, rebuild_request
+        )
+        rebuild_result = rebuild_outcome.result
 
+        if rebuild_result.backend_id != backend_contract.backend_id:
+            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_ID_MISMATCH")
         if rebuild_result.status != "REBUILT":
             raise _path_failure(f"ENGINE_VFP_INDEXED_REBUILD_{rebuild_result.status}")
 
+        staged_cdx_path = staged_table_path.with_suffix(".cdx")
+        if not staged_cdx_path.is_file():
+            raise _path_failure("ENGINE_VFP_INDEXED_REBUILT_CDX_MISSING")
+
+        control.check_cancelled()
         control.progress(
             ProgressPhase.INDEX_REBUILD,
             completed=1,
@@ -831,35 +867,34 @@ def _run_vfp_indexed_rebuild_and_verify(
             table_path=table_path,
         )
 
-        # Verify rebuilt index
-        # Get expected record count from the staged table
-        import dbfbridge
-
-        staged_table_path = dataset_root / table_path
-        try:
-            schema = dbfbridge.read_schema(staged_table_path)  # type: ignore[attr-defined]
-            expected_record_count = schema.record_count
-        except Exception:
-            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_SCHEMA_READ_FAILED")
-
-        # Get expected tags from source (backend is authoritative for tag inventory)
-        # The backend will verify against its own authoritative tag inventory
         verification_request = IndexVerificationRequest(
             protocol_schema_version=backend_contract.capability.protocol_schema_version,
             artifact_class="STRUCTURAL_CDX",
             table_path=table_path,
-            expected_record_count=expected_record_count,
-            expected_tags=(),  # Backend is authoritative for tag inventory
+            staged_table_path=staged_table_path,
         )
-        verification_result = run_backend_verification(
+        verification_outcome = run_backend_verification(
             backend_contract.backend, verification_request
         )
+        verification_result = verification_outcome.result
 
+        if verification_result.backend_id != backend_contract.backend_id:
+            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_ID_MISMATCH")
         if verification_result.status != "VERIFIED":
             raise _path_failure(
                 f"ENGINE_VFP_INDEXED_VERIFY_{verification_result.status}_{verification_result.detail_code}"
             )
+        if not verification_outcome.table_opened:
+            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_TABLE_NOT_OPENED")
+        if verification_outcome.actual_record_count != directive.record_count:
+            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_RECORD_COUNT_MISMATCH")
+        if (
+            verification_outcome.actual_tag_inventory
+            != rebuild_outcome.expected_tag_inventory
+        ):
+            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_TAG_INVENTORY_MISMATCH")
 
+        control.check_cancelled()
         control.progress(
             ProgressPhase.INDEX_REBUILD,
             completed=2,
@@ -1118,6 +1153,7 @@ def run_two_pass(
                         control.start_phase(ProgressPhase.INDEX_REBUILD)
                         _run_vfp_indexed_rebuild_and_verify(
                             engine_plan,
+                            source_root=source,
                             staging=staging,
                             backend_contract=backend_contract,
                             control=control,

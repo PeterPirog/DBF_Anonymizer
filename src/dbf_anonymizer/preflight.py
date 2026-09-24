@@ -102,6 +102,7 @@ from dbf_anonymizer.errors import (
 )
 from dbf_anonymizer.models import (
     Capabilities,
+    IndexBackendCapability,
     PreflightResult,
     Plan,
     TablePlan,
@@ -601,7 +602,11 @@ def _check_policy_consistency(plan: Plan, findings: _Findings) -> None:
 
 
 def _check_output_profile_and_capabilities(
-    plan: Plan, caps: Capabilities, findings: _Findings
+    plan: Plan,
+    caps: Capabilities,
+    findings: _Findings,
+    *,
+    index_backend_capability: IndexBackendCapability | None = None,
 ) -> None:
     # A valid preflight plan always needs direct read and direct write.
     if not caps.direct_read or not caps.direct_write:
@@ -611,10 +616,16 @@ def _check_output_profile_and_capabilities(
         findings.check(PreflightCode.DATA_ONLY_STANDALONE)
         return
 
-    # VFP_INDEXED requires an authoritative VFP index backend (REQ-P6-003).
-    # The backend capability is checked via caps.vfp_index_backend.
+    # Standalone discovery remains truthful (vfp_index_backend=False). A
+    # public pseudonymize call may provide one already-validated, operation-
+    # scoped backend capability without mutating that global discovery fact.
     if plan.output_profile is TransferProfile.VFP_INDEXED:
-        if not caps.vfp_index_backend:
+        if (
+            index_backend_capability is None
+            or not index_backend_capability.supports_structural_cdx_rebuild
+            or not index_backend_capability.supports_verification
+            or not index_backend_capability.vfp_runtime_available
+        ):
             findings.error(PreflightCode.CAPABILITY_MISSING)
         return
 
@@ -1190,7 +1201,11 @@ def _storage_ok(
 # ---------------------------------------------------------------------------
 # Public entry point + shared internal evaluation core
 # ---------------------------------------------------------------------------
-def _evaluate_plan_readonly(plan: Plan, control: ProgressController) -> PreflightResult:
+def _evaluate_plan_readonly(
+    plan: Plan,
+    control: ProgressController,
+    injected_backend_capability: IndexBackendCapability | None = None,
+) -> PreflightResult:
     """The ONE read-only preflight evaluation core (internal).
 
     Drives every side-effect-free evaluation step through the SUPPLIED
@@ -1206,6 +1221,10 @@ def _evaluate_plan_readonly(plan: Plan, control: ProgressController) -> Prefligh
       operation id and exactly one terminal completion emitted only after
       the whole operation genuinely succeeds (no second logical operation
       and no intermediate preflight completion).
+
+    ``injected_backend_capability`` augments only the operation-scoped
+    VFP_INDEXED check. Canonical direct-read/write facts always come from the
+    side-effect-free standalone provider and are never replaced or mutated.
     """
     findings = _Findings()
     caps = _capability.capabilities_provider()
@@ -1326,7 +1345,12 @@ def _evaluate_plan_readonly(plan: Plan, control: ProgressController) -> Prefligh
 
     # 6. Output profile safety + runtime capabilities.
     control.check_cancelled()
-    _check_output_profile_and_capabilities(plan, caps, findings)
+    _check_output_profile_and_capabilities(
+        plan,
+        caps,
+        findings,
+        index_backend_capability=injected_backend_capability,
+    )
 
     # 7. Relationship-domain safety (fail closed when unprovable).
     control.check_cancelled()
