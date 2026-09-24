@@ -34,6 +34,7 @@ from .errors import (
     ErrorCode,
     ErrorContext,
     ErrorDefinition,
+    IndexBackendError,
     MappingError,
     PathError,
     PolicyError,
@@ -47,8 +48,13 @@ from .errors import (
 from .models import (
     MODEL_SCHEMA_VERSION,
     IDENTITY_PRIVACY_REVIEW_REQUIRED,
+    INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+    INDEX_ARTIFACT_CLASSES,
+    INDEX_BACKEND_RESULT_STATUSES,
     Capabilities,
     DatasetIdentity,
+    IndexBackendCapability,
+    IndexBackendResult,
     NumericIdentityReview,
     Plan,
     PolicySummary,
@@ -67,6 +73,7 @@ from .models import (
     VerificationStatus,
     RawByteEquivalence,
 )
+from .index_backend import IndexBackend
 from .api import (
     build_plan,
     capabilities,
@@ -83,6 +90,12 @@ __version__ = "1.0.0.dev0"
 __all__ = [
     "MODEL_SCHEMA_VERSION",
     "IDENTITY_PRIVACY_REVIEW_REQUIRED",
+    "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
+    "INDEX_ARTIFACT_CLASSES",
+    "INDEX_BACKEND_RESULT_STATUSES",
+    "IndexBackend",
+    "IndexBackendCapability",
+    "IndexBackendResult",
     "Capabilities",
     "DatasetIdentity",
     "NumericIdentityReview",
@@ -128,6 +141,7 @@ __all__ = [
     "VerificationError",
     "RecoveryError",
     "TransferError",
+    "IndexBackendError",
     "CancellationError",
     "CallbackError",
 ]

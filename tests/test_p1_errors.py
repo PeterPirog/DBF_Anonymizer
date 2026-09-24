@@ -22,6 +22,7 @@ from dbf_anonymizer import (
     ErrorCategory,
     ErrorCode,
     ErrorContext,
+    IndexBackendError,
     MappingError,
     PathError,
     PolicyError,
@@ -34,7 +35,7 @@ from dbf_anonymizer import (
 )
 
 
-_ERROR_CODES_FOR_REGISTRY_1_4 = (
+_ERROR_CODES_FOR_REGISTRY_1_5 = (
     "PATH_INVALID",
     "PATH_NOT_FOUND",
     "PATH_OVERLAP",
@@ -60,6 +61,7 @@ _ERROR_CODES_FOR_REGISTRY_1_4 = (
     "RECOVERY_FAILED",
     "RECOVERY_NOT_PERMITTED",
     "TRANSFER_FAILED",
+    "INDEX_BACKEND_FAILED",
     "OPERATION_CANCELLED",
     "PROGRESS_CALLBACK_FAILED",
     "CANCEL_CALLBACK_FAILED",
@@ -72,13 +74,14 @@ def test_error_registry_is_versioned_complete_and_unique() -> None:
     # CANCEL_CALLBACK_FAILED); REQ-P2-002/REQ-P2-003 advanced it additively to
     # 1.2 with the protected-vault codes; REQ-P2-006 advanced it additively to
     # 1.3 with MAPPING_CONSTRAINT_INFEASIBLE. REQ-P5-004..P5-007 advanced it
-    # additively to 1.4 with the transfer-bundle family. Existing codes are
-    # never changed.
-    assert ERROR_REGISTRY_VERSION == "1.4"
+    # additively to 1.4 with the transfer-bundle family. REQ-P6-001 advanced
+    # it additively to 1.5 with the injected index-backend family. Existing
+    # codes are never changed.
+    assert ERROR_REGISTRY_VERSION == "1.5"
     registered_codes = [definition.code for definition in ERROR_REGISTRY]
-    assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_4
+    assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_5
     assert (
-        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_4
+        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_5
     )
     assert len(registered_codes) == len(set(registered_codes))
     assert set(registered_codes) == set(ErrorCode)

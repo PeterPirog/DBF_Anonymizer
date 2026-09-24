@@ -429,7 +429,9 @@ def test_manifest_schema_vocabulary_is_pinned(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     _create(result, tmp_path)
     manifest = _read_manifest(tmp_path / "bundle")
-    assert TRANSFER_MANIFEST_SCHEMA_VERSION == "1.0"
+    # 1.1 (REQ-P6-002) adds the closed ``data_state`` vocabulary stating the
+    # truthful STANDALONE reduced-semantics nature of the DATA_ONLY dataset.
+    assert TRANSFER_MANIFEST_SCHEMA_VERSION == "1.1"
     assert set(manifest) == {
         "schema_version",
         "package_version",
@@ -438,10 +440,12 @@ def test_manifest_schema_vocabulary_is_pinned(tmp_path: Path) -> None:
         "classification",
         "dataset_id",
         "index_state",
+        "data_state",
         "verification_status",
         "artifacts",
         "assurance",
     }
+    assert manifest["data_state"] == "STANDALONE_REDUCED_SEMANTICS"
     for entry in manifest["artifacts"]:  # type: ignore[union-attr]
         assert set(entry) == {
             "path",

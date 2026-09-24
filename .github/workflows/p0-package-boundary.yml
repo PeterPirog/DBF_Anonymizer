@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dbfbridge-floor-compatibility:
-    name: P4 field/NULL/memo compatibility / public dbfbridge 1.1.0 floor
+    name: P4/P6 field and standalone compatibility / public dbfbridge 1.1.0 floor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +31,7 @@ jobs:
           floor-env/bin/python -m pip install --no-cache-dir --no-deps dist/*.whl
           floor-env/bin/python -m pip check
           floor-env/bin/python -m pip install --no-cache-dir pytest
-      - name: Prove P4-004/P4-006/P4-007 against the declared runtime floor
+      - name: Prove P4 and P6-002 against the declared runtime floor
         env:
           PYTHONUTF8: "1"
         run: |
@@ -40,6 +40,8 @@ jobs:
             tests/test_p4_field_capability_matrix.py \
             tests/test_p4_nullable_text.py \
             tests/test_p4_null_memo_pipeline.py \
+            tests/test_p6_data_only.py \
+            tests/test_architecture_boundary.py \
             -ra
 
   clean-wheel-boundary:
@@ -81,6 +83,8 @@ jobs:
             tests/test_root_public_api.py \
             tests/test_p1_public_models.py \
             tests/test_p1_errors.py \
+            tests/test_p6_index_backend.py \
+            tests/test_p6_data_only.py \
             -ra
 
   packaging-versions:

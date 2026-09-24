@@ -40,6 +40,7 @@ vault pipeline.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
@@ -64,6 +65,7 @@ from dbf_anonymizer.errors import (
 __all__ = [
     "DirectSourceTable",
     "read_source_table",
+    "standalone_output_schema",
     "stream_table_records",
     "write_fresh_table",
 ]
@@ -181,6 +183,40 @@ def stream_table_records(
                 detail_code="ENGINE_DIRECT_READ_FAILED",
             ),
         ) from None
+
+
+def standalone_output_schema(schema: TableSchema) -> TableSchema:
+    """Declare the PUBLIC standalone output schema of one fresh Direct Write
+    (REQ-P6-002).
+
+    Structural-CDX and DBC coupling are removed DECLARATIVELY through the
+    public frozen ``dbfbridge.TableSchema`` dataclass constructor — the ONE
+    supported public way to construct a standalone write schema:
+
+    * the structural-CDX table flag (and companion-CDX metadata) is cleared,
+      so the fresh DBF carries the standalone header state;
+    * DBC binding and the DBC backlink are removed; the fresh output never
+      claims DBC rules/triggers/relations, and no DBC/DCT/DCX companion is
+      created or copied;
+    * no DBF header is edited manually, no raw byte is patched, no bytes are
+      copied from the source DBF and no private dbfbridge module is used:
+      the public ``dbfbridge.write_table`` owns every written byte.
+
+    The reduced application semantics (no structural index validity, no DBC
+    semantics) are reported by the planning/preflight/transfer layers; the
+    authoritative ``VFP_INDEXED`` rebuild strategy (REQ-P6-003) will hand
+    index definitions to the injected backend separately from this data
+    schema.
+    """
+    return dataclasses.replace(
+        schema,
+        has_structural_cdx=False,
+        companion_cdx_present=False,
+        companion_cdx_path=None,
+        is_database_container=False,
+        dbc_bound=False,
+        dbc_backlink_path=None,
+    )
 
 
 def write_fresh_table(

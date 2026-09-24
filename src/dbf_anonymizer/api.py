@@ -18,6 +18,11 @@ from dbf_anonymizer.engine.publication import (
     derive_operation_id,
 )
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PublicationError
+from dbf_anonymizer.index_backend import (
+    IndexBackend,
+    IndexBackendContract,
+    validate_backend_capabilities,
+)
 from dbf_anonymizer.models import (
     Plan,
     PseudonymizationResult,
@@ -93,11 +98,23 @@ def _completed_retry_candidate(plan: Plan) -> bool:
 def pseudonymize(
     plan: Plan,
     *,
+    index_backend: IndexBackend | None = None,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
     workers: int = 1,
 ) -> PseudonymizationResult:
     """Synchronously pseudonymize one immutable plan (REQ-P4-008/P4-009).
+
+    ``index_backend`` (REQ-P6-001) is the explicit injected Windows/VFP
+    index-backend boundary: ``None`` (the default) keeps the pipeline fully
+    standalone — no VFP, no COM, no subprocess, no network.  When supplied,
+    the backend's capability statement is consumed and VALIDATED fail-closed
+    BEFORE any transformation work: an unknown protocol schema version, a
+    malformed contract or a backend failure becomes the stable typed
+    privacy-safe :class:`~dbf_anonymizer.errors.IndexBackendError`.  The
+    default DATA_ONLY profile never requires a backend; a profile that
+    requires authoritative index work fails truthfully while the real
+    rebuild integration does not exist yet (REQ-P6-003).
 
     ONE invocation is ONE logical operation with ONE canonical operation id
     (REQ-P1-008): the durable publication identity, the vault operation row,
@@ -129,12 +146,24 @@ def pseudonymize(
     """
     if not isinstance(plan, Plan):
         raise TypeError("pseudonymize requires a Plan")
+    if index_backend is not None and not isinstance(index_backend, IndexBackend):
+        raise TypeError("index_backend must implement the IndexBackend protocol")
     if (
         isinstance(workers, bool)
         or not isinstance(workers, int)
         or not 1 <= workers <= _MAX_PUBLIC_WORKERS
     ):
         raise ValueError(f"workers must be an integer from 1 to {_MAX_PUBLIC_WORKERS}")
+    # REQ-P6-001: the injected backend handshake happens FIRST and fails
+    # closed.  A malformed/unknown backend capability schema is the stable
+    # typed index-backend failure, never a silent best-effort downgrade and
+    # never a raw dependency exception.
+    backend_contract: IndexBackendContract | None = None
+    if index_backend is not None:
+        backend_contract = IndexBackendContract(
+            backend=index_backend,
+            capability=validate_backend_capabilities(index_backend),
+        )
     context = plan.execution_context
     if context is None:
         # Impossible for a real build_plan result; fail closed rather than guess.

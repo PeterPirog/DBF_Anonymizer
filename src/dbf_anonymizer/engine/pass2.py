@@ -31,6 +31,7 @@ from dbfbridge import DirectRecord  # type: ignore[attr-defined]
 from dbf_anonymizer.engine.direct_io import (
     DirectSourceTable,
     read_source_table,
+    standalone_output_schema,
     stream_table_records,
     write_fresh_table,
 )
@@ -297,7 +298,7 @@ def _write_table(
         destination = staging.table_destination(index, directive.relative_path)
         result = write_fresh_table(
             destination,
-            table.schema,
+            standalone_output_schema(table.schema),
             _transform_stream(
                 engine_plan,
                 directive,
