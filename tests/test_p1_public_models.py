@@ -220,6 +220,7 @@ def test_all_required_models_are_public_root_imports() -> None:
         # REQ-P6-001: the injected index-backend protocol models.
         "IndexBackendCapability",
         "IndexBackendResult",
+        "IndexVerificationResult",
     }
     assert {model.__name__ for model in PUBLIC_MODEL_TYPES} == expected
 

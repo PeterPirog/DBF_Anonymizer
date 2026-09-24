@@ -611,11 +611,15 @@ def _check_output_profile_and_capabilities(
         findings.check(PreflightCode.DATA_ONLY_STANDALONE)
         return
 
-    # VFP_INDEXED requires an authoritative VFP index backend (future REQ-P6).
-    # No such backend exists in this standalone implementation -> fail closed.
+    # VFP_INDEXED requires an authoritative VFP index backend (REQ-P6-003).
+    # The backend capability is checked via caps.vfp_index_backend.
+    if plan.output_profile is TransferProfile.VFP_INDEXED:
+        if not caps.vfp_index_backend:
+            findings.error(PreflightCode.CAPABILITY_MISSING)
+        return
+
+    # Unknown profile -> fail closed.
     findings.error(PreflightCode.OUTPUT_PROFILE_UNSUPPORTED)
-    if not caps.vfp_index_backend:
-        findings.error(PreflightCode.CAPABILITY_MISSING)
 
 
 def _check_relationships(plan: Plan, findings: _Findings) -> None:

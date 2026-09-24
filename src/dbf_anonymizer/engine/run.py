@@ -81,7 +81,14 @@ from dbf_anonymizer.errors import (
     PublicationError,
     VaultError,
 )
-from dbf_anonymizer.models import Plan
+from dbf_anonymizer.index_backend import (
+    IndexBackendContract,
+    run_backend_rebuild,
+    run_backend_verification,
+    require_backend_support,
+    require_backend_verification,
+)
+from dbf_anonymizer.models import Plan, TransferProfile
 from dbf_anonymizer.policy import classify_field_capability, resolve_policy
 from dbf_anonymizer.relationships.models import (
     RelationGroup,
@@ -282,6 +289,7 @@ def build_engine_plan(
     numeric_present = False
     temporal_present = False
 
+    structural_cdx_tables: list[str] = []
     numeric_groups: list[tuple[RelationGroup, str]] = []
     if relationship_document is not None:
         from dbf_anonymizer.relationships.models import (
@@ -385,8 +393,11 @@ def build_engine_plan(
                 transformed=tuple(transformed),
                 memo_fields=tuple(memo_fields),
                 temporal_fields=tuple(temporal_fields),
+                structural_cdx=schema.has_structural_cdx,
             )
         )
+        if schema.has_structural_cdx:
+            structural_cdx_tables.append(relative_path)
 
     if relationship_document is not None:
         # EVERY declared relation is tracked for the verification evidence —
@@ -454,6 +465,7 @@ def build_engine_plan(
                             relation_fields_by_table.get(directive.relative_path, set())
                         )
                     ),
+                    structural_cdx=directive.structural_cdx,
                 )
             )
         tables = updated_tables
@@ -464,6 +476,7 @@ def build_engine_plan(
         text_present=text_present,
         numeric_present=numeric_present,
         temporal_present=temporal_present,
+        structural_cdx_tables=tuple(structural_cdx_tables),
     )
 
 
@@ -765,6 +778,99 @@ def _cleanup_engine_resources(
     return failure
 
 
+def _run_vfp_indexed_rebuild_and_verify(
+    engine_plan: EnginePlan,
+    *,
+    staging: DatasetStaging,
+    backend_contract: IndexBackendContract,
+    control: ProgressController,
+    fault_inject: FaultInjector | None = None,
+) -> None:
+    """Run authoritative structural index rebuild and verification for VFP_INDEXED profile.
+
+    This function runs inside protected staging after fresh DBF/FPT are written
+    but before the dataset fingerprint is computed and staging is promoted.
+
+    For each table with structural CDX:
+    1. Rebuild the structural index through the injected backend
+    2. Verify the rebuilt index (table open, record count, tag inventory)
+
+    Any failure fails closed with no publication.
+    """
+    from dbf_anonymizer.index_backend import IndexRebuildRequest, IndexVerificationRequest
+
+    # Get the staging dataset root where fresh DBF/FPT files were written
+    dataset_root = staging.dataset_root
+
+    for table_path in engine_plan.structural_cdx_tables:
+        control.check_cancelled()
+
+        # Rebuild structural CDX
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=0,
+            total=2,
+            table_path=table_path,
+        )
+
+        rebuild_request = IndexRebuildRequest(
+            protocol_schema_version=backend_contract.capability.protocol_schema_version,
+            artifact_class="STRUCTURAL_CDX",
+            table_path=table_path,
+            definition="",  # Definitions are sourced from protected staging by backend
+        )
+        rebuild_result = run_backend_rebuild(backend_contract.backend, rebuild_request)
+
+        if rebuild_result.status != "REBUILT":
+            raise _path_failure(f"ENGINE_VFP_INDEXED_REBUILD_{rebuild_result.status}")
+
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=1,
+            total=2,
+            table_path=table_path,
+        )
+
+        # Verify rebuilt index
+        # Get expected record count from the staged table
+        import dbfbridge
+
+        staged_table_path = dataset_root / table_path
+        try:
+            schema = dbfbridge.read_schema(staged_table_path)  # type: ignore[attr-defined]
+            expected_record_count = schema.record_count
+        except Exception:
+            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_SCHEMA_READ_FAILED")
+
+        # Get expected tags from source (backend is authoritative for tag inventory)
+        # The backend will verify against its own authoritative tag inventory
+        verification_request = IndexVerificationRequest(
+            protocol_schema_version=backend_contract.capability.protocol_schema_version,
+            artifact_class="STRUCTURAL_CDX",
+            table_path=table_path,
+            expected_record_count=expected_record_count,
+            expected_tags=(),  # Backend is authoritative for tag inventory
+        )
+        verification_result = run_backend_verification(
+            backend_contract.backend, verification_request
+        )
+
+        if verification_result.status != "VERIFIED":
+            raise _path_failure(
+                f"ENGINE_VFP_INDEXED_VERIFY_{verification_result.status}_{verification_result.detail_code}"
+            )
+
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=2,
+            total=2,
+            table_path=table_path,
+        )
+
+        if fault_inject is not None:
+            fault_inject(f"VFP_INDEXED_REBUILD_VERIFY_COMPLETE:{table_path}")
+
+
 def run_two_pass(
     plan: Plan,
     *,
@@ -774,6 +880,7 @@ def run_two_pass(
     operation_id: str | None = None,
     fault_inject: FaultInjector | None = None,
     control: ProgressController | None = None,
+    backend_contract: IndexBackendContract | None = None,
 ) -> TwoPassResult:
     """The bounded two-pass production run bound to ONE execution identity.
 
@@ -792,6 +899,11 @@ def run_two_pass(
     controller from ``progress``/``cancel_check`` (the pre-existing
     behavior every direct engine test relies on); supplying ``control``
     together with separate callbacks is a fail-closed contract error.
+
+    The ``backend_contract`` (REQ-P6-003) is the validated index backend
+    contract for VFP_INDEXED profile operations. When the plan's output
+    profile is VFP_INDEXED, this contract MUST be provided and will be used
+    for authoritative structural index rebuild and verification after pass 2.
 
     PRE-EXECUTION REVALIDATION (before the vault, the spool or any output
     artifact is created — zero transformation-equivalent side effects on
@@ -994,6 +1106,23 @@ def run_two_pass(
                         evidence_root=evidence_root,
                         fault_inject=fault_inject,
                     )
+                    # VFP_INDEXED profile: authoritative structural index rebuild
+                    # and verification (REQ-P6-003). Runs inside protected staging
+                    # after fresh DBF/FPT are written, before final publication.
+                    if (
+                        plan.output_profile is TransferProfile.VFP_INDEXED
+                        and engine_plan.structural_cdx_tables
+                    ):
+                        if backend_contract is None:
+                            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_MISSING")
+                        control.start_phase(ProgressPhase.INDEX_REBUILD)
+                        _run_vfp_indexed_rebuild_and_verify(
+                            engine_plan,
+                            staging=staging,
+                            backend_contract=backend_contract,
+                            control=control,
+                            fault_inject=fault_inject,
+                        )
                     output_fingerprint = fingerprint_dataset(
                         staging.dataset_root, checkpoint=control.check_cancelled
                     )

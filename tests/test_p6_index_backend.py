@@ -27,10 +27,12 @@ from dbf_anonymizer import (  # noqa: E402
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     INDEX_ARTIFACT_CLASSES,
     INDEX_BACKEND_RESULT_STATUSES,
+    INDEX_VERIFICATION_STATUSES,
     IndexBackend,
     IndexBackendCapability,
     IndexBackendError,
     IndexBackendResult,
+    IndexVerificationResult,
     VerificationStatus,
     build_plan,
     preflight,
@@ -137,9 +139,15 @@ class _ForeignCapabilityBackend(DeterministicIndexBackend):
     def capabilities(self) -> object:
         return {"backend_id": "foreign", "protocol_schema_version": "9.9"}
 
+    def verify_index(self, request) -> object:
+        return {"status": "MAGIC"}
+
 
 class _UnknownProtocolBackend(DeterministicIndexBackend):
     def capabilities(self) -> object:  # type: ignore[override]
+        raise ValueError(_PRIVATE_DIAGNOSTIC)
+
+    def verify_index(self, request) -> object:
         raise ValueError(_PRIVATE_DIAGNOSTIC)
 
 
@@ -147,9 +155,22 @@ class _ForeignResultBackend(DeterministicIndexBackend):
     def rebuild_index(self, request: IndexRebuildRequest) -> object:
         return {"status": "MAGIC"}
 
+    def verify_index(self, request) -> object:
+        return {"status": "MAGIC"}
+
 
 class _HostileTypedCapabilityBackend(DeterministicIndexBackend):
     def capabilities(self) -> IndexBackendCapability:
+        raise IndexBackendError(
+            dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED,
+            context=dbf_anonymizer.ErrorContext(
+                operation="index_backend",
+                table_path="ORIGINAL-CANARY-987654.dbf",
+                detail_code="synthetic-secret-token",
+            ),
+        )
+
+    def verify_index(self, request) -> IndexVerificationResult:
         raise IndexBackendError(
             dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED,
             context=dbf_anonymizer.ErrorContext(
@@ -178,6 +199,7 @@ def test_unknown_protocol_schema_version_fails_closed() -> None:
             protocol_schema_version="9.9",
             supports_structural_cdx_rebuild=True,
             supports_standalone_idx_rebuild=True,
+            supports_verification=True,
             vfp_runtime_available=True,
         )
 

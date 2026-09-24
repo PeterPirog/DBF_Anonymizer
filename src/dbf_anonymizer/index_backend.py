@@ -35,10 +35,13 @@ from dbf_anonymizer.errors import (
     IndexBackendError,
 )
 from dbf_anonymizer.models import (
-    INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     INDEX_ARTIFACT_CLASSES,
+    INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+    INDEX_VERIFICATION_STATUSES,
     IndexBackendCapability,
     IndexBackendResult,
+    IndexVerificationRequest,
+    IndexVerificationResult,
     _normalized_relative_path,
 )
 
@@ -46,6 +49,8 @@ __all__ = [
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
+    "INDEX_VERIFICATION_STATUSES",
+    "INDEX_VERIFICATION_DETAIL_CODES",
     "IndexBackend",
     "IndexBackendCapability",
     "IndexRebuildRequest",
@@ -56,6 +61,10 @@ __all__ = [
     "require_backend_support",
     "run_backend_rebuild",
     "index_backend_failure",
+    "require_backend_verification",
+    "run_backend_verification",
+    "IndexVerificationRequest",
+    "IndexVerificationResult",
 ]
 
 _BACKEND_OPERATION = "index_backend"
@@ -113,7 +122,7 @@ def index_backend_failure(
 
 @runtime_checkable
 class IndexBackend(Protocol):
-    """The ONE injected authoritative index-work boundary (REQ-P6-001).
+    """The ONE injected authoritative index-work boundary (REQ-P6-001/REQ-P6-003).
 
     A backend is a plain synchronous Python object supplied EXPLICITLY by
     the caller at the public service boundary.  DBF_Anonymizer never
@@ -128,6 +137,16 @@ class IndexBackend(Protocol):
 
     def rebuild_index(self, request: IndexRebuildRequest) -> IndexBackendResult:
         """Perform one authoritative index artifact operation."""
+        ...
+
+    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationResult:
+        """Perform one authoritative index verification operation.
+
+        Verifies that the rebuilt index matches the expected state:
+        - table opens successfully in the authoritative VFP context
+        - record count equals the expected pseudonymized record count
+        - structural tag inventory matches the authoritative expected inventory
+        """
         ...
 
 
@@ -185,6 +204,36 @@ def run_backend_rebuild(
         raise index_backend_failure("INDEX_BACKEND_REBUILD_FAILED") from None
     if not isinstance(result, IndexBackendResult):
         raise index_backend_failure("INDEX_BACKEND_RESULT_MALFORMED")
+    return result
+
+
+def require_backend_verification(
+    capability: IndexBackendCapability,
+    artifact_class: str,
+) -> None:
+    """Fail closed when the backend does not declare verification support."""
+    if artifact_class not in INDEX_ARTIFACT_CLASSES:
+        raise index_backend_failure("INDEX_BACKEND_ARTIFACT_CLASS_UNKNOWN")
+    if not capability.supports_verification:
+        raise index_backend_failure("INDEX_BACKEND_VERIFICATION_SUPPORT_MISSING")
+
+
+def run_backend_verification(
+    backend: IndexBackend,
+    request: IndexVerificationRequest,
+) -> IndexVerificationResult:
+    """Run one backend verification call behind the typed, privacy-safe boundary.
+
+    The result is validated through the closed public model constructor
+    (unknown status/artifact_class/schema version fail closed); a backend
+    exception becomes the stable typed privacy-safe error.
+    """
+    try:
+        result = backend.verify_index(request)
+    except Exception:
+        raise index_backend_failure("INDEX_BACKEND_VERIFICATION_FAILED") from None
+    if not isinstance(result, IndexVerificationResult):
+        raise index_backend_failure("INDEX_BACKEND_VERIFICATION_RESULT_MALFORMED")
     return result
 
 

@@ -834,6 +834,21 @@ INDEX_BACKEND_RESULT_STATUSES: tuple[str, ...] = (
     "FAILED",
 )
 
+#: Bounded truthful verification outcomes.
+INDEX_VERIFICATION_STATUSES: tuple[str, ...] = (
+    "VERIFIED",
+    "MISMATCH",
+    "FAILED",
+)
+
+#: Bounded verification detail codes.
+INDEX_VERIFICATION_DETAIL_CODES: tuple[str, ...] = (
+    "OPEN_FAILED",
+    "RECORD_COUNT_MISMATCH",
+    "TAG_INVENTORY_MISMATCH",
+    "INTERNAL_ERROR",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IndexBackendCapability(PublicModel):
@@ -850,6 +865,7 @@ class IndexBackendCapability(PublicModel):
     protocol_schema_version: str
     supports_structural_cdx_rebuild: bool
     supports_standalone_idx_rebuild: bool
+    supports_verification: bool
     vfp_runtime_available: bool
 
     def __post_init__(self) -> None:
@@ -865,6 +881,7 @@ class IndexBackendCapability(PublicModel):
         for name in (
             "supports_structural_cdx_rebuild",
             "supports_standalone_idx_rebuild",
+            "supports_verification",
             "vfp_runtime_available",
         ):
             if not isinstance(getattr(self, name), bool):
@@ -878,6 +895,7 @@ class IndexBackendCapability(PublicModel):
             protocol_schema_version=self.protocol_schema_version,
             supports_structural_cdx_rebuild=self.supports_structural_cdx_rebuild,
             supports_standalone_idx_rebuild=self.supports_standalone_idx_rebuild,
+            supports_verification=self.supports_verification,
             vfp_runtime_available=self.vfp_runtime_available,
         )
 
@@ -923,6 +941,86 @@ class IndexBackendResult(PublicModel):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class IndexVerificationRequest(PublicModel):
+    """Protected process-local input for one authoritative index verification.
+
+    This is deliberately NOT a ``PublicModel`` and has no ``to_dict`` method.
+    Its raw ``expected_tags`` belongs only to the protected-staging
+    lifecycle and may be passed in process to an injected backend. It must
+    never enter public JSON, manifests, results, progress, errors or logs.
+    """
+
+    protocol_schema_version: str
+    artifact_class: str
+    table_path: str
+    expected_record_count: int
+    expected_tags: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
+            raise ValueError(
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+            )
+        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
+            raise ValueError(
+                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
+            )
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        if not isinstance(self.expected_record_count, int) or self.expected_record_count < 0:
+            raise TypeError("expected_record_count must be a non-negative int")
+        if not isinstance(self.expected_tags, tuple):
+            raise TypeError("expected_tags must be a tuple of strings")
+        for tag in self.expected_tags:
+            if not isinstance(tag, str):
+                raise TypeError("each expected tag must be a string")
+
+
+@dataclass(frozen=True, slots=True)
+class IndexVerificationResult(PublicModel):
+    """JSON-safe verdict of one authoritative index verification (REQ-P6-003)."""
+
+    backend_id: str
+    protocol_schema_version: str
+    artifact_class: str
+    table_path: str
+    status: str
+    detail_code: str
+
+    def __post_init__(self) -> None:
+        _validated_code(self.backend_id, field_name="backend_id")
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
+            raise ValueError(
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+            )
+        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
+            raise ValueError(
+                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
+            )
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        if self.status not in INDEX_VERIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of " + ", ".join(INDEX_VERIFICATION_STATUSES)
+            )
+        if self.detail_code not in INDEX_VERIFICATION_DETAIL_CODES:
+            raise ValueError(
+                "detail_code must be one of " + ", ".join(INDEX_VERIFICATION_DETAIL_CODES)
+            )
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "IndexVerificationResult",
+            backend_id=self.backend_id,
+            protocol_schema_version=self.protocol_schema_version,
+            artifact_class=self.artifact_class,
+            table_path=self.table_path,
+            status=self.status,
+            detail_code=self.detail_code,
+        )
+
+
 PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     Capabilities,
     DatasetIdentity,
@@ -940,6 +1038,7 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     TransferBundleResult,
     IndexBackendCapability,
     IndexBackendResult,
+    IndexVerificationResult,
 )
 
 __all__ = [
@@ -969,6 +1068,10 @@ __all__ = [
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
+    "INDEX_VERIFICATION_STATUSES",
+    "INDEX_VERIFICATION_DETAIL_CODES",
     "IndexBackendCapability",
     "IndexBackendResult",
+    "IndexVerificationRequest",
+    "IndexVerificationResult",
 ]

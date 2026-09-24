@@ -32,6 +32,7 @@ from dbf_anonymizer.engine.direct_io import (
     DirectSourceTable,
     read_source_table,
     standalone_output_schema,
+    vfp_indexed_output_schema,
     stream_table_records,
     write_fresh_table,
 )
@@ -42,6 +43,7 @@ from dbf_anonymizer.engine.directives import (
     TableDirective,
     TwoPassResult,
 )
+from dbf_anonymizer.models import TransferProfile
 from dbf_anonymizer.engine.pass1 import PassOneOutcome
 from dbf_anonymizer.engine.publication import DatasetStaging, FaultInjector
 from dbf_anonymizer.engine.state import (
@@ -296,9 +298,14 @@ def _write_table(
             cancel_check=checkpoint,
         )
         destination = staging.table_destination(index, directive.relative_path)
+        # Choose output schema based on transfer profile (REQ-P6-003)
+        if engine_plan.plan.output_profile is TransferProfile.VFP_INDEXED:
+            output_schema = vfp_indexed_output_schema(table.schema)
+        else:
+            output_schema = standalone_output_schema(table.schema)
         result = write_fresh_table(
             destination,
-            standalone_output_schema(table.schema),
+            output_schema,
             _transform_stream(
                 engine_plan,
                 directive,

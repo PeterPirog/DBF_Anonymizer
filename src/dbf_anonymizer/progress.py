@@ -117,6 +117,7 @@ class ProgressPhase:
     PASS1_SCAN = "PASS1_SCAN"
     PASS1_FINALIZE = "PASS1_FINALIZE"
     PASS2_WRITE = "PASS2_WRITE"
+    INDEX_REBUILD = "INDEX_REBUILD"
 
 
 class ProgressEventCode:

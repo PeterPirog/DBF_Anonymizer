@@ -27,6 +27,7 @@ from dbf_anonymizer.models import (
     Plan,
     PseudonymizationResult,
     _PseudonymizationExecutionContext,
+    TransferProfile,
 )
 from dbf_anonymizer.planning import build_plan
 from dbf_anonymizer.preflight import PreflightCode, _evaluate_plan_readonly, preflight
@@ -198,7 +199,11 @@ def pseudonymize(
             raise _preflight_refusal()
 
     result = run_two_pass(
-        plan, workers=workers, control=control, operation_id=canonical_operation_id
+        plan,
+        workers=workers,
+        control=control,
+        operation_id=canonical_operation_id,
+        backend_contract=backend_contract if plan.output_profile is TransferProfile.VFP_INDEXED else None,
     )
     if result.operation_id is None or result.output_fingerprint is None:
         raise PublicationError(
