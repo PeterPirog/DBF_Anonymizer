@@ -9,7 +9,9 @@ Guarantees enforced by this module:
 * source-read-only and side-effect-free: it creates no output, vault, SQLite
   file/sidecar, staging, lock, manifest, log, CDX/IDX/DBC or transformed data,
   and does not modify any source DBF/FPT/CDX/IDX/DBC artifact;
-* it performs no network, subprocess, COM or VFP invocation;
+* it performs no network, subprocess, COM, VFP rebuild or verification itself;
+  an explicitly supplied backend is queried only for its typed capability
+  statement and is never discovered or retained globally;
 * ordinary preflight findings are AGGREGATED into a single ``PreflightResult``
   with ``ready=False`` rather than throwing after the first finding;
 * the public result carries only bounded machine codes and capability facts
@@ -100,6 +102,7 @@ from dbf_anonymizer.errors import (
     ErrorCode,
     VaultError,
 )
+from dbf_anonymizer.index_backend import IndexBackend, validate_backend_capabilities
 from dbf_anonymizer.models import (
     Capabilities,
     IndexBackendCapability,
@@ -1408,15 +1411,20 @@ def _evaluate_plan_readonly(
 def preflight(
     plan: Plan,
     *,
+    index_backend: IndexBackend | None = None,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
 ) -> PreflightResult:
     """Evaluate a planned dataset for preconditions before transformation.
 
     ``preflight`` is source-read-only and side-effect-free. It aggregates all
-    preconditions into a single immutable :class:`PreflightResult`. Ordinary
-    findings never raise; only invalid object contracts, unexpected dependency
-    failures and impossible invariants do.
+    preconditions into a single immutable :class:`PreflightResult`. The
+    optional ``index_backend`` is an explicit operation-scoped capability
+    input: its typed capability statement is validated fail-closed and used
+    only for this evaluation. No backend is discovered, imported, initialized
+    or stored globally, and no rebuild or verification method is called.
+    Ordinary findings never raise; only invalid object contracts, unexpected
+    dependency failures and impossible invariants do.
 
     REQ-P1-008: the optional keyword-only ``progress`` callback receives
     bounded structured :class:`~dbf_anonymizer.models.ProgressEvent` updates
@@ -1437,12 +1445,28 @@ def preflight(
     """
     if not isinstance(plan, Plan):
         raise TypeError("preflight requires a Plan")
+    if index_backend is not None and not isinstance(index_backend, IndexBackend):
+        raise TypeError("index_backend must implement the IndexBackend protocol")
+
+    backend_capability = (
+        validate_backend_capabilities(index_backend)
+        if index_backend is not None
+        else None
+    )
 
     control = ProgressController(
         operation="preflight", progress=progress, cancel_check=cancel_check
     )
     control.start_phase(ProgressPhase.OPERATION)
-    result = _evaluate_plan_readonly(plan, control)
+    result = _evaluate_plan_readonly(
+        plan,
+        control,
+        injected_backend_capability=(
+            backend_capability
+            if plan.output_profile is TransferProfile.VFP_INDEXED
+            else None
+        ),
+    )
     # The single terminal completion event is emitted only now — after the
     # public result genuinely exists (never after cancellation).
     control.complete(completed=len(plan.tables))

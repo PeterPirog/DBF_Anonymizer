@@ -23,6 +23,7 @@ from dbf_anonymizer import (
     TransferProfile,
     build_plan,
     capabilities,
+    preflight,
     pseudonymize,
 )
 from dbf_anonymizer.models import ProgressEvent
@@ -105,6 +106,87 @@ def test_missing_backend_fails_closed_before_transformation(tmp_path: Path) -> N
     assert _hash_tree(source) == source_before
 
 
+def test_public_preflight_missing_backend_is_read_only_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    plan, source, output, vault = _indexed_plan(tmp_path)
+    before = _hash_tree(tmp_path)
+
+    check = preflight(plan)
+
+    assert check.ready is False
+    assert "CAPABILITY_MISSING" in check.error_codes
+    assert _hash_tree(tmp_path) == before
+    assert _hash_tree(source)
+    assert not output.exists()
+    assert not vault.exists()
+
+
+@pytest.mark.parametrize(
+    "capability_override",
+    (
+        {"supports_structural_cdx_rebuild": False},
+        {"supports_verification": False},
+        {"vfp_runtime_available": False},
+    ),
+    ids=("no-structural-rebuild", "no-verification", "runtime-unavailable"),
+)
+def test_public_preflight_rejects_missing_backend_capability_without_mutation(
+    tmp_path: Path, capability_override: dict[str, bool]
+) -> None:
+    plan, _source, output, vault = _indexed_plan(tmp_path)
+    backend = DeterministicIndexBackend(
+        supports_structural_cdx_rebuild=capability_override.get(
+            "supports_structural_cdx_rebuild", True
+        ),
+        supports_verification=capability_override.get("supports_verification", True),
+        vfp_runtime_available=capability_override.get("vfp_runtime_available", True),
+    )
+    before = _hash_tree(tmp_path)
+
+    check = preflight(plan, index_backend=backend)
+
+    assert check.ready is False
+    assert "CAPABILITY_MISSING" in check.error_codes
+    assert backend.capabilities_calls == 1
+    assert not backend.rebuild_requests
+    assert not backend.verification_requests
+    assert _hash_tree(tmp_path) == before
+    assert not output.exists()
+    assert not vault.exists()
+
+
+class _MalformedPreflightBackend(DeterministicIndexBackend):
+    def capabilities(self) -> object:  # type: ignore[override]
+        return {
+            "backend_id": "PRIVATE-BACKEND-CANARY",
+            "private_path": "C:\\private\\source.dbf",
+        }
+
+
+def test_public_preflight_malformed_backend_has_typed_privacy_safe_refusal(
+    tmp_path: Path,
+) -> None:
+    plan, _source, output, vault = _indexed_plan(tmp_path)
+    before = _hash_tree(tmp_path)
+
+    with pytest.raises(IndexBackendError) as caught:
+        preflight(
+            plan,
+            index_backend=_MalformedPreflightBackend(),  # type: ignore[arg-type]
+        )
+
+    assert caught.value.context.detail_code == "INDEX_BACKEND_CAPABILITY_MALFORMED"
+    rendered = json.dumps(caught.value.to_dict()) + "".join(
+        traceback.format_exception(caught.value)
+    )
+    assert "PRIVATE-BACKEND-CANARY" not in rendered
+    assert "private\\source" not in rendered
+    assert _hash_tree(tmp_path) == before
+    assert not output.exists()
+    assert not vault.exists()
+
+
 def test_public_success_uses_fresh_protected_staging_and_publishes_fresh_cdx(
     tmp_path: Path,
 ) -> None:
@@ -117,6 +199,12 @@ def test_public_success_uses_fresh_protected_staging_and_publishes_fresh_cdx(
         expected_tag_inventory=_SOURCE_TAGS,
         actual_tag_inventory=_SOURCE_TAGS,
     )
+
+    before_preflight = _hash_tree(tmp_path)
+    check = preflight(plan, index_backend=backend)
+    assert check.ready is True
+    assert _hash_tree(tmp_path) == before_preflight
+    assert not output.exists()
 
     result = pseudonymize(plan, index_backend=backend)
 
@@ -142,6 +230,7 @@ def test_public_success_uses_fresh_protected_staging_and_publishes_fresh_cdx(
         != source_before["structural/indexed_table.cdx"]
     )
     assert _hash_tree(source) == source_before
+    assert backend.capabilities_calls == 2
 
 
 def test_rebuild_exception_is_sanitized_and_never_published(tmp_path: Path) -> None:
@@ -478,6 +567,11 @@ def test_data_only_backend_none_still_omits_stale_structural_artifacts(
     _copy_fixture(source, "vfp/fixture.dbc", "fixture.dbc")
     plan = build_plan(str(source), str(output), str(vault))
 
+    before_preflight = _hash_tree(tmp_path)
+    check = preflight(plan)
+    assert check.ready is True
+    assert _hash_tree(tmp_path) == before_preflight
+
     result = pseudonymize(plan, index_backend=None)
 
     assert plan.output_profile is TransferProfile.DATA_ONLY
@@ -520,9 +614,106 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
     tmp_path: Path,
 ) -> None:
     backend = _load_real_vfp_backend()
-    plan, _source, output, _vault = _indexed_plan(tmp_path)
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    _copy_structural_source(source)
+    write_numeric_table_with_deleted(
+        source,
+        "memo/private.dbf",
+        (numeric_field("KEY", "C", 12), numeric_field("NOTE", "M", 4)),
+        [({"KEY": "PRIVATE00001", "NOTE": "PRIVATE-MEMO-CANARY"}, False)],
+    )
+    plan = build_plan(
+        str(source),
+        str(output),
+        str(vault),
+        policy={"indexes": {"profile": "VFP_INDEXED"}},
+    )
+    structural = next(
+        table for table in plan.tables if table.table_path == _STRUCTURAL_RELATIVE
+    )
+    assert structural.structural_cdx is True
+    assert structural.structural_cdx_companion_present is True
+    source_before = _hash_tree(source)
+    assert "structural/indexed_table.dbf" in source_before
+    assert "structural/indexed_table.cdx" in source_before
+    assert "memo/private.dbf" in source_before
+    assert "memo/private.fpt" in source_before
 
-    result = pseudonymize(plan, index_backend=backend)
+    preflight_before = _hash_tree(tmp_path)
+    check = preflight(plan, index_backend=backend)
+    assert check.ready is True
+    assert _hash_tree(tmp_path) == preflight_before
+    events: list[ProgressEvent] = []
 
-    assert result.record_count == 4
-    assert (output / "structural/indexed_table.cdx").is_file()
+    result = pseudonymize(plan, index_backend=backend, progress=events.append)
+
+    output_dbf = output / _STRUCTURAL_RELATIVE
+    output_cdx = output / "structural/indexed_table.cdx"
+    assert result.record_count == 5
+    assert getattr(backend, "staged_table_existed_before_rebuild") is True
+    assert getattr(backend, "staged_cdx_existed_before_rebuild") is False
+    assert getattr(backend, "table_opened") is True
+    assert getattr(backend, "actual_record_count") == structural.record_count == 4
+    assert getattr(backend, "expected_tag_inventory") == _SOURCE_TAGS
+    assert getattr(backend, "actual_tag_inventory") == _SOURCE_TAGS
+    assert output_dbf.is_file()
+    assert output_cdx.is_file()
+    assert getattr(backend, "source_cdx_hash_at_rebuild") == source_before[
+        "structural/indexed_table.cdx"
+    ]
+    output_cdx_hash = hashlib.sha256(output_cdx.read_bytes()).hexdigest()
+    output_dbf_hash = hashlib.sha256(output_dbf.read_bytes()).hexdigest()
+    assert getattr(backend, "rebuilt_cdx_hash") == output_cdx_hash
+    assert output_cdx_hash != source_before["structural/indexed_table.cdx"]
+    published_record_count, published_tags = getattr(
+        backend, "inspect_published_table"
+    )(output_dbf)
+    assert getattr(backend, "published_table_opened") is True
+    assert published_record_count == structural.record_count == 4
+    assert published_tags == _SOURCE_TAGS
+    source_after = _hash_tree(source)
+    assert source_after == source_before
+
+    public_surfaces = [
+        json.dumps(check.to_dict(), sort_keys=True),
+        json.dumps(result.to_dict(), sort_keys=True),
+        *(json.dumps(event.to_dict(), sort_keys=True) for event in events),
+    ]
+    private_tokens = (
+        "KEY0001",
+        "SYNTH-A",
+        "PRIVATE00001",
+        "PRIVATE-MEMO-CANARY",
+        "SYNTHCODE",
+        "SYNTHNOTE",
+        "CODE",
+        "NOTE",
+        str(source.resolve()),
+        str(output.resolve()),
+        str(vault.resolve()),
+    )
+    assert all(
+        token not in surface for token in private_tokens for surface in public_surfaces
+    )
+
+    print(f"VFP_VERSION={getattr(backend, 'runtime_version')}")
+    print(f"VFP_TABLE_OPENED={getattr(backend, 'table_opened')}")
+    print(f"VFP_PUBLISHED_TABLE_OPENED={getattr(backend, 'published_table_opened')}")
+    print(f"VFP_RECORD_COUNT={getattr(backend, 'actual_record_count')}")
+    print(
+        "VFP_EXPECTED_TAGS="
+        + ",".join(getattr(backend, "expected_tag_inventory"))
+    )
+    print(
+        "VFP_ACTUAL_TAGS=" + ",".join(getattr(backend, "actual_tag_inventory"))
+    )
+    print(f"SOURCE_DBF_SHA256_BEFORE={source_before['structural/indexed_table.dbf']}")
+    print(f"SOURCE_DBF_SHA256_AFTER={source_after['structural/indexed_table.dbf']}")
+    print(f"SOURCE_CDX_SHA256_BEFORE={source_before['structural/indexed_table.cdx']}")
+    print(f"SOURCE_CDX_SHA256_AFTER={source_after['structural/indexed_table.cdx']}")
+    print(f"SOURCE_FPT_SHA256_BEFORE={source_before['memo/private.fpt']}")
+    print(f"SOURCE_FPT_SHA256_AFTER={source_after['memo/private.fpt']}")
+    print(f"OUTPUT_DBF_SHA256={output_dbf_hash}")
+    print(f"OUTPUT_CDX_SHA256={output_cdx_hash}")
