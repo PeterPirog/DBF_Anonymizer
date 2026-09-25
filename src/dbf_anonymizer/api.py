@@ -27,6 +27,7 @@ from dbf_anonymizer.models import (
     Plan,
     PseudonymizationResult,
     _PseudonymizationExecutionContext,
+    TransferProfile,
 )
 from dbf_anonymizer.planning import build_plan
 from dbf_anonymizer.preflight import PreflightCode, _evaluate_plan_readonly, preflight
@@ -112,9 +113,9 @@ def pseudonymize(
     BEFORE any transformation work: an unknown protocol schema version, a
     malformed contract or a backend failure becomes the stable typed
     privacy-safe :class:`~dbf_anonymizer.errors.IndexBackendError`.  The
-    default DATA_ONLY profile never requires a backend; a profile that
-    requires authoritative index work fails truthfully while the real
-    rebuild integration does not exist yet (REQ-P6-003).
+    default DATA_ONLY profile never requires a backend. VFP_INDEXED uses the
+    validated backend operation-scoped for protected-staging rebuild and
+    objective open/count/tag verification (REQ-P6-003).
 
     ONE invocation is ONE logical operation with ONE canonical operation id
     (REQ-P1-008): the durable publication identity, the vault operation row,
@@ -188,7 +189,16 @@ def pseudonymize(
     # controller: bounded progress for the potentially long read-only scan
     # stages, and NO preflight terminal completion (the public service owns
     # the invocation's single COMPLETED event).
-    check = _evaluate_plan_readonly(plan, control)
+    check = _evaluate_plan_readonly(
+        plan,
+        control,
+        injected_backend_capability=(
+            backend_contract.capability
+            if backend_contract is not None
+            and plan.output_profile is TransferProfile.VFP_INDEXED
+            else None
+        ),
+    )
     if not check.ready:
         retry_only = (
             set(check.error_codes) == {PreflightCode.DESTINATION_CONFLICT}
@@ -198,7 +208,11 @@ def pseudonymize(
             raise _preflight_refusal()
 
     result = run_two_pass(
-        plan, workers=workers, control=control, operation_id=canonical_operation_id
+        plan,
+        workers=workers,
+        control=control,
+        operation_id=canonical_operation_id,
+        backend_contract=backend_contract if plan.output_profile is TransferProfile.VFP_INDEXED else None,
     )
     if result.operation_id is None or result.output_fingerprint is None:
         raise PublicationError(

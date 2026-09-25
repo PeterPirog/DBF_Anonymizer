@@ -90,8 +90,8 @@ def snapshot() -> Capabilities:
     pseudonymized dataset through the direct reader and write through the
     direct writer; no additional backend is involved) — no filesystem
     probing, no DBF/vault open, no subprocess/COM/network.
-    ``vfp_index_backend`` remains false in this standalone implementation
-    (it will be supplied later by the REQ-P6 index backend).
+    ``vfp_index_backend`` remains false in standalone discovery. REQ-P6-003
+    validates an explicitly injected backend only for its current operation.
     """
     return Capabilities(
         direct_read=direct_read_available(),

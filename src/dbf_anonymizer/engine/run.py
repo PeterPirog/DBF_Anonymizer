@@ -81,7 +81,18 @@ from dbf_anonymizer.errors import (
     PublicationError,
     VaultError,
 )
-from dbf_anonymizer.models import Plan
+from dbf_anonymizer.index_backend import (
+    IndexBackendContract,
+    IndexRebuildRequest,
+    IndexVerificationRequest,
+    index_backend_failure,
+    require_backend_runtime,
+    run_backend_rebuild,
+    run_backend_verification,
+    require_backend_support,
+    require_backend_verification,
+)
+from dbf_anonymizer.models import Plan, TransferProfile
 from dbf_anonymizer.policy import classify_field_capability, resolve_policy
 from dbf_anonymizer.relationships.models import (
     RelationGroup,
@@ -282,6 +293,7 @@ def build_engine_plan(
     numeric_present = False
     temporal_present = False
 
+    structural_cdx_tables: list[str] = []
     numeric_groups: list[tuple[RelationGroup, str]] = []
     if relationship_document is not None:
         from dbf_anonymizer.relationships.models import (
@@ -385,8 +397,12 @@ def build_engine_plan(
                 transformed=tuple(transformed),
                 memo_fields=tuple(memo_fields),
                 temporal_fields=tuple(temporal_fields),
+                structural_cdx=schema.has_structural_cdx,
+                record_count=int(schema.record_count),
             )
         )
+        if schema.has_structural_cdx:
+            structural_cdx_tables.append(relative_path)
 
     if relationship_document is not None:
         # EVERY declared relation is tracked for the verification evidence —
@@ -454,6 +470,8 @@ def build_engine_plan(
                             relation_fields_by_table.get(directive.relative_path, set())
                         )
                     ),
+                    structural_cdx=directive.structural_cdx,
+                    record_count=directive.record_count,
                 )
             )
         tables = updated_tables
@@ -464,6 +482,7 @@ def build_engine_plan(
         text_present=text_present,
         numeric_present=numeric_present,
         temporal_present=temporal_present,
+        structural_cdx_tables=tuple(structural_cdx_tables),
     )
 
 
@@ -765,6 +784,151 @@ def _cleanup_engine_resources(
     return failure
 
 
+def _run_vfp_indexed_rebuild_and_verify(
+    engine_plan: EnginePlan,
+    *,
+    source_root: Path,
+    staging: DatasetStaging,
+    backend_contract: IndexBackendContract,
+    control: ProgressController,
+    fault_inject: FaultInjector | None = None,
+) -> None:
+    """Run authoritative structural index rebuild and verification for VFP_INDEXED profile.
+
+    This function runs inside protected staging after fresh DBF/FPT are written
+    but before the dataset fingerprint is computed and staging is promoted.
+
+    For each table with structural CDX:
+    1. Rebuild the structural index through the injected backend
+    2. Verify the rebuilt index (table open, record count, tag inventory)
+
+    Any failure fails closed with no publication.
+    """
+    try:
+        dataset_root = staging.dataset_root.resolve(strict=True)
+    except OSError:
+        raise _path_failure("ENGINE_VFP_INDEXED_STAGING_UNAVAILABLE") from None
+    capability = backend_contract.capability
+    require_backend_support(capability, "STRUCTURAL_CDX")
+    require_backend_verification(capability, "STRUCTURAL_CDX")
+    require_backend_runtime(capability)
+
+    directives = {table.relative_path: table for table in engine_plan.tables}
+
+    for table_path in engine_plan.structural_cdx_tables:
+        control.check_cancelled()
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=0,
+            total=2,
+            table_path=table_path,
+        )
+
+        try:
+            source_table_path = (source_root / table_path).resolve(strict=True)
+            staged_table_path = (dataset_root / table_path).resolve(strict=True)
+        except OSError:
+            raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
+        try:
+            staged_table_path.relative_to(dataset_root)
+        except ValueError:
+            raise _path_failure("ENGINE_VFP_INDEXED_STAGED_TARGET_INVALID") from None
+        if source_table_path == staged_table_path:
+            raise _path_failure("ENGINE_VFP_INDEXED_STAGED_TARGET_INVALID")
+        directive = directives.get(table_path)
+        if directive is None:
+            raise index_backend_failure(
+                "INDEX_BACKEND_TABLE_DIRECTIVE_MISSING", table_path=table_path
+            )
+
+        rebuild_request = IndexRebuildRequest(
+            protocol_schema_version=backend_contract.capability.protocol_schema_version,
+            artifact_class="STRUCTURAL_CDX",
+            table_path=table_path,
+            source_table_path=source_table_path,
+            staged_table_path=staged_table_path,
+        )
+        rebuild_outcome = run_backend_rebuild(
+            backend_contract.backend, rebuild_request
+        )
+        rebuild_result = rebuild_outcome.result
+
+        if rebuild_result.backend_id != backend_contract.backend_id:
+            raise index_backend_failure(
+                "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
+            )
+        if rebuild_result.status != "REBUILT":
+            detail_code = (
+                "INDEX_BACKEND_REBUILD_REFUSED"
+                if rebuild_result.status == "REFUSED"
+                else "INDEX_BACKEND_REBUILD_FAILED"
+            )
+            raise index_backend_failure(detail_code, table_path=table_path)
+
+        staged_cdx_path = staged_table_path.with_suffix(".cdx")
+        if not staged_cdx_path.is_file():
+            raise index_backend_failure(
+                "INDEX_BACKEND_REBUILT_ARTIFACT_MISSING", table_path=table_path
+            )
+
+        control.check_cancelled()
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=1,
+            total=2,
+            table_path=table_path,
+        )
+
+        verification_request = IndexVerificationRequest(
+            protocol_schema_version=backend_contract.capability.protocol_schema_version,
+            artifact_class="STRUCTURAL_CDX",
+            table_path=table_path,
+            staged_table_path=staged_table_path,
+        )
+        verification_outcome = run_backend_verification(
+            backend_contract.backend, verification_request
+        )
+        verification_result = verification_outcome.result
+
+        if verification_result.backend_id != backend_contract.backend_id:
+            raise index_backend_failure(
+                "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
+            )
+        if verification_result.status != "VERIFIED":
+            detail_code = {
+                "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
+                "RECORD_COUNT_MISMATCH": "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
+                "TAG_INVENTORY_MISMATCH": "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
+            }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
+            raise index_backend_failure(detail_code, table_path=table_path)
+        if not verification_outcome.table_opened:
+            raise index_backend_failure(
+                "INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path
+            )
+        if verification_outcome.actual_record_count != directive.record_count:
+            raise index_backend_failure(
+                "INDEX_BACKEND_RECORD_COUNT_MISMATCH", table_path=table_path
+            )
+        if (
+            verification_outcome.actual_tag_inventory
+            != rebuild_outcome.expected_tag_inventory
+        ):
+            raise index_backend_failure(
+                "INDEX_BACKEND_TAG_INVENTORY_MISMATCH", table_path=table_path
+            )
+
+        control.check_cancelled()
+        control.progress(
+            ProgressPhase.INDEX_REBUILD,
+            completed=2,
+            total=2,
+            table_path=table_path,
+        )
+
+        if fault_inject is not None:
+            fault_inject(f"VFP_INDEXED_REBUILD_VERIFY_COMPLETE:{table_path}")
+
+
 def run_two_pass(
     plan: Plan,
     *,
@@ -774,6 +938,7 @@ def run_two_pass(
     operation_id: str | None = None,
     fault_inject: FaultInjector | None = None,
     control: ProgressController | None = None,
+    backend_contract: IndexBackendContract | None = None,
 ) -> TwoPassResult:
     """The bounded two-pass production run bound to ONE execution identity.
 
@@ -792,6 +957,11 @@ def run_two_pass(
     controller from ``progress``/``cancel_check`` (the pre-existing
     behavior every direct engine test relies on); supplying ``control``
     together with separate callbacks is a fail-closed contract error.
+
+    The ``backend_contract`` (REQ-P6-003) is the validated index backend
+    contract for VFP_INDEXED profile operations. When the plan's output
+    profile is VFP_INDEXED, this contract MUST be provided and will be used
+    for authoritative structural index rebuild and verification after pass 2.
 
     PRE-EXECUTION REVALIDATION (before the vault, the spool or any output
     artifact is created — zero transformation-equivalent side effects on
@@ -994,6 +1164,24 @@ def run_two_pass(
                         evidence_root=evidence_root,
                         fault_inject=fault_inject,
                     )
+                    # VFP_INDEXED profile: authoritative structural index rebuild
+                    # and verification (REQ-P6-003). Runs inside protected staging
+                    # after fresh DBF/FPT are written, before final publication.
+                    if (
+                        plan.output_profile is TransferProfile.VFP_INDEXED
+                        and engine_plan.structural_cdx_tables
+                    ):
+                        if backend_contract is None:
+                            raise index_backend_failure("INDEX_BACKEND_MISSING")
+                        control.start_phase(ProgressPhase.INDEX_REBUILD)
+                        _run_vfp_indexed_rebuild_and_verify(
+                            engine_plan,
+                            source_root=source,
+                            staging=staging,
+                            backend_contract=backend_contract,
+                            control=control,
+                            fault_inject=fault_inject,
+                        )
                     output_fingerprint = fingerprint_dataset(
                         staging.dataset_root, checkpoint=control.check_cancelled
                     )

@@ -66,6 +66,7 @@ __all__ = [
     "DirectSourceTable",
     "read_source_table",
     "standalone_output_schema",
+    "vfp_indexed_output_schema",
     "stream_table_records",
     "write_fresh_table",
 ]
@@ -204,13 +205,45 @@ def standalone_output_schema(schema: TableSchema) -> TableSchema:
 
     The reduced application semantics (no structural index validity, no DBC
     semantics) are reported by the planning/preflight/transfer layers; the
-    authoritative ``VFP_INDEXED`` rebuild strategy (REQ-P6-003) will hand
-    index definitions to the injected backend separately from this data
-    schema.
+    authoritative ``VFP_INDEXED`` rebuild strategy (REQ-P6-003) delegates
+    source-definition discovery and staged-table rebuild to the injected
+    backend separately from this data schema.
     """
     return dataclasses.replace(
         schema,
         has_structural_cdx=False,
+        companion_cdx_present=False,
+        companion_cdx_path=None,
+        is_database_container=False,
+        dbc_bound=False,
+        dbc_backlink_path=None,
+    )
+
+
+def vfp_indexed_output_schema(schema: TableSchema) -> TableSchema:
+    """Declare the PUBLIC VFP_INDEXED output schema of one fresh Direct Write
+    (REQ-P6-003).
+
+    The structural-CDX flag is PRESERVED so the fresh DBF header declares
+    structural index presence. The companion-CDX metadata is CLEARED because
+    the authoritative rebuild (via injected IndexBackend) will produce a
+    fresh CDX in protected staging that corresponds to the pseudonymized data.
+
+    * structural-CDX table flag is kept (source truth);
+    * companion-CDX metadata is cleared (rebuild will produce fresh CDX);
+    * DBC binding and the DBC backlink are removed; the fresh output never
+      claims DBC rules/triggers/relations, and no DBC/DCT/DCX companion is
+      created or copied;
+    * no DBF header is edited manually, no raw byte is patched, no bytes are
+      copied from the source DBF and no private dbfbridge module is used:
+      the public ``dbfbridge.write_table`` owns every written byte.
+
+    The authoritative backend reads source definitions and applies them to
+    the protected staged table separately from this data schema.
+    """
+    return dataclasses.replace(
+        schema,
+        has_structural_cdx=schema.has_structural_cdx,
         companion_cdx_present=False,
         companion_cdx_path=None,
         is_database_container=False,

@@ -15,11 +15,11 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.4"
+MODEL_SCHEMA_VERSION = "1.5"
 
 #: Versioned identity of the injected index-backend protocol (REQ-P6-001).
 #: A backend capability/result that declares any other version fails closed.
-INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.0"
+INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.1"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -834,6 +834,29 @@ INDEX_BACKEND_RESULT_STATUSES: tuple[str, ...] = (
     "FAILED",
 )
 
+#: Bounded rebuild detail codes and their closed status pairing.
+INDEX_BACKEND_RESULT_DETAIL_CODES: tuple[str, ...] = (
+    "REBUILT_OK",
+    "REFUSED",
+    "INTERNAL_ERROR",
+)
+
+#: Bounded truthful verification outcomes.
+INDEX_VERIFICATION_STATUSES: tuple[str, ...] = (
+    "VERIFIED",
+    "MISMATCH",
+    "FAILED",
+)
+
+#: Bounded verification detail codes.
+INDEX_VERIFICATION_DETAIL_CODES: tuple[str, ...] = (
+    "VERIFIED_OK",
+    "OPEN_FAILED",
+    "RECORD_COUNT_MISMATCH",
+    "TAG_INVENTORY_MISMATCH",
+    "INTERNAL_ERROR",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IndexBackendCapability(PublicModel):
@@ -850,6 +873,7 @@ class IndexBackendCapability(PublicModel):
     protocol_schema_version: str
     supports_structural_cdx_rebuild: bool
     supports_standalone_idx_rebuild: bool
+    supports_verification: bool
     vfp_runtime_available: bool
 
     def __post_init__(self) -> None:
@@ -865,6 +889,7 @@ class IndexBackendCapability(PublicModel):
         for name in (
             "supports_structural_cdx_rebuild",
             "supports_standalone_idx_rebuild",
+            "supports_verification",
             "vfp_runtime_available",
         ):
             if not isinstance(getattr(self, name), bool):
@@ -878,6 +903,7 @@ class IndexBackendCapability(PublicModel):
             protocol_schema_version=self.protocol_schema_version,
             supports_structural_cdx_rebuild=self.supports_structural_cdx_rebuild,
             supports_standalone_idx_rebuild=self.supports_standalone_idx_rebuild,
+            supports_verification=self.supports_verification,
             vfp_runtime_available=self.vfp_runtime_available,
         )
 
@@ -909,11 +935,78 @@ class IndexBackendResult(PublicModel):
             raise ValueError(
                 "status must be one of " + ", ".join(INDEX_BACKEND_RESULT_STATUSES)
             )
-        _validated_code(self.detail_code, field_name="detail_code")
+        expected_detail = {
+            "REBUILT": "REBUILT_OK",
+            "REFUSED": "REFUSED",
+            "FAILED": "INTERNAL_ERROR",
+        }[self.status]
+        if self.detail_code != expected_detail:
+            raise ValueError(
+                f"detail_code must be {expected_detail} when status is {self.status}"
+            )
 
     def to_dict(self) -> JsonDict:
         return _payload(
             "IndexBackendResult",
+            backend_id=self.backend_id,
+            protocol_schema_version=self.protocol_schema_version,
+            artifact_class=self.artifact_class,
+            table_path=self.table_path,
+            status=self.status,
+            detail_code=self.detail_code,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IndexVerificationResult(PublicModel):
+    """JSON-safe verdict of one authoritative index verification (REQ-P6-003).
+
+    Objective record/tag evidence remains in the process-local backend
+    outcome. This public verdict contains no protected paths or tag names.
+    """
+
+    backend_id: str
+    protocol_schema_version: str
+    artifact_class: str
+    table_path: str
+    status: str
+    detail_code: str
+
+    def __post_init__(self) -> None:
+        _validated_code(self.backend_id, field_name="backend_id")
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
+            raise ValueError(
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+            )
+        if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
+            raise ValueError(
+                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
+            )
+        object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
+        if self.status not in INDEX_VERIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of " + ", ".join(INDEX_VERIFICATION_STATUSES)
+            )
+        if self.detail_code not in INDEX_VERIFICATION_DETAIL_CODES:
+            raise ValueError(
+                "detail_code must be one of " + ", ".join(INDEX_VERIFICATION_DETAIL_CODES)
+            )
+        allowed_details = {
+            "VERIFIED": frozenset(("VERIFIED_OK",)),
+            "MISMATCH": frozenset(
+                ("RECORD_COUNT_MISMATCH", "TAG_INVENTORY_MISMATCH")
+            ),
+            "FAILED": frozenset(("OPEN_FAILED", "INTERNAL_ERROR")),
+        }[self.status]
+        if self.detail_code not in allowed_details:
+            raise ValueError(
+                f"detail_code {self.detail_code} is invalid for status {self.status}"
+            )
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "IndexVerificationResult",
             backend_id=self.backend_id,
             protocol_schema_version=self.protocol_schema_version,
             artifact_class=self.artifact_class,
@@ -940,6 +1033,7 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     TransferBundleResult,
     IndexBackendCapability,
     IndexBackendResult,
+    IndexVerificationResult,
 )
 
 __all__ = [
@@ -969,6 +1063,10 @@ __all__ = [
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
+    "INDEX_BACKEND_RESULT_DETAIL_CODES",
+    "INDEX_VERIFICATION_STATUSES",
+    "INDEX_VERIFICATION_DETAIL_CODES",
     "IndexBackendCapability",
     "IndexBackendResult",
+    "IndexVerificationResult",
 ]

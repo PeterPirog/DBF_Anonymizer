@@ -43,13 +43,17 @@ OBSOLETE_0_3_EXPORTS = (
 EXPECTED_PUBLIC_EXPORTS = {
     "MODEL_SCHEMA_VERSION",
     "IDENTITY_PRIVACY_REVIEW_REQUIRED",
-    # REQ-P6-001: the injected Windows/VFP index-backend protocol boundary.
+    # REQ-P6-001/REQ-P6-003: the injected Windows/VFP index-backend protocol boundary.
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
     "INDEX_ARTIFACT_CLASSES",
     "INDEX_BACKEND_RESULT_STATUSES",
+    "INDEX_BACKEND_RESULT_DETAIL_CODES",
+    "INDEX_VERIFICATION_STATUSES",
+    "INDEX_VERIFICATION_DETAIL_CODES",
     "IndexBackend",
     "IndexBackendCapability",
     "IndexBackendResult",
+    "IndexVerificationResult",
     "IndexBackendError",
     "Capabilities",
     "DatasetIdentity",
@@ -75,8 +79,6 @@ EXPECTED_PUBLIC_EXPORTS = {
     "pseudonymize",
     "verify_dataset",
     "recover",
-    "create_transfer_bundle",
-    "verify_transfer_bundle",
     "create_transfer_bundle",
     "verify_transfer_bundle",
     "capabilities",

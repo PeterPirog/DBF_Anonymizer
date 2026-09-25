@@ -57,6 +57,8 @@ class TableDirective:
     memo_fields: tuple[str, ...]
     temporal_fields: tuple[str, ...]
     relation_fields: tuple[str, ...] = ()
+    structural_cdx: bool = False
+    record_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class EnginePlan:
     text_present: bool
     numeric_present: bool
     temporal_present: bool
+    structural_cdx_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

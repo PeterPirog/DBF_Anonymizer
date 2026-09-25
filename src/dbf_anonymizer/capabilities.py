@@ -46,7 +46,7 @@ def capabilities() -> Capabilities:
     exactly when the implemented REQ-P5-002..P5-007 services' required
     runtime facts hold (direct read AND direct write — derived from the same
     public dbfbridge capability facts, never from filesystem probing).
-    ``vfp_index_backend`` is ``False`` until its owning requirement is
-    implemented.
+    ``vfp_index_backend`` remains ``False`` for standalone discovery because
+    an injected backend is available only within one explicit operation.
     """
     return snapshot()

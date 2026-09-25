@@ -783,7 +783,8 @@ def test_vfp_indexed_without_backend_rejected(tmp_path: Path) -> None:
     plan = _build_plan(tmp_path, policy={"indexes": {"profile": "VFP_INDEXED"}})
     result = _preflight_no_side_effects(plan, tmp_path)
     assert result.ready is False
-    assert "OUTPUT_PROFILE_UNSUPPORTED" in result.error_codes
+    # VFP_INDEXED is now supported when backend capability is present;
+    # without backend, CAPABILITY_MISSING is reported.
     assert "CAPABILITY_MISSING" in result.error_codes
 
 

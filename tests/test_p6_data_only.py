@@ -439,7 +439,6 @@ def test_p6_module_imports_are_toolchain_free() -> None:
     """The P6 boundary imports no VFP/COM/toolchain module, no subprocess or
     network machinery, and no private dbfbridge module (AST + runtime)."""
     import ast
-    import importlib
 
     import dbf_anonymizer.index_backend as backend_module
 
@@ -452,10 +451,18 @@ def test_p6_module_imports_are_toolchain_free() -> None:
                 imported_roots.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported_roots.add(node.module.split(".")[0])
-    allowed_roots = {"__future__", "dbf_anonymizer", "dataclasses", "typing"}
+    allowed_roots = {
+        "__future__",
+        "dbf_anonymizer",
+        "dataclasses",
+        "pathlib",
+        "typing",
+    }
     assert imported_roots <= allowed_roots, sorted(imported_roots)
     for loaded in ("win32com", "pythoncom", "mcp_vfp9sp2_toolchain"):
         assert loaded not in sys.modules, loaded
-    importlib.reload(backend_module)
+    # Do not reload a protocol module during the shared suite: replacing its
+    # dataclass identities would invalidate already-collected backend doubles.
+    # The import above plus the AST proof is the import-time purity evidence.
     assert "win32com" not in sys.modules
     assert "mcp_vfp9sp2_toolchain" not in sys.modules
