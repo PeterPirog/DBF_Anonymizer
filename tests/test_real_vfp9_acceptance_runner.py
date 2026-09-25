@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,21 +12,124 @@ import pytest
 import tools.run_real_vfp9_acceptance as runner
 
 
-def test_git_provenance_rejects_every_untracked_file(
+_TEST_HEAD = "a" * 40
+
+
+def _configure_git_provenance(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    tmp_path: Path,
+    *,
+    status: str = "",
+    branch: str = runner.EXPECTED_BRANCH,
+    head: str = _TEST_HEAD,
+    remote_head: str = _TEST_HEAD,
+) -> tuple[Path, list[tuple[str, ...]]]:
+    architecture = tmp_path / runner.ARCHITECTURE_FILENAME
+    architecture_bytes = b"immutable architecture\n"
+    architecture.write_bytes(architecture_bytes)
+    monkeypatch.setattr(runner, "ARCHITECTURE_PATH", architecture)
+    monkeypatch.setattr(
+        runner,
+        "ARCHITECTURE_SHA256",
+        hashlib.sha256(architecture_bytes).hexdigest(),
+    )
     calls: list[tuple[str, ...]] = []
+    replies = {
+        ("status", "--porcelain", "--untracked-files=all"): status,
+        ("branch", "--show-current"): branch,
+        ("rev-parse", "HEAD"): head,
+        ("rev-parse", runner.EXPECTED_REMOTE_REF): remote_head,
+    }
 
-    def dirty_git(*args: str) -> str:
+    def fake_git(*args: str) -> str:
         calls.append(args)
-        return "?? local-evidence.json"
+        return replies[args]
 
-    monkeypatch.setattr(runner, "_run_git", dirty_git)
+    monkeypatch.setattr(runner, "_run_git", fake_git)
+    return architecture, calls
 
-    with pytest.raises(SystemExit, match="untracked files are present"):
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        " M tools/run_real_vfp9_acceptance.py",
+        "M  tools/run_real_vfp9_acceptance.py",
+        "?? hostile.py",
+        "?? tests/conftest.py",
+    ),
+    ids=("tracked-modification", "staged-modification", "python", "conftest"),
+)
+def test_git_provenance_rejects_every_worktree_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str
+) -> None:
+    _architecture, calls = _configure_git_provenance(
+        monkeypatch, tmp_path, status=status
+    )
+
+    with pytest.raises(SystemExit, match="worktree changes or untracked files"):
         runner._verified_git_state()
 
     assert calls == [("status", "--porcelain", "--untracked-files=all")]
+
+
+def test_git_provenance_accepts_clean_head_and_canonical_architecture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _architecture, calls = _configure_git_provenance(monkeypatch, tmp_path)
+
+    assert runner._verified_git_state() == (runner.EXPECTED_BRANCH, _TEST_HEAD)
+
+    assert calls == [
+        ("status", "--porcelain", "--untracked-files=all"),
+        ("branch", "--show-current"),
+        ("rev-parse", "HEAD"),
+        ("rev-parse", runner.EXPECTED_REMOTE_REF),
+    ]
+
+
+def test_git_provenance_rejects_wrong_architecture_hash_without_path_leak(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    architecture, _calls = _configure_git_provenance(monkeypatch, tmp_path)
+    architecture.write_bytes(b"tampered architecture\n")
+
+    with pytest.raises(SystemExit, match="architecture file hash") as caught:
+        runner._verified_git_state()
+
+    assert str(tmp_path) not in str(caught.value)
+
+
+def test_git_provenance_rejects_extra_untracked_file_alongside_architecture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _architecture, _calls = _configure_git_provenance(
+        monkeypatch, tmp_path, status="?? unexpected.txt"
+    )
+
+    with pytest.raises(SystemExit, match="worktree changes or untracked files"):
+        runner._verified_git_state()
+
+
+def test_git_provenance_rejects_wrong_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _architecture, _calls = _configure_git_provenance(
+        monkeypatch, tmp_path, branch="main"
+    )
+
+    with pytest.raises(SystemExit, match="not running on the PR #43 branch"):
+        runner._verified_git_state()
+
+
+def test_git_provenance_rejects_head_not_at_remote_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _architecture, _calls = _configure_git_provenance(
+        monkeypatch, tmp_path, remote_head="b" * 40
+    )
+
+    with pytest.raises(SystemExit, match="not the exact pushed PR branch commit"):
+        runner._verified_git_state()
 
 
 def test_hostile_python_and_pytest_environment_is_neutralized(
