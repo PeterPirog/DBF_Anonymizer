@@ -630,6 +630,11 @@ def _check_output_profile_and_capabilities(
             or not index_backend_capability.vfp_runtime_available
         ):
             findings.error(PreflightCode.CAPABILITY_MISSING)
+        # Check standalone IDX support if any table has standalone IDX
+        if any(table.standalone_idx_present for table in plan.tables):
+            assert index_backend_capability is not None
+            if not index_backend_capability.supports_standalone_idx_rebuild:
+                findings.error(PreflightCode.CAPABILITY_MISSING)
         return
 
     # Unknown profile -> fail closed.

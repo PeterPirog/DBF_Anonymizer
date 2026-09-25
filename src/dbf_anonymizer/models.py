@@ -280,6 +280,8 @@ class TablePlan(PublicModel):
     unsupported_field_count: int
     unsafe_field_count: int
     system_field_count: int
+    standalone_idx_paths: tuple[str, ...] = ()
+    standalone_idx_present: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
@@ -308,6 +310,12 @@ class TablePlan(PublicModel):
             + self.system_field_count
         ) > self.field_count:
             raise ValueError("transformed + unsafe + system cannot exceed field_count")
+        if self.standalone_idx_present and not self.standalone_idx_paths:
+            raise ValueError("standalone_idx_present=True requires non-empty standalone_idx_paths")
+        if not self.standalone_idx_present and self.standalone_idx_paths:
+            raise ValueError("standalone_idx_paths non-empty requires standalone_idx_present=True")
+        normalized_idx = tuple(_normalized_relative_path(p) for p in self.standalone_idx_paths)
+        object.__setattr__(self, "standalone_idx_paths", normalized_idx)
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -323,6 +331,8 @@ class TablePlan(PublicModel):
             memo_required=self.memo_required,
             memo_companion_present=self.memo_companion_present,
             structural_cdx_companion_present=self.structural_cdx_companion_present,
+            standalone_idx_paths=self.standalone_idx_paths,
+            standalone_idx_present=self.standalone_idx_present,
             unsupported_field_count=self.unsupported_field_count,
             unsafe_field_count=self.unsafe_field_count,
             system_field_count=self.system_field_count,

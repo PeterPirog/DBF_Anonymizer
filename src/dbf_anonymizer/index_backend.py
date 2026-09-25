@@ -146,6 +146,9 @@ class IndexRebuildRequest:
     and applies them to ``staged_table_path``. DBF_Anonymizer neither parses
     CDX nor receives raw definitions. Both absolute paths stay process-local
     and must never enter public JSON, manifests, results, progress or errors.
+
+    For STANDALONE_IDX artifact class, ``idx_path`` identifies the specific
+    index file to rebuild (relative to the table's directory).
     """
 
     protocol_schema_version: str
@@ -153,6 +156,7 @@ class IndexRebuildRequest:
     table_path: str
     source_table_path: Path
     staged_table_path: Path
+    idx_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
@@ -181,6 +185,13 @@ class IndexRebuildRequest:
         )
         if self.source_table_path == self.staged_table_path:
             raise ValueError("source_table_path and staged_table_path must differ")
+        if self.artifact_class == "STANDALONE_IDX":
+            if not self.idx_path:
+                raise ValueError("STANDALONE_IDX requires idx_path")
+            object.__setattr__(self, "idx_path", _normalized_relative_path(self.idx_path))
+        else:
+            if self.idx_path is not None:
+                raise ValueError("idx_path only allowed for STANDALONE_IDX artifact class")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +227,7 @@ class IndexVerificationRequest:
     artifact_class: str
     table_path: str
     staged_table_path: Path
+    idx_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
@@ -235,6 +247,13 @@ class IndexVerificationRequest:
                 self.staged_table_path, field_name="staged_table_path"
             ),
         )
+        if self.artifact_class == "STANDALONE_IDX":
+            if not self.idx_path:
+                raise ValueError("STANDALONE_IDX requires idx_path")
+            object.__setattr__(self, "idx_path", _normalized_relative_path(self.idx_path))
+        else:
+            if self.idx_path is not None:
+                raise ValueError("idx_path only allowed for STANDALONE_IDX artifact class")
 
 
 @dataclass(frozen=True, slots=True)

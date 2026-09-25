@@ -23,6 +23,7 @@ from dbf_anonymizer.discovery import (
     compute_source_fingerprint,
     derive_dataset_id,
     discover_tables,
+    enumerate_in_scope_paths,
 )
 from dbf_anonymizer.errors import (
     CancellationError,
@@ -186,8 +187,17 @@ def build_plan(
     # 1. Discover tables (wraps dbfbridge errors); scan safe points between
     #    discovered tables are provided through the private probes.
     control.start_phase(ProgressPhase.DISCOVERY)
+
+    # Enumerate all in-scope source files (DBF, FPT, CDX, IDX) for standalone
+    # IDX association with tables.
+    source_files = enumerate_in_scope_paths(
+        source_root,
+        cancel_probe=control.check_cancelled,
+    )
+
     discovered = discover_tables(
         source_root,
+        source_files,
         cancel_probe=control.check_cancelled,
         progress_probe=lambda rel: control.bump(
             ProgressPhase.DISCOVERY, table_path=rel
@@ -362,6 +372,7 @@ def build_plan(
 
         total_transformed_fields += transform_count
         index_strategy = _resolve_index_strategy(table.structural_cdx, output_profile)
+        standalone_idx_present = bool(table.standalone_idx_relative_paths)
 
         tables.append(
             TablePlan(
@@ -376,6 +387,8 @@ def build_plan(
                 memo_required=(schema.has_memo or schema.has_memo_flag),
                 memo_companion_present=schema.memo_companion_present,
                 structural_cdx_companion_present=schema.companion_cdx_present,
+                standalone_idx_paths=table.standalone_idx_relative_paths,
+                standalone_idx_present=standalone_idx_present,
                 unsupported_field_count=unsupported_count,
                 unsafe_field_count=unsafe_count,
                 system_field_count=system_count,

@@ -804,10 +804,23 @@ def test_same_stem_idx_not_associated_with_dbf(tmp_path: Path, idx_relative_path
     assert baseline.dataset.source_fingerprint != first.dataset.source_fingerprint
     assert first.dataset.source_fingerprint != second.dataset.source_fingerprint
     assert first.plan_id != second.plan_id
-    # Adding/changing IDX cannot invent an ownership relation on any TablePlan.
-    assert baseline.tables == first.tables == second.tables
-    assert baseline.to_dict()["tables"] == first.to_dict()["tables"] == second.to_dict()["tables"]
-    assert all(".idx" not in json.dumps(t.to_dict()).lower() for t in second.tables)
+    # REQ-P6-004: standalone IDX with same stem IS now tracked per table.
+    # The TablePlan for the associated table changes (standalone_idx_paths/present).
+    # Other tables remain unchanged.
+    assert baseline.tables[0] == first.tables[0] == second.tables[0]
+    # The table with matching stem now has standalone_idx_present=True
+    table_with_idx = second.tables[1]
+    assert table_with_idx.standalone_idx_present is True
+    assert len(table_with_idx.standalone_idx_paths) == 1
+    assert table_with_idx.standalone_idx_paths[0] == idx_relative_path
+    # The baseline and first plan should differ for the associated table
+    assert baseline.tables[1] != first.tables[1]
+    # Changing IDX content does NOT change TablePlan (only path is tracked, not content)
+    assert first.tables[1] == second.tables[1]
+    # Tables without matching stem remain unchanged between first and second
+    # (baseline differs because it was created before the IDX file existed)
+    for i in [0, 2, 3]:
+        assert first.tables[i] == second.tables[i]
     assert baseline.policy == first.policy == second.policy
     assert baseline.relationships == first.relationships == second.relationships
     assert baseline.output_profile == first.output_profile == second.output_profile

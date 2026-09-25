@@ -86,6 +86,7 @@ class EnginePlan:
     numeric_present: bool
     temporal_present: bool
     structural_cdx_tables: tuple[str, ...] = ()
+    standalone_idx_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

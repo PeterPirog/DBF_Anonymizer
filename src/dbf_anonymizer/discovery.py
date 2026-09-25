@@ -80,6 +80,7 @@ class DiscoveredTable:
     structural_cdx: bool
     dbc_bound: bool
     companion_cdx_relative_path: str | None
+    standalone_idx_relative_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +145,7 @@ def _file_sha256(
 
 def discover_tables(
     source_root: Path,
+    source_files: dict[str, Path],
     *,
     cancel_probe: Callable[[], None] | None = None,
     progress_probe: Callable[[str], None] | None = None,
@@ -162,6 +164,10 @@ def discover_tables(
     after each table has been read.  Cancellation probes never emit progress
     events.  With both hooks ``None`` the behavior is exactly the
     pre-existing deterministic discovery (same walk, same ordering).
+
+    ``source_files`` maps normalized relative paths to absolute paths for all
+    in-scope artifacts (DBF, FPT, CDX, IDX) and is used to associate
+    standalone IDX files with their tables by stem equality.
     """
     if not source_root.is_dir():
         from dbf_anonymizer.errors import PathError, ErrorCode, ErrorContext
@@ -209,6 +215,13 @@ def discover_tables(
         memo_rel = _safe_relative(schema.memo_companion_path, source_root) if schema.memo_companion_present else None
         cdx_rel = _safe_relative(schema.companion_cdx_path, source_root) if schema.companion_cdx_present else None
 
+        # Find standalone IDX files associated with this table (same stem)
+        table_stem = Path(rel).stem
+        standalone_idx: list[str] = []
+        for idx_rel, idx_path in source_files.items():
+            if idx_rel.lower().endswith(".idx") and Path(idx_rel).stem == table_stem:
+                standalone_idx.append(idx_rel)
+
         tables.append(
             DiscoveredTable(
                 relative_path=rel,
@@ -218,6 +231,7 @@ def discover_tables(
                 structural_cdx=schema.has_structural_cdx,
                 dbc_bound=schema.dbc_bound,
                 companion_cdx_relative_path=cdx_rel,
+                standalone_idx_relative_paths=tuple(sorted(standalone_idx)),
             )
         )
 
