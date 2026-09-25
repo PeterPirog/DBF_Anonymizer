@@ -44,6 +44,7 @@ from dbf_anonymizer.index_backend import (  # noqa: E402
     IndexRebuildRequest,
     IndexVerificationOutcome,
     IndexVerificationRequest,
+    index_backend_failure,
     require_backend_runtime,
     run_backend_rebuild,
     validate_backend_capabilities,
@@ -167,6 +168,19 @@ class _UnknownProtocolBackend(DeterministicIndexBackend):
         raise ValueError(_PRIVATE_DIAGNOSTIC)
 
 
+class _LegacyProtocolBackend(DeterministicIndexBackend):
+    def capabilities(self) -> IndexBackendCapability:
+        return IndexBackendCapability(
+            backend_id="legacy-backend",
+            backend_schema_version="1.0",
+            protocol_schema_version="1.0",
+            supports_structural_cdx_rebuild=True,
+            supports_standalone_idx_rebuild=False,
+            supports_verification=False,
+            vfp_runtime_available=True,
+        )
+
+
 class _ForeignResultBackend(DeterministicIndexBackend):
     def rebuild_index(self, request: IndexRebuildRequest) -> object:
         return {"status": "MAGIC"}
@@ -206,18 +220,15 @@ def test_malformed_capability_schema_fails_closed() -> None:
 
 
 def test_unknown_protocol_schema_version_fails_closed() -> None:
-    from dbf_anonymizer.models import IndexBackendCapability
-
-    with pytest.raises(ValueError):
-        IndexBackendCapability(
-            backend_id="unknown-schema",
-            backend_schema_version="1.0",
-            protocol_schema_version="9.9",
-            supports_structural_cdx_rebuild=True,
-            supports_standalone_idx_rebuild=True,
-            supports_verification=True,
-            vfp_runtime_available=True,
-        )
+    with pytest.raises(IndexBackendError) as caught:
+        validate_backend_capabilities(_LegacyProtocolBackend())
+    assert caught.value.code is dbf_anonymizer.ErrorCode.INDEX_BACKEND_FAILED
+    assert caught.value.context.detail_code == "INDEX_BACKEND_CAPABILITIES_FAILED"
+    rendered = json.dumps(caught.value.to_dict()) + "".join(
+        traceback.format_exception(caught.value)
+    )
+    assert "legacy-backend" not in rendered
+    assert "protocol_schema_version must be" not in rendered
 
 
 def test_backend_exception_becomes_a_stable_privacy_safe_error() -> None:
@@ -239,6 +250,14 @@ def test_backend_exception_becomes_a_stable_privacy_safe_error() -> None:
     assert error.__cause__ is None
     for canary in _PRIVATE_CANARIES:
         assert all(canary not in surface for surface in rendered)
+
+
+def test_unrecognized_failure_detail_is_reduced_to_closed_vocabulary() -> None:
+    error = index_backend_failure(_PRIVATE_DIAGNOSTIC)
+    assert error.context.detail_code == "INDEX_BACKEND_FAILURE_UNCLASSIFIED"
+    rendered = json.dumps(error.to_dict(), sort_keys=True) + str(error)
+    for canary in _PRIVATE_CANARIES:
+        assert canary not in rendered
 
 
 def test_backend_cannot_smuggle_a_typed_error_context() -> None:
@@ -437,7 +456,7 @@ def test_root_exports_are_import_time_pure() -> None:
     no transport, subprocess, network or toolchain machinery (AST proof)."""
     import ast
 
-    assert dbf_anonymizer.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.0"
+    assert dbf_anonymizer.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.1"
     assert "IndexBackend" in dbf_anonymizer.__all__
     import dbf_anonymizer.index_backend as module
 

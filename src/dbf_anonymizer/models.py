@@ -15,11 +15,11 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.4"
+MODEL_SCHEMA_VERSION = "1.5"
 
 #: Versioned identity of the injected index-backend protocol (REQ-P6-001).
 #: A backend capability/result that declares any other version fails closed.
-INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.0"
+INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.1"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]

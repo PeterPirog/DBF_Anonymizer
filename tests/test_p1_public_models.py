@@ -9,9 +9,13 @@ from typing import Any
 import pytest
 
 from dbf_anonymizer import (
+    INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     MODEL_SCHEMA_VERSION,
     Capabilities,
     DatasetIdentity,
+    IndexBackendCapability,
+    IndexBackendResult,
+    IndexVerificationResult,
     NumericIdentityReview,
     Plan,
     PolicySummary,
@@ -118,6 +122,31 @@ def _samples() -> tuple[object, ...]:
         output_profile=TransferProfile.DATA_ONLY,
         relationship_assurance_target=RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED,
     )
+    index_capability = IndexBackendCapability(
+        backend_id="synthetic-index-backend",
+        backend_schema_version="1.0",
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        supports_structural_cdx_rebuild=True,
+        supports_standalone_idx_rebuild=False,
+        supports_verification=True,
+        vfp_runtime_available=True,
+    )
+    index_result = IndexBackendResult(
+        backend_id="synthetic-index-backend",
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/registry.dbf",
+        status="REBUILT",
+        detail_code="REBUILT_OK",
+    )
+    index_verification = IndexVerificationResult(
+        backend_id="synthetic-index-backend",
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_class="STRUCTURAL_CDX",
+        table_path="north/registry.dbf",
+        status="VERIFIED",
+        detail_code="VERIFIED_OK",
+    )
     return (
         capabilities,
         dataset,
@@ -184,6 +213,9 @@ def _samples() -> tuple[object, ...]:
             dbf_type="I",
             status="IDENTITY_PRIVACY_REVIEW_REQUIRED",
         ),
+        index_capability,
+        index_result,
+        index_verification,
     )
 
 
@@ -234,12 +266,33 @@ def test_models_are_frozen_and_deeply_use_immutable_public_containers() -> None:
 
 
 def test_every_public_model_is_json_safe_and_versioned() -> None:
-    for model in _samples():
+    samples = _samples()
+    assert {type(sample) for sample in samples} == set(PUBLIC_MODEL_TYPES)
+    for model in samples:
         payload = model.to_dict()  # type: ignore[union-attr]
-        # REQ-P6-001 advanced the public model schema additively to 1.4.
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.4"
+        # REQ-P6-003 advances the public shape for verification evidence.
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.5"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
+
+
+def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
+    assert MODEL_SCHEMA_VERSION == "1.5"
+    assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.1"
+    p6_types = {
+        IndexBackendCapability,
+        IndexBackendResult,
+        IndexVerificationResult,
+    }
+    p6_samples = tuple(
+        sample for sample in _samples() if type(sample) in p6_types
+    )
+    assert {type(sample) for sample in p6_samples} == p6_types
+    for sample in p6_samples:
+        payload = sample.to_dict()  # type: ignore[union-attr]
+        assert payload["schema_version"] == "1.5"
+        assert payload["protocol_schema_version"] == "1.1"
+        assert json.loads(json.dumps(payload, sort_keys=True)) == payload
 
 
 def test_relative_paths_are_normalized_before_serialization() -> None:
@@ -527,6 +580,20 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "NumericIdentityReview": (
             "schema_version", "model_type", "table_path", "field_name", "dbf_type", "status",
+        ),
+        "IndexBackendCapability": (
+            "schema_version", "model_type", "backend_id", "backend_schema_version",
+            "protocol_schema_version", "supports_structural_cdx_rebuild",
+            "supports_standalone_idx_rebuild", "supports_verification",
+            "vfp_runtime_available",
+        ),
+        "IndexBackendResult": (
+            "schema_version", "model_type", "backend_id", "protocol_schema_version",
+            "artifact_class", "table_path", "status", "detail_code",
+        ),
+        "IndexVerificationResult": (
+            "schema_version", "model_type", "backend_id", "protocol_schema_version",
+            "artifact_class", "table_path", "status", "detail_code",
         ),
     }
 

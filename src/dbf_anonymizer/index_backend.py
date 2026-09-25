@@ -76,6 +76,33 @@ _BACKEND_OPERATION = "index_backend"
 _MAX_TAG_COUNT = 256
 _MAX_TAG_NAME_LENGTH = 128
 
+_INDEX_BACKEND_FAILURE_DETAIL_CODES = frozenset(
+    {
+        "INDEX_BACKEND_ARTIFACT_CLASS_UNKNOWN",
+        "INDEX_BACKEND_ID_MISMATCH",
+        "INDEX_BACKEND_CAPABILITIES_FAILED",
+        "INDEX_BACKEND_CAPABILITY_MALFORMED",
+        "INDEX_BACKEND_FAILURE_UNCLASSIFIED",
+        "INDEX_BACKEND_MISSING",
+        "INDEX_BACKEND_REBUILD_FAILED",
+        "INDEX_BACKEND_REBUILD_REFUSED",
+        "INDEX_BACKEND_REBUILT_ARTIFACT_MISSING",
+        "INDEX_BACKEND_RESULT_MALFORMED",
+        "INDEX_BACKEND_RESULT_MISMATCH",
+        "INDEX_BACKEND_RUNTIME_UNAVAILABLE",
+        "INDEX_BACKEND_SUPPORT_MISSING",
+        "INDEX_BACKEND_TABLE_DIRECTIVE_MISSING",
+        "INDEX_BACKEND_TABLE_NOT_OPENED",
+        "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
+        "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
+        "INDEX_BACKEND_VERIFICATION_FAILED",
+        "INDEX_BACKEND_VERIFICATION_RESULT_MALFORMED",
+        "INDEX_BACKEND_VERIFICATION_RESULT_MISMATCH",
+        "INDEX_BACKEND_VERIFICATION_SUPPORT_MISSING",
+        "INDEX_BACKEND_VERIFY_FAILED",
+    }
+)
+
 
 def _validated_tag_inventory(
     tags: object, *, field_name: str, allow_empty: bool = False
@@ -250,13 +277,22 @@ class IndexVerificationOutcome:
 def index_backend_failure(
     detail_code: str, *, table_path: str | None = None
 ) -> IndexBackendError:
-    """A stable typed, privacy-safe index-backend refusal (no values)."""
+    """A stable typed, privacy-safe index-backend refusal (no values).
+
+    Only the closed internal machine vocabulary can cross the public error
+    boundary. Unknown backend or caller text is reduced to one generic code.
+    """
+    safe_detail_code = (
+        detail_code
+        if detail_code in _INDEX_BACKEND_FAILURE_DETAIL_CODES
+        else "INDEX_BACKEND_FAILURE_UNCLASSIFIED"
+    )
     return IndexBackendError(
         ErrorCode.INDEX_BACKEND_FAILED,
         context=ErrorContext(
             operation="index_backend",
             table_path=table_path,
-            detail_code=detail_code,
+            detail_code=safe_detail_code,
         ),
     )
 

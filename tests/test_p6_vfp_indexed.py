@@ -8,7 +8,9 @@ import json
 import os
 import shutil
 import traceback
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import dbfbridge
@@ -16,6 +18,7 @@ import pytest
 
 from dbf_anonymizer import (
     CancellationError,
+    ErrorCode,
     IndexBackend,
     IndexBackendError,
     PathError,
@@ -26,6 +29,8 @@ from dbf_anonymizer import (
     preflight,
     pseudonymize,
 )
+from dbf_anonymizer.engine.run import _run_vfp_indexed_rebuild_and_verify
+from dbf_anonymizer.index_backend import IndexRebuildOutcome, IndexRebuildRequest
 from dbf_anonymizer.models import ProgressEvent
 from tests.support.deterministic_index_backend import DeterministicIndexBackend
 from tests.support.numeric_tables import (
@@ -38,6 +43,16 @@ from tests.support.numeric_tables import (
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "p0"
 _STRUCTURAL_RELATIVE = "structural/indexed_table.dbf"
 _SOURCE_TAGS = ("SYNTHCODE", "SYNTHNOTE")
+_PRIVATE_FAILURE_CANARIES = (
+    "PRIVATE-DEFINITION-CANARY",
+    "PRIVATE-MEMO-CANARY",
+    "C:\\protected\\staging",
+    "TAG-CANARY",
+    "KEY0001",
+    "SYNTH-A",
+    "SYNTHCODE",
+    "SYNTHNOTE",
+)
 
 
 def _copy_fixture(source: Path, fixture_relative: str, relative: str | None = None) -> None:
@@ -91,6 +106,39 @@ def _assert_not_published(output: Path, events: list[ProgressEvent] | None = Non
     assert not output.exists()
     if events is not None:
         assert not any(event.event_code == "COMPLETED" for event in events)
+
+
+def _assert_index_failure(
+    error: IndexBackendError,
+    detail_code: str,
+    *,
+    private_paths: tuple[Path, ...] = (),
+) -> None:
+    assert error.code is ErrorCode.INDEX_BACKEND_FAILED
+    assert error.context.detail_code == detail_code
+    rendered = json.dumps(error.to_dict(), sort_keys=True) + "".join(
+        traceback.format_exception(error)
+    )
+    for canary in _PRIVATE_FAILURE_CANARIES:
+        assert canary not in rendered
+    for path in private_paths:
+        assert str(path.resolve()) not in rendered
+
+
+class _BackendIdMismatchBackend(DeterministicIndexBackend):
+    def rebuild_index(self, request: IndexRebuildRequest) -> IndexRebuildOutcome:
+        outcome = super().rebuild_index(request)
+        return IndexRebuildOutcome(
+            result=replace(outcome.result, backend_id="foreign-backend"),
+            expected_tag_inventory=outcome.expected_tag_inventory,
+        )
+
+
+class _MissingRebuiltArtifactBackend(DeterministicIndexBackend):
+    def rebuild_index(self, request: IndexRebuildRequest) -> IndexRebuildOutcome:
+        outcome = super().rebuild_index(request)
+        request.staged_table_path.with_suffix(".cdx").unlink()
+        return outcome
 
 
 def test_missing_backend_fails_closed_before_transformation(tmp_path: Path) -> None:
@@ -257,12 +305,11 @@ def test_rebuild_exception_is_sanitized_and_never_published(tmp_path: Path) -> N
     with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
-    rendered = json.dumps(caught.value.to_dict()) + "".join(
-        traceback.format_exception(caught.value)
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_REBUILD_FAILED",
+        private_paths=(source, output, vault),
     )
-    assert "PRIVATE-DEFINITION-CANARY" not in rendered
-    assert "protected" not in rendered
-    assert "TAG-CANARY" not in rendered
     _assert_not_published(output)
     assert _hash_tree(source) == source_before
 
@@ -279,12 +326,44 @@ def test_non_rebuilt_status_never_publishes(
     source_before = _hash_tree(source)
     backend = DeterministicIndexBackend(status=status, detail_code=detail_code)
 
-    with pytest.raises(PathError) as caught:
+    with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
-    assert caught.value.__class__.__module__.startswith("dbf_anonymizer")
+    expected_detail = {
+        "REFUSED": "INDEX_BACKEND_REBUILD_REFUSED",
+        "FAILED": "INDEX_BACKEND_REBUILD_FAILED",
+    }[status]
+    _assert_index_failure(caught.value, expected_detail, private_paths=(source, output))
     _assert_not_published(output)
     assert _hash_tree(source) == source_before
+
+
+def test_backend_id_mismatch_is_typed_and_never_published(tmp_path: Path) -> None:
+    plan, source, output, _vault = _indexed_plan(tmp_path)
+
+    with pytest.raises(IndexBackendError) as caught:
+        pseudonymize(plan, index_backend=_BackendIdMismatchBackend())
+
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_ID_MISMATCH",
+        private_paths=(source, output),
+    )
+    _assert_not_published(output)
+
+
+def test_missing_rebuilt_cdx_is_typed_and_never_published(tmp_path: Path) -> None:
+    plan, source, output, _vault = _indexed_plan(tmp_path)
+
+    with pytest.raises(IndexBackendError) as caught:
+        pseudonymize(plan, index_backend=_MissingRebuiltArtifactBackend())
+
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_REBUILT_ARTIFACT_MISSING",
+        private_paths=(source, output),
+    )
+    _assert_not_published(output)
 
 
 def test_table_open_failure_never_publishes(tmp_path: Path) -> None:
@@ -296,9 +375,14 @@ def test_table_open_failure_never_publishes(tmp_path: Path) -> None:
         actual_tag_inventory=(),
     )
 
-    with pytest.raises(PathError):
+    with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_TABLE_NOT_OPENED",
+        private_paths=(output,),
+    )
     _assert_not_published(output)
 
 
@@ -306,10 +390,14 @@ def test_nominal_success_with_wrong_record_count_is_rejected(tmp_path: Path) -> 
     plan, _source, output, _vault = _indexed_plan(tmp_path)
     backend = DeterministicIndexBackend(actual_record_count=999)
 
-    with pytest.raises(PathError) as caught:
+    with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
-    assert "RECORD_COUNT_MISMATCH" in caught.value.context.detail_code
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
+        private_paths=(output,),
+    )
     _assert_not_published(output)
 
 
@@ -321,9 +409,14 @@ def test_reported_tag_mismatch_never_publishes(tmp_path: Path) -> None:
         actual_tag_inventory=("WRONGTAG",),
     )
 
-    with pytest.raises(PathError):
+    with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
+        private_paths=(output,),
+    )
     _assert_not_published(output)
 
 
@@ -331,11 +424,31 @@ def test_nominal_success_with_wrong_tag_evidence_is_rejected(tmp_path: Path) -> 
     plan, _source, output, _vault = _indexed_plan(tmp_path)
     backend = DeterministicIndexBackend(actual_tag_inventory=("WRONGTAG",))
 
-    with pytest.raises(PathError) as caught:
+    with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
 
-    assert "TAG_INVENTORY_MISMATCH" in caught.value.context.detail_code
+    _assert_index_failure(
+        caught.value,
+        "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
+        private_paths=(output,),
+    )
     _assert_not_published(output)
+
+
+def test_genuine_staging_path_failure_remains_path_error(tmp_path: Path) -> None:
+    with pytest.raises(PathError) as caught:
+        _run_vfp_indexed_rebuild_and_verify(
+            object(),  # type: ignore[arg-type]
+            source_root=tmp_path,
+            staging=SimpleNamespace(  # type: ignore[arg-type]
+                dataset_root=tmp_path / "missing-staging"
+            ),
+            backend_contract=object(),  # type: ignore[arg-type]
+            control=object(),  # type: ignore[arg-type]
+        )
+
+    assert caught.value.code is ErrorCode.PATH_INVALID
+    assert caught.value.context.detail_code == "ENGINE_VFP_INDEXED_STAGING_UNAVAILABLE"
 
 
 @pytest.mark.parametrize(

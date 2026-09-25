@@ -85,6 +85,7 @@ from dbf_anonymizer.index_backend import (
     IndexBackendContract,
     IndexRebuildRequest,
     IndexVerificationRequest,
+    index_backend_failure,
     require_backend_runtime,
     run_backend_rebuild,
     run_backend_verification,
@@ -836,7 +837,9 @@ def _run_vfp_indexed_rebuild_and_verify(
             raise _path_failure("ENGINE_VFP_INDEXED_STAGED_TARGET_INVALID")
         directive = directives.get(table_path)
         if directive is None:
-            raise _path_failure("ENGINE_VFP_INDEXED_TABLE_DIRECTIVE_MISSING")
+            raise index_backend_failure(
+                "INDEX_BACKEND_TABLE_DIRECTIVE_MISSING", table_path=table_path
+            )
 
         rebuild_request = IndexRebuildRequest(
             protocol_schema_version=backend_contract.capability.protocol_schema_version,
@@ -851,13 +854,22 @@ def _run_vfp_indexed_rebuild_and_verify(
         rebuild_result = rebuild_outcome.result
 
         if rebuild_result.backend_id != backend_contract.backend_id:
-            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_ID_MISMATCH")
+            raise index_backend_failure(
+                "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
+            )
         if rebuild_result.status != "REBUILT":
-            raise _path_failure(f"ENGINE_VFP_INDEXED_REBUILD_{rebuild_result.status}")
+            detail_code = (
+                "INDEX_BACKEND_REBUILD_REFUSED"
+                if rebuild_result.status == "REFUSED"
+                else "INDEX_BACKEND_REBUILD_FAILED"
+            )
+            raise index_backend_failure(detail_code, table_path=table_path)
 
         staged_cdx_path = staged_table_path.with_suffix(".cdx")
         if not staged_cdx_path.is_file():
-            raise _path_failure("ENGINE_VFP_INDEXED_REBUILT_CDX_MISSING")
+            raise index_backend_failure(
+                "INDEX_BACKEND_REBUILT_ARTIFACT_MISSING", table_path=table_path
+            )
 
         control.check_cancelled()
         control.progress(
@@ -879,20 +891,31 @@ def _run_vfp_indexed_rebuild_and_verify(
         verification_result = verification_outcome.result
 
         if verification_result.backend_id != backend_contract.backend_id:
-            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_ID_MISMATCH")
-        if verification_result.status != "VERIFIED":
-            raise _path_failure(
-                f"ENGINE_VFP_INDEXED_VERIFY_{verification_result.status}_{verification_result.detail_code}"
+            raise index_backend_failure(
+                "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
             )
+        if verification_result.status != "VERIFIED":
+            detail_code = {
+                "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
+                "RECORD_COUNT_MISMATCH": "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
+                "TAG_INVENTORY_MISMATCH": "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
+            }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
+            raise index_backend_failure(detail_code, table_path=table_path)
         if not verification_outcome.table_opened:
-            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_TABLE_NOT_OPENED")
+            raise index_backend_failure(
+                "INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path
+            )
         if verification_outcome.actual_record_count != directive.record_count:
-            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_RECORD_COUNT_MISMATCH")
+            raise index_backend_failure(
+                "INDEX_BACKEND_RECORD_COUNT_MISMATCH", table_path=table_path
+            )
         if (
             verification_outcome.actual_tag_inventory
             != rebuild_outcome.expected_tag_inventory
         ):
-            raise _path_failure("ENGINE_VFP_INDEXED_VERIFY_TAG_INVENTORY_MISMATCH")
+            raise index_backend_failure(
+                "INDEX_BACKEND_TAG_INVENTORY_MISMATCH", table_path=table_path
+            )
 
         control.check_cancelled()
         control.progress(
@@ -1149,7 +1172,7 @@ def run_two_pass(
                         and engine_plan.structural_cdx_tables
                     ):
                         if backend_contract is None:
-                            raise _path_failure("ENGINE_VFP_INDEXED_BACKEND_MISSING")
+                            raise index_backend_failure("INDEX_BACKEND_MISSING")
                         control.start_phase(ProgressPhase.INDEX_REBUILD)
                         _run_vfp_indexed_rebuild_and_verify(
                             engine_plan,
