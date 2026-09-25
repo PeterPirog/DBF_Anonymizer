@@ -32,6 +32,7 @@ TEST_IDENTIFIER = (
 )
 TEST_COMMAND = f"python -m pytest {TEST_IDENTIFIER} -vv -s"
 EXPECTED_BRANCH = "p6/vfp-indexed-profile-impl"
+EXPECTED_REMOTE_REF = f"origin/{EXPECTED_BRANCH}"
 FACT_KEYS = (
     "VFP_VERSION",
     "VFP_TABLE_OPENED",
@@ -97,9 +98,9 @@ def _verified_git_state() -> tuple[str, str]:
     if branch != EXPECTED_BRANCH:
         _fail("the acceptance command is not running on the PR #43 branch")
     head = _run_git("rev-parse", "HEAD")
-    upstream = _run_git("rev-parse", "@{upstream}")
-    if head != upstream:
-        _fail("HEAD is not the exact pushed upstream commit")
+    pushed_head = _run_git("rev-parse", EXPECTED_REMOTE_REF)
+    if head != pushed_head:
+        _fail("HEAD is not the exact pushed PR branch commit")
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         _fail("Git returned a malformed commit identifier")
     return branch, head
