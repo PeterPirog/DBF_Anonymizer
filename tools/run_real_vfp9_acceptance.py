@@ -168,7 +168,6 @@ def _acceptance_environment(executable: Path) -> dict[str, str]:
     env.pop("PYTEST_PLUGINS", None)
     env.update(
         {
-            "PYTHONNOUSERSITE": "1",
             "PYTHONPATH": os.pathsep.join((str(SOURCE_ROOT), str(REPO_ROOT))),
             "PYTEST_ADDOPTS": "",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",

@@ -46,7 +46,6 @@ def test_hostile_python_and_pytest_environment_is_neutralized(
     assert env["PYTEST_ADDOPTS"] == ""
     assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert "PYTEST_PLUGINS" not in env
-    assert env["PYTHONNOUSERSITE"] == "1"
 
 
 def test_foreign_package_origin_is_rejected(
