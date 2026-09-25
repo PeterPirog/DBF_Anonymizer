@@ -111,9 +111,11 @@ def _resolve_vfp9() -> Path:
         _fail("the trusted runner must be Windows")
     if not VFP_SHORTCUT.is_file():
         _fail("the approved Visual FoxPro shortcut is unavailable")
+    shortcut_env = dict(os.environ)
+    shortcut_env["DBF_ANONYMIZER_VFP9_SHORTCUT"] = str(VFP_SHORTCUT)
     powershell = (
         "$shortcut = (New-Object -ComObject WScript.Shell)."
-        "CreateShortcut($args[0]); "
+        "CreateShortcut($env:DBF_ANONYMIZER_VFP9_SHORTCUT); "
         "[Console]::Out.Write($shortcut.TargetPath)"
     )
     completed = subprocess.run(
@@ -123,8 +125,8 @@ def _resolve_vfp9() -> Path:
             "-NonInteractive",
             "-Command",
             powershell,
-            str(VFP_SHORTCUT),
         ),
+        env=shortcut_env,
         capture_output=True,
         text=True,
         encoding="utf-8",
