@@ -822,6 +822,14 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
     print(
         "VFP_ACTUAL_TAGS=" + ",".join(getattr(backend, "actual_tag_inventory"))
     )
+    print(
+        "VFP_STAGED_TABLE_EXISTED_BEFORE_REBUILD="
+        f"{getattr(backend, 'staged_table_existed_before_rebuild')}"
+    )
+    print(
+        "VFP_STAGED_CDX_EXISTED_BEFORE_REBUILD="
+        f"{getattr(backend, 'staged_cdx_existed_before_rebuild')}"
+    )
     print(f"SOURCE_DBF_SHA256_BEFORE={source_before['structural/indexed_table.dbf']}")
     print(f"SOURCE_DBF_SHA256_AFTER={source_after['structural/indexed_table.dbf']}")
     print(f"SOURCE_CDX_SHA256_BEFORE={source_before['structural/indexed_table.cdx']}")
@@ -830,3 +838,9 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
     print(f"SOURCE_FPT_SHA256_AFTER={source_after['memo/private.fpt']}")
     print(f"OUTPUT_DBF_SHA256={output_dbf_hash}")
     print(f"OUTPUT_CDX_SHA256={output_cdx_hash}")
+    print(f"SOURCE_IMMUTABLE={source_after == source_before}")
+    fresh_cdx = (
+        not getattr(backend, "staged_cdx_existed_before_rebuild")
+        and output_cdx.is_file()
+    )
+    print(f"FRESH_CDX={fresh_cdx}")
