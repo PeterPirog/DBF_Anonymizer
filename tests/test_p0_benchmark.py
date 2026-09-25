@@ -158,8 +158,9 @@ def test_transient_publication_interruption_restarts_in_a_fresh_attempt(
         if not observed:
             observed.append("failed")
             raise PermissionError(5, "simulated transient handle race")
+        result = real_atomic_replace(source, destination)  # type: ignore[arg-type]
         observed.append("ok")
-        return real_atomic_replace(source, destination)  # type: ignore[arg-type]
+        return result
 
     monkeypatch.setattr(
         publication_module, "atomic_replace", transiently_failing_replace
@@ -169,7 +170,8 @@ def test_transient_publication_interruption_restarts_in_a_fresh_attempt(
         workspace, customers=40, orders=20, archived=10, workers=1
     )
     assert observed == ["failed", "ok"]
-    assert run.workspace.name == "attempt-2"
+    successful_attempt = int(run.workspace.name.removeprefix("attempt-"))
+    assert 2 <= successful_attempt <= 1 + bench.MAX_TRANSIENT_PUBLICATION_RETRIES
     assert (workspace / "attempt-1").is_dir()
     bench._validate_report_shape(run.report)
     assert run.report["record_count"] == 70

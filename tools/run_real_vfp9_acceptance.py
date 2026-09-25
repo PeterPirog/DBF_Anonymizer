@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -19,9 +20,20 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
+from typing import NoReturn
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = REPO_ROOT / "src"
+EXPECTED_PACKAGE_FILE = SOURCE_ROOT / "dbf_anonymizer" / "__init__.py"
+ARCHITECTURE_FILENAME = (
+    "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md"
+)
+ARCHITECTURE_PATH = REPO_ROOT.parent / ARCHITECTURE_FILENAME
+ARCHITECTURE_SHA256 = (
+    "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+)
 VFP_SHORTCUT = Path(
     r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"
     r"\Microsoft Visual FoxPro 9.0.lnk"
@@ -72,7 +84,7 @@ _PRIVATE_TOKENS = (
 )
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise SystemExit(f"real VFP9 acceptance FAILED: {message}")
 
 
@@ -92,8 +104,16 @@ def _run_git(*args: str) -> str:
 
 
 def _verified_git_state() -> tuple[str, str]:
-    if _run_git("status", "--porcelain", "--untracked-files=no"):
-        _fail("tracked worktree changes are present")
+    if _run_git("status", "--porcelain", "--untracked-files=all"):
+        _fail("worktree changes or untracked files are present")
+    if not ARCHITECTURE_PATH.is_file():
+        _fail("the canonical architecture file is unavailable")
+    try:
+        architecture_hash = hashlib.sha256(ARCHITECTURE_PATH.read_bytes()).hexdigest()
+    except OSError:
+        _fail("the canonical architecture file could not be verified")
+    if architecture_hash != ARCHITECTURE_SHA256:
+        _fail("the canonical architecture file hash is not accepted")
     branch = _run_git("branch", "--show-current")
     if branch != EXPECTED_BRANCH:
         _fail("the acceptance command is not running on the PR #43 branch")
@@ -140,6 +160,66 @@ def _resolve_vfp9() -> Path:
     if executable.name.lower() != "vfp9.exe" or not executable.is_file():
         _fail("the approved shortcut target is not an available vfp9.exe")
     return executable
+
+
+def _acceptance_environment(executable: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTEST_PLUGINS", None)
+    env.update(
+        {
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": os.pathsep.join((str(SOURCE_ROOT), str(REPO_ROOT))),
+            "PYTEST_ADDOPTS": "",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "DBF_ANONYMIZER_REAL_VFP9_AVAILABLE": "1",
+            "DBF_ANONYMIZER_REAL_VFP9_BACKEND_FACTORY": (
+                "tests.support.real_vfp9_backend:create_backend"
+            ),
+            "DBF_ANONYMIZER_REAL_VFP9_EXECUTABLE": str(executable),
+        }
+    )
+    return env
+
+
+def _verify_source_origin(env: dict[str, str]) -> None:
+    probe = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "import dbf_anonymizer; print(dbf_anonymizer.__file__)",
+        ),
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        _fail("the source-tree package import probe failed")
+    try:
+        actual = Path(probe.stdout.strip()).resolve(strict=True)
+        expected = EXPECTED_PACKAGE_FILE.resolve(strict=True)
+    except OSError:
+        _fail("the package import origin could not be verified")
+    if actual != expected:
+        _fail("pytest would not import dbf_anonymizer from this checkout's src tree")
+
+
+def _verified_output_path(output: Path) -> Path:
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        resolved = output.resolve(strict=False)
+    except OSError:
+        _fail("the system TEMP evidence destination could not be resolved")
+    if resolved.parent != temp_root:
+        _fail("the evidence destination must be directly inside system TEMP")
+    if resolved.exists():
+        _fail("the evidence destination already exists")
+    return resolved
 
 
 def _parse_facts(output: str) -> dict[str, str]:
@@ -270,24 +350,15 @@ def main() -> int:
         "--output",
         type=Path,
         required=True,
-        help="JSON evidence destination (system TEMP is recommended)",
+        help="JSON evidence destination directly inside system TEMP",
     )
     args = parser.parse_args()
-    if args.output.exists():
-        _fail("the evidence destination already exists")
+    output = _verified_output_path(args.output)
 
     branch, commit = _verified_git_state()
     executable = _resolve_vfp9()
-    env = dict(os.environ)
-    env.update(
-        {
-            "DBF_ANONYMIZER_REAL_VFP9_AVAILABLE": "1",
-            "DBF_ANONYMIZER_REAL_VFP9_BACKEND_FACTORY": (
-                "tests.support.real_vfp9_backend:create_backend"
-            ),
-            "DBF_ANONYMIZER_REAL_VFP9_EXECUTABLE": str(executable),
-        }
-    )
+    env = _acceptance_environment(executable)
+    _verify_source_origin(env)
     completed = subprocess.run(
         (sys.executable, "-m", "pytest", TEST_IDENTIFIER, "-vv", "-s"),
         cwd=REPO_ROOT,
@@ -315,10 +386,19 @@ def main() -> int:
     if re.search(r"\bSKIPPED\b", combined_output) is not None:
         _fail("the real VFP9 pytest node was skipped")
 
+    final_branch, final_commit = _verified_git_state()
+    if (final_branch, final_commit) != (branch, commit):
+        _fail("Git provenance changed during the real VFP9 acceptance run")
+
     evidence = _build_evidence(branch, commit, _parse_facts(combined_output))
     rendered = _sanitized_json(evidence)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered, encoding="ascii")
+    try:
+        with output.open("x", encoding="ascii") as stream:
+            stream.write(rendered)
+    except FileExistsError:
+        _fail("the evidence destination was created during acceptance")
+    except OSError:
+        _fail("the evidence record could not be written to system TEMP")
 
     print("real VFP9 acceptance PASSED (1 passed, 0 skipped)")
     print(f"tested commit: {commit}")
