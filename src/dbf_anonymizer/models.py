@@ -16,8 +16,8 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, ClassVar, TypeAlias
 
-#: Additive REQ-P6-004 inventory/provenance schema.
-MODEL_SCHEMA_VERSION = "1.6"
+#: Additive REQ-P6-005 source/output truthfulness schema.
+MODEL_SCHEMA_VERSION = "1.7"
 
 #: Versioned identity of the injected index-backend protocol (REQ-P6-001).
 #: Version 1.2 adds authoritative standalone-IDX association plus exact
@@ -52,6 +52,12 @@ class TransferProfile(str, Enum):
 
     DATA_ONLY = "DATA_ONLY"
     VFP_INDEXED = "VFP_INDEXED"
+
+
+class OutputDataState(str, Enum):
+    """Truthful semantics of freshly written DBF/FPT output (REQ-P6-005)."""
+
+    STANDALONE_REDUCED_SEMANTICS = "STANDALONE_REDUCED_SEMANTICS"
 
 
 class VaultStrategy(str, Enum):
@@ -250,6 +256,7 @@ class DatasetIdentity(PublicModel):
     source_fingerprint: str
     table_paths: tuple[str, ...]
     standalone_idx_paths: tuple[str, ...] = ()
+    dbc_bound_table_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validated_code(self.dataset_id, field_name="dataset_id")
@@ -269,6 +276,20 @@ class DatasetIdentity(PublicModel):
         if any(PurePosixPath(path).suffix.lower() != ".idx" for path in idx_paths):
             raise ValueError("standalone_idx_paths must identify IDX artifacts")
         object.__setattr__(self, "standalone_idx_paths", idx_paths)
+        dbc_paths = tuple(
+            sorted(
+                (
+                    _normalized_relative_path(path)
+                    for path in self.dbc_bound_table_paths
+                ),
+                key=lambda path: (path.casefold(), path),
+            )
+        )
+        if len(set(dbc_paths)) != len(dbc_paths):
+            raise ValueError("dbc_bound_table_paths must be unique")
+        if any(path not in normalized for path in dbc_paths):
+            raise ValueError("dbc_bound_table_paths must identify dataset tables")
+        object.__setattr__(self, "dbc_bound_table_paths", dbc_paths)
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -277,6 +298,7 @@ class DatasetIdentity(PublicModel):
             source_fingerprint=self.source_fingerprint,
             table_paths=self.table_paths,
             standalone_idx_paths=self.standalone_idx_paths,
+            dbc_bound_table_paths=self.dbc_bound_table_paths,
         )
 
 
@@ -574,6 +596,7 @@ class Plan(PublicModel):
     relationships: RelationshipMetadata
     output_profile: TransferProfile
     relationship_assurance_target: RelationalAssuranceLevel
+    output_data_state: OutputDataState
     numeric_identity_review: tuple[NumericIdentityReview, ...] = ()
     execution_context: _PlanExecutionContext | None = field(
         default=None, repr=False, compare=False
@@ -584,6 +607,18 @@ class Plan(PublicModel):
         planned_paths = tuple(table.table_path for table in self.tables)
         if planned_paths != self.dataset.table_paths:
             raise ValueError("plan table order must exactly match dataset.table_paths")
+        observed_dbc_paths = tuple(
+            sorted(
+                (table.table_path for table in self.tables if table.dbc_bound),
+                key=lambda path: (path.casefold(), path),
+            )
+        )
+        if observed_dbc_paths != self.dataset.dbc_bound_table_paths:
+            raise ValueError(
+                "dataset dbc_bound_table_paths must match source table facts"
+            )
+        if not isinstance(self.output_data_state, OutputDataState):
+            raise TypeError("output_data_state must be an OutputDataState")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -595,6 +630,7 @@ class Plan(PublicModel):
             relationships=self.relationships,
             output_profile=self.output_profile,
             relationship_assurance_target=self.relationship_assurance_target,
+            output_data_state=self.output_data_state,
             numeric_identity_review=self.numeric_identity_review,
         )
 
@@ -795,6 +831,7 @@ class PseudonymizationResult(PublicModel):
     vault_created: bool
     output_fingerprint: str
     assurance: RelationalAssurance
+    output_data_state: OutputDataState
     index_artifacts: tuple[StandaloneIdxEvidence, ...] = ()
     execution_context: _PseudonymizationExecutionContext | None = field(
         default=None, repr=False, compare=False
@@ -806,6 +843,8 @@ class PseudonymizationResult(PublicModel):
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
         _validated_code(self.output_fingerprint, field_name="output_fingerprint")
+        if not isinstance(self.output_data_state, OutputDataState):
+            raise TypeError("output_data_state must be an OutputDataState")
         _validate_idx_evidence(self.dataset, self.index_artifacts)
 
     def to_dict(self) -> JsonDict:
@@ -819,6 +858,7 @@ class PseudonymizationResult(PublicModel):
             vault_created=self.vault_created,
             output_fingerprint=self.output_fingerprint,
             assurance=self.assurance,
+            output_data_state=self.output_data_state,
             index_artifacts=self.index_artifacts,
         )
 
@@ -843,6 +883,7 @@ class VerificationResult(PublicModel):
     record_count: int
     check_codes: tuple[str, ...]
     assurance: RelationalAssurance
+    output_data_state: OutputDataState
     index_artifacts: tuple[StandaloneIdxEvidence, ...] = ()
 
     @property
@@ -856,6 +897,8 @@ class VerificationResult(PublicModel):
         _non_negative(self.record_count, field_name="record_count")
         for code in self.check_codes:
             _validated_code(code, field_name="check_codes item")
+        if not isinstance(self.output_data_state, OutputDataState):
+            raise TypeError("output_data_state must be an OutputDataState")
         _validate_idx_evidence(self.dataset, self.index_artifacts)
         if self.status is VerificationStatus.PASS and any(
             item.status == "OMITTED_UNVERIFIED" for item in self.index_artifacts
@@ -872,6 +915,7 @@ class VerificationResult(PublicModel):
             record_count=self.record_count,
             check_codes=self.check_codes,
             assurance=self.assurance,
+            output_data_state=self.output_data_state,
             index_artifacts=self.index_artifacts,
         )
 
@@ -1264,6 +1308,7 @@ __all__ = [
     "RelationshipMetadata",
     "RelationalAssurance",
     "RelationalAssuranceLevel",
+    "OutputDataState",
     "NumericIdentityReview",
     "ProgressEvent",
     "PreflightResult",

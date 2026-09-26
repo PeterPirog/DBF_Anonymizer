@@ -87,6 +87,7 @@ from dbf_anonymizer.errors import (
 )
 from dbf_anonymizer.models import (
     DatasetIdentity,
+    OutputDataState,
     PseudonymizationResult,
     RelationalAssurance,
     RelationalAssuranceLevel,
@@ -137,7 +138,7 @@ _INDEX_STATE_DATA_ONLY = "DATA_ONLY_INDEX_OMITTED"
 #: is a STANDALONE fresh DBF/FPT dataset with structural-CDX/DBC coupling
 #: removed and REDUCED application semantics; no VFP index validity and no
 #: DBC rules/triggers/relations are claimed.
-_DATA_STATE_STANDALONE = "STANDALONE_REDUCED_SEMANTICS"
+_DATA_STATE_STANDALONE = OutputDataState.STANDALONE_REDUCED_SEMANTICS.value
 
 #: The exact creation-verification status vocabulary of schema 1.0: the
 #: producing service self-verified the staged bundle before promotion, and
@@ -490,7 +491,7 @@ def _build_manifest(
         "classification": "PSEUDONYMIZED",
         "dataset_id": result.dataset.dataset_id,
         "index_state": _INDEX_STATE_DATA_ONLY,
-        "data_state": _DATA_STATE_STANDALONE,
+        "data_state": result.output_data_state.value,
         "verification_status": _VERIFICATION_STATUS_CREATED,
         "artifacts": [
             {

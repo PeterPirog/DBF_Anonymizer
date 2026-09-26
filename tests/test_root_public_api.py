@@ -62,6 +62,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "IndexBackendError",
     "Capabilities",
     "DatasetIdentity",
+    "OutputDataState",
     "NumericIdentityReview",
     "Plan",
     "TablePlan",

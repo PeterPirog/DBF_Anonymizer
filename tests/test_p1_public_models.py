@@ -18,6 +18,7 @@ from dbf_anonymizer import (
     IndexBackendResult,
     IndexVerificationResult,
     NumericIdentityReview,
+    OutputDataState,
     Plan,
     PolicySummary,
     PreflightResult,
@@ -54,6 +55,7 @@ def _samples() -> tuple[object, ...]:
         source_fingerprint="sha256:source",
         table_paths=("north\\registry.dbf", "south/orders.dbf"),
         standalone_idx_paths=("north\\registry.idx",),
+        dbc_bound_table_paths=("south\\orders.dbf",),
     )
     tables = (
         TablePlan(
@@ -124,6 +126,7 @@ def _samples() -> tuple[object, ...]:
         status="OMITTED_DATA_ONLY",
         source_sha256="a" * 64,
     )
+    output_data_state = OutputDataState.STANDALONE_REDUCED_SEMANTICS
     plan = Plan(
         plan_id="plan-001",
         dataset=dataset,
@@ -132,6 +135,7 @@ def _samples() -> tuple[object, ...]:
         relationships=relationships,
         output_profile=TransferProfile.DATA_ONLY,
         relationship_assurance_target=RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED,
+        output_data_state=output_data_state,
     )
     index_capability = IndexBackendCapability(
         backend_id="synthetic-index-backend",
@@ -199,6 +203,7 @@ def _samples() -> tuple[object, ...]:
             vault_created=True,
             output_fingerprint="sha256:output",
             assurance=assurance,
+            output_data_state=output_data_state,
             index_artifacts=(idx_evidence,),
         ),
         VerificationResult(
@@ -209,6 +214,7 @@ def _samples() -> tuple[object, ...]:
             record_count=15,
             check_codes=(),
             assurance=assurance,
+            output_data_state=output_data_state,
             index_artifacts=(idx_evidence,),
         ),
         RecoveryResult(
@@ -296,14 +302,14 @@ def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in samples:
         payload = model.to_dict()  # type: ignore[union-attr]
         # REQ-P6-003 advances the public shape for verification evidence.
-        # REQ-P6-004 adds standalone IDX fields and bumps schema to 1.6.
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.6"
+        # REQ-P6-005 adds source/output DBC truthfulness and bumps schema to 1.7.
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.7"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
 
 def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
-    assert MODEL_SCHEMA_VERSION == "1.6"
+    assert MODEL_SCHEMA_VERSION == "1.7"
     assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
     p6_types = {
         IndexBackendCapability,
@@ -318,7 +324,7 @@ def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
     assert {type(sample) for sample in p6_samples} == p6_types
     for sample in p6_samples:
         payload = sample.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == "1.6"
+        assert payload["schema_version"] == "1.7"
         if type(sample) is not StandaloneIdxEvidence:
             assert payload["protocol_schema_version"] == "1.2"
         assert json.loads(json.dumps(payload, sort_keys=True)) == payload
@@ -490,6 +496,7 @@ def test_invalid_counts_and_inconsistent_states_fail_fast() -> None:
             record_count=1,
             check_codes=(),
             assurance=assurance,
+            output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         )
 
 
@@ -517,6 +524,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=(),
         assurance=assurance,
+        output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         index_artifacts=(idx_evidence,),
     )
     partial = VerificationResult(
@@ -527,6 +535,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=("INDEX_ARTIFACT_UNVERIFIED",),
         assurance=assurance,
+        output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         index_artifacts=(idx_evidence,),
     )
     failed = VerificationResult(
@@ -537,6 +546,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=("OUTPUT_FINGERPRINT_MISMATCH",),
         assurance=assurance,
+        output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         index_artifacts=(idx_evidence,),
     )
     assert passed.verified is True
@@ -560,7 +570,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "DatasetIdentity": (
             "schema_version", "model_type", "dataset_id", "source_fingerprint", "table_paths",
-            "standalone_idx_paths",
+            "standalone_idx_paths", "dbc_bound_table_paths",
         ),
         "TablePlan": (
             "schema_version", "model_type", "table_path", "memo_path", "record_count",
@@ -587,7 +597,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         "Plan": (
             "schema_version", "model_type", "plan_id", "dataset", "tables", "policy",
             "relationships", "output_profile", "relationship_assurance_target",
-            "numeric_identity_review",
+            "output_data_state", "numeric_identity_review",
         ),
         "ProgressEvent": (
             "schema_version", "model_type", "operation_id", "phase_code", "event_code",
@@ -599,11 +609,12 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "PseudonymizationResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
-            "record_count", "vault_created", "output_fingerprint", "assurance", "index_artifacts",
+            "record_count", "vault_created", "output_fingerprint", "assurance", "output_data_state",
+            "index_artifacts",
         ),
         "VerificationResult": (
             "schema_version", "model_type", "status", "dataset", "operation_id", "table_count",
-            "record_count", "check_codes", "assurance", "index_artifacts",
+            "record_count", "check_codes", "assurance", "output_data_state", "index_artifacts",
         ),
         "RecoveryResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
