@@ -38,6 +38,7 @@ from dbf_anonymizer.models import (
     IDENTITY_PRIVACY_REVIEW_REQUIRED,
     DatasetIdentity,
     NumericIdentityReview,
+    OutputDataState,
     Plan,
     PolicySummary,
     RelationalAssuranceLevel,
@@ -523,6 +524,9 @@ def build_plan(
             )
             if Path(relative).suffix.lower() == ".idx"
         ),
+        dbc_bound_table_paths=tuple(
+            table.relative_path for table in discovered if table.dbc_bound
+        ),
     )
 
     # 11. Compute plan ID (deterministic from all inputs)
@@ -555,6 +559,7 @@ def build_plan(
         relationships=rel_meta,
         output_profile=output_profile,
         relationship_assurance_target=_assure_target(rel_meta),
+        output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         numeric_identity_review=tuple(sorted(numeric_identity_review, key=lambda r: (r.table_path, r.field_name, r.dbf_type))),
         execution_context=execution_ctx,
     )

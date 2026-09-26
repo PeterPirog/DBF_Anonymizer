@@ -235,6 +235,7 @@ def pseudonymize(
         vault_created=result.protected_state_created,
         output_fingerprint=result.output_fingerprint,
         assurance=assurance,
+        output_data_state=plan.output_data_state,
         index_artifacts=result.index_artifacts,
         execution_context=_PseudonymizationExecutionContext(
             output_root=context.output_root,

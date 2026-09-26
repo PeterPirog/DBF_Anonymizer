@@ -120,12 +120,13 @@ __all__ = [
 #: verified invariant held). A clean PASS carries no finding. The
 #: authoritative PASS/PARTIAL/FAIL status lives on the public
 #: :class:`~dbf_anonymizer.models.VerificationResult` model.
-VERIFICATION_CHECK_CODE_VERSION = "1.2"
+VERIFICATION_CHECK_CODE_VERSION = "1.3"
 
 #: The exact bounded finding-code vocabulary (pinned by the snapshot test).
 VERIFICATION_CHECK_CODES = frozenset(
     {
         "SOURCE_FINGERPRINT_MISMATCH",
+        "SOURCE_DBC_INVENTORY_MISMATCH",
         "OUTPUT_FINGERPRINT_MISMATCH",
         "RECEIPT_FINGERPRINT_MISMATCH",
         "RECEIPT_IDENTITY_MISMATCH",
@@ -139,6 +140,7 @@ VERIFICATION_CHECK_CODES = frozenset(
         "STANDALONE_IDX_DEFINITION_UNAVAILABLE",
         "STANDALONE_IDX_EVIDENCE_MISMATCH",
         "MEMO_COMPANION_MISSING",
+        "OUTPUT_DBC_COUPLING_PRESENT",
         "SCHEMA_MISMATCH",
         "RECORD_COUNT_MISMATCH",
         "RECORD_ORDER_MISMATCH",
@@ -163,8 +165,9 @@ _LEDGER_ACTIONS = frozenset(
 )
 
 #: Index artifacts that only a VFP/index backend (P6) could semantically
-#: verify; their presence yields a truthful PARTIAL, never a fake PASS.
-_INDEX_ARTIFACT_SUFFIXES = frozenset({".cdx", ".idx", ".dbc"})
+#: verify; their presence yields a truthful PARTIAL, never a fake PASS. DBC
+#: companions are not indexes and are always output contamination.
+_INDEX_ARTIFACT_SUFFIXES = frozenset({".cdx", ".idx"})
 
 _VERIFY_OPERATION = "verify_dataset"
 
@@ -572,6 +575,7 @@ def _verify_dataset_core(
         record_count=record_count,
         check_codes=check_codes,
         assurance=result.assurance,
+        output_data_state=result.output_data_state,
         index_artifacts=result.index_artifacts,
     )
     return verification_result
@@ -656,7 +660,7 @@ def _expected_output_inventory(
     *,
     source_root: Path,
     rebuilt_idx_paths: Sequence[str] = (),
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], tuple[str, ...]]:
     """The exact expected output inventory from the SOURCE topology.
 
     One expected output DBF per planned table at the SAME normalized
@@ -667,15 +671,18 @@ def _expected_output_inventory(
     """
     expected: set[str] = set()
     memo_companions: set[str] = set()
+    dbc_bound_tables: list[str] = []
     for relative_path in table_paths:
         expected.add(relative_path)
         table = read_source_table(source_root, relative_path)
+        if table.schema.dbc_bound:
+            dbc_bound_tables.append(relative_path)
         if table.has_memo_fields:
             memo_relative = Path(relative_path).with_suffix(".fpt").as_posix()
             expected.add(memo_relative)
             memo_companions.add(memo_relative)
     expected.update(rebuilt_idx_paths)
-    return expected, memo_companions
+    return expected, memo_companions, tuple(dbc_bound_tables)
 
 
 def _artifact_sha256(path: Path) -> str:
@@ -735,11 +742,15 @@ def _verify(
         if item.status == "REBUILT_VERIFIED"
     )
     rebuilt_idx_set = set(rebuilt_idx_paths)
-    expected_output, expected_memo_companions = _expected_output_inventory(
-        dataset.table_paths,
-        source_root=source_root,
-        rebuilt_idx_paths=rebuilt_idx_paths,
+    expected_output, expected_memo_companions, observed_dbc_bound_tables = (
+        _expected_output_inventory(
+            dataset.table_paths,
+            source_root=source_root,
+            rebuilt_idx_paths=rebuilt_idx_paths,
+        )
     )
+    if observed_dbc_bound_tables != dataset.dbc_bound_table_paths:
+        findings.fail("SOURCE_DBC_INVENTORY_MISMATCH")
     try:
         output_inventory = _iter_output_files(output_root)
     except Exception:
@@ -1022,6 +1033,13 @@ def _verify_table(
     except Exception:
         raise fail("SOURCE_UNREADABLE") from None
     output_table = _output_table(output_root, relative_path, owning_operation=owning_operation)
+    if (
+        output_table.schema.dbc_bound
+        or output_table.schema.dbc_backlink_path is not None
+        or output_table.schema.is_database_container
+    ):
+        findings.fail("OUTPUT_DBC_COUPLING_PRESENT")
+        return 0
     if _schema_facts(source_table) != _schema_facts(output_table):
         findings.fail("SCHEMA_MISMATCH")
         return 0

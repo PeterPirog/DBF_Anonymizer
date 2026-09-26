@@ -59,6 +59,7 @@ from dbf_anonymizer import progress as progress_layer
 from dbf_anonymizer.errors import ErrorContext
 from dbf_anonymizer.models import (
     DatasetIdentity,
+    OutputDataState,
     Plan,
     PolicySummary,
     PreflightResult,
@@ -274,6 +275,7 @@ def _synthetic_plan(table_count: int, tmp: Path) -> Plan:
         relationships=relationships,
         output_profile=TransferProfile.DATA_ONLY,
         relationship_assurance_target=RelationalAssuranceLevel.INCOMPLETE,
+        output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         execution_context=_PlanExecutionContext(
             source_root=str(tmp / "missing_src"),
             output_root=str(tmp / "out"),
