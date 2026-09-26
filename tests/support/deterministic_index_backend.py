@@ -80,6 +80,7 @@ class DeterministicIndexBackend:
         self.fail_rebuild_with: Exception | None = None
         self.fail_verification_with: Exception | None = None
         self.staged_table_existed_at_rebuild = False
+        self.staged_idx_existed_at_rebuild = False
         self.staged_rows_at_rebuild: tuple[dict[str, object], ...] = ()
         self.rebuilt_cdx_existed_before_return = False
         self.rebuilt_idx_existed_before_return = False
@@ -139,6 +140,7 @@ class DeterministicIndexBackend:
         ):
             if request.staged_idx_path is None:
                 raise ValueError("STANDALONE_IDX requires staged_idx_path")
+            self.staged_idx_existed_at_rebuild = request.staged_idx_path.exists()
             request.staged_idx_path.write_bytes(self.standalone_idx_bytes)
             self.rebuilt_idx_existed_before_return = request.staged_idx_path.is_file()
         return IndexRebuildOutcome(

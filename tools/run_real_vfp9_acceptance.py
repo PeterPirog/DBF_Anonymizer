@@ -1,6 +1,8 @@
 """Run REQ-P6-003 against real VFP9 and emit sanitized JSON evidence.
 
-Usage: python tools/run_real_vfp9_acceptance.py --output <evidence.json>
+Usage: python tools/run_real_vfp9_acceptance.py --output <evidence.json> \
+    --expected-branch <branch> --expected-head <sha> \
+    --expected-architecture-sha256 <sha256>
 
 This command is intentionally manual. It resolves only the approved Start Menu
 shortcut, requires a clean pushed Git HEAD, runs one opt-in real-runtime test,
@@ -31,9 +33,6 @@ ARCHITECTURE_FILENAME = (
     "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md"
 )
 ARCHITECTURE_PATH = REPO_ROOT.parent / ARCHITECTURE_FILENAME
-ARCHITECTURE_SHA256 = (
-    "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
-)
 VFP_SHORTCUT = Path(
     r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"
     r"\Microsoft Visual FoxPro 9.0.lnk"
@@ -43,8 +42,6 @@ TEST_IDENTIFIER = (
     "test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared"
 )
 TEST_COMMAND = f"python -m pytest {TEST_IDENTIFIER} -vv -s"
-EXPECTED_BRANCH = "p6/vfp-indexed-profile-impl"
-EXPECTED_REMOTE_REF = f"origin/{EXPECTED_BRANCH}"
 FACT_KEYS = (
     "VFP_VERSION",
     "VFP_TABLE_OPENED",
@@ -103,7 +100,22 @@ def _run_git(*args: str) -> str:
     return completed.stdout.strip()
 
 
-def _verified_git_state() -> tuple[str, str]:
+def _verified_git_state(
+    *,
+    expected_branch: str,
+    expected_head: str,
+    expected_architecture_sha256: str,
+) -> tuple[str, str]:
+    if (
+        not expected_branch
+        or expected_branch.startswith("-")
+        or re.fullmatch(r"[A-Za-z0-9._/-]+", expected_branch) is None
+    ):
+        _fail("the trusted expected branch is malformed")
+    if re.fullmatch(r"[0-9a-f]{40}", expected_head) is None:
+        _fail("the trusted expected HEAD is malformed")
+    if _SHA256.fullmatch(expected_architecture_sha256) is None:
+        _fail("the trusted architecture SHA-256 is malformed")
     if _run_git("status", "--porcelain", "--untracked-files=all"):
         _fail("worktree changes or untracked files are present")
     if not ARCHITECTURE_PATH.is_file():
@@ -112,17 +124,15 @@ def _verified_git_state() -> tuple[str, str]:
         architecture_hash = hashlib.sha256(ARCHITECTURE_PATH.read_bytes()).hexdigest()
     except OSError:
         _fail("the canonical architecture file could not be verified")
-    if architecture_hash != ARCHITECTURE_SHA256:
+    if architecture_hash != expected_architecture_sha256:
         _fail("the canonical architecture file hash is not accepted")
     branch = _run_git("branch", "--show-current")
-    if branch != EXPECTED_BRANCH:
-        _fail("the acceptance command is not running on the PR #43 branch")
+    if branch != expected_branch:
+        _fail("the acceptance command is not running on the trusted expected branch")
     head = _run_git("rev-parse", "HEAD")
-    pushed_head = _run_git("rev-parse", EXPECTED_REMOTE_REF)
-    if head != pushed_head:
+    pushed_head = _run_git("rev-parse", f"origin/{expected_branch}")
+    if head != expected_head or pushed_head != expected_head:
         _fail("HEAD is not the exact pushed PR branch commit")
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
-        _fail("Git returned a malformed commit identifier")
     return branch, head
 
 
@@ -351,10 +361,18 @@ def main() -> int:
         required=True,
         help="JSON evidence destination directly inside system TEMP",
     )
+    parser.add_argument("--expected-branch", required=True)
+    parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--expected-architecture-sha256", required=True)
     args = parser.parse_args()
     output = _verified_output_path(args.output)
 
-    branch, commit = _verified_git_state()
+    provenance = {
+        "expected_branch": args.expected_branch,
+        "expected_head": args.expected_head,
+        "expected_architecture_sha256": args.expected_architecture_sha256,
+    }
+    branch, commit = _verified_git_state(**provenance)
     executable = _resolve_vfp9()
     env = _acceptance_environment(executable)
     _verify_source_origin(env)
@@ -385,7 +403,7 @@ def main() -> int:
     if re.search(r"\bSKIPPED\b", combined_output) is not None:
         _fail("the real VFP9 pytest node was skipped")
 
-    final_branch, final_commit = _verified_git_state()
+    final_branch, final_commit = _verified_git_state(**provenance)
     if (final_branch, final_commit) != (branch, commit):
         _fail("Git provenance changed during the real VFP9 acceptance run")
 

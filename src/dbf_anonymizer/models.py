@@ -759,8 +759,6 @@ class StandaloneIdxEvidence(PublicModel):
                 raise ValueError(
                     "REBUILT_VERIFIED requires backend, table and output evidence"
                 )
-            if self.output_sha256 == self.source_sha256:
-                raise ValueError("REBUILT_VERIFIED cannot claim a stale source copy")
 
     def to_dict(self) -> JsonDict:
         return _payload(

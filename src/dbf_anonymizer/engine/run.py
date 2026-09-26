@@ -1172,10 +1172,6 @@ def _run_vfp_indexed_rebuild_and_verify(
                 missing_code="INDEX_BACKEND_REBUILT_ARTIFACT_MISSING",
             )
             rebuilt_sha256 = _idx_sha256(rebuilt_idx_path, control)
-            if rebuilt_sha256 == source_sha256:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_STALE_ARTIFACT_COPY", table_path=table_path
-                )
             if _idx_sha256(source_idx_path, control) != source_sha256:
                 raise index_backend_failure(
                     "INDEX_BACKEND_STALE_ARTIFACT_COPY", table_path=table_path

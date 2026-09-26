@@ -332,8 +332,31 @@ def test_authoritative_backend_associates_without_filename_inference(
     assert evidence.output_sha256 == hashlib.sha256(
         b"DETERMINISTIC_FRESH_IDX_CONTENT"
     ).hexdigest()
-    assert evidence.output_sha256 != evidence.source_sha256
     assert _hash_tree(source) == source_before
+
+
+def test_authoritative_byte_identical_idx_rebuild_is_valid(tmp_path: Path) -> None:
+    plan, source, output, vault = _indexed_plan(tmp_path)
+    source_before = _hash_tree(source)
+    backend = DeterministicIndexBackend(
+        standalone_idx_associations={"indexes/code.idx": "north/registry.dbf"},
+        standalone_idx_bytes=b"SOURCE-IDX",
+    )
+
+    result = pseudonymize(plan, index_backend=backend)
+    verification = verify_dataset(result, source=source, vault=vault)
+
+    assert len(backend.rebuild_requests) == 1
+    assert len(backend.verification_requests) == 1
+    assert backend.staged_idx_existed_at_rebuild is False
+    assert backend.rebuilt_idx_existed_before_return is True
+    assert _hash_tree(source) == source_before
+    assert (output / "indexes/code.idx").read_bytes() == b"SOURCE-IDX"
+    evidence = result.index_artifacts[0]
+    assert evidence.status == "REBUILT_VERIFIED"
+    assert evidence.source_sha256 == source_before["indexes/code.idx"]
+    assert evidence.output_sha256 == evidence.source_sha256
+    assert verification.status is VerificationStatus.PASS
 
 
 def test_duplicate_dbf_basenames_use_only_backend_selected_table(tmp_path: Path) -> None:
@@ -447,15 +470,8 @@ def test_partial_rebuild_never_promotes_full_set_to_pass(tmp_path: Path) -> None
             ),
             "INDEX_BACKEND_REBUILT_ARTIFACT_MISSING",
         ),
-        (
-            lambda: DeterministicIndexBackend(
-                standalone_idx_associations={"indexes/code.idx": "north/registry.dbf"},
-                standalone_idx_bytes=b"SOURCE-IDX",
-            ),
-            "INDEX_BACKEND_STALE_ARTIFACT_COPY",
-        ),
     ),
-    ids=("missing-artifact", "wrong-target", "stale-source-copy"),
+    ids=("missing-artifact", "wrong-target"),
 )
 def test_invalid_rebuilt_artifact_fails_closed_without_publication(
     tmp_path: Path, backend_factory: object, detail_code: str
