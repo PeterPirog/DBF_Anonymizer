@@ -11,6 +11,7 @@ JSON-safe dictionary carrying an explicit schema version and model type.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
@@ -23,6 +24,43 @@ MODEL_SCHEMA_VERSION = "1.7"
 #: Version 1.2 adds authoritative standalone-IDX association plus exact
 #: process-local source/staging artifact identity. Foreign versions fail closed.
 INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.2"
+
+# REQ-P7-002 public JSON bounds. These limits apply before serialization, so
+# every accepted model has an objective maximum shape rather than relying on a
+# representative small payload. Counts use signed 64-bit range for portable
+# consumers; collection limits keep even path-heavy planning payloads finite.
+PUBLIC_JSON_MAX_TOKEN_LENGTH = 128
+PUBLIC_JSON_MAX_OPERATION_ID_LENGTH = 64
+PUBLIC_JSON_MAX_RELATIVE_PATH_LENGTH = 512
+PUBLIC_JSON_MAX_DATASET_TABLES = 256
+PUBLIC_JSON_MAX_INDEX_ARTIFACTS = 256
+PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS = 1024
+PUBLIC_JSON_MAX_TRANSFORMATION_CLASSES = 64
+PUBLIC_JSON_MAX_FINDING_CODES = 64
+PUBLIC_JSON_MAX_COUNT = (1 << 63) - 1
+
+PROGRESS_PHASE_CODES: tuple[str, ...] = (
+    "OPERATION",
+    "DISCOVERY",
+    "FINGERPRINT",
+    "TABLE_EVALUATION",
+    "SOURCE_VERIFICATION",
+    "SOURCE_REVALIDATION",
+    "CAPACITY_SCAN",
+    "SCAN",
+    "WRITE",
+    "VERIFICATION",
+    "VAULT_VERIFICATION",
+    "OUTPUT_VERIFICATION",
+    "RECOVERY_SCAN",
+    "TRANSFER_SCAN",
+    "PUBLICATION",
+    "PASS1_SCAN",
+    "PASS1_FINALIZE",
+    "PASS2_WRITE",
+    "INDEX_REBUILD",
+)
+PROGRESS_EVENT_CODES: tuple[str, ...] = ("STARTED", "PROGRESS", "COMPLETED")
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -105,7 +143,14 @@ IDENTITY_PRIVACY_REVIEW_REQUIRED = "IDENTITY_PRIVACY_REVIEW_REQUIRED"
 
 
 def _normalized_relative_path(value: str) -> str:
-    if not value or "\x00" in value:
+    if not isinstance(value, str):
+        raise TypeError("relative path must be a string")
+    if (
+        not value
+        or len(value) > PUBLIC_JSON_MAX_RELATIVE_PATH_LENGTH
+        or "\x00" in value
+        or any(not character.isprintable() for character in value)
+    ):
         raise ValueError("relative path must be a non-empty text path")
     windows = PureWindowsPath(value)
     if windows.is_absolute() or windows.drive or windows.root:
@@ -121,9 +166,41 @@ def _normalized_relative_path(value: str) -> str:
     return text
 
 
-def _validated_code(value: str, *, field_name: str) -> str:
-    if not value or value.strip() != value or any(ch.isspace() for ch in value):
+def _validated_code(
+    value: str,
+    *,
+    field_name: str,
+    max_length: int = PUBLIC_JSON_MAX_TOKEN_LENGTH,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if (
+        not value
+        or len(value) > max_length
+        or value.strip() != value
+        or any(ch.isspace() or not ch.isprintable() for ch in value)
+        or "/" in value
+        or "\\" in value
+    ):
         raise ValueError(f"{field_name} must be a non-empty whitespace-free code")
+    return value
+
+
+def _validated_operation_id(value: str, *, field_name: str = "operation_id") -> str:
+    return _validated_code(
+        value,
+        field_name=field_name,
+        max_length=PUBLIC_JSON_MAX_OPERATION_ID_LENGTH,
+    )
+
+
+def _bounded_tuple(
+    value: object, *, field_name: str, max_items: int
+) -> tuple[Any, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{field_name} must be a tuple")
+    if len(value) > max_items:
+        raise ValueError(f"{field_name} must contain at most {max_items} items")
     return value
 
 
@@ -196,8 +273,12 @@ def validate_relationship_fingerprint(
 
 
 def _non_negative(value: int, *, field_name: str) -> int:
-    if value < 0:
-        raise ValueError(f"{field_name} must be non-negative")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0 or value > PUBLIC_JSON_MAX_COUNT:
+        raise ValueError(
+            f"{field_name} must be from 0 to {PUBLIC_JSON_MAX_COUNT}"
+        )
     return value
 
 
@@ -209,6 +290,8 @@ def _json_value(value: object) -> JsonValue:
         return raw
     if isinstance(value, PublicModel):
         return value.to_dict()
+    if isinstance(value, float) and not math.isfinite(value):
+        raise TypeError("public JSON floats must be finite")
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, tuple):
@@ -236,6 +319,15 @@ class Capabilities(PublicModel):
     dbfbridge_version: str
 
     def __post_init__(self) -> None:
+        for field_name in (
+            "direct_read",
+            "direct_write",
+            "recovery",
+            "transfer_bundle",
+            "vfp_index_backend",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be a genuine bool")
         _validated_code(self.dbfbridge_version, field_name="dbfbridge_version")
 
     def to_dict(self) -> JsonDict:
@@ -261,13 +353,23 @@ class DatasetIdentity(PublicModel):
     def __post_init__(self) -> None:
         _validated_code(self.dataset_id, field_name="dataset_id")
         _validated_code(self.source_fingerprint, field_name="source_fingerprint")
-        normalized = tuple(_normalized_relative_path(path) for path in self.table_paths)
+        table_paths = _bounded_tuple(
+            self.table_paths,
+            field_name="table_paths",
+            max_items=PUBLIC_JSON_MAX_DATASET_TABLES,
+        )
+        normalized = tuple(_normalized_relative_path(path) for path in table_paths)
         if len(set(normalized)) != len(normalized):
             raise ValueError("table_paths must be unique")
         object.__setattr__(self, "table_paths", normalized)
+        standalone_idx_paths = _bounded_tuple(
+            self.standalone_idx_paths,
+            field_name="standalone_idx_paths",
+            max_items=PUBLIC_JSON_MAX_INDEX_ARTIFACTS,
+        )
         idx_paths = tuple(
             sorted(
-                (_normalized_relative_path(path) for path in self.standalone_idx_paths),
+                (_normalized_relative_path(path) for path in standalone_idx_paths),
                 key=lambda path: (path.casefold(), path),
             )
         )
@@ -276,11 +378,16 @@ class DatasetIdentity(PublicModel):
         if any(PurePosixPath(path).suffix.lower() != ".idx" for path in idx_paths):
             raise ValueError("standalone_idx_paths must identify IDX artifacts")
         object.__setattr__(self, "standalone_idx_paths", idx_paths)
+        dbc_bound_table_paths = _bounded_tuple(
+            self.dbc_bound_table_paths,
+            field_name="dbc_bound_table_paths",
+            max_items=PUBLIC_JSON_MAX_DATASET_TABLES,
+        )
         dbc_paths = tuple(
             sorted(
                 (
                     _normalized_relative_path(path)
-                    for path in self.dbc_bound_table_paths
+                    for path in dbc_bound_table_paths
                 ),
                 key=lambda path: (path.casefold(), path),
             )
@@ -326,9 +433,20 @@ class TablePlan(PublicModel):
         _non_negative(self.record_count, field_name="record_count")
         _non_negative(self.field_count, field_name="field_count")
         _non_negative(self.transform_field_count, field_name="transform_field_count")
+        for field_name in (
+            "structural_cdx",
+            "dbc_bound",
+            "memo_required",
+            "memo_companion_present",
+            "structural_cdx_companion_present",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be a genuine bool")
         if self.transform_field_count > self.field_count:
             raise ValueError("transform_field_count cannot exceed field_count")
         _validated_code(self.index_strategy, field_name="index_strategy")
+        if self.index_strategy not in {profile.value for profile in TransferProfile}:
+            raise ValueError("index_strategy must identify a supported transfer profile")
         _non_negative(self.unsupported_field_count, field_name="unsupported_field_count")
         _non_negative(self.unsafe_field_count, field_name="unsafe_field_count")
         _non_negative(self.system_field_count, field_name="system_field_count")
@@ -381,8 +499,17 @@ class PolicySummary(PublicModel):
         _validated_code(self.policy_fingerprint, field_name="policy_fingerprint")
         _non_negative(self.transformed_field_count, field_name="transformed_field_count")
         _non_negative(self.relationship_count, field_name="relationship_count")
-        for item in self.transformation_classes:
+        if not isinstance(self.recovery_enabled, bool):
+            raise TypeError("recovery_enabled must be a genuine bool")
+        transformation_classes = _bounded_tuple(
+            self.transformation_classes,
+            field_name="transformation_classes",
+            max_items=PUBLIC_JSON_MAX_TRANSFORMATION_CLASSES,
+        )
+        for item in transformation_classes:
             _validated_code(item, field_name="transformation_classes item")
+        if not isinstance(self.vault_strategy, VaultStrategy):
+            raise TypeError("vault_strategy must be a VaultStrategy")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -485,6 +612,8 @@ class RelationalAssurance(PublicModel):
     scope_note: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.level, RelationalAssuranceLevel):
+            raise TypeError("level must be a RelationalAssuranceLevel")
         _non_negative(self.declared_relations, field_name="declared_relations")
         _non_negative(self.verified_relations, field_name="verified_relations")
         _non_negative(self.failed_relations, field_name="failed_relations")
@@ -604,7 +733,40 @@ class Plan(PublicModel):
 
     def __post_init__(self) -> None:
         _validated_code(self.plan_id, field_name="plan_id")
-        planned_paths = tuple(table.table_path for table in self.tables)
+        if not isinstance(self.dataset, DatasetIdentity):
+            raise TypeError("dataset must be a DatasetIdentity")
+        tables = _bounded_tuple(
+            self.tables,
+            field_name="tables",
+            max_items=PUBLIC_JSON_MAX_DATASET_TABLES,
+        )
+        if not all(isinstance(table, TablePlan) for table in tables):
+            raise TypeError("tables must contain only TablePlan values")
+        if not isinstance(self.policy, PolicySummary):
+            raise TypeError("policy must be a PolicySummary")
+        if not isinstance(self.relationships, RelationshipMetadata):
+            raise TypeError("relationships must be RelationshipMetadata")
+        if not isinstance(self.output_profile, TransferProfile):
+            raise TypeError("output_profile must be a TransferProfile")
+        if not isinstance(
+            self.relationship_assurance_target, RelationalAssuranceLevel
+        ):
+            raise TypeError(
+                "relationship_assurance_target must be a RelationalAssuranceLevel"
+            )
+        numeric_identity_review = _bounded_tuple(
+            self.numeric_identity_review,
+            field_name="numeric_identity_review",
+            max_items=PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS,
+        )
+        if not all(
+            isinstance(review, NumericIdentityReview)
+            for review in numeric_identity_review
+        ):
+            raise TypeError(
+                "numeric_identity_review must contain only NumericIdentityReview values"
+            )
+        planned_paths = tuple(table.table_path for table in tables)
         if planned_paths != self.dataset.table_paths:
             raise ValueError("plan table order must exactly match dataset.table_paths")
         observed_dbc_paths = tuple(
@@ -645,9 +807,13 @@ class ProgressEvent(PublicModel):
     table_path: str | None = None
 
     def __post_init__(self) -> None:
-        _validated_code(self.operation_id, field_name="operation_id")
+        _validated_operation_id(self.operation_id)
         _validated_code(self.phase_code, field_name="phase_code")
         _validated_code(self.event_code, field_name="event_code")
+        if self.phase_code not in PROGRESS_PHASE_CODES:
+            raise ValueError("phase_code is not in the public progress vocabulary")
+        if self.event_code not in PROGRESS_EVENT_CODES:
+            raise ValueError("event_code is not in the public progress vocabulary")
         _non_negative(self.completed_units, field_name="completed_units")
         if self.total_units is not None:
             _non_negative(self.total_units, field_name="total_units")
@@ -678,13 +844,22 @@ class PreflightResult(PublicModel):
     error_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.ready, bool):
+            raise TypeError("ready must be a genuine bool")
         _validated_code(self.plan_id, field_name="plan_id")
+        if not isinstance(self.capabilities, Capabilities):
+            raise TypeError("capabilities must be Capabilities")
         for field_name, codes in (
             ("check_codes", self.check_codes),
             ("warning_codes", self.warning_codes),
             ("error_codes", self.error_codes),
         ):
-            for code in codes:
+            bounded_codes = _bounded_tuple(
+                codes,
+                field_name=field_name,
+                max_items=PUBLIC_JSON_MAX_FINDING_CODES,
+            )
+            for code in bounded_codes:
                 _validated_code(code, field_name=f"{field_name} item")
         if self.ready and self.error_codes:
             raise ValueError("ready preflight cannot contain error_codes")
@@ -812,7 +987,14 @@ class StandaloneIdxEvidence(PublicModel):
 def _validate_idx_evidence(
     dataset: DatasetIdentity, evidence: tuple[StandaloneIdxEvidence, ...]
 ) -> None:
-    paths = tuple(item.artifact_path for item in evidence)
+    bounded_evidence = _bounded_tuple(
+        evidence,
+        field_name="index_artifacts",
+        max_items=PUBLIC_JSON_MAX_INDEX_ARTIFACTS,
+    )
+    if not all(isinstance(item, StandaloneIdxEvidence) for item in bounded_evidence):
+        raise TypeError("index_artifacts must contain only StandaloneIdxEvidence")
+    paths = tuple(item.artifact_path for item in bounded_evidence)
     if paths != dataset.standalone_idx_paths:
         raise ValueError(
             "index_artifacts must exactly match dataset standalone_idx_paths"
@@ -838,11 +1020,17 @@ class PseudonymizationResult(PublicModel):
     )
 
     def __post_init__(self) -> None:
-        _validated_code(self.operation_id, field_name="operation_id")
+        _validated_operation_id(self.operation_id)
+        if not isinstance(self.dataset, DatasetIdentity):
+            raise TypeError("dataset must be a DatasetIdentity")
         object.__setattr__(self, "output_path", _normalized_relative_path(self.output_path))
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
+        if not isinstance(self.vault_created, bool):
+            raise TypeError("vault_created must be a genuine bool")
         _validated_code(self.output_fingerprint, field_name="output_fingerprint")
+        if not isinstance(self.assurance, RelationalAssurance):
+            raise TypeError("assurance must be RelationalAssurance")
         if not isinstance(self.output_data_state, OutputDataState):
             raise TypeError("output_data_state must be an OutputDataState")
         _validate_idx_evidence(self.dataset, self.index_artifacts)
@@ -892,11 +1080,22 @@ class VerificationResult(PublicModel):
         return self.status is VerificationStatus.PASS
 
     def __post_init__(self) -> None:
-        _validated_code(self.operation_id, field_name="operation_id")
+        if not isinstance(self.status, VerificationStatus):
+            raise TypeError("status must be a VerificationStatus")
+        if not isinstance(self.dataset, DatasetIdentity):
+            raise TypeError("dataset must be a DatasetIdentity")
+        _validated_operation_id(self.operation_id)
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
-        for code in self.check_codes:
+        check_codes = _bounded_tuple(
+            self.check_codes,
+            field_name="check_codes",
+            max_items=PUBLIC_JSON_MAX_FINDING_CODES,
+        )
+        for code in check_codes:
             _validated_code(code, field_name="check_codes item")
+        if not isinstance(self.assurance, RelationalAssurance):
+            raise TypeError("assurance must be RelationalAssurance")
         if not isinstance(self.output_data_state, OutputDataState):
             raise TypeError("output_data_state must be an OutputDataState")
         _validate_idx_evidence(self.dataset, self.index_artifacts)
@@ -943,7 +1142,9 @@ class RecoveryResult(PublicModel):
     raw_byte_equivalence: RawByteEquivalence
 
     def __post_init__(self) -> None:
-        _validated_code(self.operation_id, field_name="operation_id")
+        _validated_operation_id(self.operation_id)
+        if not isinstance(self.dataset, DatasetIdentity):
+            raise TypeError("dataset must be a DatasetIdentity")
         object.__setattr__(self, "output_path", _normalized_relative_path(self.output_path))
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
@@ -976,8 +1177,14 @@ class TransferBundleResult(PublicModel):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bundle_path", _normalized_relative_path(self.bundle_path))
+        if not isinstance(self.profile, TransferProfile):
+            raise TypeError("profile must be a TransferProfile")
         _non_negative(self.file_count, field_name="file_count")
         _validated_code(self.manifest_fingerprint, field_name="manifest_fingerprint")
+        if not isinstance(self.verified, bool):
+            raise TypeError("verified must be a genuine bool")
+        if not isinstance(self.assurance, RelationalAssurance):
+            raise TypeError("assurance must be RelationalAssurance")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -1297,6 +1504,17 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
 
 __all__ = [
     "MODEL_SCHEMA_VERSION",
+    "PUBLIC_JSON_MAX_TOKEN_LENGTH",
+    "PUBLIC_JSON_MAX_OPERATION_ID_LENGTH",
+    "PUBLIC_JSON_MAX_RELATIVE_PATH_LENGTH",
+    "PUBLIC_JSON_MAX_DATASET_TABLES",
+    "PUBLIC_JSON_MAX_INDEX_ARTIFACTS",
+    "PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS",
+    "PUBLIC_JSON_MAX_TRANSFORMATION_CLASSES",
+    "PUBLIC_JSON_MAX_FINDING_CODES",
+    "PUBLIC_JSON_MAX_COUNT",
+    "PROGRESS_PHASE_CODES",
+    "PROGRESS_EVENT_CODES",
     "JsonDict",
     "JsonValue",
     "IDENTITY_PRIVACY_REVIEW_REQUIRED",

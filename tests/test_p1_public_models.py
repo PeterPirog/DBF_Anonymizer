@@ -181,7 +181,7 @@ def _samples() -> tuple[object, ...]:
         ProgressEvent(
             operation_id="operation-001",
             phase_code="WRITE",
-            event_code="TABLE_DONE",
+            event_code="PROGRESS",
             completed_units=1,
             total_units=2,
             table_path="north\\registry.dbf",

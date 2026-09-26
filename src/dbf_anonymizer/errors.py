@@ -18,9 +18,15 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import ClassVar
 
-from .models import JsonDict
+from .models import (
+    PUBLIC_JSON_MAX_RELATIVE_PATH_LENGTH,
+    PUBLIC_JSON_MAX_TOKEN_LENGTH,
+    JsonDict,
+    _validated_operation_id,
+)
 
-ERROR_SCHEMA_VERSION = "1.0"
+#: Version 1.1 adds the optional bounded operation ID to public error context.
+ERROR_SCHEMA_VERSION = "1.1"
 ERROR_REGISTRY_VERSION = "1.5"
 
 
@@ -248,18 +254,36 @@ _ERROR_BY_CODE: dict[ErrorCode, ErrorDefinition] = {
 
 def _validate_token(value: str, *, field_name: str) -> str:
     """Validate a bounded machine token without interpreting its meaning."""
-    if not value or len(value) > 128 or value.strip() != value:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if (
+        not value
+        or len(value) > PUBLIC_JSON_MAX_TOKEN_LENGTH
+        or value.strip() != value
+    ):
         raise ValueError(
-            f"{field_name} must be a non-empty token of at most 128 characters"
+            f"{field_name} must be a non-empty token of at most "
+            f"{PUBLIC_JSON_MAX_TOKEN_LENGTH} characters"
         )
-    if any(character.isspace() for character in value):
-        raise ValueError(f"{field_name} must not contain whitespace")
+    if (
+        any(character.isspace() or not character.isprintable() for character in value)
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError(f"{field_name} must be a path-free machine token")
     return value
 
 
 def _normalize_relative_path(value: str) -> str:
     """Return a transport-stable relative path or reject unsafe disclosure."""
-    if not value or "\x00" in value:
+    if not isinstance(value, str):
+        raise TypeError("public error paths must be strings")
+    if (
+        not value
+        or len(value) > PUBLIC_JSON_MAX_RELATIVE_PATH_LENGTH
+        or "\x00" in value
+        or any(not character.isprintable() for character in value)
+    ):
         raise ValueError("public error paths must be non-empty text paths")
     windows = PureWindowsPath(value)
     if windows.is_absolute() or windows.drive or windows.root:
@@ -284,6 +308,7 @@ class ErrorContext:
     """
 
     operation: str | None = None
+    operation_id: str | None = None
     artifact_path: str | None = None
     table_path: str | None = None
     policy_rule: str | None = None
@@ -291,6 +316,12 @@ class ErrorContext:
     detail_code: str | None = None
 
     def __post_init__(self) -> None:
+        if self.operation_id is not None:
+            object.__setattr__(
+                self,
+                "operation_id",
+                _validated_operation_id(self.operation_id),
+            )
         for field_name in (
             "operation",
             "policy_rule",
@@ -310,6 +341,7 @@ class ErrorContext:
     def to_dict(self) -> JsonDict:
         return {
             "operation": self.operation,
+            "operation_id": self.operation_id,
             "artifact_path": self.artifact_path,
             "table_path": self.table_path,
             "policy_rule": self.policy_rule,
@@ -320,12 +352,15 @@ class ErrorContext:
 
 def _structured_machine_code(value: object) -> str | None:
     """Extract a machine code from a structured attribute, never from text."""
-    if isinstance(value, str):
-        return _validate_token(value, field_name="dependency_code")
-    if isinstance(value, Enum):
-        enum_value = value.value
-        if isinstance(enum_value, str):
-            return _validate_token(enum_value, field_name="dependency_code")
+    try:
+        if isinstance(value, str):
+            return _validate_token(value, field_name="dependency_code")
+        if isinstance(value, Enum):
+            enum_value = value.value
+            if isinstance(enum_value, str):
+                return _validate_token(enum_value, field_name="dependency_code")
+    except (TypeError, ValueError):
+        return None
     return None
 
 

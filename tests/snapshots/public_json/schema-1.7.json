@@ -1,0 +1,481 @@
+{
+  "error_contract": {
+    "context_fields": [
+      "operation",
+      "operation_id",
+      "artifact_path",
+      "table_path",
+      "policy_rule",
+      "relationship_id",
+      "detail_code"
+    ],
+    "error_codes": [
+      {
+        "category": "path",
+        "code": "PATH_INVALID"
+      },
+      {
+        "category": "path",
+        "code": "PATH_NOT_FOUND"
+      },
+      {
+        "category": "path",
+        "code": "PATH_OVERLAP"
+      },
+      {
+        "category": "path",
+        "code": "DESTINATION_CONFLICT"
+      },
+      {
+        "category": "policy",
+        "code": "POLICY_INVALID"
+      },
+      {
+        "category": "policy",
+        "code": "POLICY_UNSUPPORTED"
+      },
+      {
+        "category": "dbfbridge",
+        "code": "DBFBRIDGE_FAILURE"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_UNAVAILABLE"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_CORRUPT"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_ACCESS_DENIED"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_SCHEMA_UNSUPPORTED"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_IDENTITY_MISMATCH"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_STATE_INVALID"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_WRITER_CONFLICT"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CAPACITY_EXHAUSTED"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CONSTRAINT_INFEASIBLE"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CONFLICT"
+      },
+      {
+        "category": "relationship",
+        "code": "RELATIONSHIP_INVALID"
+      },
+      {
+        "category": "relationship",
+        "code": "RELATIONSHIP_VERIFICATION_FAILED"
+      },
+      {
+        "category": "publication",
+        "code": "PUBLICATION_FAILED"
+      },
+      {
+        "category": "publication",
+        "code": "PUBLICATION_INCOMPLETE"
+      },
+      {
+        "category": "verification",
+        "code": "VERIFICATION_FAILED"
+      },
+      {
+        "category": "recovery",
+        "code": "RECOVERY_FAILED"
+      },
+      {
+        "category": "recovery",
+        "code": "RECOVERY_NOT_PERMITTED"
+      },
+      {
+        "category": "transfer",
+        "code": "TRANSFER_FAILED"
+      },
+      {
+        "category": "index_backend",
+        "code": "INDEX_BACKEND_FAILED"
+      },
+      {
+        "category": "cancellation",
+        "code": "OPERATION_CANCELLED"
+      },
+      {
+        "category": "callback",
+        "code": "PROGRESS_CALLBACK_FAILED"
+      },
+      {
+        "category": "callback",
+        "code": "CANCEL_CALLBACK_FAILED"
+      }
+    ],
+    "payload_fields": [
+      "schema_version",
+      "registry_version",
+      "code",
+      "category",
+      "message",
+      "dependency_code",
+      "context"
+    ],
+    "registry_version": "1.5",
+    "schema_version": "1.1"
+  },
+  "families": {
+    "capability": [
+      "Capabilities",
+      "IndexBackendCapability"
+    ],
+    "progress": [
+      "ProgressEvent"
+    ],
+    "result": [
+      "Plan",
+      "PreflightResult",
+      "PseudonymizationResult",
+      "VerificationResult",
+      "RecoveryResult",
+      "TransferBundleResult"
+    ]
+  },
+  "limits": {
+    "count_max": 9223372036854775807,
+    "dataset_tables_max_items": 256,
+    "finding_codes_max_items": 64,
+    "index_artifacts_max_items": 256,
+    "numeric_identity_reviews_max_items": 1024,
+    "operation_id_max_length": 64,
+    "relative_path_max_length": 512,
+    "token_max_length": 128,
+    "transformation_classes_max_items": 64
+  },
+  "model_fields": {
+    "Capabilities": [
+      "schema_version",
+      "model_type",
+      "direct_read",
+      "direct_write",
+      "recovery",
+      "transfer_bundle",
+      "vfp_index_backend",
+      "dbfbridge_version"
+    ],
+    "DatasetIdentity": [
+      "schema_version",
+      "model_type",
+      "dataset_id",
+      "source_fingerprint",
+      "table_paths",
+      "standalone_idx_paths",
+      "dbc_bound_table_paths"
+    ],
+    "IndexBackendCapability": [
+      "schema_version",
+      "model_type",
+      "backend_id",
+      "backend_schema_version",
+      "protocol_schema_version",
+      "supports_structural_cdx_rebuild",
+      "supports_standalone_idx_rebuild",
+      "supports_verification",
+      "vfp_runtime_available"
+    ],
+    "IndexBackendResult": [
+      "schema_version",
+      "model_type",
+      "backend_id",
+      "protocol_schema_version",
+      "artifact_class",
+      "table_path",
+      "status",
+      "detail_code",
+      "artifact_path"
+    ],
+    "IndexVerificationResult": [
+      "schema_version",
+      "model_type",
+      "backend_id",
+      "protocol_schema_version",
+      "artifact_class",
+      "table_path",
+      "status",
+      "detail_code",
+      "artifact_path"
+    ],
+    "NumericIdentityReview": [
+      "schema_version",
+      "model_type",
+      "table_path",
+      "field_name",
+      "dbf_type",
+      "status"
+    ],
+    "Plan": [
+      "schema_version",
+      "model_type",
+      "plan_id",
+      "dataset",
+      "tables",
+      "policy",
+      "relationships",
+      "output_profile",
+      "relationship_assurance_target",
+      "output_data_state",
+      "numeric_identity_review"
+    ],
+    "PolicySummary": [
+      "schema_version",
+      "model_type",
+      "policy_schema_version",
+      "policy_fingerprint",
+      "transformed_field_count",
+      "relationship_count",
+      "recovery_enabled",
+      "transformation_classes",
+      "vault_strategy"
+    ],
+    "PreflightResult": [
+      "schema_version",
+      "model_type",
+      "ready",
+      "plan_id",
+      "capabilities",
+      "check_codes",
+      "warning_codes",
+      "error_codes"
+    ],
+    "ProgressEvent": [
+      "schema_version",
+      "model_type",
+      "operation_id",
+      "phase_code",
+      "event_code",
+      "completed_units",
+      "total_units",
+      "table_path"
+    ],
+    "PseudonymizationResult": [
+      "schema_version",
+      "model_type",
+      "operation_id",
+      "dataset",
+      "output_path",
+      "table_count",
+      "record_count",
+      "vault_created",
+      "output_fingerprint",
+      "assurance",
+      "output_data_state",
+      "index_artifacts"
+    ],
+    "RecoveryResult": [
+      "schema_version",
+      "model_type",
+      "operation_id",
+      "dataset",
+      "output_path",
+      "table_count",
+      "record_count",
+      "canonical_verified",
+      "raw_byte_equivalence"
+    ],
+    "RelationalAssurance": [
+      "schema_version",
+      "model_type",
+      "level",
+      "declared_relations",
+      "verified_relations",
+      "failed_relations",
+      "incomplete_relations",
+      "evidence_fingerprint",
+      "relationship_fingerprint",
+      "evidence_schema_version",
+      "scope_note"
+    ],
+    "RelationshipMetadata": [
+      "schema_version",
+      "model_type",
+      "metadata_schema_version",
+      "provenance",
+      "relationship_fingerprint",
+      "relation_count",
+      "authoritative",
+      "metadata_path"
+    ],
+    "StandaloneIdxAssociationResult": [
+      "schema_version",
+      "model_type",
+      "backend_id",
+      "protocol_schema_version",
+      "artifact_path",
+      "status",
+      "detail_code",
+      "table_path"
+    ],
+    "StandaloneIdxEvidence": [
+      "schema_version",
+      "model_type",
+      "artifact_id",
+      "artifact_path",
+      "status",
+      "source_sha256",
+      "backend_id",
+      "table_path",
+      "output_sha256"
+    ],
+    "TablePlan": [
+      "schema_version",
+      "model_type",
+      "table_path",
+      "memo_path",
+      "record_count",
+      "field_count",
+      "transform_field_count",
+      "structural_cdx",
+      "dbc_bound",
+      "index_strategy",
+      "memo_required",
+      "memo_companion_present",
+      "structural_cdx_companion_present",
+      "unsupported_field_count",
+      "unsafe_field_count",
+      "system_field_count"
+    ],
+    "TransferBundleResult": [
+      "schema_version",
+      "model_type",
+      "bundle_path",
+      "profile",
+      "file_count",
+      "manifest_fingerprint",
+      "verified",
+      "assurance"
+    ],
+    "VerificationResult": [
+      "schema_version",
+      "model_type",
+      "status",
+      "dataset",
+      "operation_id",
+      "table_count",
+      "record_count",
+      "check_codes",
+      "assurance",
+      "output_data_state",
+      "index_artifacts"
+    ]
+  },
+  "model_schema_version": "1.7",
+  "vocabularies": {
+    "index_artifact_class": [
+      "STRUCTURAL_CDX",
+      "STANDALONE_IDX"
+    ],
+    "index_backend_detail": [
+      "REBUILT_OK",
+      "REFUSED",
+      "INTERNAL_ERROR"
+    ],
+    "index_backend_status": [
+      "REBUILT",
+      "REFUSED",
+      "FAILED"
+    ],
+    "index_verification_detail": [
+      "VERIFIED_OK",
+      "OPEN_FAILED",
+      "RECORD_COUNT_MISMATCH",
+      "TAG_INVENTORY_MISMATCH",
+      "INTERNAL_ERROR"
+    ],
+    "index_verification_status": [
+      "VERIFIED",
+      "MISMATCH",
+      "FAILED"
+    ],
+    "output_data_state": [
+      "STANDALONE_REDUCED_SEMANTICS"
+    ],
+    "progress_event": [
+      "STARTED",
+      "PROGRESS",
+      "COMPLETED"
+    ],
+    "progress_phase": [
+      "OPERATION",
+      "DISCOVERY",
+      "FINGERPRINT",
+      "TABLE_EVALUATION",
+      "SOURCE_VERIFICATION",
+      "SOURCE_REVALIDATION",
+      "CAPACITY_SCAN",
+      "SCAN",
+      "WRITE",
+      "VERIFICATION",
+      "VAULT_VERIFICATION",
+      "OUTPUT_VERIFICATION",
+      "RECOVERY_SCAN",
+      "TRANSFER_SCAN",
+      "PUBLICATION",
+      "PASS1_SCAN",
+      "PASS1_FINALIZE",
+      "PASS2_WRITE",
+      "INDEX_REBUILD"
+    ],
+    "raw_byte_equivalence": [
+      "PROVEN_EQUAL",
+      "PROVEN_DIFFERENT",
+      "NOT_EVALUATED"
+    ],
+    "relational_assurance": [
+      "GLOBAL_EXACT_VALUE",
+      "DECLARED_RELATIONS_VERIFIED",
+      "VFP_METADATA_VERIFIED",
+      "INCOMPLETE"
+    ],
+    "standalone_idx_association_detail": [
+      "ASSOCIATED_OK",
+      "DEFINITION_UNAVAILABLE"
+    ],
+    "standalone_idx_association_status": [
+      "ASSOCIATED",
+      "UNAVAILABLE"
+    ],
+    "standalone_idx_evidence_status": [
+      "OMITTED_DATA_ONLY",
+      "OMITTED_UNVERIFIED",
+      "REBUILT_VERIFIED"
+    ],
+    "transfer_profile": [
+      "DATA_ONLY",
+      "VFP_INDEXED"
+    ],
+    "vault_strategy": [
+      "NONE",
+      "SINGLE_DATASET_SQLITE"
+    ],
+    "verification_status": [
+      "PASS",
+      "PARTIAL",
+      "FAIL"
+    ]
+  }
+}
