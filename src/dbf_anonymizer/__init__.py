@@ -91,6 +91,7 @@ from .api import (
     preflight,
     pseudonymize,
     recover,
+    RecoveryPolicy,
     verify_dataset,
     verify_transfer_bundle,
 )
@@ -140,6 +141,7 @@ __all__ = [
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "RecoveryPolicy",
     "create_transfer_bundle",
     "verify_transfer_bundle",
     "capabilities",
