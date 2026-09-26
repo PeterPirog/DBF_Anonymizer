@@ -69,7 +69,7 @@ _ERROR_CODES_FOR_REGISTRY_1_5 = (
 
 
 def test_error_registry_is_versioned_complete_and_unique() -> None:
-    assert ERROR_SCHEMA_VERSION == "1.0"
+    assert ERROR_SCHEMA_VERSION == "1.1"
     # REQ-P1-008 advanced the registry to 1.1 (PROGRESS_CALLBACK_FAILED and
     # CANCEL_CALLBACK_FAILED); REQ-P2-002/REQ-P2-003 advanced it additively to
     # 1.2 with the protected-vault codes; REQ-P2-006 advanced it additively to
@@ -253,6 +253,7 @@ def test_error_payload_schema_snapshot_is_stable() -> None:
     )
     assert tuple(error.context.to_dict()) == (
         "operation",
+        "operation_id",
         "artifact_path",
         "table_path",
         "policy_rule",

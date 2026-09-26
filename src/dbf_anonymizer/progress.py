@@ -264,6 +264,7 @@ class ProgressController:
                 ErrorCode.CANCEL_CALLBACK_FAILED,
                 context=ErrorContext(
                     operation=self._operation,
+                    operation_id=self.operation_id,
                     detail_code=_CANCEL_CHECK_DETAIL,
                 ),
             ) from None
@@ -272,6 +273,7 @@ class ProgressController:
                 ErrorCode.OPERATION_CANCELLED,
                 context=ErrorContext(
                     operation=self._operation,
+                    operation_id=self.operation_id,
                     detail_code=_CANCELLED_DETAIL,
                 ),
             )
@@ -362,6 +364,7 @@ class ProgressController:
                 ErrorCode.PROGRESS_CALLBACK_FAILED,
                 context=ErrorContext(
                     operation=self._operation,
+                    operation_id=self.operation_id,
                     detail_code=_PROGRESS_CALLBACK_DETAIL,
                 ),
             ) from None

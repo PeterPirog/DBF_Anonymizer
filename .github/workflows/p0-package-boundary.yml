@@ -45,6 +45,7 @@ jobs:
             tests/test_p6_index_backend.py \
             tests/test_p6_vfp_indexed.py \
             tests/test_p6_dbc_truthfulness.py \
+            tests/test_p7_public_json_contract.py \
             tests/test_architecture_boundary.py \
             -ra
 
@@ -87,6 +88,7 @@ jobs:
             tests/test_root_public_api.py \
             tests/test_p1_public_models.py \
             tests/test_p1_errors.py \
+            tests/test_p7_public_json_contract.py \
             tests/test_p6_index_backend.py \
             tests/test_p6_idx.py \
             tests/test_p6_data_only.py \
@@ -168,6 +170,7 @@ jobs:
             tests/test_p1_packaging.py \
             tests/test_p1_public_models.py \
             tests/test_p1_errors.py \
+            tests/test_p7_public_json_contract.py \
             -ra
 
   p4-windows-concurrency-locking:

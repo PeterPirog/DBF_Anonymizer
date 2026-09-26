@@ -266,6 +266,7 @@ def test_backend_cannot_smuggle_a_typed_error_context() -> None:
     error = caught.value
     assert error.context.to_dict() == {
         "operation": "index_backend",
+        "operation_id": None,
         "artifact_path": None,
         "table_path": None,
         "policy_rule": None,

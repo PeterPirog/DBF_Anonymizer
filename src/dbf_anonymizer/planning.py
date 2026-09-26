@@ -36,6 +36,9 @@ from dbf_anonymizer.errors import (
 )
 from dbf_anonymizer.models import (
     IDENTITY_PRIVACY_REVIEW_REQUIRED,
+    PUBLIC_JSON_MAX_DATASET_TABLES,
+    PUBLIC_JSON_MAX_INDEX_ARTIFACTS,
+    PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS,
     DatasetIdentity,
     NumericIdentityReview,
     OutputDataState,
@@ -118,6 +121,14 @@ def _record_identity_review(
     if identity in reviewed_identities:
         return
     reviewed_identities.add(identity)
+    if len(review) >= PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS:
+        raise PathError(
+            ErrorCode.PATH_INVALID,
+            context=ErrorContext(
+                operation="build_plan",
+                detail_code="PUBLIC_NUMERIC_REVIEW_LIMIT_EXCEEDED",
+            ),
+        )
     review.append(
         NumericIdentityReview(
             table_path=table_path,
@@ -210,6 +221,31 @@ def build_plan(
             context=ErrorContext(
                 operation="build_plan",
                 detail_code="no_tables_found",
+            ),
+        )
+
+    if len(discovered) > PUBLIC_JSON_MAX_DATASET_TABLES:
+        raise PathError(
+            ErrorCode.PATH_INVALID,
+            context=ErrorContext(
+                operation="build_plan",
+                detail_code="PUBLIC_DATASET_TABLE_LIMIT_EXCEEDED",
+            ),
+        )
+
+    standalone_idx_paths = tuple(
+        relative
+        for relative in sorted(
+            source_files, key=lambda path: (path.casefold(), path)
+        )
+        if Path(relative).suffix.lower() == ".idx"
+    )
+    if len(standalone_idx_paths) > PUBLIC_JSON_MAX_INDEX_ARTIFACTS:
+        raise PathError(
+            ErrorCode.PATH_INVALID,
+            context=ErrorContext(
+                operation="build_plan",
+                detail_code="PUBLIC_INDEX_ARTIFACT_LIMIT_EXCEEDED",
             ),
         )
 
@@ -517,13 +553,7 @@ def build_plan(
         dataset_id=dataset_id,
         source_fingerprint=source_fp,
         table_paths=table_paths,
-        standalone_idx_paths=tuple(
-            relative
-            for relative in sorted(
-                source_files, key=lambda path: (path.casefold(), path)
-            )
-            if Path(relative).suffix.lower() == ".idx"
-        ),
+        standalone_idx_paths=standalone_idx_paths,
         dbc_bound_table_paths=tuple(
             table.relative_path for table in discovered if table.dbc_bound
         ),
