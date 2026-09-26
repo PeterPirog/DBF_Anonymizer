@@ -36,7 +36,7 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           floor-env/bin/python -c "import dbfbridge; assert dbfbridge.__version__ == '1.1.0'"
-          floor-env/bin/python -m pytest \
+floor-env/bin/python -m pytest \
             tests/test_p4_field_capability_matrix.py \
             tests/test_p4_nullable_text.py \
             tests/test_p4_null_memo_pipeline.py \
@@ -44,6 +44,7 @@ jobs:
             tests/test_p6_data_only.py \
             tests/test_p6_index_backend.py \
             tests/test_p6_vfp_indexed.py \
+            tests/test_p6_dbc_truthfulness.py \
             tests/test_architecture_boundary.py \
             -ra
 
@@ -79,7 +80,7 @@ jobs:
         env:
           PYTHONUTF8: "1"
         run: |
-          clean-env/bin/python -m pytest \
+clean-env/bin/python -m pytest \
             tests/test_dependency_contract.py \
             tests/test_dbfbridge_capability_contract.py \
             tests/test_architecture_boundary.py \
@@ -90,6 +91,7 @@ jobs:
             tests/test_p6_idx.py \
             tests/test_p6_data_only.py \
             tests/test_p6_vfp_indexed.py \
+            tests/test_p6_dbc_truthfulness.py \
             -ra
 
   packaging-versions:
