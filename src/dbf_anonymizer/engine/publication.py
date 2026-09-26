@@ -19,6 +19,7 @@ from dbf_anonymizer.durability import (
 )
 from dbf_anonymizer.engine.directives import RelationPassSummary, TwoPassResult
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PathError, PublicationError
+from dbf_anonymizer.models import MODEL_SCHEMA_VERSION, StandaloneIdxEvidence
 from dbf_anonymizer.vault.store import VaultDatabase
 
 __all__ = [
@@ -34,7 +35,7 @@ FaultInjector = Callable[[str], None]
 
 #: The INTERNAL operation-receipt schema. Any structural change bumps this
 #: version; unknown versions are rejected fail-closed on read-back.
-RECEIPT_SCHEMA_VERSION = "1.1"
+RECEIPT_SCHEMA_VERSION = "1.2"
 
 #: Versioned identity of the PRIVATE publication crash-state record
 #: (``transaction.json`` inside the staging root — never part of any
@@ -693,6 +694,7 @@ def result_receipt(result: TwoPassResult) -> str:
         "operation_id": result.operation_id,
         "output_fingerprint": result.output_fingerprint,
         "protected_state_created": result.protected_state_created,
+        "index_artifacts": [item.to_dict() for item in result.index_artifacts],
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -705,6 +707,51 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
         relations = tuple(
             RelationPassSummary(**item) for item in payload["relations"]
         )
+        index_artifacts: list[StandaloneIdxEvidence] = []
+        for item in payload["index_artifacts"]:
+            if not isinstance(item, dict) or set(item) != {
+                "schema_version",
+                "model_type",
+                "artifact_id",
+                "artifact_path",
+                "status",
+                "source_sha256",
+                "backend_id",
+                "table_path",
+                "output_sha256",
+            }:
+                raise ValueError
+            if (
+                item["schema_version"] != MODEL_SCHEMA_VERSION
+                or item["model_type"] != "StandaloneIdxEvidence"
+            ):
+                raise ValueError
+            required = (
+                item["artifact_id"],
+                item["artifact_path"],
+                item["status"],
+                item["source_sha256"],
+            )
+            optional = (
+                item["backend_id"],
+                item["table_path"],
+                item["output_sha256"],
+            )
+            if not all(isinstance(value, str) for value in required) or not all(
+                value is None or isinstance(value, str) for value in optional
+            ):
+                raise ValueError
+            index_artifacts.append(
+                StandaloneIdxEvidence(
+                    artifact_id=item["artifact_id"],
+                    artifact_path=item["artifact_path"],
+                    status=item["status"],
+                    source_sha256=item["source_sha256"],
+                    backend_id=item["backend_id"],
+                    table_path=item["table_path"],
+                    output_sha256=item["output_sha256"],
+                )
+            )
         result = TwoPassResult(
             tables_written=tuple(str(item) for item in payload["tables_written"]),
             pass1_records_scanned=int(payload["pass1_records_scanned"]),
@@ -726,6 +773,7 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
             output_fingerprint=str(payload["output_fingerprint"]),
             reused_existing=True,
             protected_state_created=bool(payload["protected_state_created"]),
+            index_artifacts=tuple(index_artifacts),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise _publication_failure("OPERATION_RECEIPT_INVALID") from None

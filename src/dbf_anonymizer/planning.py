@@ -188,8 +188,8 @@ def build_plan(
     #    discovered tables are provided through the private probes.
     control.start_phase(ProgressPhase.DISCOVERY)
 
-    # Enumerate all in-scope source files (DBF, FPT, CDX, IDX) for standalone
-    # IDX association with tables.
+    # Enumerate every in-scope artifact once. Standalone IDX paths form an
+    # independent dataset inventory; no table ownership is inferred here.
     source_files = enumerate_in_scope_paths(
         source_root,
         cancel_probe=control.check_cancelled,
@@ -197,7 +197,6 @@ def build_plan(
 
     discovered = discover_tables(
         source_root,
-        source_files,
         cancel_probe=control.check_cancelled,
         progress_probe=lambda rel: control.bump(
             ProgressPhase.DISCOVERY, table_path=rel
@@ -372,8 +371,6 @@ def build_plan(
 
         total_transformed_fields += transform_count
         index_strategy = _resolve_index_strategy(table.structural_cdx, output_profile)
-        standalone_idx_present = bool(table.standalone_idx_relative_paths)
-
         tables.append(
             TablePlan(
                 table_path=table.relative_path,
@@ -387,8 +384,6 @@ def build_plan(
                 memo_required=(schema.has_memo or schema.has_memo_flag),
                 memo_companion_present=schema.memo_companion_present,
                 structural_cdx_companion_present=schema.companion_cdx_present,
-                standalone_idx_paths=table.standalone_idx_relative_paths,
-                standalone_idx_present=standalone_idx_present,
                 unsupported_field_count=unsupported_count,
                 unsafe_field_count=unsafe_count,
                 system_field_count=system_count,
@@ -521,6 +516,13 @@ def build_plan(
         dataset_id=dataset_id,
         source_fingerprint=source_fp,
         table_paths=table_paths,
+        standalone_idx_paths=tuple(
+            relative
+            for relative in sorted(
+                source_files, key=lambda path: (path.casefold(), path)
+            )
+            if Path(relative).suffix.lower() == ".idx"
+        ),
     )
 
     # 11. Compute plan ID (deterministic from all inputs)

@@ -623,18 +623,24 @@ def _check_output_profile_and_capabilities(
     # public pseudonymize call may provide one already-validated, operation-
     # scoped backend capability without mutating that global discovery fact.
     if plan.output_profile is TransferProfile.VFP_INDEXED:
+        structural_required = any(table.structural_cdx for table in plan.tables)
+        standalone_required = bool(plan.dataset.standalone_idx_paths)
+        if index_backend_capability is None:
+            findings.error(PreflightCode.CAPABILITY_MISSING)
+            return
         if (
-            index_backend_capability is None
-            or not index_backend_capability.supports_structural_cdx_rebuild
-            or not index_backend_capability.supports_verification
+            not index_backend_capability.supports_verification
             or not index_backend_capability.vfp_runtime_available
+            or (
+                structural_required
+                and not index_backend_capability.supports_structural_cdx_rebuild
+            )
+            or (
+                standalone_required
+                and not index_backend_capability.supports_standalone_idx_rebuild
+            )
         ):
             findings.error(PreflightCode.CAPABILITY_MISSING)
-        # Check standalone IDX support if any table has standalone IDX
-        if any(table.standalone_idx_present for table in plan.tables):
-            assert index_backend_capability is not None
-            if not index_backend_capability.supports_standalone_idx_rebuild:
-                findings.error(PreflightCode.CAPABILITY_MISSING)
         return
 
     # Unknown profile -> fail closed.

@@ -516,6 +516,9 @@ def _validate_recovery_authority(
             dataset_id=derive_dataset_id(dataset_row[0]),
             source_fingerprint=dataset_row[0],
             table_paths=tuple(sorted(vault_tables)),
+            standalone_idx_paths=tuple(
+                item.artifact_path for item in receipt.index_artifacts
+            ),
         ),
         ledger=ledger,
         expected_records=int(receipt.pass2_records_written),

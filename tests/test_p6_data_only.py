@@ -8,8 +8,7 @@ A. a structural-CDX source table produces a standalone fresh output whose
    the source reports its coupling truthfully and stays byte-identical;
 B. a DBC-bound source produces output without DBC/DCT/DCX companions and
    the standalone output claims no DBC semantics;
-C. a standalone IDX is never copied as valid (no rebuild behavior yet:
-   REQ-P6-004 stays out of scope);
+C. a standalone IDX is inventoried and never copied as valid by DATA_ONLY;
 D. a hostile combined source (DBF+FPT+CDX+IDX+DBC/DCT/DCX plus unrelated
    unknown sidecars) exports ONLY the approved standalone DBF/FPT payload
    plus the sanitized manifest;
@@ -208,7 +207,8 @@ def test_standalone_idx_is_not_copied_and_no_rebuild_is_claimed(
     assert plan.tables[0].index_strategy == "DATA_ONLY"
     assert not list(output.rglob("*.idx"))
     assert (output / "idx" / "standalone_idx_table.dbf").is_file()
-    # No rebuild behavior is claimed yet (REQ-P6-004 stays out of scope).
+    assert plan.dataset.standalone_idx_paths == ("idx/code_idx.idx",)
+    assert result.index_artifacts[0].status == "OMITTED_DATA_ONLY"
     assert plan.output_profile is not None
     rows = list(
         dbfbridge.iter_records(output / "idx" / "standalone_idx_table.dbf",

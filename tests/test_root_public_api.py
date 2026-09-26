@@ -50,10 +50,15 @@ EXPECTED_PUBLIC_EXPORTS = {
     "INDEX_BACKEND_RESULT_DETAIL_CODES",
     "INDEX_VERIFICATION_STATUSES",
     "INDEX_VERIFICATION_DETAIL_CODES",
+    "STANDALONE_IDX_ASSOCIATION_STATUSES",
+    "STANDALONE_IDX_ASSOCIATION_DETAIL_CODES",
+    "STANDALONE_IDX_EVIDENCE_STATUSES",
     "IndexBackend",
     "IndexBackendCapability",
     "IndexBackendResult",
     "IndexVerificationResult",
+    "StandaloneIdxAssociationResult",
+    "StandaloneIdxEvidence",
     "IndexBackendError",
     "Capabilities",
     "DatasetIdentity",
@@ -100,7 +105,6 @@ EXPECTED_PUBLIC_EXPORTS = {
     "VerificationError",
     "RecoveryError",
     "TransferError",
-    "IndexBackendError",
     "CancellationError",
     # REQ-P1-008: the contained, classified callback-failure type is public so
     # consumers can catch callback failures without importing private modules.

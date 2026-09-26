@@ -28,7 +28,8 @@ state belongs to P4-009).
 
 from __future__ import annotations
 
-import json
+import os
+import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -36,6 +37,7 @@ from typing import Callable, Sequence
 
 import dbfbridge
 
+from dbf_anonymizer.discovery import _file_sha256
 from dbf_anonymizer.engine import direct_io
 from dbf_anonymizer.engine.directives import (
     ACTION_MEMO,
@@ -76,6 +78,7 @@ from dbf_anonymizer.engine.state import (
 from dbf_anonymizer.errors import (
     ErrorCode,
     ErrorContext,
+    IndexBackendError,
     MappingError,
     PathError,
     PublicationError,
@@ -85,14 +88,21 @@ from dbf_anonymizer.index_backend import (
     IndexBackendContract,
     IndexRebuildRequest,
     IndexVerificationRequest,
+    StandaloneIdxAssociationRequest,
     index_backend_failure,
     require_backend_runtime,
     run_backend_rebuild,
+    run_backend_standalone_idx_association,
     run_backend_verification,
     require_backend_support,
     require_backend_verification,
 )
-from dbf_anonymizer.models import Plan, TransferProfile
+from dbf_anonymizer.models import (
+    Plan,
+    StandaloneIdxEvidence,
+    TransferProfile,
+    standalone_idx_artifact_id,
+)
 from dbf_anonymizer.policy import classify_field_capability, resolve_policy
 from dbf_anonymizer.relationships.models import (
     RelationGroup,
@@ -294,7 +304,6 @@ def build_engine_plan(
     temporal_present = False
 
     structural_cdx_tables: list[str] = []
-    standalone_idx_tables: list[str] = []
     numeric_groups: list[tuple[RelationGroup, str]] = []
     if relationship_document is not None:
         from dbf_anonymizer.relationships.models import (
@@ -404,9 +413,6 @@ def build_engine_plan(
         )
         if schema.has_structural_cdx:
             structural_cdx_tables.append(relative_path)
-        # Track tables with standalone IDX for REQ-P6-004
-        if table_plan.standalone_idx_present:
-            standalone_idx_tables.append(relative_path)
 
     if relationship_document is not None:
         # EVERY declared relation is tracked for the verification evidence —
@@ -487,7 +493,7 @@ def build_engine_plan(
         numeric_present=numeric_present,
         temporal_present=temporal_present,
         structural_cdx_tables=tuple(structural_cdx_tables),
-        standalone_idx_tables=tuple(standalone_idx_tables),
+        standalone_idx_paths=plan.dataset.standalone_idx_paths,
     )
 
 
@@ -789,6 +795,79 @@ def _cleanup_engine_resources(
     return failure
 
 
+def _idx_sha256(path: Path, control: ProgressController) -> str:
+    try:
+        return _file_sha256(path, cancel_probe=control.check_cancelled)
+    except OSError:
+        raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID") from None
+
+
+def _regular_idx_path(path: Path, root: Path, *, missing_code: str) -> Path:
+    try:
+        metadata = os.lstat(path)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except FileNotFoundError:
+        raise index_backend_failure(missing_code) from None
+    except (OSError, ValueError):
+        raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID") from None
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID")
+    return resolved
+
+
+def _staged_idx_inventory(dataset_root: Path) -> set[str]:
+    inventory: set[str] = set()
+    try:
+        for current, directories, files in os.walk(dataset_root, followlinks=False):
+            directories.sort()
+            files.sort()
+            current_path = Path(current)
+            for name in files:
+                if Path(name).suffix.lower() != ".idx":
+                    continue
+                path = current_path / name
+                metadata = os.lstat(path)
+                if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+                    raise index_backend_failure(
+                        "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID"
+                    )
+                inventory.add(path.relative_to(dataset_root).as_posix())
+    except IndexBackendError:
+        raise
+    except OSError:
+        raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID") from None
+    return inventory
+
+
+def _data_only_idx_evidence(
+    engine_plan: EnginePlan,
+    *,
+    source_root: Path,
+    control: ProgressController,
+) -> tuple[StandaloneIdxEvidence, ...]:
+    try:
+        resolved_source_root = source_root.resolve(strict=True)
+    except OSError:
+        raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
+    evidence: list[StandaloneIdxEvidence] = []
+    for idx_path in engine_plan.standalone_idx_paths:
+        source_idx_path = _regular_idx_path(
+            resolved_source_root / idx_path,
+            resolved_source_root,
+            missing_code="INDEX_BACKEND_REBUILT_ARTIFACT_INVALID",
+        )
+        evidence.append(
+            StandaloneIdxEvidence(
+                artifact_id=standalone_idx_artifact_id(idx_path),
+                artifact_path=idx_path,
+                status="OMITTED_DATA_ONLY",
+                source_sha256=_idx_sha256(source_idx_path, control),
+            )
+        )
+    return tuple(evidence)
+
+
 def _run_vfp_indexed_rebuild_and_verify(
     engine_plan: EnginePlan,
     *,
@@ -797,7 +876,7 @@ def _run_vfp_indexed_rebuild_and_verify(
     backend_contract: IndexBackendContract,
     control: ProgressController,
     fault_inject: FaultInjector | None = None,
-) -> None:
+) -> tuple[StandaloneIdxEvidence, ...]:
     """Run authoritative structural index rebuild and verification for VFP_INDEXED profile.
 
     This function runs inside protected staging after fresh DBF/FPT are written
@@ -937,22 +1016,65 @@ def _run_vfp_indexed_rebuild_and_verify(
                 fault_inject(f"VFP_INDEXED_REBUILD_VERIFY_COMPLETE:{table_path}")
 
     # --- Standalone IDX rebuild and verification (REQ-P6-004) ---
-    if engine_plan.standalone_idx_tables:
+    idx_evidence: list[StandaloneIdxEvidence] = []
+    if engine_plan.standalone_idx_paths:
         require_backend_support(capability, "STANDALONE_IDX")
         require_backend_verification(capability, "STANDALONE_IDX")
         require_backend_runtime(capability)
+        try:
+            resolved_source_root = source_root.resolve(strict=True)
+        except OSError:
+            raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
+        table_paths = tuple(table.relative_path for table in engine_plan.tables)
 
-        for table_path in engine_plan.standalone_idx_tables:
+        for idx_path in engine_plan.standalone_idx_paths:
             control.check_cancelled()
             control.progress(
                 ProgressPhase.INDEX_REBUILD,
                 completed=0,
                 total=2,
-                table_path=table_path,
+                table_path=idx_path,
             )
-
+            source_idx_candidate = resolved_source_root / idx_path
+            source_idx_path = _regular_idx_path(
+                source_idx_candidate,
+                resolved_source_root,
+                missing_code="INDEX_BACKEND_REBUILT_ARTIFACT_INVALID",
+            )
+            source_sha256 = _idx_sha256(source_idx_path, control)
+            association_request = StandaloneIdxAssociationRequest(
+                protocol_schema_version=capability.protocol_schema_version,
+                artifact_path=idx_path,
+                source_dataset_root=resolved_source_root,
+                source_idx_path=source_idx_path,
+                table_paths=table_paths,
+            )
+            association = run_backend_standalone_idx_association(
+                backend_contract.backend, association_request
+            ).result
+            if association.backend_id != backend_contract.backend_id:
+                raise index_backend_failure("INDEX_BACKEND_ID_MISMATCH")
+            if _idx_sha256(source_idx_path, control) != source_sha256:
+                raise index_backend_failure("INDEX_BACKEND_STALE_ARTIFACT_COPY")
+            if association.status == "UNAVAILABLE":
+                idx_evidence.append(
+                    StandaloneIdxEvidence(
+                        artifact_id=standalone_idx_artifact_id(idx_path),
+                        artifact_path=idx_path,
+                        status="OMITTED_UNVERIFIED",
+                        source_sha256=source_sha256,
+                        backend_id=backend_contract.backend_id,
+                    )
+                )
+                continue
+            associated_table_path = association.table_path
+            if associated_table_path is None:
+                raise index_backend_failure("INDEX_BACKEND_ASSOCIATION_MISMATCH")
+            table_path = associated_table_path
             try:
-                source_table_path = (source_root / table_path).resolve(strict=True)
+                source_table_path = (resolved_source_root / table_path).resolve(
+                    strict=True
+                )
                 staged_table_path = (dataset_root / table_path).resolve(strict=True)
             except OSError:
                 raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
@@ -967,74 +1089,176 @@ def _run_vfp_indexed_rebuild_and_verify(
                 raise index_backend_failure(
                     "INDEX_BACKEND_TABLE_DIRECTIVE_MISSING", table_path=table_path
                 )
+            staged_idx_path = (dataset_root / idx_path).resolve(strict=False)
+            try:
+                staged_idx_path.relative_to(dataset_root)
+                os.lstat(staged_idx_path)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError):
+                raise index_backend_failure(
+                    "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID", table_path=table_path
+                ) from None
+            else:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID", table_path=table_path
+                )
+            try:
+                staged_idx_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID", table_path=table_path
+                ) from None
+            rebuild_request = IndexRebuildRequest(
+                protocol_schema_version=capability.protocol_schema_version,
+                artifact_class="STANDALONE_IDX",
+                table_path=table_path,
+                source_table_path=source_table_path,
+                staged_table_path=staged_table_path,
+                source_idx_path=source_idx_path,
+                staged_idx_path=staged_idx_path,
+                artifact_path=idx_path,
+                source_dataset_root=resolved_source_root,
+                staged_dataset_root=dataset_root,
+            )
+            rebuild_outcome = run_backend_rebuild(
+                backend_contract.backend, rebuild_request
+            )
+            rebuild_result = rebuild_outcome.result
 
-            # For standalone IDX, we need to know which IDX files to rebuild.
-            # The TablePlan has the list of standalone_idx_paths.
-            table_plan = next(t for t in engine_plan.plan.tables if t.table_path == table_path)
-            idx_paths = table_plan.standalone_idx_paths
+            if rebuild_result.backend_id != backend_contract.backend_id:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
+                )
+            if rebuild_result.status != "REBUILT":
+                if rebuild_result.status == "REFUSED":
+                    try:
+                        os.lstat(staged_idx_path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        raise index_backend_failure(
+                            "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID",
+                            table_path=table_path,
+                        ) from None
+                    else:
+                        raise index_backend_failure(
+                            "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID",
+                            table_path=table_path,
+                        )
+                    if _idx_sha256(source_idx_path, control) != source_sha256:
+                        raise index_backend_failure(
+                            "INDEX_BACKEND_STALE_ARTIFACT_COPY",
+                            table_path=table_path,
+                        )
+                    idx_evidence.append(
+                        StandaloneIdxEvidence(
+                            artifact_id=standalone_idx_artifact_id(idx_path),
+                            artifact_path=idx_path,
+                            status="OMITTED_UNVERIFIED",
+                            source_sha256=source_sha256,
+                            backend_id=backend_contract.backend_id,
+                            table_path=table_path,
+                        )
+                    )
+                    continue
+                raise index_backend_failure(
+                    "INDEX_BACKEND_REBUILD_FAILED", table_path=table_path
+                )
 
-            for idx_path in idx_paths:
-                # Rebuild each standalone IDX separately
-                rebuild_request = IndexRebuildRequest(
-                    protocol_schema_version=backend_contract.capability.protocol_schema_version,
-                    artifact_class="STANDALONE_IDX",
+            rebuilt_idx_path = _regular_idx_path(
+                staged_idx_path,
+                dataset_root,
+                missing_code="INDEX_BACKEND_REBUILT_ARTIFACT_MISSING",
+            )
+            rebuilt_sha256 = _idx_sha256(rebuilt_idx_path, control)
+            if rebuilt_sha256 == source_sha256:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_STALE_ARTIFACT_COPY", table_path=table_path
+                )
+            if _idx_sha256(source_idx_path, control) != source_sha256:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_STALE_ARTIFACT_COPY", table_path=table_path
+                )
+
+            control.check_cancelled()
+            control.progress(
+                ProgressPhase.INDEX_REBUILD,
+                completed=1,
+                total=2,
+                table_path=idx_path,
+            )
+            verification_request = IndexVerificationRequest(
+                protocol_schema_version=capability.protocol_schema_version,
+                artifact_class="STANDALONE_IDX",
+                table_path=table_path,
+                staged_table_path=staged_table_path,
+                staged_idx_path=rebuilt_idx_path,
+                artifact_path=idx_path,
+                staged_dataset_root=dataset_root,
+            )
+            verification_outcome = run_backend_verification(
+                backend_contract.backend, verification_request
+            )
+            verification_result = verification_outcome.result
+            if verification_result.backend_id != backend_contract.backend_id:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
+                )
+            if verification_result.status != "VERIFIED":
+                detail_code = {
+                    "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
+                    "RECORD_COUNT_MISMATCH": "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
+                }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
+                raise index_backend_failure(detail_code, table_path=table_path)
+            if not verification_outcome.table_opened:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path
+                )
+            if verification_outcome.actual_record_count != directive.record_count:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_RECORD_COUNT_MISMATCH", table_path=table_path
+                )
+            if _idx_sha256(rebuilt_idx_path, control) != rebuilt_sha256:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_VERIFICATION_RESULT_MISMATCH",
                     table_path=table_path,
-                    source_table_path=source_table_path,
-                    staged_table_path=staged_table_path,
-                    idx_path=idx_path,
                 )
-                rebuild_outcome = run_backend_rebuild(
-                    backend_contract.backend, rebuild_request
+            if _idx_sha256(source_idx_path, control) != source_sha256:
+                raise index_backend_failure(
+                    "INDEX_BACKEND_STALE_ARTIFACT_COPY", table_path=table_path
                 )
-                rebuild_result = rebuild_outcome.result
-
-                if rebuild_result.backend_id != backend_contract.backend_id:
-                    raise index_backend_failure(
-                        "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                    )
-                if rebuild_result.status != "REBUILT":
-                    detail_code = (
-                        "INDEX_BACKEND_REBUILD_REFUSED"
-                        if rebuild_result.status == "REFUSED"
-                        else "INDEX_BACKEND_REBUILD_FAILED"
-                    )
-                    raise index_backend_failure(detail_code, table_path=table_path)
-
-                # Verify each rebuilt IDX
-                verification_request = IndexVerificationRequest(
-                    protocol_schema_version=backend_contract.capability.protocol_schema_version,
-                    artifact_class="STANDALONE_IDX",
+            idx_evidence.append(
+                StandaloneIdxEvidence(
+                    artifact_id=standalone_idx_artifact_id(idx_path),
+                    artifact_path=idx_path,
+                    status="REBUILT_VERIFIED",
+                    source_sha256=source_sha256,
+                    backend_id=backend_contract.backend_id,
                     table_path=table_path,
-                    staged_table_path=staged_table_path,
-                    idx_path=idx_path,
+                    output_sha256=rebuilt_sha256,
                 )
-                verification_outcome = run_backend_verification(
-                    backend_contract.backend, verification_request
-                )
-                verification_result = verification_outcome.result
-
-                if verification_result.backend_id != backend_contract.backend_id:
-                    raise index_backend_failure(
-                        "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                    )
-                if verification_result.status != "VERIFIED":
-                    detail_code = {
-                        "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
-                        "RECORD_COUNT_MISMATCH": "INDEX_BACKEND_RECORD_COUNT_MISMATCH",
-                        "TAG_INVENTORY_MISMATCH": "INDEX_BACKEND_TAG_INVENTORY_MISMATCH",
-                    }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
-                    raise index_backend_failure(detail_code, table_path=table_path)
+            )
 
             control.check_cancelled()
             control.progress(
                 ProgressPhase.INDEX_REBUILD,
                 completed=2,
                 total=2,
-                table_path=table_path,
+                table_path=idx_path,
             )
 
             if fault_inject is not None:
-                fault_inject(f"VFP_INDEXED_REBUILD_VERIFY_COMPLETE:{table_path}")
+                fault_inject(f"STANDALONE_IDX_REBUILD_VERIFY_COMPLETE:{idx_path}")
+
+        verified_paths = {
+            item.artifact_path
+            for item in idx_evidence
+            if item.status == "REBUILT_VERIFIED"
+        }
+        if _staged_idx_inventory(dataset_root) != verified_paths:
+            raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID")
+    return tuple(idx_evidence)
 
 
 def run_two_pass(
@@ -1272,28 +1496,37 @@ def run_two_pass(
                         evidence_root=evidence_root,
                         fault_inject=fault_inject,
                     )
-                    # VFP_INDEXED profile: authoritative structural index rebuild
-                    # and verification (REQ-P6-003). Also rebuild standalone IDX
-                    # when authoritative backend support is available (REQ-P6-004).
-                    # Runs inside protected staging after fresh DBF/FPT are written,
-                    # before final publication.
+                    if plan.output_profile is TransferProfile.DATA_ONLY:
+                        result = replace(
+                            result,
+                            index_artifacts=_data_only_idx_evidence(
+                                engine_plan,
+                                source_root=source,
+                                control=control,
+                            ),
+                        )
+                    # VFP_INDEXED work runs only when the source inventory
+                    # actually requires structural-CDX or standalone-IDX work.
                     if (
                         plan.output_profile is TransferProfile.VFP_INDEXED
                         and (
                             engine_plan.structural_cdx_tables
-                            or engine_plan.standalone_idx_tables
+                            or engine_plan.standalone_idx_paths
                         )
                     ):
                         if backend_contract is None:
                             raise index_backend_failure("INDEX_BACKEND_MISSING")
                         control.start_phase(ProgressPhase.INDEX_REBUILD)
-                        _run_vfp_indexed_rebuild_and_verify(
-                            engine_plan,
-                            source_root=source,
-                            staging=staging,
-                            backend_contract=backend_contract,
-                            control=control,
-                            fault_inject=fault_inject,
+                        result = replace(
+                            result,
+                            index_artifacts=_run_vfp_indexed_rebuild_and_verify(
+                                engine_plan,
+                                source_root=source,
+                                staging=staging,
+                                backend_contract=backend_contract,
+                                control=control,
+                                fault_inject=fault_inject,
+                            ),
                         )
                     output_fingerprint = fingerprint_dataset(
                         staging.dataset_root, checkpoint=control.check_cancelled

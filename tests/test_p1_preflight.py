@@ -1816,8 +1816,11 @@ def test_standalone_idx_data_only_warns_without_ownership(tmp_path: Path) -> Non
     assert result.ready is True
     assert "STANDALONE_IDX_DATA_ONLY" in result.warning_codes
     serialized = json.dumps(plan.to_dict(), ensure_ascii=False)
-    # No TablePlan carries an inferred standalone-IDX ownership relation.
-    assert "code_idx" not in serialized
+    # The dataset inventory contains the IDX, while no TablePlan carries an
+    # inferred ownership relation.
+    assert plan.dataset.standalone_idx_paths == ("vfp/idx/code_idx.idx",)
+    assert "code_idx" in serialized
+    assert all(not hasattr(table, "standalone_idx_paths") for table in plan.tables)
     assert result.error_codes == ()
 
 

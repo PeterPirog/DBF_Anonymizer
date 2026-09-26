@@ -42,6 +42,7 @@ result or log.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
@@ -119,7 +120,7 @@ __all__ = [
 #: verified invariant held). A clean PASS carries no finding. The
 #: authoritative PASS/PARTIAL/FAIL status lives on the public
 #: :class:`~dbf_anonymizer.models.VerificationResult` model.
-VERIFICATION_CHECK_CODE_VERSION = "1.1"
+VERIFICATION_CHECK_CODE_VERSION = "1.2"
 
 #: The exact bounded finding-code vocabulary (pinned by the snapshot test).
 VERIFICATION_CHECK_CODES = frozenset(
@@ -135,6 +136,8 @@ VERIFICATION_CHECK_CODES = frozenset(
         "TABLE_MISSING",
         "UNEXPECTED_OUTPUT_ARTIFACT",
         "INDEX_ARTIFACT_UNVERIFIED",
+        "STANDALONE_IDX_DEFINITION_UNAVAILABLE",
+        "STANDALONE_IDX_EVIDENCE_MISMATCH",
         "MEMO_COMPANION_MISSING",
         "SCHEMA_MISMATCH",
         "RECORD_COUNT_MISMATCH",
@@ -569,6 +572,7 @@ def _verify_dataset_core(
         record_count=record_count,
         check_codes=check_codes,
         assurance=result.assurance,
+        index_artifacts=result.index_artifacts,
     )
     return verification_result
 
@@ -648,7 +652,10 @@ def _iter_output_files(root: Path) -> Sequence[tuple[str, Path]]:
 
 
 def _expected_output_inventory(
-    table_paths: Sequence[str], *, source_root: Path
+    table_paths: Sequence[str],
+    *,
+    source_root: Path,
+    rebuilt_idx_paths: Sequence[str] = (),
 ) -> tuple[set[str], set[str]]:
     """The exact expected output inventory from the SOURCE topology.
 
@@ -667,7 +674,19 @@ def _expected_output_inventory(
             memo_relative = Path(relative_path).with_suffix(".fpt").as_posix()
             expected.add(memo_relative)
             memo_companions.add(memo_relative)
+    expected.update(rebuilt_idx_paths)
     return expected, memo_companions
+
+
+def _artifact_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while True:
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _verify(
@@ -710,8 +729,16 @@ def _verify(
         findings.fail("SOURCE_FINGERPRINT_MISMATCH")
 
     # --- TOPOLOGY: expected output inventory from the SOURCE topology --------
+    rebuilt_idx_paths = tuple(
+        item.artifact_path
+        for item in result.index_artifacts
+        if item.status == "REBUILT_VERIFIED"
+    )
+    rebuilt_idx_set = set(rebuilt_idx_paths)
     expected_output, expected_memo_companions = _expected_output_inventory(
-        dataset.table_paths, source_root=source_root
+        dataset.table_paths,
+        source_root=source_root,
+        rebuilt_idx_paths=rebuilt_idx_paths,
     )
     try:
         output_inventory = _iter_output_files(output_root)
@@ -721,13 +748,40 @@ def _verify(
     for relative in sorted(expected_output - output_paths):
         if relative in expected_memo_companions:
             findings.fail("MEMO_COMPANION_MISSING")
+        elif relative in rebuilt_idx_set:
+            findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
         else:
             findings.fail("TABLE_MISSING")
     for relative in sorted(output_paths - expected_output):
-        if Path(relative).suffix.lower() in _INDEX_ARTIFACT_SUFFIXES:
+        suffix = Path(relative).suffix.lower()
+        if suffix == ".idx":
+            findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
+        elif suffix in _INDEX_ARTIFACT_SUFFIXES:
             findings.partial("INDEX_ARTIFACT_UNVERIFIED")
         else:
             findings.fail("UNEXPECTED_OUTPUT_ARTIFACT")
+
+    # --- REQ-P6-004: durable per-IDX provenance and artifact binding ---------
+    for item in result.index_artifacts:
+        control.check_cancelled()
+        source_idx = source_root / item.artifact_path
+        try:
+            if _artifact_sha256(source_idx) != item.source_sha256:
+                findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
+        except OSError:
+            findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
+        if item.status == "OMITTED_UNVERIFIED":
+            findings.partial("STANDALONE_IDX_DEFINITION_UNAVAILABLE")
+        elif item.status == "REBUILT_VERIFIED":
+            output_idx = output_root / item.artifact_path
+            try:
+                if (
+                    item.output_sha256 is None
+                    or _artifact_sha256(output_idx) != item.output_sha256
+                ):
+                    findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
+            except OSError:
+                findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
 
     # --- VAULT VERIFICATION: identity, binding, receipt, mappings ------------
     control.start_phase(ProgressPhase.VAULT_VERIFICATION)
@@ -865,6 +919,8 @@ def _verify_vault(
         findings.fail("RECEIPT_IDENTITY_MISMATCH")
     if receipt.output_fingerprint != result.output_fingerprint:
         findings.fail("RECEIPT_FINGERPRINT_MISMATCH")
+    if receipt.index_artifacts != result.index_artifacts:
+        findings.fail("RECEIPT_IDENTITY_MISMATCH")
 
     # The public relational assurance is cross-validated against the DURABLE
     # receipt evidence (never simply trusted).
