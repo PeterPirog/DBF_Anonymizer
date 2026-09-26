@@ -716,10 +716,12 @@ MCP_SERVER_IMPORT_ROOTS = frozenset(
         "mcp",
         "fastmcp",
         "mcp_vfp9sp2_toolchain",
+        "vfp_toolchain",
         "flask",
         "django",
         "fastapi",
         "starlette",
+        "aiohttp",
         "uvicorn",
     }
 )
@@ -763,6 +765,18 @@ def test_no_mcp_or_server_framework_imports_in_the_python_api() -> None:
                 f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
             )
     assert not offending, "MCP/server framework import: " + "; ".join(offending)
+
+
+def test_mcp_server_guard_covers_the_p7_001_required_roots() -> None:
+    assert {
+        "mcp",
+        "mcp_vfp9sp2_toolchain",
+        "vfp_toolchain",
+        "fastapi",
+        "flask",
+        "starlette",
+        "aiohttp",
+    } <= MCP_SERVER_IMPORT_ROOTS
 
 
 def test_no_runtime_package_installation_imports() -> None:

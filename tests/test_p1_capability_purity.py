@@ -61,13 +61,13 @@ from dbf_anonymizer import Capabilities
 
 VERDICT_PREFIX = "DBF_PURITY_VERDICT:"
 
-#: Optional backend modules that must never be *resolved or loaded* by
-#: import/discovery.  The COM/ole set plus the architecture's external VFP
-#: toolchain provider (REQ-P6-006: accepted as injected metadata, never
-#: imported). The active repository contains no VFP/COM backend implementation
-#: module.
+#: Optional backend and server modules that must never be *resolved or loaded*
+#: by import/discovery.  The COM/ole set, the architecture's external VFP
+#: toolchain provider and MCP/server frameworks stay outside this synchronous
+#: transport-neutral package (REQ-P6-006/REQ-P7-001).
 FORBIDDEN_BACKEND_MODULES = (
-    "win32com,pythoncom,comtypes,pywintypes,mcp_vfp9sp2_toolchain"
+    "win32com,pythoncom,comtypes,pywintypes,mcp,fastmcp,fastapi,flask,"
+    "starlette,aiohttp,mcp_vfp9sp2_toolchain,vfp_toolchain"
 )
 
 #: The five public dbfbridge data operations that discovery must never call.
