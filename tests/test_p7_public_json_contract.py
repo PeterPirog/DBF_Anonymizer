@@ -41,7 +41,7 @@ from dbf_anonymizer.models import (
 from dbf_anonymizer.progress import ProgressController
 
 
-SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "public_json" / "schema-1.7.json"
+SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "public_json" / "schema-1.8.json"
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "dbf_anonymizer"
 PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
@@ -236,6 +236,11 @@ def _schema_snapshot() -> dict[str, Any]:
 
 def test_committed_schema_snapshot_is_exact_and_deterministic() -> None:
     expected = _schema_snapshot()
+    assert public.MODEL_SCHEMA_VERSION == "1.8"
+    assert public.ERROR_SCHEMA_VERSION == "1.1"
+    assert public.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
+    assert SNAPSHOT_PATH.name == "schema-1.8.json"
+    assert expected["model_schema_version"] == "1.8"
     committed_text = SNAPSHOT_PATH.read_text(encoding="ascii")
     assert json.loads(committed_text) == expected
     assert committed_text == json.dumps(
@@ -483,6 +488,60 @@ def test_limits_reject_one_past_the_public_boundaries() -> None:
             (),
             (),
         )
+
+
+def test_build_plan_table_limit_refusal_is_early_deterministic_and_private(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import dbf_anonymizer.planning as planning
+    from dbf_anonymizer.discovery import DiscoveredTable
+
+    source = tmp_path / CANARIES[0]
+    output = tmp_path / CANARIES[1]
+    vault = tmp_path / CANARIES[4]
+    source.mkdir()
+    discovered = tuple(
+        DiscoveredTable(
+            relative_path=f"tables/table-{index:03d}.dbf",
+            memo_relative_path=None,
+            record_count=0,
+            field_count=0,
+            structural_cdx=False,
+            dbc_bound=False,
+            companion_cdx_relative_path=None,
+        )
+        for index in range(PUBLIC_JSON_MAX_DATASET_TABLES + 1)
+    )
+    monkeypatch.setattr(
+        planning, "enumerate_in_scope_paths", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        planning, "discover_tables", lambda *args, **kwargs: discovered
+    )
+
+    def fingerprint_must_not_run(*args: object, **kwargs: object) -> object:
+        pytest.fail("fingerprinting ran after the public table limit was exceeded")
+
+    monkeypatch.setattr(
+        planning, "collect_fingerprint_entries", fingerprint_must_not_run
+    )
+
+    payloads = []
+    for _ in range(2):
+        with pytest.raises(public.PathError) as caught:
+            public.build_plan(source=source, output=output, vault=vault)
+        payloads.append(caught.value.to_dict())
+
+    assert payloads[0] == payloads[1]
+    assert payloads[0]["code"] == "PATH_INVALID"
+    assert (
+        payloads[0]["context"]["detail_code"]
+        == "PUBLIC_DATASET_TABLE_LIMIT_EXCEEDED"
+    )
+    serialized = json.dumps(payloads[0], sort_keys=True)
+    assert all(canary not in serialized for canary in CANARIES)
+    assert not output.exists()
+    assert not vault.exists()
 
 
 @pytest.mark.parametrize(

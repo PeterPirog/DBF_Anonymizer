@@ -301,15 +301,14 @@ def test_every_public_model_is_json_safe_and_versioned() -> None:
     assert {type(sample) for sample in samples} == set(PUBLIC_MODEL_TYPES)
     for model in samples:
         payload = model.to_dict()  # type: ignore[union-attr]
-        # REQ-P6-003 advances the public shape for verification evidence.
-        # REQ-P6-005 adds source/output DBC truthfulness and bumps schema to 1.7.
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.7"
+        # REQ-P7-002 bounds the public JSON contract and advances it to 1.8.
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.8"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
 
 def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
-    assert MODEL_SCHEMA_VERSION == "1.7"
+    assert MODEL_SCHEMA_VERSION == "1.8"
     assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
     p6_types = {
         IndexBackendCapability,
@@ -324,7 +323,7 @@ def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
     assert {type(sample) for sample in p6_samples} == p6_types
     for sample in p6_samples:
         payload = sample.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == "1.7"
+        assert payload["schema_version"] == "1.8"
         if type(sample) is not StandaloneIdxEvidence:
             assert payload["protocol_schema_version"] == "1.2"
         assert json.loads(json.dumps(payload, sort_keys=True)) == payload

@@ -17,8 +17,8 @@ from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, ClassVar, TypeAlias
 
-#: Additive REQ-P6-005 source/output truthfulness schema.
-MODEL_SCHEMA_VERSION = "1.7"
+#: REQ-P7-002 bounded public JSON model contract.
+MODEL_SCHEMA_VERSION = "1.8"
 
 #: Versioned identity of the injected index-backend protocol (REQ-P6-001).
 #: Version 1.2 adds authoritative standalone-IDX association plus exact

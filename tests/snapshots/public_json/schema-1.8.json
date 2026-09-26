@@ -383,7 +383,7 @@
       "index_artifacts"
     ]
   },
-  "model_schema_version": "1.7",
+  "model_schema_version": "1.8",
   "vocabularies": {
     "index_artifact_class": [
       "STRUCTURAL_CDX",
