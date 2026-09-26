@@ -112,6 +112,7 @@ from dbf_anonymizer.models import (
     TransferProfile,
     VaultStrategy,
 )
+from dbf_anonymizer.recovery_policy import RecoveryPolicy
 from dbf_anonymizer.policy import classify_field_capability
 from dbf_anonymizer.progress import (
     CancelCheck,
@@ -1219,6 +1220,7 @@ def _evaluate_plan_readonly(
     plan: Plan,
     control: ProgressController,
     injected_backend_capability: IndexBackendCapability | None = None,
+    recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED,
 ) -> PreflightResult:
     """The ONE read-only preflight evaluation core (internal).
 
@@ -1239,9 +1241,13 @@ def _evaluate_plan_readonly(
     ``injected_backend_capability`` augments only the operation-scoped
     VFP_INDEXED check. Canonical direct-read/write facts always come from the
     side-effect-free standalone provider and are never replaced or mutated.
+
+    REQ-P7-003: ``recovery_policy`` controls the projected recovery capability
+    in the returned capabilities snapshot.
     """
+    from dbf_anonymizer.recovery_policy import RecoveryPolicy
     findings = _Findings()
-    caps = _capability.capabilities_provider()
+    caps = _capability.capabilities_provider(recovery_policy)
 
     context = plan.execution_context
     if context is None:

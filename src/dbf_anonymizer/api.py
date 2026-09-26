@@ -1,8 +1,9 @@
 """Public API entry point for DBF_Anonymizer 1.0 operational functions.
 
 Exposes capability discovery, deterministic planning/preflight, the
-synchronous transport-neutral ``pseudonymize`` service operation and the
-public independent dataset verification ``verify_dataset`` service.
+synchronous transport-neutral ``pseudonymize`` service operation, the
+public independent dataset verification ``verify_dataset`` service, and
+the protected canonical dataset recovery ``recover`` service.
 """
 
 from __future__ import annotations
@@ -37,10 +38,11 @@ from dbf_anonymizer.progress import (
     ProgressController,
     ProgressPhase,
 )
+from dbf_anonymizer.recovery import recover
+from dbf_anonymizer.recovery_policy import RecoveryPolicy
 from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
 )
-from dbf_anonymizer.recovery import recover
 from dbf_anonymizer.transfer_bundle import (
     create_transfer_bundle,
     verify_transfer_bundle,
@@ -54,6 +56,7 @@ __all__ = [
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "RecoveryPolicy",
     "create_transfer_bundle",
     "verify_transfer_bundle",
 ]

@@ -85,6 +85,7 @@ EXPECTED_PUBLIC_EXPORTS = {
     "pseudonymize",
     "verify_dataset",
     "recover",
+    "RecoveryPolicy",
     "create_transfer_bundle",
     "verify_transfer_bundle",
     "capabilities",
