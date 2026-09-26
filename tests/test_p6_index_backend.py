@@ -456,7 +456,7 @@ def test_root_exports_are_import_time_pure() -> None:
     no transport, subprocess, network or toolchain machinery (AST proof)."""
     import ast
 
-    assert dbf_anonymizer.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.1"
+    assert dbf_anonymizer.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
     assert "IndexBackend" in dbf_anonymizer.__all__
     import dbf_anonymizer.index_backend as module
 

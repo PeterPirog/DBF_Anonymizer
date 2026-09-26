@@ -23,6 +23,7 @@ from dbf_anonymizer.discovery import (
     compute_source_fingerprint,
     derive_dataset_id,
     discover_tables,
+    enumerate_in_scope_paths,
 )
 from dbf_anonymizer.errors import (
     CancellationError,
@@ -186,6 +187,14 @@ def build_plan(
     # 1. Discover tables (wraps dbfbridge errors); scan safe points between
     #    discovered tables are provided through the private probes.
     control.start_phase(ProgressPhase.DISCOVERY)
+
+    # Enumerate every in-scope artifact once. Standalone IDX paths form an
+    # independent dataset inventory; no table ownership is inferred here.
+    source_files = enumerate_in_scope_paths(
+        source_root,
+        cancel_probe=control.check_cancelled,
+    )
+
     discovered = discover_tables(
         source_root,
         cancel_probe=control.check_cancelled,
@@ -362,7 +371,6 @@ def build_plan(
 
         total_transformed_fields += transform_count
         index_strategy = _resolve_index_strategy(table.structural_cdx, output_profile)
-
         tables.append(
             TablePlan(
                 table_path=table.relative_path,
@@ -508,6 +516,13 @@ def build_plan(
         dataset_id=dataset_id,
         source_fingerprint=source_fp,
         table_paths=table_paths,
+        standalone_idx_paths=tuple(
+            relative
+            for relative in sorted(
+                source_files, key=lambda path: (path.casefold(), path)
+            )
+            if Path(relative).suffix.lower() == ".idx"
+        ),
     )
 
     # 11. Compute plan ID (deterministic from all inputs)

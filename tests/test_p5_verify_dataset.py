@@ -304,7 +304,7 @@ def test_verify_dataset_is_the_public_service_with_the_architecture_signature() 
 
 
 def test_verification_check_code_vocabulary_is_versioned_and_pinned() -> None:
-    assert VERIFICATION_CHECK_CODE_VERSION == "1.1"
+    assert VERIFICATION_CHECK_CODE_VERSION == "1.2"
     assert VERIFICATION_CHECK_CODES == frozenset(
         {
             "SOURCE_FINGERPRINT_MISMATCH",
@@ -318,6 +318,8 @@ def test_verification_check_code_vocabulary_is_versioned_and_pinned() -> None:
             "TABLE_MISSING",
             "UNEXPECTED_OUTPUT_ARTIFACT",
             "INDEX_ARTIFACT_UNVERIFIED",
+            "STANDALONE_IDX_DEFINITION_UNAVAILABLE",
+            "STANDALONE_IDX_EVIDENCE_MISMATCH",
             "MEMO_COMPANION_MISSING",
             "SCHEMA_MISMATCH",
             "RECORD_COUNT_MISMATCH",

@@ -804,10 +804,12 @@ def test_same_stem_idx_not_associated_with_dbf(tmp_path: Path, idx_relative_path
     assert baseline.dataset.source_fingerprint != first.dataset.source_fingerprint
     assert first.dataset.source_fingerprint != second.dataset.source_fingerprint
     assert first.plan_id != second.plan_id
-    # Adding/changing IDX cannot invent an ownership relation on any TablePlan.
+    # REQ-P6-004 inventories IDX independently and never invents table
+    # ownership from matching stems or directory placement.
     assert baseline.tables == first.tables == second.tables
-    assert baseline.to_dict()["tables"] == first.to_dict()["tables"] == second.to_dict()["tables"]
-    assert all(".idx" not in json.dumps(t.to_dict()).lower() for t in second.tables)
+    assert baseline.dataset.standalone_idx_paths == ()
+    assert first.dataset.standalone_idx_paths == (idx_relative_path,)
+    assert second.dataset.standalone_idx_paths == (idx_relative_path,)
     assert baseline.policy == first.policy == second.policy
     assert baseline.relationships == first.relationships == second.relationships
     assert baseline.output_profile == first.output_profile == second.output_profile

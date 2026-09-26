@@ -10,16 +10,19 @@ JSON-safe dictionary carrying an explicit schema version and model type.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, ClassVar, TypeAlias
 
-MODEL_SCHEMA_VERSION = "1.5"
+#: Additive REQ-P6-004 inventory/provenance schema.
+MODEL_SCHEMA_VERSION = "1.6"
 
 #: Versioned identity of the injected index-backend protocol (REQ-P6-001).
-#: A backend capability/result that declares any other version fails closed.
-INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.1"
+#: Version 1.2 adds authoritative standalone-IDX association plus exact
+#: process-local source/staging artifact identity. Foreign versions fail closed.
+INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION = "1.2"
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -246,6 +249,7 @@ class DatasetIdentity(PublicModel):
     dataset_id: str
     source_fingerprint: str
     table_paths: tuple[str, ...]
+    standalone_idx_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validated_code(self.dataset_id, field_name="dataset_id")
@@ -254,6 +258,17 @@ class DatasetIdentity(PublicModel):
         if len(set(normalized)) != len(normalized):
             raise ValueError("table_paths must be unique")
         object.__setattr__(self, "table_paths", normalized)
+        idx_paths = tuple(
+            sorted(
+                (_normalized_relative_path(path) for path in self.standalone_idx_paths),
+                key=lambda path: (path.casefold(), path),
+            )
+        )
+        if len(set(idx_paths)) != len(idx_paths):
+            raise ValueError("standalone_idx_paths must be unique")
+        if any(PurePosixPath(path).suffix.lower() != ".idx" for path in idx_paths):
+            raise ValueError("standalone_idx_paths must identify IDX artifacts")
+        object.__setattr__(self, "standalone_idx_paths", idx_paths)
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -261,6 +276,7 @@ class DatasetIdentity(PublicModel):
             dataset_id=self.dataset_id,
             source_fingerprint=self.source_fingerprint,
             table_paths=self.table_paths,
+            standalone_idx_paths=self.standalone_idx_paths,
         )
 
 
@@ -308,7 +324,6 @@ class TablePlan(PublicModel):
             + self.system_field_count
         ) > self.field_count:
             raise ValueError("transformed + unsafe + system cannot exceed field_count")
-
     def to_dict(self) -> JsonDict:
         return _payload(
             "TablePlan",
@@ -669,6 +684,107 @@ class _PseudonymizationExecutionContext:
         return "<_PseudonymizationExecutionContext>"
 
 
+#: Per-artifact standalone-IDX outcomes carried by the durable receipt and
+#: public result/verification boundaries (REQ-P6-004).
+STANDALONE_IDX_EVIDENCE_STATUSES: tuple[str, ...] = (
+    "OMITTED_DATA_ONLY",
+    "OMITTED_UNVERIFIED",
+    "REBUILT_VERIFIED",
+)
+
+
+def standalone_idx_artifact_id(artifact_path: str) -> str:
+    """Return the stable identity of one normalized dataset-relative IDX."""
+    normalized = _normalized_relative_path(artifact_path)
+    if PurePosixPath(normalized).suffix.lower() != ".idx":
+        raise ValueError("artifact_path must identify an IDX artifact")
+    return "idx-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _sha256_hex(value: str, *, field_name: str) -> str:
+    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class StandaloneIdxEvidence(PublicModel):
+    """Bounded per-IDX provenance without definitions or private paths."""
+
+    artifact_id: str
+    artifact_path: str
+    status: str
+    source_sha256: str
+    backend_id: str | None = None
+    table_path: str | None = None
+    output_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized = _normalized_relative_path(self.artifact_path)
+        object.__setattr__(self, "artifact_path", normalized)
+        expected_id = standalone_idx_artifact_id(normalized)
+        if self.artifact_id != expected_id:
+            raise ValueError("artifact_id must match artifact_path")
+        if self.status not in STANDALONE_IDX_EVIDENCE_STATUSES:
+            raise ValueError(
+                "status must be one of "
+                + ", ".join(STANDALONE_IDX_EVIDENCE_STATUSES)
+            )
+        _sha256_hex(self.source_sha256, field_name="source_sha256")
+        if self.backend_id is not None:
+            _validated_code(self.backend_id, field_name="backend_id")
+        if self.table_path is not None:
+            object.__setattr__(
+                self, "table_path", _normalized_relative_path(self.table_path)
+            )
+        if self.output_sha256 is not None:
+            _sha256_hex(self.output_sha256, field_name="output_sha256")
+        if self.status == "OMITTED_DATA_ONLY":
+            if any(
+                item is not None
+                for item in (self.backend_id, self.table_path, self.output_sha256)
+            ):
+                raise ValueError("OMITTED_DATA_ONLY cannot claim backend or output")
+        elif self.status == "OMITTED_UNVERIFIED":
+            if self.backend_id is None or self.output_sha256 is not None:
+                raise ValueError(
+                    "OMITTED_UNVERIFIED requires backend_id and no output claim"
+                )
+        else:
+            if (
+                self.backend_id is None
+                or self.table_path is None
+                or self.output_sha256 is None
+            ):
+                raise ValueError(
+                    "REBUILT_VERIFIED requires backend, table and output evidence"
+                )
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "StandaloneIdxEvidence",
+            artifact_id=self.artifact_id,
+            artifact_path=self.artifact_path,
+            status=self.status,
+            source_sha256=self.source_sha256,
+            backend_id=self.backend_id,
+            table_path=self.table_path,
+            output_sha256=self.output_sha256,
+        )
+
+
+def _validate_idx_evidence(
+    dataset: DatasetIdentity, evidence: tuple[StandaloneIdxEvidence, ...]
+) -> None:
+    paths = tuple(item.artifact_path for item in evidence)
+    if paths != dataset.standalone_idx_paths:
+        raise ValueError(
+            "index_artifacts must exactly match dataset standalone_idx_paths"
+        )
+    if len({item.artifact_id for item in evidence}) != len(evidence):
+        raise ValueError("index_artifacts must have distinct artifact identities")
+
+
 @dataclass(frozen=True, slots=True)
 class PseudonymizationResult(PublicModel):
     operation_id: str
@@ -679,6 +795,7 @@ class PseudonymizationResult(PublicModel):
     vault_created: bool
     output_fingerprint: str
     assurance: RelationalAssurance
+    index_artifacts: tuple[StandaloneIdxEvidence, ...] = ()
     execution_context: _PseudonymizationExecutionContext | None = field(
         default=None, repr=False, compare=False
     )
@@ -689,6 +806,7 @@ class PseudonymizationResult(PublicModel):
         _non_negative(self.table_count, field_name="table_count")
         _non_negative(self.record_count, field_name="record_count")
         _validated_code(self.output_fingerprint, field_name="output_fingerprint")
+        _validate_idx_evidence(self.dataset, self.index_artifacts)
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -701,6 +819,7 @@ class PseudonymizationResult(PublicModel):
             vault_created=self.vault_created,
             output_fingerprint=self.output_fingerprint,
             assurance=self.assurance,
+            index_artifacts=self.index_artifacts,
         )
 
 
@@ -724,6 +843,7 @@ class VerificationResult(PublicModel):
     record_count: int
     check_codes: tuple[str, ...]
     assurance: RelationalAssurance
+    index_artifacts: tuple[StandaloneIdxEvidence, ...] = ()
 
     @property
     def verified(self) -> bool:
@@ -736,6 +856,11 @@ class VerificationResult(PublicModel):
         _non_negative(self.record_count, field_name="record_count")
         for code in self.check_codes:
             _validated_code(code, field_name="check_codes item")
+        _validate_idx_evidence(self.dataset, self.index_artifacts)
+        if self.status is VerificationStatus.PASS and any(
+            item.status == "OMITTED_UNVERIFIED" for item in self.index_artifacts
+        ):
+            raise ValueError("PASS cannot contain unverified standalone IDX evidence")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -747,6 +872,7 @@ class VerificationResult(PublicModel):
             record_count=self.record_count,
             check_codes=self.check_codes,
             assurance=self.assurance,
+            index_artifacts=self.index_artifacts,
         )
 
 
@@ -857,6 +983,17 @@ INDEX_VERIFICATION_DETAIL_CODES: tuple[str, ...] = (
     "INTERNAL_ERROR",
 )
 
+#: Bounded authoritative association outcomes for one inventoried IDX.
+STANDALONE_IDX_ASSOCIATION_STATUSES: tuple[str, ...] = (
+    "ASSOCIATED",
+    "UNAVAILABLE",
+)
+
+STANDALONE_IDX_ASSOCIATION_DETAIL_CODES: tuple[str, ...] = (
+    "ASSOCIATED_OK",
+    "DEFINITION_UNAVAILABLE",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IndexBackendCapability(PublicModel):
@@ -918,6 +1055,7 @@ class IndexBackendResult(PublicModel):
     table_path: str
     status: str
     detail_code: str
+    artifact_path: str | None = None
 
     def __post_init__(self) -> None:
         _validated_code(self.backend_id, field_name="backend_id")
@@ -944,6 +1082,14 @@ class IndexBackendResult(PublicModel):
             raise ValueError(
                 f"detail_code must be {expected_detail} when status is {self.status}"
             )
+        if self.artifact_class == "STANDALONE_IDX":
+            if self.artifact_path is None:
+                raise ValueError("STANDALONE_IDX result requires artifact_path")
+            object.__setattr__(
+                self, "artifact_path", _normalized_relative_path(self.artifact_path)
+            )
+        elif self.artifact_path is not None:
+            raise ValueError("artifact_path is only valid for STANDALONE_IDX")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -954,6 +1100,7 @@ class IndexBackendResult(PublicModel):
             table_path=self.table_path,
             status=self.status,
             detail_code=self.detail_code,
+            artifact_path=self.artifact_path,
         )
 
 
@@ -971,6 +1118,7 @@ class IndexVerificationResult(PublicModel):
     table_path: str
     status: str
     detail_code: str
+    artifact_path: str | None = None
 
     def __post_init__(self) -> None:
         _validated_code(self.backend_id, field_name="backend_id")
@@ -1003,6 +1151,14 @@ class IndexVerificationResult(PublicModel):
             raise ValueError(
                 f"detail_code {self.detail_code} is invalid for status {self.status}"
             )
+        if self.artifact_class == "STANDALONE_IDX":
+            if self.artifact_path is None:
+                raise ValueError("STANDALONE_IDX result requires artifact_path")
+            object.__setattr__(
+                self, "artifact_path", _normalized_relative_path(self.artifact_path)
+            )
+        elif self.artifact_path is not None:
+            raise ValueError("artifact_path is only valid for STANDALONE_IDX")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -1013,6 +1169,63 @@ class IndexVerificationResult(PublicModel):
             table_path=self.table_path,
             status=self.status,
             detail_code=self.detail_code,
+            artifact_path=self.artifact_path,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StandaloneIdxAssociationResult(PublicModel):
+    """Authoritative backend association verdict for one source IDX."""
+
+    backend_id: str
+    protocol_schema_version: str
+    artifact_path: str
+    status: str
+    detail_code: str
+    table_path: str | None = None
+
+    def __post_init__(self) -> None:
+        _validated_code(self.backend_id, field_name="backend_id")
+        if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
+            raise ValueError(
+                "protocol_schema_version must be "
+                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+            )
+        object.__setattr__(
+            self, "artifact_path", _normalized_relative_path(self.artifact_path)
+        )
+        standalone_idx_artifact_id(self.artifact_path)
+        if self.status not in STANDALONE_IDX_ASSOCIATION_STATUSES:
+            raise ValueError(
+                "status must be one of "
+                + ", ".join(STANDALONE_IDX_ASSOCIATION_STATUSES)
+            )
+        expected_detail = {
+            "ASSOCIATED": "ASSOCIATED_OK",
+            "UNAVAILABLE": "DEFINITION_UNAVAILABLE",
+        }[self.status]
+        if self.detail_code != expected_detail:
+            raise ValueError(
+                f"detail_code must be {expected_detail} when status is {self.status}"
+            )
+        if self.status == "ASSOCIATED":
+            if self.table_path is None:
+                raise ValueError("ASSOCIATED requires table_path")
+            object.__setattr__(
+                self, "table_path", _normalized_relative_path(self.table_path)
+            )
+        elif self.table_path is not None:
+            raise ValueError("UNAVAILABLE cannot claim table_path")
+
+    def to_dict(self) -> JsonDict:
+        return _payload(
+            "StandaloneIdxAssociationResult",
+            backend_id=self.backend_id,
+            protocol_schema_version=self.protocol_schema_version,
+            artifact_path=self.artifact_path,
+            status=self.status,
+            detail_code=self.detail_code,
+            table_path=self.table_path,
         )
 
 
@@ -1031,9 +1244,11 @@ PUBLIC_MODEL_TYPES: tuple[type[PublicModel], ...] = (
     VerificationResult,
     RecoveryResult,
     TransferBundleResult,
+    StandaloneIdxEvidence,
     IndexBackendCapability,
     IndexBackendResult,
     IndexVerificationResult,
+    StandaloneIdxAssociationResult,
 )
 
 __all__ = [
@@ -1058,6 +1273,9 @@ __all__ = [
     "RawByteEquivalence",
     "RecoveryResult",
     "TransferBundleResult",
+    "StandaloneIdxEvidence",
+    "STANDALONE_IDX_EVIDENCE_STATUSES",
+    "standalone_idx_artifact_id",
     "TransferProfile",
     "VaultStrategy",
     "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
@@ -1066,7 +1284,10 @@ __all__ = [
     "INDEX_BACKEND_RESULT_DETAIL_CODES",
     "INDEX_VERIFICATION_STATUSES",
     "INDEX_VERIFICATION_DETAIL_CODES",
+    "STANDALONE_IDX_ASSOCIATION_STATUSES",
+    "STANDALONE_IDX_ASSOCIATION_DETAIL_CODES",
     "IndexBackendCapability",
     "IndexBackendResult",
     "IndexVerificationResult",
+    "StandaloneIdxAssociationResult",
 ]

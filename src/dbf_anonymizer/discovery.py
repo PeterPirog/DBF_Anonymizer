@@ -162,6 +162,9 @@ def discover_tables(
     after each table has been read.  Cancellation probes never emit progress
     events.  With both hooks ``None`` the behavior is exactly the
     pre-existing deterministic discovery (same walk, same ordering).
+
+    Standalone IDX files deliberately remain outside this per-table discovery:
+    neither a filename, stem nor directory is authoritative ownership evidence.
     """
     if not source_root.is_dir():
         from dbf_anonymizer.errors import PathError, ErrorCode, ErrorContext

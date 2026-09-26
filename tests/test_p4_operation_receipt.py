@@ -64,11 +64,10 @@ def _result(*, protected_state_created: bool) -> TwoPassResult:
 
 def test_receipt_schema_version_is_versioned_and_rejects_unknown_versions() -> None:
     # The internal receipt schema is explicitly versioned; the current
-    # version reflects the neutral protected-state fact introduced with the
-    # public pseudonymize service.
-    assert RECEIPT_SCHEMA_VERSION == "1.1"
+    # version includes durable per-IDX provenance introduced by REQ-P6-004.
+    assert RECEIPT_SCHEMA_VERSION == "1.2"
     receipt = result_receipt(_result(protected_state_created=True))
-    assert json.loads(receipt)["schema_version"] == "1.1"
+    assert json.loads(receipt)["schema_version"] == "1.2"
 
     # Any unknown or missing version is rejected fail-closed, never parsed
     # best-effort into a partially trusted result.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import FrozenInstanceError, fields
 from typing import Any
@@ -27,6 +28,8 @@ from dbf_anonymizer import (
     RelationalAssurance,
     RelationalAssuranceLevel,
     RelationshipMetadata,
+    StandaloneIdxAssociationResult,
+    StandaloneIdxEvidence,
     TablePlan,
     TransferBundleResult,
     TransferProfile,
@@ -50,6 +53,7 @@ def _samples() -> tuple[object, ...]:
         dataset_id="dataset-001",
         source_fingerprint="sha256:source",
         table_paths=("north\\registry.dbf", "south/orders.dbf"),
+        standalone_idx_paths=("north\\registry.idx",),
     )
     tables = (
         TablePlan(
@@ -113,6 +117,13 @@ def _samples() -> tuple[object, ...]:
         evidence_schema_version="1.0",
         scope_note="DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY",
     )
+    idx_path = "north/registry.idx"
+    idx_evidence = StandaloneIdxEvidence(
+        artifact_id="idx-" + hashlib.sha256(idx_path.encode("utf-8")).hexdigest(),
+        artifact_path=idx_path,
+        status="OMITTED_DATA_ONLY",
+        source_sha256="a" * 64,
+    )
     plan = Plan(
         plan_id="plan-001",
         dataset=dataset,
@@ -147,6 +158,14 @@ def _samples() -> tuple[object, ...]:
         status="VERIFIED",
         detail_code="VERIFIED_OK",
     )
+    idx_association = StandaloneIdxAssociationResult(
+        backend_id="synthetic-index-backend",
+        protocol_schema_version=INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
+        artifact_path=idx_path,
+        status="ASSOCIATED",
+        detail_code="ASSOCIATED_OK",
+        table_path="north/registry.dbf",
+    )
     return (
         capabilities,
         dataset,
@@ -180,6 +199,7 @@ def _samples() -> tuple[object, ...]:
             vault_created=True,
             output_fingerprint="sha256:output",
             assurance=assurance,
+            index_artifacts=(idx_evidence,),
         ),
         VerificationResult(
             status=VerificationStatus.PASS,
@@ -189,6 +209,7 @@ def _samples() -> tuple[object, ...]:
             record_count=15,
             check_codes=(),
             assurance=assurance,
+            index_artifacts=(idx_evidence,),
         ),
         RecoveryResult(
             operation_id="operation-002",
@@ -216,6 +237,8 @@ def _samples() -> tuple[object, ...]:
         index_capability,
         index_result,
         index_verification,
+        idx_evidence,
+        idx_association,
     )
 
 
@@ -253,6 +276,8 @@ def test_all_required_models_are_public_root_imports() -> None:
         "IndexBackendCapability",
         "IndexBackendResult",
         "IndexVerificationResult",
+        "StandaloneIdxEvidence",
+        "StandaloneIdxAssociationResult",
     }
     assert {model.__name__ for model in PUBLIC_MODEL_TYPES} == expected
 
@@ -271,18 +296,21 @@ def test_every_public_model_is_json_safe_and_versioned() -> None:
     for model in samples:
         payload = model.to_dict()  # type: ignore[union-attr]
         # REQ-P6-003 advances the public shape for verification evidence.
-        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.5"
+        # REQ-P6-004 adds standalone IDX fields and bumps schema to 1.6.
+        assert payload["schema_version"] == MODEL_SCHEMA_VERSION == "1.6"
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         assert json.loads(encoded) == payload
 
 
 def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
-    assert MODEL_SCHEMA_VERSION == "1.5"
-    assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.1"
+    assert MODEL_SCHEMA_VERSION == "1.6"
+    assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
     p6_types = {
         IndexBackendCapability,
         IndexBackendResult,
         IndexVerificationResult,
+        StandaloneIdxAssociationResult,
+        StandaloneIdxEvidence,
     }
     p6_samples = tuple(
         sample for sample in _samples() if type(sample) in p6_types
@@ -290,8 +318,9 @@ def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
     assert {type(sample) for sample in p6_samples} == p6_types
     for sample in p6_samples:
         payload = sample.to_dict()  # type: ignore[union-attr]
-        assert payload["schema_version"] == "1.5"
-        assert payload["protocol_schema_version"] == "1.1"
+        assert payload["schema_version"] == "1.6"
+        if type(sample) is not StandaloneIdxEvidence:
+            assert payload["protocol_schema_version"] == "1.2"
         assert json.loads(json.dumps(payload, sort_keys=True)) == payload
 
 
@@ -476,8 +505,10 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
     samples = _samples()
     dataset = samples[1]
     assurance = samples[5]
+    idx_evidence = samples[17]
     assert isinstance(dataset, DatasetIdentity)
     assert isinstance(assurance, RelationalAssurance)
+    assert isinstance(idx_evidence, StandaloneIdxEvidence)
     passed = VerificationResult(
         status=VerificationStatus.PASS,
         dataset=dataset,
@@ -486,6 +517,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=(),
         assurance=assurance,
+        index_artifacts=(idx_evidence,),
     )
     partial = VerificationResult(
         status=VerificationStatus.PARTIAL,
@@ -495,6 +527,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=("INDEX_ARTIFACT_UNVERIFIED",),
         assurance=assurance,
+        index_artifacts=(idx_evidence,),
     )
     failed = VerificationResult(
         status=VerificationStatus.FAIL,
@@ -504,6 +537,7 @@ def test_verification_status_is_the_one_authoritative_pass_partial_fail_vocabula
         record_count=3,
         check_codes=("OUTPUT_FINGERPRINT_MISMATCH",),
         assurance=assurance,
+        index_artifacts=(idx_evidence,),
     )
     assert passed.verified is True
     assert partial.verified is False
@@ -526,6 +560,7 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "DatasetIdentity": (
             "schema_version", "model_type", "dataset_id", "source_fingerprint", "table_paths",
+            "standalone_idx_paths",
         ),
         "TablePlan": (
             "schema_version", "model_type", "table_path", "memo_path", "record_count",
@@ -564,11 +599,11 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "PseudonymizationResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
-            "record_count", "vault_created", "output_fingerprint", "assurance",
+            "record_count", "vault_created", "output_fingerprint", "assurance", "index_artifacts",
         ),
         "VerificationResult": (
             "schema_version", "model_type", "status", "dataset", "operation_id", "table_count",
-            "record_count", "check_codes", "assurance",
+            "record_count", "check_codes", "assurance", "index_artifacts",
         ),
         "RecoveryResult": (
             "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
@@ -589,11 +624,19 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
         ),
         "IndexBackendResult": (
             "schema_version", "model_type", "backend_id", "protocol_schema_version",
-            "artifact_class", "table_path", "status", "detail_code",
+            "artifact_class", "table_path", "status", "detail_code", "artifact_path",
         ),
         "IndexVerificationResult": (
             "schema_version", "model_type", "backend_id", "protocol_schema_version",
-            "artifact_class", "table_path", "status", "detail_code",
+            "artifact_class", "table_path", "status", "detail_code", "artifact_path",
+        ),
+        "StandaloneIdxEvidence": (
+            "schema_version", "model_type", "artifact_id", "artifact_path", "status",
+            "source_sha256", "backend_id", "table_path", "output_sha256",
+        ),
+        "StandaloneIdxAssociationResult": (
+            "schema_version", "model_type", "backend_id", "protocol_schema_version",
+            "artifact_path", "status", "detail_code", "table_path",
         ),
     }
 

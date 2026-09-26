@@ -13,6 +13,7 @@ import tools.run_real_vfp9_acceptance as runner
 
 
 _TEST_HEAD = "a" * 40
+_TEST_BRANCH = "p6/standalone-idx-handling"
 
 
 def _configure_git_provenance(
@@ -20,25 +21,21 @@ def _configure_git_provenance(
     tmp_path: Path,
     *,
     status: str = "",
-    branch: str = runner.EXPECTED_BRANCH,
+    branch: str = _TEST_BRANCH,
     head: str = _TEST_HEAD,
     remote_head: str = _TEST_HEAD,
-) -> tuple[Path, list[tuple[str, ...]]]:
+) -> tuple[Path, list[tuple[str, ...]], str]:
     architecture = tmp_path / runner.ARCHITECTURE_FILENAME
     architecture_bytes = b"immutable architecture\n"
     architecture.write_bytes(architecture_bytes)
     monkeypatch.setattr(runner, "ARCHITECTURE_PATH", architecture)
-    monkeypatch.setattr(
-        runner,
-        "ARCHITECTURE_SHA256",
-        hashlib.sha256(architecture_bytes).hexdigest(),
-    )
+    architecture_sha256 = hashlib.sha256(architecture_bytes).hexdigest()
     calls: list[tuple[str, ...]] = []
     replies = {
         ("status", "--porcelain", "--untracked-files=all"): status,
         ("branch", "--show-current"): branch,
         ("rev-parse", "HEAD"): head,
-        ("rev-parse", runner.EXPECTED_REMOTE_REF): remote_head,
+        ("rev-parse", f"origin/{_TEST_BRANCH}"): remote_head,
     }
 
     def fake_git(*args: str) -> str:
@@ -46,7 +43,15 @@ def _configure_git_provenance(
         return replies[args]
 
     monkeypatch.setattr(runner, "_run_git", fake_git)
-    return architecture, calls
+    return architecture, calls, architecture_sha256
+
+
+def _verify_test_state(architecture_sha256: str) -> tuple[str, str]:
+    return runner._verified_git_state(
+        expected_branch=_TEST_BRANCH,
+        expected_head=_TEST_HEAD,
+        expected_architecture_sha256=architecture_sha256,
+    )
 
 
 @pytest.mark.parametrize(
@@ -62,12 +67,12 @@ def _configure_git_provenance(
 def test_git_provenance_rejects_every_worktree_change(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str
 ) -> None:
-    _architecture, calls = _configure_git_provenance(
+    _architecture, calls, architecture_sha256 = _configure_git_provenance(
         monkeypatch, tmp_path, status=status
     )
 
     with pytest.raises(SystemExit, match="worktree changes or untracked files"):
-        runner._verified_git_state()
+        _verify_test_state(architecture_sha256)
 
     assert calls == [("status", "--porcelain", "--untracked-files=all")]
 
@@ -75,26 +80,30 @@ def test_git_provenance_rejects_every_worktree_change(
 def test_git_provenance_accepts_clean_head_and_canonical_architecture(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _architecture, calls = _configure_git_provenance(monkeypatch, tmp_path)
+    _architecture, calls, architecture_sha256 = _configure_git_provenance(
+        monkeypatch, tmp_path
+    )
 
-    assert runner._verified_git_state() == (runner.EXPECTED_BRANCH, _TEST_HEAD)
+    assert _verify_test_state(architecture_sha256) == (_TEST_BRANCH, _TEST_HEAD)
 
     assert calls == [
         ("status", "--porcelain", "--untracked-files=all"),
         ("branch", "--show-current"),
         ("rev-parse", "HEAD"),
-        ("rev-parse", runner.EXPECTED_REMOTE_REF),
+        ("rev-parse", f"origin/{_TEST_BRANCH}"),
     ]
 
 
 def test_git_provenance_rejects_wrong_architecture_hash_without_path_leak(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    architecture, _calls = _configure_git_provenance(monkeypatch, tmp_path)
+    architecture, _calls, architecture_sha256 = _configure_git_provenance(
+        monkeypatch, tmp_path
+    )
     architecture.write_bytes(b"tampered architecture\n")
 
     with pytest.raises(SystemExit, match="architecture file hash") as caught:
-        runner._verified_git_state()
+        _verify_test_state(architecture_sha256)
 
     assert str(tmp_path) not in str(caught.value)
 
@@ -102,34 +111,60 @@ def test_git_provenance_rejects_wrong_architecture_hash_without_path_leak(
 def test_git_provenance_rejects_extra_untracked_file_alongside_architecture(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _architecture, _calls = _configure_git_provenance(
+    _architecture, _calls, architecture_sha256 = _configure_git_provenance(
         monkeypatch, tmp_path, status="?? unexpected.txt"
     )
 
     with pytest.raises(SystemExit, match="worktree changes or untracked files"):
-        runner._verified_git_state()
+        _verify_test_state(architecture_sha256)
 
 
 def test_git_provenance_rejects_wrong_branch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _architecture, _calls = _configure_git_provenance(
+    _architecture, _calls, architecture_sha256 = _configure_git_provenance(
         monkeypatch, tmp_path, branch="main"
     )
 
-    with pytest.raises(SystemExit, match="not running on the PR #43 branch"):
-        runner._verified_git_state()
+    with pytest.raises(SystemExit, match="not running on the trusted expected branch"):
+        _verify_test_state(architecture_sha256)
 
 
 def test_git_provenance_rejects_head_not_at_remote_branch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _architecture, _calls = _configure_git_provenance(
+    _architecture, _calls, architecture_sha256 = _configure_git_provenance(
         monkeypatch, tmp_path, remote_head="b" * 40
     )
 
     with pytest.raises(SystemExit, match="not the exact pushed PR branch commit"):
-        runner._verified_git_state()
+        _verify_test_state(architecture_sha256)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("expected_branch", "--hostile", "expected branch is malformed"),
+        ("expected_head", "not-a-head", "expected HEAD is malformed"),
+        (
+            "expected_architecture_sha256",
+            "not-a-sha",
+            "architecture SHA-256 is malformed",
+        ),
+    ),
+)
+def test_git_provenance_rejects_malformed_trusted_inputs(
+    field: str, value: str, message: str
+) -> None:
+    inputs = {
+        "expected_branch": _TEST_BRANCH,
+        "expected_head": _TEST_HEAD,
+        "expected_architecture_sha256": "b" * 64,
+    }
+    inputs[field] = value
+
+    with pytest.raises(SystemExit, match=message):
+        runner._verified_git_state(**inputs)
 
 
 def test_hostile_python_and_pytest_environment_is_neutralized(

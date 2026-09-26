@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from dbf_anonymizer.models import Plan
+from dbf_anonymizer.models import Plan, StandaloneIdxEvidence
 from dbf_anonymizer.transforms.numeric_keys import (
     NumericKeyDomain,
     NumericKeyMemberRange,
@@ -86,6 +86,7 @@ class EnginePlan:
     numeric_present: bool
     temporal_present: bool
     structural_cdx_tables: tuple[str, ...] = ()
+    standalone_idx_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ class TwoPassResult:
     #: neutral internal fact; the protected-state name itself must never
     #: enter the engine boundary serialization — see the P4 canary rules).
     protected_state_created: bool = False
+    index_artifacts: tuple[StandaloneIdxEvidence, ...] = ()
 
     @property
     def all_relations_verified(self) -> bool:
