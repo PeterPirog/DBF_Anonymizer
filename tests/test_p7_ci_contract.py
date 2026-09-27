@@ -148,7 +148,14 @@ def _resolved_runs_on(job: dict[str, Any]) -> set[str]:
         strategy = job.get("strategy") or {}
         matrix = strategy.get("matrix") or {}
         if "matrix.os" in str(runs_on):
-            return {str(value) for value in matrix.get("os") or []}
+            os_values = matrix.get("os")
+            if os_values is None:
+                os_values = [
+                    include.get("os")
+                    for include in matrix.get("include") or []
+                    if isinstance(include, dict) and include.get("os")
+                ]
+            return {str(value) for value in os_values}
         return set()
     return {str(runs_on)}
 
@@ -252,11 +259,7 @@ def test_cross_platform_no_vfp_smoke_exists() -> None:
     assert smoke_jobs, "the no-VFP smoke job is missing"
     operating_systems: set[str] = set()
     for job in smoke_jobs:
-        strategy = job.get("strategy") or {}
-        matrix = strategy.get("matrix") or {}
-        operating_systems |= set(matrix.get("os") or [])
-        if not matrix:
-            operating_systems.add(str(job.get("runs-on")))
+        operating_systems |= _resolved_runs_on(job)
     assert {"ubuntu-latest", "windows-latest"} <= operating_systems
 
 

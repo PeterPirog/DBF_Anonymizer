@@ -80,7 +80,7 @@ jobs:
           $venvPython = "$env:SMOKE_ROOT\venv\Scripts\python.exe"
           & $venvPython -m pip install --no-cache-dir --upgrade pip
           & $venvPython -m pip install --no-cache-dir -r "$env:GITHUB_WORKSPACE\requirements\p0-dbfbridge-tested.txt"
-          & $venvPython -m pip install --no-cache-dir --no-deps "$env:SMOKE_ROOT\wheelhouse\*.whl"
+          & $venvPython -m pip install --no-cache-dir --no-deps (Get-ChildItem "$env:SMOKE_ROOT\wheelhouse\*.whl").FullName
           & $venvPython -m pip check
           Set-Location -LiteralPath "$env:SMOKE_ROOT\work"
           if ($PWD.Path.StartsWith($env:GITHUB_WORKSPACE)) {
@@ -261,7 +261,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            venv-python: clean-env/bin/python
+          - os: windows-latest
+            venv-python: clean-env\Scripts\python.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -278,14 +282,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -m venv clean-env
-          $venvPython = "clean-env\Scripts\python.exe"
+          $venvPython = "${{ matrix.venv-python }}"
           & $venvPython -m pip install --no-cache-dir --upgrade pip
           & $venvPython -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
-          & $venvPython -m pip install --no-cache-dir --no-deps (Get-ChildItem dist\*.whl).FullName
+          & $venvPython -m pip install --no-cache-dir --no-deps (Get-ChildItem dist/*.whl).FullName
           & $venvPython -m pip check
       - name: No-VFP smoke (import purity + capabilities + standalone workflow)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python tools/check_p7_no_vfp_smoke.py --python "clean-env\Scripts\python.exe"
+          python tools/check_p7_no_vfp_smoke.py --python "${{ matrix.venv-python }}"
