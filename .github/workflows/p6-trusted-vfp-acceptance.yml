@@ -13,8 +13,8 @@ name: P6 trusted real-VFP9 acceptance (isolated)
 #   RUNNER GROUP whose access policy:
 #   * allows access only to this repository (selected-repositories allowlist,
 #     public-repository access granted deliberately);
-#   * restricts workflow access to EXACTLY this workflow file, pinned to the
-#     protected refs/heads/main;
+#   * restricts workflow access to EXACTLY this workflow file, pinned to
+#     refs/heads/main;
 #   * so no other (including future, PR-modified) workflow file can schedule
 #     jobs on the trusted machine.
 #   GitHub documents this boundary only for organization/enterprise runner
@@ -27,8 +27,8 @@ name: P6 trusted real-VFP9 acceptance (isolated)
 # LAYER 2 — workflow defense in depth (this file):
 #   workflow_dispatch ONLY (never pull_request, never pull_request_target,
 #   never workflow_run, never push from a PR context); contents: read;
-#   refuses every ref except the protected main branch BEFORE any checkout;
-#   checks out ONLY the dispatched trusted ref (never
+#   refuses every ref except the main branch (refs/heads/main) BEFORE any
+#   checkout; checks out ONLY the dispatched trusted ref (never
 #   github.event.pull_request.head.sha, never a caller-provided SHA/branch);
 #   records and verifies the exact trusted revision identity; delegates ALL
 #   real-VFP9 semantics to the established REQ-P6-003 acceptance runner tool.
@@ -42,16 +42,15 @@ name: P6 trusted real-VFP9 acceptance (isolated)
 # group.  A label is ROUTING information only; the platform runner-group
 # policy is the authorization boundary.
 #
-# ACCEPTANCE LIFECYCLE (two stages; see .github/trusted-vfp-runner-policy.json):
-#   STAGE A — this workflow is version-controlled on the branch; once the
-#     ENABLING MERGE places it on the default branch, it becomes legally
-#     dispatchable (workflow_dispatch only receives events for workflow files
-#     on the default branch).  The enabling merge does NOT mark REQ-P7-006
-#     PASS and does NOT authorize REQ-P7-007.
-#   STAGE B — only after the platform runner-group boundary is provisioned
-#     AND verified from live GitHub configuration may the variables be
-#     populated and this lane be dispatched on protected main to produce the
-#     real VFP9 acceptance evidence.
+# ACCEPTANCE SEMANTICS (immutable architecture):
+#   REQ-P7-006 acceptance = version-controlled workflows + green mandatory
+#   jobs + THIS isolation contract; it does NOT require real VFP execution.
+#   Real VFP9 execution is CONDITIONAL acceptance evidence for requirements
+#   that explicitly demand it (especially REQ-P6-003).  GitHub accepts
+#   workflow_dispatch events only for workflow files on the default branch,
+#   so this lane becomes dispatchable once it is version-controlled on the
+#   default branch; that fact alone changes no acceptance status of any
+#   requirement.  See .github/trusted-vfp-runner-policy.json.
 
 on:
   workflow_dispatch:
@@ -67,7 +66,7 @@ jobs:
       labels: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}
     timeout-minutes: 60
     steps:
-      - name: Trust guard — the trusted machine runs ONLY the protected main ref
+      - name: Trust guard — the trusted machine runs ONLY the main ref (refs/heads/main)
         shell: pwsh
         run: |
           if ($env:GITHUB_REF -ne "refs/heads/main") {
@@ -88,7 +87,7 @@ jobs:
           Write-Output "trusted_head=$head"
           Write-Output "origin_main=$originHead"
           if ($head -ne $originHead) {
-            throw "trusted checkout is not the pushed protected main commit"
+            throw "trusted checkout is not the pushed main commit"
           }
           Add-Content -Path $env:GITHUB_ENV -Value "TRUSTED_HEAD=$head"
       - name: Set up the acceptance Python (trusted machine, hosted-equivalent tooling only)
