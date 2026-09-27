@@ -194,6 +194,72 @@ jobs:
           PYTHONUTF8: "1"
         run: python -m pytest tests/test_p4_parallel_execution.py tests/test_p4_transactional_publication.py -ra
 
+  p7-windows-offline-wheelhouse:
+    name: P7 offline wheelhouse / clean Windows standalone runtime
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Online preparation / build exact local runtime wheelhouse
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p7-offline
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+          if (Test-Path -LiteralPath $env:SMOKE_ROOT) {
+            Remove-Item -LiteralPath $env:SMOKE_ROOT -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\wheelhouse" | Out-Null
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\work" | Out-Null
+          python -m pip download `
+            --only-binary=:all: `
+            --no-cache-dir `
+            --no-deps `
+            --dest "$env:SMOKE_ROOT\wheelhouse" `
+            --requirement requirements/p7-offline-wheelhouse.txt
+          Copy-Item -Path "dist\*.whl" -Destination "$env:SMOKE_ROOT\wheelhouse"
+          Copy-Item -LiteralPath "tools\check_p7_offline_runtime.py" -Destination "$env:SMOKE_ROOT\work"
+          python tools/check_p7_offline_wheelhouse.py `
+            requirements/p7-offline-wheelhouse.txt `
+            "$env:SMOKE_ROOT\wheelhouse"
+      - name: Offline acceptance / local wheels only, empty cache, external runtime
+        shell: pwsh
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_CACHE_DIR: ${{ runner.temp }}\dbf-anonymizer-p7-offline\pip-cache
+          PYTHONUTF8: "1"
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p7-offline
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Path $env:PIP_CACHE_DIR | Out-Null
+          python -m venv "$env:SMOKE_ROOT\venv"
+          $venvPython = "$env:SMOKE_ROOT\venv\Scripts\python.exe"
+          & $venvPython -m pip install `
+            --no-index `
+            --find-links "$env:SMOKE_ROOT\wheelhouse" `
+            --no-cache-dir `
+            dbf-anonymizer==1.0.0.dev0
+          & $venvPython -m pip check
+          Set-Location -LiteralPath "$env:SMOKE_ROOT\work"
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --help
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --version
+          & $venvPython -c "import dbf_anonymizer; f = dbf_anonymizer.__file__; assert 'site-packages' in f.lower(), f; print('site-packages import:', f)"
+          & $venvPython check_p7_offline_runtime.py `
+            --work-root "$env:SMOKE_ROOT\runtime" `
+            --repository-root "$env:GITHUB_WORKSPACE"
+          $cacheEntries = @(Get-ChildItem -LiteralPath $env:PIP_CACHE_DIR -Force)
+          if ($cacheEntries.Count -ne 0) {
+            throw "offline installation unexpectedly used pip cache"
+          }
+
   tests:
     name: Remaining pytest suite / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

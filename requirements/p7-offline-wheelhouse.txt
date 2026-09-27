@@ -1,0 +1,12 @@
+# REQ-P7-004 pinned standalone runtime closure.
+#
+# This manifest is used only to assemble the tested offline wheelhouse. The
+# published runtime dependency remains dbfbridge[write]>=1.1.0,<2 in
+# pyproject.toml, and the separate dbfbridge 1.1.0 floor gate remains intact.
+# Every requirement below is an exact runtime pin; development and test tools
+# intentionally do not belong in the offline runtime wheelhouse.
+
+dbfbridge[write]==1.1.1
+dbfread==2.0.7
+dbf==0.99.11
+aenum==3.1.17
