@@ -84,16 +84,20 @@ def test_deleted_nullable_character_and_varchar_use_same_text_domain(
     chars = [record.values["CHARVAL"] for record in records]
     varchars = [record.values["VARVAL"] for record in records]
 
-    assert source_sequence == _sequence(output_path) == [
-        (0, False),
-        (1, True),
-        (2, False),
-        (3, True),
-        (4, False),
-        (5, True),
-        (6, False),
-        (7, True),
-    ]
+    assert (
+        source_sequence
+        == _sequence(output_path)
+        == [
+            (0, False),
+            (1, True),
+            (2, False),
+            (3, True),
+            (4, False),
+            (5, True),
+            (6, False),
+            (7, True),
+        ]
+    )
     assert chars[0] == chars[1] and chars[0] not in {"", "ALPHA"}
     assert chars[2] == chars[3] and chars[2] not in {"", "BETA", chars[0]}
     assert varchars[0] == varchars[1] and varchars[0] not in {"", "V-ALPHA"}
@@ -172,12 +176,8 @@ def test_deleted_numeric_keys_share_mapping_and_relation_evidence(
     _plan, result, output_root, _vault_path = _run(
         source_root, tmp_path, relationship_document=_numeric_document()
     )
-    parents = tuple(
-        dbfbridge.iter_records(output_root / "parent.dbf", include_deleted=True)
-    )
-    children = tuple(
-        dbfbridge.iter_records(output_root / "child.dbf", include_deleted=True)
-    )
+    parents = tuple(dbfbridge.iter_records(output_root / "parent.dbf", include_deleted=True))
+    children = tuple(dbfbridge.iter_records(output_root / "child.dbf", include_deleted=True))
     parent_values = [record.values["KEY"] for record in parents]
     child_values = [record.values["KEY"] for record in children]
 
@@ -309,18 +309,10 @@ def test_deleted_composite_relations_preserve_tuple_multiplicity(
     _plan, result, output_root, _vault_path = _run(
         source_root, tmp_path, relationship_document=_composite_document()
     )
-    parents = tuple(
-        dbfbridge.iter_records(output_root / "parent.dbf", include_deleted=True)
-    )
-    children = tuple(
-        dbfbridge.iter_records(output_root / "child.dbf", include_deleted=True)
-    )
-    parent_tuples = [
-        (record.values["PART_A"], record.values["PART_B"]) for record in parents
-    ]
-    child_tuples = [
-        (record.values["PART_A"], record.values["PART_B"]) for record in children
-    ]
+    parents = tuple(dbfbridge.iter_records(output_root / "parent.dbf", include_deleted=True))
+    children = tuple(dbfbridge.iter_records(output_root / "child.dbf", include_deleted=True))
+    parent_tuples = [(record.values["PART_A"], record.values["PART_B"]) for record in parents]
+    child_tuples = [(record.values["PART_A"], record.values["PART_B"]) for record in children]
 
     assert child_tuples[:4] == [
         parent_tuples[0],

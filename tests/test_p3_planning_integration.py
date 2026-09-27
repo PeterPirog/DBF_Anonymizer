@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import pytest
 
-from dbf_anonymizer import MappingError, PolicyError, VaultError
+from dbf_anonymizer import MappingError, PolicyError
 from dbf_anonymizer.planning import build_plan
 from dbf_anonymizer.preflight import preflight
 from dbf_anonymizer.vault import (
@@ -149,15 +149,11 @@ def test_incompatible_relationship_document_fails_preflight(
     ("mutate", "detail"),
     [
         (
-            lambda doc: doc["relations"][0]["members"][0].update(
-                {"table": "missing/nowhere.dbf"}
-            ),
+            lambda doc: doc["relations"][0]["members"][0].update({"table": "missing/nowhere.dbf"}),
             "RELATIONSHIP_MEMBER_TABLE_UNKNOWN",
         ),
         (
-            lambda doc: doc["relations"][0]["members"][0].update(
-                {"field": "NOT_THERE"}
-            ),
+            lambda doc: doc["relations"][0]["members"][0].update({"field": "NOT_THERE"}),
             "RELATIONSHIP_MEMBER_FIELD_UNKNOWN",
         ),
         (
@@ -165,15 +161,11 @@ def test_incompatible_relationship_document_fails_preflight(
             "RELATIONSHIP_MEMBER_TYPE_MISMATCH",
         ),
         (
-            lambda doc: doc["relations"][0]["members"][0].update(
-                {"byte_width": 10}
-            ),
+            lambda doc: doc["relations"][0]["members"][0].update({"byte_width": 10}),
             "RELATIONSHIP_MEMBER_WIDTH_MISMATCH",
         ),
         (
-            lambda doc: doc["relations"][0]["members"][0].update(
-                {"encoding": "utf-16le"}
-            ),
+            lambda doc: doc["relations"][0]["members"][0].update({"encoding": "utf-16le"}),
             "RELATIONSHIP_MEMBER_ENCODING_INCOMPATIBLE",
         ),
     ],
@@ -221,7 +213,11 @@ def test_binding_width_capacity_impossible_fails_closed(tmp_path: Path) -> None:
     dbf_path_w = source / "south" / "orders.dbf"
     for path, fields, values in (
         (dbf_path_n, narrow_fields, {"CUST_ID": "K"}),
-        (dbf_path_w, (dbf_field("CUST_ID", "C", 8), dbf_field("NOTE", "C", 8)), {"CUST_ID": "K00001", "NOTE": "NOTE-01"}),
+        (
+            dbf_path_w,
+            (dbf_field("CUST_ID", "C", 8), dbf_field("NOTE", "C", 8)),
+            {"CUST_ID": "K00001", "NOTE": "NOTE-01"},
+        ),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         write_table(

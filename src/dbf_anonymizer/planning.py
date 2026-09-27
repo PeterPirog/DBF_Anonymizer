@@ -60,9 +60,7 @@ from dbf_anonymizer.progress import (
 )
 
 
-def _resolve_index_strategy(
-    structural_cdx: bool, output_profile: TransferProfile
-) -> str:
+def _resolve_index_strategy(structural_cdx: bool, output_profile: TransferProfile) -> str:
     if output_profile is TransferProfile.VFP_INDEXED and structural_cdx:
         return "VFP_INDEXED"
     return "DATA_ONLY"
@@ -210,9 +208,7 @@ def build_plan(
     discovered = discover_tables(
         source_root,
         cancel_probe=control.check_cancelled,
-        progress_probe=lambda rel: control.bump(
-            ProgressPhase.DISCOVERY, table_path=rel
-        ),
+        progress_probe=lambda rel: control.bump(ProgressPhase.DISCOVERY, table_path=rel),
     )
 
     if not discovered:
@@ -235,9 +231,7 @@ def build_plan(
 
     standalone_idx_paths = tuple(
         relative
-        for relative in sorted(
-            source_files, key=lambda path: (path.casefold(), path)
-        )
+        for relative in sorted(source_files, key=lambda path: (path.casefold(), path))
         if Path(relative).suffix.lower() == ".idx"
     )
     if len(standalone_idx_paths) > PUBLIC_JSON_MAX_INDEX_ARTIFACTS:
@@ -297,17 +291,13 @@ def build_plan(
         # document is retained for the preflight compatibility validation.
         # The SEMANTIC compatibility validation runs in PREFLIGHT (before any
         # transformation-equivalent action) — see _check_relationships.
-        parsed_relationship_document = parse_relationship_document(
-            relationship_document
-        )
+        parsed_relationship_document = parse_relationship_document(relationship_document)
         rel_meta = relationship_metadata_from_document(parsed_relationship_document)
         for group in parsed_relationship_document.groups:
             if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                 for member in group.members:
                     if member.is_numeric_member:
-                        numeric_reversible_fields.add(
-                            (member.table_path, member.field_name)
-                        )
+                        numeric_reversible_fields.add((member.table_path, member.field_name))
     elif relationships is None:
         rel_meta = _default_relationships()
     else:
@@ -446,9 +436,6 @@ def build_plan(
     # member-level source mismatch is reported with its MEMBER detail code.
     if parsed_relationship_document is not None:
         from dbf_anonymizer.transforms.text import candidate_alphabet
-        from dbf_anonymizer.relationships.compatibility import (
-            validate_document_compatibility,
-        )
         from dbf_anonymizer.relationships.models import (
             NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
         )
@@ -457,35 +444,29 @@ def build_plan(
         for group in parsed_relationship_document.groups:
             for member in group.members:
                 if member.table_path not in discovered_paths:
-                    raise _relationship_binding_error(
-                        "RELATIONSHIP_MEMBER_TABLE_UNKNOWN"
-                    )
+                    raise _relationship_binding_error("RELATIONSHIP_MEMBER_TABLE_UNKNOWN")
                 bound_fact = field_facts.get((member.table_path, member.field_name))
                 if bound_fact is None:
-                    raise _relationship_binding_error(
-                        "RELATIONSHIP_MEMBER_FIELD_UNKNOWN"
-                    )
-                actual_type, actual_length, actual_encoding, actual_decimals, actual_autoincrement, actual_nullable = bound_fact
+                    raise _relationship_binding_error("RELATIONSHIP_MEMBER_FIELD_UNKNOWN")
+                (
+                    actual_type,
+                    actual_length,
+                    actual_encoding,
+                    actual_decimals,
+                    actual_autoincrement,
+                    actual_nullable,
+                ) = bound_fact
                 if member.dbf_type != actual_type:
-                    raise _relationship_binding_error(
-                        "RELATIONSHIP_MEMBER_TYPE_MISMATCH"
-                    )
+                    raise _relationship_binding_error("RELATIONSHIP_MEMBER_TYPE_MISMATCH")
                 if member.byte_width != actual_length:
-                    raise _relationship_binding_error(
-                        "RELATIONSHIP_MEMBER_WIDTH_MISMATCH"
-                    )
+                    raise _relationship_binding_error("RELATIONSHIP_MEMBER_WIDTH_MISMATCH")
                 if member.is_numeric_member:
                     # REQ-P3-005 numeric binding (public schema facts only):
-                    if (
-                        group.numeric_strategy
-                        == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
-                    ):
+                    if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                         if member.dbf_type == "N" and actual_decimals != 0:
                             # A non-integral Numeric domain is never silently
                             # rounded: fail closed before any allocation.
-                            raise _relationship_binding_error(
-                                "NUMERIC_MEMBER_DECIMALS_UNSUPPORTED"
-                            )
+                            raise _relationship_binding_error("NUMERIC_MEMBER_DECIMALS_UNSUPPORTED")
                         if actual_autoincrement:
                             # VFP autoincrement keys are never a supported
                             # numeric-key pseudonymizer target in this
@@ -494,12 +475,8 @@ def build_plan(
                                 "NUMERIC_MEMBER_AUTOINCREMENT_UNSUPPORTED"
                             )
                         if member.nullable != actual_nullable:
-                            raise _relationship_binding_error(
-                                "NUMERIC_MEMBER_NULLABILITY_MISMATCH"
-                            )
-                        relationship_bindings[
-                            (member.table_path, member.field_name)
-                        ] = bound_fact
+                            raise _relationship_binding_error("NUMERIC_MEMBER_NULLABILITY_MISMATCH")
+                        relationship_bindings[(member.table_path, member.field_name)] = bound_fact
                         continue
                     # REQ-P3-004: a numeric key member that stays
                     # value-identical (IDENTITY) is truthfully marked for
@@ -513,12 +490,8 @@ def build_plan(
                     )
                     relationship_bindings[(member.table_path, member.field_name)] = bound_fact
                     continue
-                if not candidate_alphabet(
-                    [member.encoding, actual_encoding]
-                ):
-                    raise _relationship_binding_error(
-                        "RELATIONSHIP_MEMBER_ENCODING_INCOMPATIBLE"
-                    )
+                if not candidate_alphabet([member.encoding, actual_encoding]):
+                    raise _relationship_binding_error("RELATIONSHIP_MEMBER_ENCODING_INCOMPATIBLE")
                 relationship_bindings[(member.table_path, member.field_name)] = bound_fact
         # A C/V NULL-policy binding fact is NOT exposed by the public
         # dbfbridge schema; the declared NULL policy stays relationship
@@ -554,9 +527,7 @@ def build_plan(
         source_fingerprint=source_fp,
         table_paths=table_paths,
         standalone_idx_paths=standalone_idx_paths,
-        dbc_bound_table_paths=tuple(
-            table.relative_path for table in discovered if table.dbc_bound
-        ),
+        dbc_bound_table_paths=tuple(table.relative_path for table in discovered if table.dbc_bound),
     )
 
     # 11. Compute plan ID (deterministic from all inputs)
@@ -575,9 +546,7 @@ def build_plan(
         output_root=str(output_root),
         vault_path=str(vault_path),
         relationship_document=parsed_relationship_document,
-        relationship_bindings=(
-            dict(relationship_bindings) if relationship_bindings else None
-        ),
+        relationship_bindings=(dict(relationship_bindings) if relationship_bindings else None),
         resolved_policy=dict(merged_policy),
     )
 
@@ -590,7 +559,9 @@ def build_plan(
         output_profile=output_profile,
         relationship_assurance_target=_assure_target(rel_meta),
         output_data_state=OutputDataState.STANDALONE_REDUCED_SEMANTICS,
-        numeric_identity_review=tuple(sorted(numeric_identity_review, key=lambda r: (r.table_path, r.field_name, r.dbf_type))),
+        numeric_identity_review=tuple(
+            sorted(numeric_identity_review, key=lambda r: (r.table_path, r.field_name, r.dbf_type))
+        ),
         execution_context=execution_ctx,
     )
 

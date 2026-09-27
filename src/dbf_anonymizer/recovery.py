@@ -66,9 +66,8 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Callable, Iterator
 
-import dbfbridge
 from dbfbridge import DirectRecord  # type: ignore[attr-defined]
 
 from dbf_anonymizer.discovery import derive_dataset_id
@@ -189,9 +188,9 @@ def _recovery_identity(
         vault_fingerprint=vault_fingerprint,
         destination_identity=destination_identity,
     )
-    sibling_token = hashlib.sha256(
-        f"recovery-{destination_identity}".encode("ascii")
-    ).hexdigest()[:24]
+    sibling_token = hashlib.sha256(f"recovery-{destination_identity}".encode("ascii")).hexdigest()[
+        :24
+    ]
     parent = destination.resolve(strict=False).parent
     return PublicationIdentity(
         operation_id=operation_id,
@@ -287,9 +286,7 @@ def recover(
 
     # --- 1. Read-only protected-state authority (fail closed) ---------------
     control.start_phase(ProgressPhase.VAULT_VERIFICATION)
-    vault_reader = _VerifyVault(
-        vault_path, operation=_RECOVER_OPERATION, failure=_recovery_failure
-    )
+    vault_reader = _VerifyVault(vault_path, operation=_RECOVER_OPERATION, failure=_recovery_failure)
     try:
         identity = _validate_recovery_authority(
             pseudonymized_root=pseudonymized_root,
@@ -346,7 +343,7 @@ def recover(
                     if isinstance(primary, Exception):
                         try:
                             staging.cleanup_owned()
-                        except Exception as cleanup_exc:
+                        except Exception:
                             cleanup_failure = _recovery_failure(
                                 "RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED"
                             )
@@ -477,10 +474,7 @@ def _validate_recovery_authority(
     if receipt.operation_id != operation_id:
         raise _recovery_failure("RECOVERY_IDENTITY_MISMATCH")
     durable_output = operation["output_fingerprint"]
-    if (
-        durable_output is None
-        or durable_output != receipt.output_fingerprint
-    ):
+    if durable_output is None or durable_output != receipt.output_fingerprint:
         raise _recovery_failure("RECOVERY_PSEUDONYMIZED_MISMATCH")
 
     # The given pseudonymized dataset must still BE the durable publication.
@@ -495,16 +489,16 @@ def _validate_recovery_authority(
     for domain_id, domain_kind in vault_reader.domains():
         control.check_cancelled()
         if domain_kind == VAULT_TABLE_DOMAIN_KIND_TEXT:
-            count, distinct_originals, distinct_pseudonyms = (
-                vault_reader.domain_bijection(domain_id, "text_mappings")
+            count, distinct_originals, distinct_pseudonyms = vault_reader.domain_bijection(
+                domain_id, "text_mappings"
             )
             if count != distinct_originals or count != distinct_pseudonyms:
                 raise _recovery_failure("RECOVERY_MAPPING_INVALID")
             if vault_reader.empty_text_originals(domain_id):
                 raise _recovery_failure("RECOVERY_MAPPING_INVALID")
         elif domain_kind == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
-            count, distinct_originals, distinct_pseudonyms = (
-                vault_reader.domain_bijection(domain_id, "numeric_key_mappings")
+            count, distinct_originals, distinct_pseudonyms = vault_reader.domain_bijection(
+                domain_id, "numeric_key_mappings"
             )
             if count != distinct_originals or count != distinct_pseudonyms:
                 raise _recovery_failure("RECOVERY_MAPPING_INVALID")
@@ -543,9 +537,7 @@ def _validate_recovery_authority(
             dataset_id=derive_dataset_id(dataset_row[0]),
             source_fingerprint=dataset_row[0],
             table_paths=tuple(sorted(vault_tables)),
-            standalone_idx_paths=tuple(
-                item.artifact_path for item in receipt.index_artifacts
-            ),
+            standalone_idx_paths=tuple(item.artifact_path for item in receipt.index_artifacts),
         ),
         ledger=ledger,
         expected_records=int(receipt.pass2_records_written),
@@ -574,9 +566,7 @@ def _reverse_value(
             # NULL preserves NULL: the protected store holds no recovery row
             # for a NULL payload by design (REQ-P2-007 NULL semantics).
             return None
-        recovery = vault_reader.memo_recovery_row(
-            table_id, physical_index, field_id
-        )
+        recovery = vault_reader.memo_recovery_row(table_id, physical_index, field_id)
         if recovery is None:
             raise _recovery_failure("RECOVERY_RECOVERY_ROW_MISSING")
         original, payload_kind = recovery
@@ -594,9 +584,7 @@ def _reverse_value(
         if domain_id is None:
             raise _recovery_failure("RECOVERY_MAPPING_MISSING")
         if vault_reader.domain_kind(domain_id) == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
-            if isinstance(pseudonymized_value, bool) or not isinstance(
-                pseudonymized_value, int
-            ):
+            if isinstance(pseudonymized_value, bool) or not isinstance(pseudonymized_value, int):
                 raise _recovery_failure("RECOVERY_MAPPING_INVALID")
             original_text = vault_reader.numeric_original(
                 domain_id, canonical_integer_text(pseudonymized_value)
@@ -746,9 +734,7 @@ def _verify_staged_recovery(
     try:
         from dbf_anonymizer.engine.publication import _iter_dataset_files
 
-        staged_inventory = {
-            relative for relative, _path in _iter_dataset_files(staged_root)
-        }
+        staged_inventory = {relative for relative, _path in _iter_dataset_files(staged_root)}
     except Exception:
         raise _recovery_failure("RECOVERY_STAGED_INVALID") from None
     expected_staged: set[str] = set()
@@ -759,9 +745,7 @@ def _verify_staged_recovery(
             pseudonymized_root, relative_path, cancel_check=control.check_cancelled
         )
         if table.has_memo_fields:
-            expected_staged.add(
-                Path(relative_path).with_suffix(".fpt").as_posix()
-            )
+            expected_staged.add(Path(relative_path).with_suffix(".fpt").as_posix())
     if staged_inventory != expected_staged:
         raise _recovery_failure("RECOVERY_STAGED_INVALID")
     record_total = 0
@@ -821,9 +805,7 @@ def _verify_staged_table(
             memo_policy=memo_policy,
             cancel_check=checkpoint,
         )
-        for pseudonymized_record, staged_record in zip(
-            pseudonymized_stream, staged_stream
-        ):
+        for pseudonymized_record, staged_record in zip(pseudonymized_stream, staged_stream):
             checkpoint()
             scanned += 1
             if (
@@ -851,22 +833,16 @@ def _verify_staged_table(
                         pseudonymized_record.physical_index,
                         field_id,
                     )
-                    if recovery is None or staged_value != _staged_memo_payload(
-                        recovery
-                    ):
+                    if recovery is None or staged_value != _staged_memo_payload(recovery):
                         raise _recovery_failure("RECOVERY_STAGED_INVALID")
                 elif action == "SHIFT_REVERSIBLE":
                     offset = (
-                        vault_reader.temporal_offset(domain_id)
-                        if domain_id is not None
-                        else None
+                        vault_reader.temporal_offset(domain_id) if domain_id is not None else None
                     )
                     if offset is None:
                         if staged_value != pseudonymized_value:
                             raise _recovery_failure("RECOVERY_STAGED_INVALID")
-                    elif staged_value != temporal_shift(
-                        pseudonymized_value, -offset
-                    ):
+                    elif staged_value != temporal_shift(pseudonymized_value, -offset):
                         raise _recovery_failure("RECOVERY_STAGED_INVALID")
                 elif action == "PSEUDONYMIZE_REVERSIBLE":
                     if not _reverse_agrees(
@@ -908,16 +884,11 @@ def _reverse_agrees(
     if vault_reader.domain_kind(domain_id) == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
         if isinstance(staged_value, bool) or not isinstance(staged_value, int):
             return False
-        if isinstance(pseudonymized_value, bool) or not isinstance(
-            pseudonymized_value, int
-        ):
+        if isinstance(pseudonymized_value, bool) or not isinstance(pseudonymized_value, int):
             return False
-        return (
-            vault_reader.numeric_original(
-                domain_id, canonical_integer_text(pseudonymized_value)
-            )
-            == canonical_integer_text(staged_value)
-        )
+        return vault_reader.numeric_original(
+            domain_id, canonical_integer_text(pseudonymized_value)
+        ) == canonical_integer_text(staged_value)
     if not isinstance(staged_value, str) or not isinstance(pseudonymized_value, str):
         return False
     return vault_reader.text_original(domain_id, pseudonymized_value) == staged_value

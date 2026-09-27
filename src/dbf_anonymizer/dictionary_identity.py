@@ -67,7 +67,7 @@ def dictionary_id_shape_valid(value: object, prefix: str) -> bool:
     """True when *value* is ``prefix`` followed by 32 lowercase hex digits."""
     if not isinstance(value, str) or not value.startswith(prefix):
         return False
-    digits = value[len(prefix):]
+    digits = value[len(prefix) :]
     if len(digits) != 32:
         return False
     return all(character in "0123456789abcdef" for character in digits)
@@ -87,13 +87,9 @@ def dictionary_sidecars(path: Path) -> tuple[str, ...]:
     try:
         names = os.listdir(path.parent)
     except PermissionError:
-        raise _dictionary_failure(
-            ErrorCode.VAULT_ACCESS_DENIED, "TARGET_STAT_DENIED"
-        ) from None
+        raise _dictionary_failure(ErrorCode.VAULT_ACCESS_DENIED, "TARGET_STAT_DENIED") from None
     except OSError:
-        raise _dictionary_failure(
-            ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED"
-        ) from None
+        raise _dictionary_failure(ErrorCode.VAULT_UNAVAILABLE, "TARGET_STAT_FAILED") from None
     owned = {f"{path.name}{suffix}" for suffix in DICTIONARY_SIDECAR_SUFFIXES}
     return tuple(name for name in sorted(names) if name in owned)
 
@@ -141,11 +137,7 @@ def read_dictionary_identity(
     TYPE only; failures are typed and carry no database text.
     """
     check_rows = connection.execute("PRAGMA quick_check").fetchall()
-    if (
-        len(check_rows) != 1
-        or not isinstance(check_rows[0][0], str)
-        or check_rows[0][0] != "ok"
-    ):
+    if len(check_rows) != 1 or not isinstance(check_rows[0][0], str) or check_rows[0][0] != "ok":
         raise _dictionary_failure(ErrorCode.VAULT_CORRUPT, "QUICK_CHECK_FAILED")
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
@@ -159,9 +151,7 @@ def read_dictionary_identity(
     if not dictionary_id_shape_valid(vault_id, VAULT_ID_PREFIX):
         raise _dictionary_failure(ErrorCode.VAULT_CORRUPT, "VAULT_ID_MALFORMED")
     if meta[0] != VAULT_SCHEMA_VERSION:
-        raise _dictionary_failure(
-            ErrorCode.VAULT_SCHEMA_UNSUPPORTED, "SCHEMA_VERSION_UNSUPPORTED"
-        )
+        raise _dictionary_failure(ErrorCode.VAULT_SCHEMA_UNSUPPORTED, "SCHEMA_VERSION_UNSUPPORTED")
     dataset = connection.execute(
         "SELECT source_fingerprint, policy_fingerprint, relationship_fingerprint "
         "FROM dataset WHERE singleton = 1"
@@ -220,9 +210,7 @@ def validate_dictionary_identity_readonly(
     written, never converted and never left with new sidecars.
     """
     if dictionary_sidecars(path):
-        raise _dictionary_failure(
-            ErrorCode.VAULT_STATE_INVALID, "SIDECAR_STATE_AMBIGUOUS"
-        )
+        raise _dictionary_failure(ErrorCode.VAULT_STATE_INVALID, "SIDECAR_STATE_AMBIGUOUS")
     connection = connect_dictionary_readonly(path)
     try:
         _vault_id, _schema_version, fingerprints = read_dictionary_identity(connection)

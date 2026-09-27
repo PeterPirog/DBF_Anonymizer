@@ -16,7 +16,6 @@ Proves the complete REQ-P2-010 acceptance contract:
 from __future__ import annotations
 
 import hashlib
-import os
 import subprocess
 import sys
 from datetime import date
@@ -30,7 +29,6 @@ from dbf_anonymizer.vault import (
     VAULT_DATABASE_FILENAME,
     VaultDatabase,
     mappings,
-    new_writer_token,
 )
 from dbf_anonymizer.vault.mappings import (
     VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
@@ -40,7 +38,6 @@ from dbf_anonymizer.vault.mappings import (
     get_text_pseudonym,
     text_mapping_rows,
 )
-from dbf_anonymizer.vault.text_allocation import GlobalTextDomainMapping
 from dbf_anonymizer.vault.temporal_allocation import TemporalShiftDomain
 from support.vault_sessions import writer_session
 
@@ -155,9 +152,7 @@ def test_every_fingerprint_mismatch_fails_closed_without_mutation(
             expected_relationship_fingerprint=mismatches.get("relationship", RELATIONSHIP_FP),
         )
     assert excinfo.value.code is ErrorCode.VAULT_IDENTITY_MISMATCH
-    boundary = (
-        str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     # No actual fingerprint values, no source/vault paths in the refusal.
     assert SOURCE_FP not in boundary and OTHER_FP not in boundary
     assert str(tmp_path) not in boundary
@@ -186,7 +181,8 @@ def test_one_vault_coherently_reuses_all_recovery_classes(tmp_path: Path) -> Non
         vault_id = vault.vault_id
         with writer_session(vault), vault.transaction():
             create_domain(
-                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
+                vault,
+                domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
                 domain_id=GLOBAL_TEXT_DOMAIN_ID,
             )
             add_text_mapping(vault, GLOBAL_TEXT_DOMAIN_ID, "KUND-1", "7XQ2A", logical_byte_length=5)
@@ -220,8 +216,11 @@ def test_one_vault_coherently_reuses_all_recovery_classes(tmp_path: Path) -> Non
             # TEXT: the mapped original reproduces its exact pseudonym.
             assert get_text_pseudonym(reused, GLOBAL_TEXT_DOMAIN_ID, "KUND-1") == "7XQ2A"
             with reused.transaction():
-                add_text_mapping(reused, GLOBAL_TEXT_DOMAIN_ID, "KUND-2", "9B4D1", logical_byte_length=5)
+                add_text_mapping(
+                    reused, GLOBAL_TEXT_DOMAIN_ID, "KUND-2", "9B4D1", logical_byte_length=5
+                )
             assert text_mapping_rows(reused, GLOBAL_TEXT_DOMAIN_ID)[0][1] == "7XQ2A"
+
             # TEMPORAL: compatible persisted offset reused; the CSPRNG seam
             # must never be consulted.
             def refuse_csprng(*_args: object) -> int:
@@ -276,8 +275,7 @@ def _seed_corrupt_temporal(tmp_path: Path, raw_offset: object) -> VaultDatabase:
                 domain_id=domain_id,
             )
             vault._internal_connection().execute(
-                "INSERT INTO temporal_parameters (domain_id, offset_days) "
-                "VALUES (?, ?)",
+                "INSERT INTO temporal_parameters (domain_id, offset_days) VALUES (?, ?)",
                 (domain_id, raw_offset),
             )
         vault.close()
@@ -293,9 +291,7 @@ def _seed_corrupt_temporal(tmp_path: Path, raw_offset: object) -> VaultDatabase:
     "raw_offset",
     ["not-a-number", 3.5, b"\x00\x01", 0, 9223372036854775807],
 )
-def test_hostile_temporal_storage_classes_fail_closed(
-    tmp_path: Path, raw_offset: object
-) -> None:
+def test_hostile_temporal_storage_classes_fail_closed(tmp_path: Path, raw_offset: object) -> None:
     with _seed_corrupt_temporal(tmp_path, raw_offset) as vault:
         domain = TemporalShiftDomain(vault, domain_name="corrupt")
         domain.observe(date(2020, 1, 1))
@@ -327,7 +323,8 @@ def _seed_corrupt_memo(
     with _open_create(dictionary) as vault:
         with writer_session(vault), vault.transaction():
             create_domain(
-                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
+                vault,
+                domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
                 domain_id=GLOBAL_TEXT_DOMAIN_ID,
             )
             table_id = vault.register_table("memo/corrupt.dbf")
@@ -359,9 +356,7 @@ def test_hostile_memo_storage_classes_fail_closed(
         from dbf_anonymizer.vault import recover_memo_value
 
         with pytest.raises((VaultError, MappingError)) as excinfo:
-            recover_memo_value(
-                vault, table_id=table_id, physical_record_index=0, field_id=field_id
-            )
+            recover_memo_value(vault, table_id=table_id, physical_record_index=0, field_id=field_id)
         boundary = (
             str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
         )
@@ -377,7 +372,8 @@ def _seed_corrupt_text(tmp_path: Path, raw_length: object) -> VaultDatabase:
     with _open_create(dictionary) as vault:
         with writer_session(vault), vault.transaction():
             create_domain(
-                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
+                vault,
+                domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
                 domain_id=GLOBAL_TEXT_DOMAIN_ID,
             )
             vault._internal_connection().execute(
@@ -431,9 +427,7 @@ def test_uncommitted_changes_disappear_after_interruption(tmp_path: Path) -> Non
         "mappings.add_text_mapping(vault, GLOBAL_TEXT_DOMAIN_ID, 'KUND-UNCOMMITTED', '9B4D1', logical_byte_length=5)\n"
         "os._exit(9)  # dies mid-transaction: the unit must roll back\n"
     ).format(src=_SRC_ROOT, dictionary=dictionary)
-    completed = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, timeout=120
-    )
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=120)
     assert completed.returncode == 9, completed.stderr.decode("utf-8", "replace")
     with VaultDatabase.open(
         dictionary,
@@ -474,13 +468,14 @@ def test_fresh_vaults_are_deterministically_independent(
             vault_ids.append(vault.vault_id)
             with writer_session(vault), vault.transaction():
                 create_domain(
-                    vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
+                    vault,
+                    domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT,
                     domain_id=GLOBAL_TEXT_DOMAIN_ID,
                 )
-                add_text_mapping(vault, GLOBAL_TEXT_DOMAIN_ID, "KUND-1", f"7XQ2{index}", logical_byte_length=5)
-            temporal = TemporalShiftDomain(
-                vault, _random_below=lambda bound, k=index: k
-            )
+                add_text_mapping(
+                    vault, GLOBAL_TEXT_DOMAIN_ID, "KUND-1", f"7XQ2{index}", logical_byte_length=5
+                )
+            temporal = TemporalShiftDomain(vault, _random_below=lambda bound, k=index: k)
             temporal.observe(date(2020, 1, 1))
             with writer_session(vault):
                 offset = temporal.finalize()
@@ -501,9 +496,7 @@ def test_fresh_vaults_are_deterministically_independent(
             expected_relationship_fingerprint=RELATIONSHIP_FP,
         ) as reused:
             assert reused.vault_id == vault_ids[index]
-            assert get_text_pseudonym(
-                reused, GLOBAL_TEXT_DOMAIN_ID, "KUND-1"
-            ) == f"7XQ2{index}"
+            assert get_text_pseudonym(reused, GLOBAL_TEXT_DOMAIN_ID, "KUND-1") == f"7XQ2{index}"
             temporal = TemporalShiftDomain(
                 reused, _random_below=lambda bound: pytest.fail("reuse must not call CSPRNG")
             )

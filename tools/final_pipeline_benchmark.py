@@ -359,7 +359,11 @@ def write_benchmark_workload(
     write_numeric_table_with_deleted(
         source_root,
         "archive/data.dbf",
-        (numeric_field("LEG_ID", "C", 12), numeric_field("NOTE", "M", 4), numeric_field("AMT", "N", 9)),
+        (
+            numeric_field("LEG_ID", "C", 12),
+            numeric_field("NOTE", "M", 4),
+            numeric_field("AMT", "N", 9),
+        ),
         entries,
     )
 
@@ -483,9 +487,7 @@ class _TimedCursor:
         return getattr(object.__getattribute__(self, "_cursor"), name)
 
 
-def _timed_connect(
-    real_connect: Any, collector: _SqliteCollector
-) -> Any:
+def _timed_connect(real_connect: Any, collector: _SqliteCollector) -> Any:
     """Build the instrumented ``sqlite3.connect`` replacement.
 
     The connection OPEN itself is part of ``sqlite_seconds``.
@@ -625,9 +627,11 @@ class _TransientSampler:
             pass
         try:
             for entry in self._vault_dir.iterdir():
-                if entry.name == PASS1_STATE_FILENAME or entry.name.startswith(
-                    PASS1_STATE_FILENAME + "-"
-                ) or entry.name.startswith(PASS2_EVIDENCE_PREFIX):
+                if (
+                    entry.name == PASS1_STATE_FILENAME
+                    or entry.name.startswith(PASS1_STATE_FILENAME + "-")
+                    or entry.name.startswith(PASS2_EVIDENCE_PREFIX)
+                ):
                     total += _transient_entry_bytes(entry)
         except OSError:
             pass
@@ -639,9 +643,7 @@ class _TransientSampler:
             if observed > self._peak:
                 self._peak = observed
 
-    def replace_while_sampling_paused(
-        self, replacing: Any, source: Path, destination: Path
-    ) -> Any:
+    def replace_while_sampling_paused(self, replacing: Any, source: Path, destination: Path) -> Any:
         """Run atomic publication without a concurrent staging-tree scan.
 
         On Windows an open ``scandir`` handle prevents the directory rename.
@@ -759,9 +761,7 @@ def _run_benchmark_once(
     vault_path = vault_dir / "dictionary.sqlite3"
 
     # --- deterministic synthetic workload (NOT part of the measured window)
-    write_benchmark_workload(
-        source_root, customers=customers, orders=orders, archived=archived
-    )
+    write_benchmark_workload(source_root, customers=customers, orders=orders, archived=archived)
     source_hashes_before = _tree_hashes(source_root)
     source_bytes = sum(
         (workspace / "source" / name).stat().st_size for name in source_hashes_before
@@ -793,9 +793,7 @@ def _run_benchmark_once(
     real_atomic_replace = publication_module.atomic_replace
 
     def observed_atomic_replace(source: Path, destination: Path) -> Any:
-        return sampler.replace_while_sampling_paused(
-            real_atomic_replace, source, destination
-        )
+        return sampler.replace_while_sampling_paused(real_atomic_replace, source, destination)
 
     try:
         sqlite3.connect = connecting
@@ -808,9 +806,7 @@ def _run_benchmark_once(
             pseudonymization = pseudonymize(plan, workers=workers)
             wall_seconds = time.perf_counter() - started
             verification_started = time.perf_counter()
-            verification = verify_dataset(
-                pseudonymization, source=source_root, vault=vault_path
-            )
+            verification = verify_dataset(pseudonymization, source=source_root, vault=vault_path)
             verification_seconds = time.perf_counter() - verification_started
             _current, peak_memory_bytes = tracemalloc.get_traced_memory()
         finally:
@@ -901,9 +897,17 @@ def _validate_report_shape(report: dict[str, object]) -> None:
         value = report[name]
         if not isinstance(value, str) or not value or len(value) > 128:
             raise BenchmarkError(f"unbounded or missing string field: {name}")
-    for name in ("workers", "table_count", "record_count", "source_bytes",
-                 "output_bytes", "vault_bytes", "sqlite_bytes",
-                 "temporary_peak_bytes", "peak_memory_bytes"):
+    for name in (
+        "workers",
+        "table_count",
+        "record_count",
+        "source_bytes",
+        "output_bytes",
+        "vault_bytes",
+        "sqlite_bytes",
+        "temporary_peak_bytes",
+        "peak_memory_bytes",
+    ):
         value = report[name]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise BenchmarkError(f"non-integer or negative numeric field: {name}")
@@ -1025,9 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     # allow_nan=False: the machine artifact is STRICT JSON — schema drift can
     # never silently emit NaN/Infinity (the closed schema rejects them too).
-    machine = json.dumps(
-        run.report, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False
-    )
+    machine = json.dumps(run.report, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False)
     summary = render_markdown(run.report)
     if arguments.output:
         output_path = Path(arguments.output)

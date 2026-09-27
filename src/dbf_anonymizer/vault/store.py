@@ -78,8 +78,6 @@ from dbf_anonymizer.vault.schema import (
     VAULT_OPERATION_ID_PREFIX,
     VAULT_OPERATION_STATE_COMPLETED,
     VAULT_OPERATION_STATE_STARTED,
-    VAULT_PAYLOAD_KIND_BINARY,
-    VAULT_PAYLOAD_KIND_TEXT,
     VAULT_SCHEMA_VERSION,
     VAULT_WRITER_TOKEN_PREFIX,
 )
@@ -366,9 +364,7 @@ class VaultDatabase:
         """Require the explicit WAL policy; never silently convert a vault."""
         current_mode = cls._read_journal_mode(connection)
         if current_mode.lower() != VAULT_JOURNAL_MODE.lower():
-            raise _vault_failure(
-                ErrorCode.VAULT_STATE_INVALID, "JOURNAL_MODE_UNEXPECTED"
-            )
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "JOURNAL_MODE_UNEXPECTED")
 
     @classmethod
     def _validate_existing_readonly(
@@ -431,9 +427,7 @@ class VaultDatabase:
     @staticmethod
     def _apply_journal_mode(connection: sqlite3.Connection) -> str:
         """Set the explicit WAL policy and RETURN the verified PRAGMA result."""
-        row = connection.execute(
-            f"PRAGMA journal_mode = {VAULT_JOURNAL_MODE}"
-        ).fetchone()
+        row = connection.execute(f"PRAGMA journal_mode = {VAULT_JOURNAL_MODE}").fetchone()
         return str(row[0]) if row is not None and row[0] is not None else ""
 
     @staticmethod
@@ -534,13 +528,9 @@ class VaultDatabase:
             try:
                 applied = cls._apply_journal_mode(connection)
             except sqlite3.Error:
-                raise _vault_failure(
-                    ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE"
-                ) from None
+                raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
             if applied.lower() != VAULT_JOURNAL_MODE.lower():
-                raise _vault_failure(
-                    ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE"
-                )
+                raise _vault_failure(ErrorCode.VAULT_CORRUPT, "JOURNAL_MODE_UNAVAILABLE")
             vault_id = _new_hex_id(VAULT_ID_PREFIX)
             transaction = VaultTransaction(connection)
             with transaction:
@@ -620,13 +610,9 @@ class VaultDatabase:
         try:
             cls._remove_partial_dictionary(path, reserved_identity)
         except VaultError:
-            raise _vault_failure(
-                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED") from None
         if close_failed:
-            raise _vault_failure(
-                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED") from None
 
     @staticmethod
     def _reserve_dictionary_file(path: Path) -> tuple[int, int]:
@@ -658,9 +644,7 @@ class VaultDatabase:
             os.close(descriptor)
 
     @staticmethod
-    def _remove_partial_dictionary(
-        path: Path, reserved_identity: tuple[int, int] | None
-    ) -> None:
+    def _remove_partial_dictionary(path: Path, reserved_identity: tuple[int, int] | None) -> None:
         """Remove OUR partially created dictionary; cleanup failures SURFACE.
 
         Ownership guard: when the file's current identity no longer matches
@@ -675,19 +659,13 @@ class VaultDatabase:
             except FileNotFoundError:
                 return  # the reservation is already gone: nothing of ours left
             except OSError:
-                raise _vault_failure(
-                    ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
-                ) from None
+                raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED") from None
             if current_identity != reserved_identity:
-                raise _vault_failure(
-                    ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
-                ) from None
+                raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED") from None
         try:
             path.unlink()
         except OSError:
-            raise _vault_failure(
-                ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CREATION_CLEANUP_FAILED") from None
 
     @classmethod
     def _ensure_parent_directory(cls, path: Path) -> None:
@@ -762,9 +740,7 @@ class VaultDatabase:
         return database
 
     @classmethod
-    def _read_identity(
-        cls, connection: sqlite3.Connection
-    ) -> tuple[str, str, dict[str, str]]:
+    def _read_identity(cls, connection: sqlite3.Connection) -> tuple[str, str, dict[str, str]]:
         """Delegate to the shared dictionary-identity kernel.
 
         The classmethod is preserved as the store's typed injection seam:
@@ -850,9 +826,7 @@ class VaultDatabase:
 
     def foreign_keys_enabled(self) -> bool:
         """True when the enforced per-connection FK pragma is active."""
-        return int(
-            self._internal_connection().execute("PRAGMA foreign_keys").fetchone()[0]
-        ) == 1
+        return int(self._internal_connection().execute("PRAGMA foreign_keys").fetchone()[0]) == 1
 
     def journal_mode(self) -> str:
         """The active SQLite journal mode (the explicit WAL policy)."""
@@ -918,11 +892,7 @@ class VaultDatabase:
 
     def _require_active_transaction(self, action: str) -> VaultTransaction:
         transaction = self._transaction
-        if (
-            transaction is None
-            or not transaction.active
-            or not self._transaction_authorized
-        ):
+        if transaction is None or not transaction.active or not self._transaction_authorized:
             raise ValueError(
                 f"{action} requires an active authorized VaultDatabase.transaction() unit"
             )
@@ -952,13 +922,9 @@ class VaultDatabase:
                 or check_rows[0][0] != "ok"
             ):
                 raise _vault_failure(ErrorCode.VAULT_CORRUPT, "CHECK_FAILED")
-            violations = self._connection.execute(
-                "PRAGMA foreign_key_check"
-            ).fetchall()
+            violations = self._connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
-                raise _vault_failure(
-                    ErrorCode.VAULT_CORRUPT, "FOREIGN_KEY_CHECK_FAILED"
-                )
+                raise _vault_failure(ErrorCode.VAULT_CORRUPT, "FOREIGN_KEY_CHECK_FAILED")
             self._read_identity(self._connection)
         except sqlite3.DatabaseError:
             raise _vault_failure(ErrorCode.VAULT_CORRUPT, "DATABASE_UNREADABLE") from None
@@ -993,9 +959,7 @@ class VaultDatabase:
                     (owner_token,),
                 )
                 if cursor.rowcount != 1:
-                    raise _vault_failure(
-                        ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_HELD"
-                    )
+                    raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "WRITER_LEASE_HELD")
                 tick_row = self._connection.execute(
                     "SELECT acquire_tick FROM writer_authority WHERE singleton = 1"
                 ).fetchone()
@@ -1024,9 +988,7 @@ class VaultDatabase:
                     (owner_token,),
                 )
                 if cursor.rowcount != 1:
-                    raise _vault_failure(
-                        ErrorCode.VAULT_WRITER_CONFLICT, "NOT_LEASE_HOLDER"
-                    )
+                    raise _vault_failure(ErrorCode.VAULT_WRITER_CONFLICT, "NOT_LEASE_HOLDER")
         except sqlite3.OperationalError:
             raise _vault_failure(
                 ErrorCode.VAULT_UNAVAILABLE, "WRITER_LEASE_STORAGE_FAILURE"
@@ -1036,17 +998,21 @@ class VaultDatabase:
 
     def stale_writer_lease(self) -> str | None:
         """The currently stored lease token (explicit crash-state evidence)."""
-        row = self._internal_connection().execute(
-            "SELECT owner_token FROM writer_authority WHERE singleton = 1"
-        ).fetchone()
+        row = (
+            self._internal_connection()
+            .execute("SELECT owner_token FROM writer_authority WHERE singleton = 1")
+            .fetchone()
+        )
         if row is None or row[0] is None:
             return None
         return str(row[0])
 
     def writer_acquire_tick(self) -> int:
-        row = self._internal_connection().execute(
-            "SELECT acquire_tick FROM writer_authority WHERE singleton = 1"
-        ).fetchone()
+        row = (
+            self._internal_connection()
+            .execute("SELECT acquire_tick FROM writer_authority WHERE singleton = 1")
+            .fetchone()
+        )
         return int(row[0]) if row is not None and row[0] is not None else 0
 
     # -- operation/publication state (REQ-P2-002) ------------------------------
@@ -1067,9 +1033,11 @@ class VaultDatabase:
             operation_id = _new_hex_id(VAULT_OPERATION_ID_PREFIX)
         else:
             _validate_token(operation_id, field_name="operation_id")
-            existing = self._internal_connection().execute(
-                "SELECT 1 FROM operations WHERE operation_id = ?", (operation_id,)
-            ).fetchone()
+            existing = (
+                self._internal_connection()
+                .execute("SELECT 1 FROM operations WHERE operation_id = ?", (operation_id,))
+                .fetchone()
+            )
             if existing is not None:
                 raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "OPERATION_EXISTS")
         try:
@@ -1091,9 +1059,7 @@ class VaultDatabase:
                 ),
             )
         except sqlite3.IntegrityError:
-            raise _vault_failure(
-                ErrorCode.VAULT_STATE_INVALID, "OPERATION_REJECTED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "OPERATION_REJECTED") from None
         return operation_id
 
     def complete_operation(
@@ -1129,9 +1095,7 @@ class VaultDatabase:
         removed the staging tree it created in the same invocation.
         """
         self._require_active_transaction("abandon_operation")
-        self._connection.execute(
-            "DELETE FROM publication WHERE operation_id = ?", (operation_id,)
-        )
+        self._connection.execute("DELETE FROM publication WHERE operation_id = ?", (operation_id,))
         cursor = self._connection.execute(
             "DELETE FROM operations WHERE operation_id = ? AND state = ?",
             (operation_id, VAULT_OPERATION_STATE_STARTED),
@@ -1141,13 +1105,17 @@ class VaultDatabase:
 
     def operation_record(self, operation_id: str) -> dict[str, str | None] | None:
         """Return one complete internal operation binding, if present."""
-        row = self._internal_connection().execute(
-            "SELECT operation_id, state, source_fingerprint, policy_fingerprint, "
-            "relationship_fingerprint, vault_fingerprint, destination_identity, "
-            "binding_fingerprint, output_fingerprint, result_json, started_at, "
-            "completed_at FROM operations WHERE operation_id = ?",
-            (operation_id,),
-        ).fetchone()
+        row = (
+            self._internal_connection()
+            .execute(
+                "SELECT operation_id, state, source_fingerprint, policy_fingerprint, "
+                "relationship_fingerprint, vault_fingerprint, destination_identity, "
+                "binding_fingerprint, output_fingerprint, result_json, started_at, "
+                "completed_at FROM operations WHERE operation_id = ?",
+                (operation_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         names = (
@@ -1166,22 +1134,28 @@ class VaultDatabase:
         )
         return {name: None if value is None else str(value) for name, value in zip(names, row)}
 
-    def operation_for_destination(
-        self, destination_identity: str
-    ) -> dict[str, str | None] | None:
+    def operation_for_destination(self, destination_identity: str) -> dict[str, str | None] | None:
         """Return the unique operation bound to a normalized destination."""
-        row = self._internal_connection().execute(
-            "SELECT operation_id FROM operations WHERE destination_identity = ?",
-            (destination_identity,),
-        ).fetchone()
+        row = (
+            self._internal_connection()
+            .execute(
+                "SELECT operation_id FROM operations WHERE destination_identity = ?",
+                (destination_identity,),
+            )
+            .fetchone()
+        )
         return None if row is None else self.operation_record(str(row[0]))
 
     def operations(self) -> tuple[dict[str, str | None], ...]:
         """All persisted operations in stable operation-id order."""
-        rows = self._internal_connection().execute(
-            "SELECT operation_id, state, source_fingerprint, output_fingerprint, "
-            "started_at, completed_at FROM operations ORDER BY operation_id"
-        ).fetchall()
+        rows = (
+            self._internal_connection()
+            .execute(
+                "SELECT operation_id, state, source_fingerprint, output_fingerprint, "
+                "started_at, completed_at FROM operations ORDER BY operation_id"
+            )
+            .fetchall()
+        )
         return tuple(
             {
                 "operation_id": str(row[0]),
@@ -1212,9 +1186,7 @@ class VaultDatabase:
                 (operation_id, phase, output_fingerprint, vault_fingerprint),
             )
         except sqlite3.IntegrityError:
-            raise _vault_failure(
-                ErrorCode.VAULT_STATE_INVALID, "PUBLICATION_REJECTED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "PUBLICATION_REJECTED") from None
 
     # -- dataset structure (stable table/field identities) ---------------------
     def register_table(
@@ -1239,9 +1211,7 @@ class VaultDatabase:
                 (table_id, normalized, schema_fingerprint, source_fingerprint),
             )
         except sqlite3.IntegrityError:
-            raise _vault_failure(
-                ErrorCode.VAULT_STATE_INVALID, "TABLE_REJECTED"
-            ) from None
+            raise _vault_failure(ErrorCode.VAULT_STATE_INVALID, "TABLE_REJECTED") from None
         return table_id
 
     def register_field(
@@ -1285,10 +1255,14 @@ class VaultDatabase:
         return field_id
 
     def tables(self) -> tuple[dict[str, str | None], ...]:
-        rows = self._internal_connection().execute(
-            "SELECT table_id, relative_path, schema_fingerprint, source_fingerprint "
-            "FROM tables ORDER BY relative_path"
-        ).fetchall()
+        rows = (
+            self._internal_connection()
+            .execute(
+                "SELECT table_id, relative_path, schema_fingerprint, source_fingerprint "
+                "FROM tables ORDER BY relative_path"
+            )
+            .fetchall()
+        )
         return tuple(
             {
                 "table_id": str(row[0]),
@@ -1315,13 +1289,9 @@ class VaultDatabase:
             f"PRAGMA wal_checkpoint({VAULT_CLOSE_CHECKPOINT})"
         ).fetchone()
         if row is None or row[0] is None or len(row) < 1:
-            raise _vault_failure(
-                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE"
-            )
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE")
         if int(row[0]) != 0:
-            raise _vault_failure(
-                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE"
-            )
+            raise _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_INCOMPLETE")
 
     def close(self) -> None:
         """Clean close: truncate-checkpoint the WAL, then close the connection.
@@ -1356,9 +1326,7 @@ class VaultDatabase:
         except VaultError as error:
             failure = error  # typed checkpoint status/execution failure
         except sqlite3.Error:
-            failure = _vault_failure(
-                ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_FAILED"
-            )
+            failure = _vault_failure(ErrorCode.VAULT_UNAVAILABLE, "CLOSE_CHECKPOINT_FAILED")
         try:
             self._connection.close()
         except sqlite3.Error:

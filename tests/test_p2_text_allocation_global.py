@@ -24,7 +24,6 @@ when the remaining problem is genuinely infeasible.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -97,9 +96,7 @@ def _allocator(
     )
 
 
-def _seed_global_domain_rows(
-    vault: VaultDatabase, rows: list[tuple[str, str, int]]
-) -> None:
+def _seed_global_domain_rows(vault: VaultDatabase, rows: list[tuple[str, str, int]]) -> None:
     with writer_session(vault), vault.transaction():
         mappings.create_domain(
             vault,
@@ -135,15 +132,14 @@ def test_counterexample_a_wide_first_must_not_steal_narrow_capacity(
     stream = _ScriptedRandom(0, *range(1, 36), 0, cycle=True)
     with _create(tmp_path) as vault:
         with writer_session(vault):
-            allocator = GlobalTextDomainMapping(
-                vault, _random_below=stream.__call__
-            )
+            allocator = GlobalTextDomainMapping(vault, _random_below=stream.__call__)
             for original in narrow:
                 allocator.observe(original, encoding="cp1250", byte_width=1)
             allocator.observe("WIDE-ORIGINAL", encoding="cp1250", byte_width=2)
             allocator.finalize()
             wide_pseudonym = allocator.pseudonym_for("WIDE-ORIGINAL")
-            results = [allocator.pseudonym_for(original) for original in narrow]
+            for original in narrow:
+                allocator.pseudonym_for(original)
         rows = dict((original, pseudonym) for original, pseudonym, _l in _global_rows(vault))
         assert len(rows) == 37
         assert len(set(rows.values())) == 37  # bijection
@@ -167,8 +163,9 @@ def test_counterexample_a_narrow_first_order_independent(tmp_path: Path) -> None
                 allocator.observe(original, encoding="cp1250", byte_width=1)
             allocator.observe("WIDE-ORIGINAL", encoding="cp1250", byte_width=2)
             allocator.finalize()
-            results = [allocator.pseudonym_for(original) for original in narrow]
-            wide_pseudonym = allocator.pseudonym_for("WIDE-ORIGINAL")
+            for original in narrow:
+                allocator.pseudonym_for(original)
+            allocator.pseudonym_for("WIDE-ORIGINAL")
         rows = dict((original, pseudonym) for original, pseudonym, _l in _global_rows(vault))
         assert len(rows) == 37
         assert len(set(rows.values())) == 37
@@ -223,7 +220,8 @@ def test_self_token_original_first_still_feasible(tmp_path: Path) -> None:
                 allocator.observe(original, encoding="cp1250", byte_width=1)
             allocator.finalize()
             c_pseudonym = allocator.pseudonym_for("C")
-            assigned = [allocator.pseudonym_for(original) for original in flexible]
+            for original in flexible:
+                allocator.pseudonym_for(original)
         rows = dict((original, pseudonym) for original, pseudonym, _l in _global_rows(vault))
         assert len(rows) == 36 and len(set(rows.values())) == 36
         assert rows["C"] == c_pseudonym and c_pseudonym != "C"
@@ -255,10 +253,9 @@ def test_persisted_prefix_is_completed_regardless_of_request_order(
                 allocator.observe("Q", encoding="cp1250", byte_width=1)
                 allocator.observe("FLEX-00", encoding="cp1250", byte_width=1)
                 allocator.finalize()
-                results = [allocator.pseudonym_for(remaining[i]) for i in order]
-            rows = dict(
-                (original, pseudonym) for original, pseudonym, _l in _global_rows(vault)
-            )
+                for index in order:
+                    allocator.pseudonym_for(remaining[index])
+            rows = dict((original, pseudonym) for original, pseudonym, _l in _global_rows(vault))
             assert len(rows) == 34 + 3
             assert len(set(rows.values())) == 34 + 3
             for original in remaining:
@@ -275,8 +272,7 @@ def test_persisted_prefix_without_completion_fails_truthfully(
     # completion is genuinely infeasible: the typed exhaustion is truthful
     # (the prefix itself stays fixed and is never remapped).
     prefix = [
-        (f"PREFIX-{index:02d}", ch, 1)
-        for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
+        (f"PREFIX-{index:02d}", ch, 1) for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
     ]
     with _create(tmp_path) as vault:
         _seed_global_domain_rows(vault, list(prefix))

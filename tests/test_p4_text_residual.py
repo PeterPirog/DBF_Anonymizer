@@ -70,9 +70,7 @@ def _seed_domain(vault: VaultDatabase) -> str:
         vault.acquire_writer_lease(lease)
         try:
             with vault.transaction():
-                if not any(
-                    row["domain_id"] == domain_id for row in mapping_domains(vault)
-                ):
+                if not any(row["domain_id"] == domain_id for row in mapping_domains(vault)):
                     create_domain(
                         vault,
                         domain_kind=VAULT_TABLE_DOMAIN_KIND_TEXT,
@@ -83,9 +81,7 @@ def _seed_domain(vault: VaultDatabase) -> str:
     return domain_id
 
 
-def _persist(
-    vault: VaultDatabase, domain_id: str, pairs: list[tuple[str, str]]
-) -> None:
+def _persist(vault: VaultDatabase, domain_id: str, pairs: list[tuple[str, str]]) -> None:
     if not pairs:
         return
     lease = new_writer_token()
@@ -119,11 +115,15 @@ def _solved_assignment(
     spool: PassOneSpool,
 ) -> dict[str, tuple[str, int | None, int | None]]:
     """The solved (original -> (kind, class_length, token_value)) mapping."""
-    rows = spool.internal_connection().execute(
-        "SELECT o.canonical, a.kind, a.length, t.value "
-        "FROM res_assign a JOIN res_original o ON o.idx = a.orig_idx "
-        "LEFT JOIN res_token t ON t.tid = a.token_idx ORDER BY o.idx"
-    ).fetchall()
+    rows = (
+        spool.internal_connection()
+        .execute(
+            "SELECT o.canonical, a.kind, a.length, t.value "
+            "FROM res_assign a JOIN res_original o ON o.idx = a.orig_idx "
+            "LEFT JOIN res_token t ON t.tid = a.token_idx ORDER BY o.idx"
+        )
+        .fetchall()
+    )
     return {
         bytes(canonical).decode("utf-8"): (
             str(kind),
@@ -138,9 +138,9 @@ def _original_ids(spool: PassOneSpool) -> dict[str, int]:
     """The original-id namespace of the solved graph (by value)."""
     return {
         bytes(canonical).decode("utf-8"): int(idx)
-        for canonical, idx in spool.internal_connection().execute(
-            "SELECT canonical, idx FROM res_original"
-        ).fetchall()
+        for canonical, idx in spool.internal_connection()
+        .execute("SELECT canonical, idx FROM res_original")
+        .fetchall()
     }
 
 
@@ -148,9 +148,9 @@ def _token_ids(spool: PassOneSpool) -> dict[str, int]:
     """The tid namespace of the solved graph (resource ids, by value)."""
     return {
         str(value): int(tid)
-        for value, tid in spool.internal_connection().execute(
-            "SELECT value, tid FROM res_token"
-        ).fetchall()
+        for value, tid in spool.internal_connection()
+        .execute("SELECT value, tid FROM res_token")
+        .fetchall()
     }
 
 
@@ -158,9 +158,9 @@ def _token_owners(spool: PassOneSpool) -> dict[str, int]:
     """The owner original of every reserved token (by token value)."""
     return {
         str(value): int(owner)
-        for value, owner in spool.internal_connection().execute(
-            "SELECT value, owner_idx FROM res_token"
-        ).fetchall()
+        for value, owner in spool.internal_connection()
+        .execute("SELECT value, owner_idx FROM res_token")
+        .fetchall()
     }
 
 
@@ -181,10 +181,7 @@ def test_one_token_exhaustion_is_infeasible(tmp_path: Path) -> None:
             _solve(vault, spool, domain_id, alphabet="a")
             raise AssertionError("expected infeasibility")
         except MappingError as excinfo:
-            assert (
-                excinfo.to_dict()["context"]["detail_code"]
-                == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
-            )
+            assert excinfo.to_dict()["context"]["detail_code"] == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
         assert _solved_assignment(spool) == {}
         spool.cleanup()
 
@@ -207,7 +204,6 @@ def test_two_token_exact_swap(tmp_path: Path) -> None:
             "b": ("token", None, "a"),
         }
         token_ids = _token_ids(spool)
-        owners = _token_owners(spool)
         original_ids = _original_ids(spool)
         assert token_ids == {"a": 0, "b": 1}
         # tid namespace vs occupant: the occupant of each reserved token is
@@ -238,9 +234,7 @@ def test_real_three_token_odd_derangement(tmp_path: Path) -> None:
         real_unwind = text_residual_module._unwind
 
         def spy_unwind(connection, found):
-            rows = int(
-                connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0]
-            )
+            rows = int(connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0])
             max_stack["depth"] = max(max_stack["depth"], int(rows))
             return real_unwind(connection, found)
 
@@ -300,9 +294,7 @@ def test_displacement_frame_uses_the_occupant_original(
         real_unwind = text_residual_module._unwind
 
         def spy_unwind(connection, found):
-            rows = int(
-                connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0]
-            )
+            rows = int(connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0])
             max_stack["depth"] = max(max_stack["depth"], rows)
             return real_unwind(connection, found)
 
@@ -410,10 +402,7 @@ def test_persisted_occupied_resources_can_make_it_infeasible(
             _solve(vault, spool, domain_id, alphabet="abcd")
             raise AssertionError("expected infeasibility")
         except MappingError as exc:
-            assert (
-                exc.to_dict()["context"]["detail_code"]
-                == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
-            )
+            assert exc.to_dict()["context"]["detail_code"] == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
         spool.cleanup()
 
 
@@ -456,13 +445,11 @@ def test_materialization_never_steals_a_reserved_token(
         originals = _original_ids(spool)
         tokens = _token_ids(spool)
         connection.execute(
-            "UPDATE res_assign SET kind = 'class', length = 1, token_idx = NULL "
-            "WHERE orig_idx = ?",
+            "UPDATE res_assign SET kind = 'class', length = 1, token_idx = NULL WHERE orig_idx = ?",
             (originals["b"],),
         )
         connection.execute(
-            "UPDATE res_assign SET kind = 'token', length = NULL, token_idx = ? "
-            "WHERE orig_idx = ?",
+            "UPDATE res_assign SET kind = 'token', length = NULL, token_idx = ? WHERE orig_idx = ?",
             (tokens["a"], originals["c"]),
         )
         connection.commit()
@@ -474,17 +461,13 @@ def test_materialization_never_steals_a_reserved_token(
         # Probe: a->d, then b attempts reserved/unoccupied a before choosing e.
         # Exact walk: after a->d, its SQL blocked set still includes a/b/c,
         # leaving only e for b.  In both cases c->a commits last.
-        monkeypatch.setattr(
-            text_residual_module, "_TEXT_PROBE_BUDGET", probe_budget
-        )
+        monkeypatch.setattr(text_residual_module, "_TEXT_PROBE_BUDGET", probe_budget)
         sequence = iter(choices)
 
         def deterministic_randbelow(bound: int) -> int:
             return next(sequence) % bound
 
-        monkeypatch.setattr(
-            text_residual_module, "_randbelow", deterministic_randbelow
-        )
+        monkeypatch.setattr(text_residual_module, "_randbelow", deterministic_randbelow)
         allocated: dict[str, str] = {}
         from dbf_anonymizer.engine.text_residual import (
             materialize_text_assignment,
@@ -629,9 +612,7 @@ def _oracle_case(
             _solve(vault, spool, domain_id, alphabet=alphabet)
         except MappingError:
             production_feasible = False
-        oracle = _brute_force_oracle(
-            alphabet, originals, dict(persisted)
-        )
+        oracle = _brute_force_oracle(alphabet, originals, dict(persisted))
         spool.cleanup()
         return production_feasible, oracle is not None
 
@@ -692,9 +673,7 @@ def test_brute_force_oracle_equivalence_battery(tmp_path: Path) -> None:
                 used_pseudonyms.add(token)
                 if len(persisted) >= rng.randint(0, 2):
                     break
-        production, oracle = _oracle_case(
-            work, trial, alphabet, originals, persisted
-        )
+        production, oracle = _oracle_case(work, trial, alphabet, originals, persisted)
         cases += 1
         if production != oracle:
             divergences += 1
@@ -746,17 +725,13 @@ def test_p2_oracle_equivalence_on_the_production_alphabet(
             persisted = {}
             assign_count = rng.randint(0, len(values) // 2)
             if assign_count:
-                token_population = [
-                    token for token in population if token not in values
-                ]
+                token_population = [token for token in population if token not in values]
                 if token_population:
                     pseudonyms = rng.sample(
                         token_population,
                         min(assign_count, len(token_population)),
                     )
-                    for value, pseudonym in zip(
-                        values[: len(pseudonyms)], pseudonyms
-                    ):
+                    for value, pseudonym in zip(values[: len(pseudonyms)], pseudonyms):
                         persisted[value] = pseudonym
             _persist(vault, domain_id, list(persisted.items()))
             for value, observed_width in observed:
@@ -769,9 +744,7 @@ def test_p2_oracle_equivalence_on_the_production_alphabet(
             production_mapping: dict[str, str] = {}
             try:
                 _solve(vault, spool, domain_id, alphabet=ALPHABET)
-                for value, (kind, length, token) in _solved_assignment(
-                    spool
-                ).items():
+                for value, (kind, length, token) in _solved_assignment(spool).items():
                     if kind == "token":
                         production_mapping[value] = token
                     # Fungible class slots pick their token value at
@@ -789,9 +762,7 @@ def test_p2_oracle_equivalence_on_the_production_alphabet(
                     for value, observed_width in observed:
                         if value in persisted:
                             continue
-                        planner.observe(
-                            value, encoding="cp1250", byte_width=observed_width
-                        )
+                        planner.observe(value, encoding="cp1250", byte_width=observed_width)
                     planner.finalize()
                     for value, _observed_width in observed:
                         if value in persisted:
@@ -810,9 +781,7 @@ def test_p2_oracle_equivalence_on_the_production_alphabet(
                     assert is_safe_token(pseudonym, ALPHABET)
                     assert pseudonym != value
                     assert len(pseudonym) <= dict(observed)[value]
-                assert len(set(production_mapping.values())) == len(
-                    production_mapping
-                )
+                assert len(set(production_mapping.values())) == len(production_mapping)
                 for value, pseudonym in oracle_mapping.items():
                     assert is_safe_token(pseudonym, ALPHABET)
                     assert pseudonym != value
@@ -860,7 +829,6 @@ def test_post_solve_validator_fails_closed_on_corruption(
     stable value-free detail code: a missing assignment, an unknown kind
     (schema-guarded), a dangling token id, a double token occupancy, a
     self-assignment or a capacity bookkeeping mismatch."""
-    import sqlite3
 
     from dbf_anonymizer.engine.text_residual import (
         _validate_residual_assignment,
@@ -887,24 +855,17 @@ def test_post_solve_validator_fails_closed_on_corruption(
                     base=2,
                 )
             assert (
-                excinfo.value.to_dict()["context"]["detail_code"]
-                == "ENGINE_TEXT_RESIDUAL_CORRUPT"
+                excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_TEXT_RESIDUAL_CORRUPT"
             )
             spool.cleanup()
 
+    corrupt(lambda c: c.execute("DELETE FROM res_assign WHERE orig_idx = 0"), 0)
     corrupt(
-        lambda c: c.execute("DELETE FROM res_assign WHERE orig_idx = 0"), 0
-    )
-    corrupt(
-        lambda c: c.execute(
-            "UPDATE res_assign SET token_idx = NULL WHERE orig_idx = 0"
-        ),
+        lambda c: c.execute("UPDATE res_assign SET token_idx = NULL WHERE orig_idx = 0"),
         1,
     )
     corrupt(
-        lambda c: c.execute(
-            "UPDATE res_assign SET token_idx = 999 WHERE orig_idx = 0"
-        ),
+        lambda c: c.execute("UPDATE res_assign SET token_idx = 999 WHERE orig_idx = 0"),
         2,
     )
     corrupt(lambda c: c.execute("UPDATE res_cap SET fungible = 999"), 3)

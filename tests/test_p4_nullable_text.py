@@ -37,9 +37,7 @@ def _text_mappings(plan: Any, vault_path: Path) -> dict[str, str]:
     try:
         return {
             original: pseudonym
-            for original, pseudonym, _length in text_mapping_rows(
-                vault, GLOBAL_TEXT_DOMAIN_ID
-            )
+            for original, pseudonym, _length in text_mapping_rows(vault, GLOBAL_TEXT_DOMAIN_ID)
         }
     finally:
         vault.close()
@@ -89,9 +87,7 @@ def test_nullable_character_end_to_end_preserves_null_empty_deleted_and_mappings
         def logical_records():
             for record in records:  # type: ignore[union-attr]
                 supplied_records["count"] += 1
-                assert all(
-                    str(name).upper() != "_NULLFLAGS" for name in record.values
-                )
+                assert all(str(name).upper() != "_NULLFLAGS" for name in record.values)
                 yield record
 
         kwargs["records"] = logical_records()
@@ -100,11 +96,7 @@ def test_nullable_character_end_to_end_preserves_null_empty_deleted_and_mappings
     monkeypatch.setattr(direct_io.dbfbridge, "write_table", inspect_write)
     plan, result, output_root, vault_path = _run(source_root, tmp_path)
 
-    output = tuple(
-        dbfbridge.iter_records(
-            output_root / "character.dbf", include_deleted=True
-        )
-    )
+    output = tuple(dbfbridge.iter_records(output_root / "character.dbf", include_deleted=True))
     values = [record.values["TXT"] for record in output]
     assert values[0] is None
     assert values[1] == ""
@@ -133,9 +125,7 @@ def test_nullable_varchar_preserves_significant_values_and_mapping_partition(
     )
     plan, result, output_root, vault_path = _run(source_root, tmp_path)
 
-    output = tuple(
-        dbfbridge.iter_records(output_root / "varchar.dbf", include_deleted=True)
-    )
+    output = tuple(dbfbridge.iter_records(output_root / "varchar.dbf", include_deleted=True))
     values = [record.values["TXT"] for record in output]
     assert values[0] is None
     assert values[1] == ""
@@ -256,9 +246,7 @@ def test_nullable_memo_preserves_null_and_masks_empty_and_nonempty(
     plan = build_plan(source_root, output_root, vault_path)
     run_two_pass(plan)
 
-    output = tuple(
-        dbfbridge.iter_records(output_root / "memo.dbf", memo="inline")
-    )
+    output = tuple(dbfbridge.iter_records(output_root / "memo.dbf", memo="inline"))
     values = [record.values["NOTE"] for record in output]
     assert values[0] is None
     assert values[1] == values[2] == "[MASKED-MEMO]"
@@ -276,8 +264,6 @@ def test_nullable_memo_preserves_null_and_masks_empty_and_nonempty(
         assert [bytes(row["original_payload"]) for row in rows] == [b"", b"ABC"]
         registered_names = {
             str(row[0])
-            for row in vault._internal_connection().execute(
-                "SELECT name FROM fields ORDER BY name"
-            )
+            for row in vault._internal_connection().execute("SELECT name FROM fields ORDER BY name")
         }
         assert registered_names == {"NOTE"}

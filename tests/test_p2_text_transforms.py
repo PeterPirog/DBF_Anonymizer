@@ -22,7 +22,6 @@ from dbf_anonymizer.transforms.text import (
     is_safe_token,
     max_encoded_byte_length,
     reduced_strictest,
-    token_at,
     token_index,
     token_space,
     token_space_at_least,

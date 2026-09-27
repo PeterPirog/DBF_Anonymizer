@@ -21,8 +21,6 @@ evidence only, not the future REQ-P1-008 public cancellation semantics.
 from __future__ import annotations
 
 import os
-import shutil
-import stat
 from pathlib import Path
 
 import pytest
@@ -33,7 +31,6 @@ from support.source_immutability import (
     IN_SCOPE_SUFFIXES,
     OperationCancelled,
     OperationFailedError,
-    SourceArtifact,
     WriteTargetInsideSourceError,
     assert_fingerprints_equal,
     build_synthetic_source_tree,
@@ -89,7 +86,9 @@ def _output_root(tmp_path: Path) -> Path:
     return tmp_path / "operation-output"
 
 
-def _assert_targets_outside_source(source_root: Path, targets: list[str], output_root: Path) -> None:
+def _assert_targets_outside_source(
+    source_root: Path, targets: list[str], output_root: Path
+) -> None:
     for relative in targets:
         absolute = output_root / relative
         assert absolute.is_file()
@@ -104,7 +103,9 @@ def _assert_targets_outside_source(source_root: Path, targets: list[str], output
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_discovers_every_expected_artifact_recursively(synthetic_source_tree: Path) -> None:
+def test_fingerprint_discovers_every_expected_artifact_recursively(
+    synthetic_source_tree: Path,
+) -> None:
     fingerprint = fingerprint_source_tree(synthetic_source_tree)
     assert {artifact.relative_path for artifact in fingerprint} == EXPECTED_SOURCE_ARTIFACTS
     assert {artifact.artifact_class for artifact in fingerprint} == {"dbf", "fpt", "cdx", "idx"}
@@ -247,7 +248,7 @@ def test_failure_scenario_leaves_source_byte_identical(
     before = fingerprint_source_tree(source_root)
     source_inventory_before = full_tree_inventory(source_root)
     with pytest.raises(OperationFailedError):
-        created = representative_operation(source_root, output_root, fail_after_tables=0)
+        representative_operation(source_root, output_root, fail_after_tables=0)
     # Failure happened AFTER the first table (deterministic sorted order:
     # extra/UPPERCASE.DBF) was fully processed and externally written.
     assert (output_root / "extra" / "UPPERCASE.DBF").is_file()
@@ -258,7 +259,11 @@ def test_failure_scenario_leaves_source_byte_identical(
     # (no REQ-P4 atomic-publication semantics are claimed here).
     _assert_targets_outside_source(
         source_root,
-        [path.relative_to(output_root).as_posix() for path in output_root.rglob("*") if path.is_file()],
+        [
+            path.relative_to(output_root).as_posix()
+            for path in output_root.rglob("*")
+            if path.is_file()
+        ],
         output_root,
     )
 
@@ -278,7 +283,11 @@ def test_cancellation_scenario_leaves_source_byte_identical(
     assert full_tree_inventory(source_root) == source_inventory_before
     _assert_targets_outside_source(
         source_root,
-        [path.relative_to(output_root).as_posix() for path in output_root.rglob("*") if path.is_file()],
+        [
+            path.relative_to(output_root).as_posix()
+            for path in output_root.rglob("*")
+            if path.is_file()
+        ],
         output_root,
     )
 

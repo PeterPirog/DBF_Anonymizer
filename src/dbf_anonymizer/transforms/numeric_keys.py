@@ -48,7 +48,6 @@ __all__ = [
     "integer_writable_pseudonym_range",
     "integral_numeric_range",
     "intersect_ranges",
-    "range_contains",
     "NumericKeyMemberRange",
     "NumericKeyDomain",
     "integer_member",
@@ -304,9 +303,7 @@ MEMBER_ORIGINAL_RECOVERY_UNWRITABLE = "RECOVERY_UNWRITABLE"
 MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE = "OUT_OF_MEMBER_RANGE"
 
 
-def classify_member_original(
-    member: NumericKeyMemberRange, value: int
-) -> str:
+def classify_member_original(member: NumericKeyMemberRange, value: int) -> str:
     """The ORIGIN-MEMBER reversible verdict for one observed occurrence.
 
     This is the ONE authoritative member-level reversible-original rule,
@@ -365,9 +362,7 @@ def free_token_count(domain: NumericKeyDomain, occupied: Sequence[int]) -> int:
     above ``pseudonym_low..pseudonym_high`` never consume capacity and
     duplicates never double-count.
     """
-    in_domain = {
-        value for value in occupied if domain.contains_pseudonym(value)
-    }
+    in_domain = {value for value in occupied if domain.contains_pseudonym(value)}
     return domain.size - len(in_domain)
 
 
@@ -431,9 +426,7 @@ def plan_numeric_bijection(
     feasible through the swap.  The result is deterministic, needs no
     materialization of the token universe and reports capacity truthfully.
     """
-    blocked = {
-        value for value in occupied_pseudonyms if domain.contains_pseudonym(value)
-    }
+    blocked = {value for value in occupied_pseudonyms if domain.contains_pseudonym(value)}
     originals = list(unpersisted_originals)
     distinct = set(originals)
     if len(distinct) != len(originals):

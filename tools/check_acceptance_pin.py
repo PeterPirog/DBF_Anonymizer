@@ -18,7 +18,6 @@ acceptance failure, never a reason to switch sources.
 from __future__ import annotations
 
 import importlib.metadata
-import sys
 from pathlib import Path
 
 PIN_FILE = Path(__file__).resolve().parents[1] / "requirements" / "p0-dbfbridge-tested.txt"
@@ -40,7 +39,9 @@ def _read_pin() -> str:
         if line.strip() and not line.strip().startswith("#")
     ]
     if len(requirement_lines) != 1:
-        _fail(f"acceptance pin must contain exactly one requirement line, found {requirement_lines!r}")
+        _fail(
+            f"acceptance pin must contain exactly one requirement line, found {requirement_lines!r}"
+        )
     pin = requirement_lines[0].replace(" ", "")
     if pin.count("==") != 1 or not pin.startswith(EXPECTED_PACKAGE + "=="):
         _fail(f"acceptance pin must be an exact {EXPECTED_PACKAGE}==<version> pin, found {pin!r}")

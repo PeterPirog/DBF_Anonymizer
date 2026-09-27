@@ -64,26 +64,19 @@ def _add_recovery_policy(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_plan_arguments(
-    parser: argparse.ArgumentParser, *, output_name: str = "output"
-) -> None:
+def _add_plan_arguments(parser: argparse.ArgumentParser, *, output_name: str = "output") -> None:
     parser.add_argument("source", type=Path, help="source dataset directory")
     parser.add_argument(output_name, type=Path, help="pseudonymized output directory")
     parser.add_argument("vault", type=Path, help="protected SQLite vault path")
     parser.add_argument("--policy", type=Path, help="versioned JSON policy file")
-    parser.add_argument(
-        "--relationships", type=Path, help="versioned JSON relationship document"
-    )
+    parser.add_argument("--relationships", type=Path, help="versioned JSON relationship document")
     _add_json(parser)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description=(
-            "DBF_Anonymizer 1.0: pseudonymization for Visual FoxPro "
-            "DBF/FPT datasets."
-        ),
+        description=("DBF_Anonymizer 1.0: pseudonymization for Visual FoxPro DBF/FPT datasets."),
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -94,15 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    caps = subparsers.add_parser(
-        "capabilities", help="report standalone runtime capabilities"
-    )
+    caps = subparsers.add_parser("capabilities", help="report standalone runtime capabilities")
     _add_recovery_policy(caps)
     _add_json(caps)
 
-    plan_parser = subparsers.add_parser(
-        "plan", help="build a read-only deterministic dataset plan"
-    )
+    plan_parser = subparsers.add_parser("plan", help="build a read-only deterministic dataset plan")
     _add_plan_arguments(plan_parser)
 
     preflight_parser = subparsers.add_parser(
@@ -127,9 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover",
         help="reconstruct the original logical dataset from output and vault",
     )
-    recover_parser.add_argument(
-        "pseudonymized", type=Path, help="pseudonymized dataset directory"
-    )
+    recover_parser.add_argument("pseudonymized", type=Path, help="pseudonymized dataset directory")
     recover_parser.add_argument("vault", type=Path, help="protected SQLite vault")
     recover_parser.add_argument(
         "output", type=Path, help="recovered output directory (must not exist)"
@@ -141,9 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "export-bundle", help="create a verified standalone DATA_ONLY bundle"
     )
     export_parser.add_argument("source", type=Path, help="source dataset directory")
-    export_parser.add_argument(
-        "pseudonymized", type=Path, help="pseudonymized dataset directory"
-    )
+    export_parser.add_argument("pseudonymized", type=Path, help="pseudonymized dataset directory")
     export_parser.add_argument("vault", type=Path, help="protected SQLite vault")
     export_parser.add_argument("destination", type=Path, help="bundle destination")
     export_parser.add_argument("--policy", type=Path, help="versioned JSON policy file")
@@ -169,8 +154,7 @@ def _progress_to_stderr(event: ProgressEvent) -> None:
     total = event.total_units if event.total_units is not None else "?"
     table = f" [{event.table_path}]" if event.table_path else ""
     print(
-        f"[{event.phase_code}] {event.event_code}: "
-        f"{event.completed_units}/{total}{table}",
+        f"[{event.phase_code}] {event.event_code}: {event.completed_units}/{total}{table}",
         file=sys.stderr,
     )
 
@@ -207,9 +191,7 @@ def _build_plan_from_args(args: argparse.Namespace) -> Plan:
         output=output,
         vault=args.vault,
         policy=_load_document(args.policy, kind="policy"),
-        relationship_document=_load_document(
-            args.relationships, kind="relationship"
-        ),
+        relationship_document=_load_document(args.relationships, kind="relationship"),
         progress=_progress(args),
     )
 
@@ -217,11 +199,7 @@ def _build_plan_from_args(args: argparse.Namespace) -> Plan:
 def _emit(args: argparse.Namespace, result: object, human: str) -> int:
     if args.json:
         to_dict = getattr(result, "to_dict")
-        print(
-            json.dumps(
-                to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-            )
-        )
+        print(json.dumps(to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True))
     else:
         print(human, file=sys.stderr)
     return 0
@@ -250,9 +228,7 @@ def _run_pseudonymize(args: argparse.Namespace) -> int:
     except ValueError:
         raise PolicyError(
             ErrorCode.POLICY_INVALID,
-            context=ErrorContext(
-                operation="cli", detail_code="CLI_WORKER_COUNT_INVALID"
-            ),
+            context=ErrorContext(operation="cli", detail_code="CLI_WORKER_COUNT_INVALID"),
         ) from None
     return _emit(
         args,

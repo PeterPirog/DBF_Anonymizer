@@ -53,9 +53,7 @@ def _unsupported(dbf_type: str | None = None) -> MappingError:
     """Stable typed refusal for an unsupported memo representation."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="MEMO_UNSUPPORTED_REPRESENTATION"
-        ),
+        context=ErrorContext(operation="transform", detail_code="MEMO_UNSUPPORTED_REPRESENTATION"),
     )
 
 
@@ -143,11 +141,7 @@ def persist_memo_recovery(
         # _mask_for already refused non-vocabulary values; this branch keeps
         # the row API's declared payload type honest for the type checker.
         raise _unsupported()
-    kind = (
-        VAULT_PAYLOAD_KIND_TEXT
-        if isinstance(value, str)
-        else VAULT_PAYLOAD_KIND_BINARY
-    )
+    kind = VAULT_PAYLOAD_KIND_TEXT if isinstance(value, str) else VAULT_PAYLOAD_KIND_BINARY
     with database.transaction():
         # IDEMPOTENT RERUN SEMANTICS (REQ-P2-010): the exact same stable
         # identity with the SAME original payload and kind reuses the
@@ -157,15 +151,11 @@ def persist_memo_recovery(
         if existing is not None:
             stored_payload, stored_kind = existing
             if isinstance(value, str):
-                same = (
-                    stored_kind == VAULT_PAYLOAD_KIND_TEXT
-                    and stored_payload == value.encode("utf-8")
+                same = stored_kind == VAULT_PAYLOAD_KIND_TEXT and stored_payload == value.encode(
+                    "utf-8"
                 )
             else:
-                same = (
-                    stored_kind == VAULT_PAYLOAD_KIND_BINARY
-                    and stored_payload == bytes(value)
-                )
+                same = stored_kind == VAULT_PAYLOAD_KIND_BINARY and stored_payload == bytes(value)
             if not same:
                 raise _identity_conflict()
         else:

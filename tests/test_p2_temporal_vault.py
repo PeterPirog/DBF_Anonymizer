@@ -18,7 +18,6 @@ import pytest
 
 from dbf_anonymizer import ErrorCode, MappingError, VaultError
 from dbf_anonymizer.vault import (
-    GLOBAL_TEXT_DOMAIN_ID,
     VAULT_DATABASE_FILENAME,
     VaultDatabase,
     TemporalShiftDomain,
@@ -207,10 +206,7 @@ def test_zero_only_feasible_domain_fails_closed_without_persisting(
             # Nothing was persisted for the refused domain.
             assert temporal_parameter(vault, domain.domain_id) is None
             with vault.transaction():
-                assert all(
-                    row["domain_id"] != domain.domain_id
-                    for row in mapping_domains(vault)
-                )
+                assert all(row["domain_id"] != domain.domain_id for row in mapping_domains(vault))
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +281,9 @@ def test_unauthorized_writer_cannot_allocate_an_offset(tmp_path: Path) -> None:
         assert temporal_parameter(unauthorized, domain.domain_id) is None
 
 
-def test_failed_offset_persistence_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_offset_persistence_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from support.vault_sessions import install_failing_execute
 
     with _create(tmp_path) as vault:
@@ -376,9 +374,7 @@ def test_intervals_are_preserved_across_all_value_classes(tmp_path: Path) -> Non
             d = datetime(2020, 12, 31, 12, 34, 56)
             assert (domain.shifted(d) - domain.shifted(c)) == (d - c)
             # Mixed classes compare at the calendar-date level.
-            assert (domain.shifted(d).date() - domain.shifted(a)).days == (
-                d.date() - a
-            ).days
+            assert (domain.shifted(d).date() - domain.shifted(a)).days == (d.date() - a).days
             assert offset != 0
 
 
@@ -395,11 +391,7 @@ def test_typed_failures_never_carry_dates_or_offsets(tmp_path: Path) -> None:
             with pytest.raises(MappingError) as excinfo:
                 domain.finalize()
         boundary = (
-            str(excinfo.value)
-            + "|"
-            + repr(excinfo.value)
-            + "|"
-            + str(excinfo.value.to_dict())
+            str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
         )
         assert str(secret_offset) not in boundary
         assert "offset" not in boundary.lower().replace("temporal_only_zero_feasible", "")
@@ -509,8 +501,7 @@ def test_persisted_zero_offset_fails_closed(tmp_path: Path) -> None:
                     domain_id=domain.domain_id,
                 )
                 vault._internal_connection().execute(
-                    "INSERT INTO temporal_parameters (domain_id, offset_days) "
-                    "VALUES (?, ?)",
+                    "INSERT INTO temporal_parameters (domain_id, offset_days) VALUES (?, ?)",
                     (domain.domain_id, 0),
                 )
         domain.observe(date(2020, 1, 1))
@@ -565,9 +556,7 @@ def test_non_temporal_domain_kind_state_is_refused(tmp_path: Path) -> None:
         # Recovery must refuse the same corrupt state.
         with _reopen(tmp_path) as vault:
             with pytest.raises(VaultError) as recovery:
-                TemporalShiftDomain(vault, domain_name="kindprobe").recover(
-                    date(2020, 5, 1)
-                )
+                TemporalShiftDomain(vault, domain_name="kindprobe").recover(date(2020, 5, 1))
             assert recovery.value.code is ErrorCode.VAULT_STATE_INVALID
 
 

@@ -29,12 +29,8 @@ from dbf_anonymizer.models import (
 _EXECUTABLE_ENV = "DBF_ANONYMIZER_REAL_VFP9_EXECUTABLE"
 _BACKEND_ID = "trusted-local-vfp9-test-backend"
 _FIXTURE_TABLE = "structural/indexed_table.dbf"
-_FIXTURE_DBF_SHA256 = (
-    "3076275e4bcd174500a9e1954596b5fd62f826e957fd9e3136b7bfe45e6054aa"
-)
-_FIXTURE_CDX_SHA256 = (
-    "b5ab7ee37138971be4c565dcb2871879b700b416d8861ae2f5203a9e695a3fe7"
-)
+_FIXTURE_DBF_SHA256 = "3076275e4bcd174500a9e1954596b5fd62f826e957fd9e3136b7bfe45e6054aa"
+_FIXTURE_CDX_SHA256 = "b5ab7ee37138971be4c565dcb2871879b700b416d8861ae2f5203a9e695a3fe7"
 
 
 def _vfp_literal(value: Path) -> str:
@@ -167,18 +163,14 @@ ENDPROC
             expected_tag_inventory=tags,
         )
 
-    def verify_index(
-        self, request: IndexVerificationRequest
-    ) -> IndexVerificationOutcome:
+    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationOutcome:
         self._validate_staged_request(request)
         record_count, tags = self._inspect_table(request.staged_table_path)
         self.table_opened = True
         self.actual_record_count = record_count
         self.actual_tag_inventory = tags
         status = "VERIFIED" if tags == self.expected_tag_inventory else "MISMATCH"
-        detail_code = (
-            "VERIFIED_OK" if status == "VERIFIED" else "TAG_INVENTORY_MISMATCH"
-        )
+        detail_code = "VERIFIED_OK" if status == "VERIFIED" else "TAG_INVENTORY_MISMATCH"
         return IndexVerificationOutcome(
             result=IndexVerificationResult(
                 backend_id=_BACKEND_ID,
@@ -193,9 +185,7 @@ ENDPROC
             actual_tag_inventory=tags,
         )
 
-    def inspect_published_table(
-        self, table_path: Path
-    ) -> tuple[int, tuple[str, ...]]:
+    def inspect_published_table(self, table_path: Path) -> tuple[int, tuple[str, ...]]:
         """Reopen one published synthetic fixture through real VFP9."""
         if table_path.name.lower() != "indexed_table.dbf":
             raise RuntimeError("real VFP9 test backend accepts the synthetic fixture only")
@@ -291,14 +281,8 @@ QUIT
     def _parse_evidence(lines: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
         if not lines or not lines[0].startswith("OK\t"):
             raise RuntimeError("real VFP9 evidence is malformed")
-        counts = [
-            line.split("\t", 1)[1] for line in lines if line.startswith("COUNT\t")
-        ]
-        tags = tuple(
-            line.split("\t", 1)[1].upper()
-            for line in lines
-            if line.startswith("TAG\t")
-        )
+        counts = [line.split("\t", 1)[1] for line in lines if line.startswith("COUNT\t")]
+        tags = tuple(line.split("\t", 1)[1].upper() for line in lines if line.startswith("TAG\t"))
         if len(counts) != 1 or not tags:
             raise RuntimeError("real VFP9 evidence is incomplete")
         return int(counts[0]), tags

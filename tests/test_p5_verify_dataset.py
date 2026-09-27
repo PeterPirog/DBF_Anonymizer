@@ -33,7 +33,6 @@ from dbf_anonymizer import (
     VerificationError,
     VerificationResult,
     VerificationStatus,
-    build_plan,
     preflight,
     pseudonymize,
     verify_dataset,
@@ -240,7 +239,6 @@ def _prepare(tmp_path: Path) -> tuple[PseudonymizationResult, Path, Path, Path]:
     return result, source, output, vault
 
 
-
 def _table_entries(path: Path) -> tuple[list[dict[str, Any]], list[bool]]:
     source_records = tuple(
         dbfbridge.iter_records(path, include_deleted=True, memo="inline")  # type: ignore[attr-defined]
@@ -375,9 +373,7 @@ def test_verification_is_strictly_read_only_and_creates_no_artifacts(
     before_vault = _hash_tree(vault.parent)
     before_tmp = _hash_tree(tmp_path)
 
-    verification = verify_dataset(
-        result, source=source, vault=vault, cancel_check=lambda: False
-    )
+    verification = verify_dataset(result, source=source, vault=vault, cancel_check=lambda: False)
 
     assert verification.status is VerificationStatus.PASS
     assert _hash_tree(source) == before_source
@@ -478,9 +474,7 @@ def test_verification_pass_partial_fail_is_deterministic_and_repeatable(
     assert partial.status is VerificationStatus.PARTIAL
     assert partial.check_codes == ("INDEX_ARTIFACT_UNVERIFIED",)
     assert partial.verified is False
-    assert verify_dataset(
-        partial_result, source=source, vault=vault
-    ) == partial
+    assert verify_dataset(partial_result, source=source, vault=vault) == partial
 
     # --- FAIL: real corruption always wins over the partial dimension.
     records, deleted_flags = _table_entries(source / "north" / "data.dbf")
@@ -881,9 +875,7 @@ def test_incompatible_vault_schema_is_a_typed_inability(tmp_path: Path) -> None:
 
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "UPDATE meta SET schema_version = '9.9' WHERE singleton = 1"
-        )
+        connection.execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
         connection.commit()
     finally:
         connection.close()
@@ -932,6 +924,8 @@ def test_completed_idempotent_retry_keeps_verification_truthful(
     assert first == second
     assert first.status is VerificationStatus.PASS
     assert second.operation_id == result.operation_id
+
+
 # ---------------------------------------------------------------------------
 # OUTPUT_VERIFICATION cancellation / callback classification (Defect B)
 # ---------------------------------------------------------------------------
@@ -1011,9 +1005,7 @@ def test_field_policy_ledger_is_complete_with_explicit_keep(tmp_path: Path) -> N
     action - the identity fields carry the explicit KEEP action with no
     mapping domain, and absence of evidence never means KEEP."""
     result, source, output, vault = _prepare(tmp_path)
-    assert verify_dataset(result, source=source, vault=vault).status is (
-        VerificationStatus.PASS
-    )
+    assert verify_dataset(result, source=source, vault=vault).status is (VerificationStatus.PASS)
     ledger = dict((row[0], row) for row in _fields_rows(vault, "north/data.dbf"))
     # Every non-system field of the source schema is explicitly bound.
     schema_names = {
@@ -1152,8 +1144,7 @@ def test_operation_policy_fingerprint_mismatch_fails(tmp_path: Path) -> None:
     connection = sqlite3.connect(vault)
     try:
         connection.execute(
-            "UPDATE operations SET policy_fingerprint = 'pol-tampered' "
-            "WHERE operation_id = ?",
+            "UPDATE operations SET policy_fingerprint = 'pol-tampered' WHERE operation_id = ?",
             (result.operation_id,),
         )
         connection.commit()
@@ -1186,8 +1177,7 @@ def test_operation_binding_fingerprint_mismatch_fails(tmp_path: Path) -> None:
     connection = sqlite3.connect(vault)
     try:
         connection.execute(
-            "UPDATE operations SET binding_fingerprint = 'opb-tampered' "
-            "WHERE operation_id = ?",
+            "UPDATE operations SET binding_fingerprint = 'opb-tampered' WHERE operation_id = ?",
             (result.operation_id,),
         )
         connection.commit()
@@ -1206,8 +1196,7 @@ def test_unknown_domain_kind_fails_closed(tmp_path: Path) -> None:
     connection = sqlite3.connect(vault)
     try:
         connection.execute(
-            "UPDATE mapping_domains SET domain_kind = 'BOGUS_KIND' "
-            "WHERE domain_kind = 'TEXT'"
+            "UPDATE mapping_domains SET domain_kind = 'BOGUS_KIND' WHERE domain_kind = 'TEXT'"
         )
         connection.commit()
     finally:

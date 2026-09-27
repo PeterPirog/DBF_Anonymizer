@@ -60,13 +60,8 @@ def _text_document() -> dict[str, object]:
 
 def _write_large_dataset(source_root: Path, *, customers: int, orders: int) -> None:
     """A large synthetic dataset with MANY unique values (bounded fixture)."""
-    parent_rows = [
-        {"CUST_ID": f"C{index:07d}", "AMT": index} for index in range(customers)
-    ]
-    child_rows = [
-        {"CUST_ID": f"C{index % customers:07d}", "AMT": index}
-        for index in range(orders)
-    ]
+    parent_rows = [{"CUST_ID": f"C{index:07d}", "AMT": index} for index in range(customers)]
+    child_rows = [{"CUST_ID": f"C{index % customers:07d}", "AMT": index} for index in range(orders)]
     write_numeric_table(
         source_root,
         "north/customers.dbf",

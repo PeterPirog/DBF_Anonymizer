@@ -106,9 +106,7 @@ def run_pass_two(
     read_streams: list[tuple[str, str]] = []
     written: list[str] = []
     text_domain_id = outcome.text_domain_id if engine_plan.text_present else None
-    temporal_offset = (
-        _persisted_temporal_offset(vault) if engine_plan.temporal_present else None
-    )
+    temporal_offset = _persisted_temporal_offset(vault) if engine_plan.temporal_present else None
     stop = Event()
 
     def accept(table_result: _TableWriteResult) -> None:
@@ -141,16 +139,12 @@ def run_pass_two(
                 )
             )
     else:
-        with ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="dbf-table"
-        ) as executor:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dbf-table") as executor:
             for start in range(0, len(engine_plan.tables), workers):
                 control.check_cancelled()
                 batch = tuple(
                     (index, engine_plan.tables[index])
-                    for index in range(
-                        start, min(start + workers, len(engine_plan.tables))
-                    )
+                    for index in range(start, min(start + workers, len(engine_plan.tables)))
                 )
                 futures: list[Future[_TableWriteResult]] = [
                     executor.submit(
@@ -231,9 +225,7 @@ def _worker_checkpoint(stop: Event) -> None:
     if stop.is_set():
         raise CancellationError(
             ErrorCode.OPERATION_CANCELLED,
-            context=ErrorContext(
-                operation="two_pass", detail_code="CANCELLED_BY_COORDINATOR"
-            ),
+            context=ErrorContext(operation="two_pass", detail_code="CANCELLED_BY_COORDINATOR"),
         )
 
 
@@ -259,9 +251,7 @@ def _primary_worker_failure(
 def _worker_cleanup_failure() -> PublicationError:
     return PublicationError(
         ErrorCode.PUBLICATION_INCOMPLETE,
-        context=ErrorContext(
-            operation="two_pass", detail_code="ENGINE_WORKER_CLEANUP_FAILED"
-        ),
+        context=ErrorContext(operation="two_pass", detail_code="ENGINE_WORKER_CLEANUP_FAILED"),
     )
 
 
@@ -382,20 +372,14 @@ def _transform_stream(
         cancel_check=checkpoint,
     )
     system_fields = {
-        str(field.name)
-        for field in table.schema.fields
-        if str(field.dbf_type).upper() == "0"
+        str(field.name) for field in table.schema.fields if str(field.dbf_type).upper() == "0"
     }
     for record in records:
         checkpoint()
         # Type-0 fields (notably VFP _NullFlags) are writer-owned system
         # state.  Supply only logical application values and let dbfbridge
         # derive the output bitmap from None/non-None values.
-        values = {
-            name: value
-            for name, value in record.values.items()
-            if name not in system_fields
-        }
+        values = {name: value for name, value in record.values.items() if name not in system_fields}
         for field_directive in directive.transformed:
             name = field_directive.field_name
             value = values.get(name)
@@ -430,13 +414,9 @@ def _transform_stream(
         for relation in engine_plan.relations:
             assert isinstance(relation, RelationDirective)
             if relation.parent_table == directive.relative_path:
-                _observe_after_side(
-                    relation, "parent", relation.parent_fields, values, evidence
-                )
+                _observe_after_side(relation, "parent", relation.parent_fields, values, evidence)
             if relation.foreign_table == directive.relative_path:
-                _observe_after_side(
-                    relation, "foreign", relation.foreign_fields, values, evidence
-                )
+                _observe_after_side(relation, "foreign", relation.foreign_fields, values, evidence)
         yield DirectRecord(
             physical_index=record.physical_index,
             deleted=record.deleted,
@@ -499,12 +479,8 @@ def _compare_relations(
         after_foreign = spool.relation_side_facts("after", relation_id, "foreign")
         before_unique = spool.relation_unique_count("before", relation_id, "parent")
         after_unique = spool.relation_unique_count("after", relation_id, "parent")
-        before_matched = spool.relation_matched_count(
-            "before", relation_id, "parent", "foreign"
-        )
-        after_matched = spool.relation_matched_count(
-            "after", relation_id, "parent", "foreign"
-        )
+        before_matched = spool.relation_matched_count("before", relation_id, "parent", "foreign")
+        after_matched = spool.relation_matched_count("after", relation_id, "parent", "foreign")
         before_orphan = (before_foreign[0] - before_foreign[1]) - before_matched
         after_orphan = (after_foreign[0] - after_foreign[1]) - after_matched
         parent_profile_equal = spool.relation_profile_equal(

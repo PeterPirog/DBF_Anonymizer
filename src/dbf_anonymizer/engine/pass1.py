@@ -48,7 +48,6 @@ from typing import Iterator, Sequence
 
 from dbf_anonymizer.engine import direct_io
 from dbf_anonymizer.engine.directives import (
-    ACTION_TEMPORAL,
     EnginePlan,
     FieldDirective,
     RelationDirective,
@@ -60,11 +59,9 @@ from dbf_anonymizer.errors import ErrorCode, ErrorContext, MappingError
 from dbf_anonymizer.progress import ProgressController, ProgressPhase
 from dbf_anonymizer.transforms.numeric_keys import (
     NumericKeyDomain,
-    NumericKeyMemberRange,
     canonical_integer_text,
     classify_member_original,
     parse_canonical_integer_text,
-    plan_numeric_bijection,
 )
 from dbf_anonymizer.transforms.text import candidate_alphabet
 from dbf_anonymizer.vault.mappings import (
@@ -149,7 +146,6 @@ def run_pass_one(
 ) -> None:
     """One deterministic Direct Read scan of the whole planned dataset."""
 
-
     assert isinstance(engine_plan, EnginePlan)
     control.start_phase(ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables))
     for directive in engine_plan.tables:
@@ -193,7 +189,6 @@ def run_pass_one(
         spool.flush()
 
 
-
 def _projection_fields(directive: "TableDirective") -> Sequence[str] | None:
     """Pass 1 reads ONLY the union of the transformed fields and EVERY
     declared relation member field of the table (BLOCKER 2 fix).
@@ -234,9 +229,7 @@ def _observe_record(
             if temporal_domain is not None:
                 temporal_domain.observe(value)
         elif field_directive.action == "MASK_REVERSIBLE":
-            binding = memo_bindings.get(
-                (directive.relative_path, field_directive.field_name)
-            )
+            binding = memo_bindings.get((directive.relative_path, field_directive.field_name))
             if binding is None:
                 raise _mapping_failure("ENGINE_MEMO_BINDING_MISSING")
             table_id, field_id = binding
@@ -294,10 +287,7 @@ def _observe_relation_side(
         )
 
 
-def _observe_text(
-    field_directive: "FieldDirective", value: object, spool: PassOneSpool
-) -> None:
-
+def _observe_text(field_directive: "FieldDirective", value: object, spool: PassOneSpool) -> None:
 
     assert isinstance(field_directive, FieldDirective)
     if value is None or value == "":
@@ -308,10 +298,7 @@ def _observe_text(
     spool.observe_text_encoding(field_directive.encoding)
 
 
-def _observe_numeric(
-    field_directive: "FieldDirective", value: object, spool: PassOneSpool
-) -> None:
-
+def _observe_numeric(field_directive: "FieldDirective", value: object, spool: PassOneSpool) -> None:
 
     assert isinstance(field_directive, FieldDirective)
     if value is None:
@@ -344,7 +331,6 @@ def run_pass_one_finalize(
 ) -> None:
     """Allocate every finalized mapping and persist the vault truth."""
 
-
     assert isinstance(engine_plan, EnginePlan)
     control.start_phase(ProgressPhase.PASS1_FINALIZE)
     if engine_plan.text_present:
@@ -366,8 +352,6 @@ def run_pass_one_finalize(
         offset = temporal_domain.finalize()
         outcome.temporal_offset = offset
         outcome.temporal_domain_id = temporal_domain.domain_id
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +404,7 @@ def _finalize_text(
         solve_text_residual,
     )
 
-    plan = solve_text_residual(
+    solve_text_residual(
         vault,
         spool,
         domain_id=domain_id,
@@ -434,9 +418,7 @@ def _finalize_text(
     ):
         control.check_cancelled()
         with vault.transaction():
-            add_text_mapping(
-                vault, domain_id, value, token, logical_byte_length=encoded_length
-            )
+            add_text_mapping(vault, domain_id, value, token, logical_byte_length=encoded_length)
         spool.drop_text_observation(value)
         allocated += 1
     connection = spool.internal_connection()
@@ -450,9 +432,11 @@ def _finalize_text(
 
 def width_infeasible(spool: PassOneSpool) -> bool:
     """Whether any remaining observation has a non-positive strictest width."""
-    row = spool.internal_connection().execute(
-        "SELECT 1 FROM text_observation WHERE min_width < 1 LIMIT 1"
-    ).fetchone()
+    row = (
+        spool.internal_connection()
+        .execute("SELECT 1 FROM text_observation WHERE min_width < 1 LIMIT 1")
+        .fetchone()
+    )
     return row is not None
 
 
@@ -544,9 +528,7 @@ def _numeric_residual_feasible(
         return False
     if free_after < 1:
         return False
-    if remaining_after > 0 and _spool_value_free_in_domain(
-        vault, spool, domain_id, domain
-    ):
+    if remaining_after > 0 and _spool_value_free_in_domain(vault, spool, domain_id, domain):
         if free_after < 2:
             return False
     return True
@@ -578,31 +560,32 @@ def _spool_value_free_in_domain(
                 return True
 
 
-def _numeric_token_occupied(
-    vault: VaultDatabase, domain_id: str, token: int
-) -> bool:
-    row = vault._internal_connection().execute(
-        "SELECT 1 FROM numeric_key_mappings WHERE domain_id = ? "
-        "AND pseudonym_value = ?",
-        (domain_id, canonical_integer_text(token)),
-    ).fetchone()
+def _numeric_token_occupied(vault: VaultDatabase, domain_id: str, token: int) -> bool:
+    row = (
+        vault._internal_connection()
+        .execute(
+            "SELECT 1 FROM numeric_key_mappings WHERE domain_id = ? AND pseudonym_value = ?",
+            (domain_id, canonical_integer_text(token)),
+        )
+        .fetchone()
+    )
     return row is not None
 
 
-def _numeric_candidate_blocked(
-    candidate: int, spool: PassOneSpool, domain_id: str
-) -> bool:
+def _numeric_candidate_blocked(candidate: int, spool: PassOneSpool, domain_id: str) -> bool:
     """Whether the candidate is a still-unpersisted original's own value."""
-    row = spool.internal_connection().execute(  # noqa: SLF001 - engine SQL
-        "SELECT 1 FROM numeric_observation WHERE domain_id = ? AND canonical = ?",
-        (domain_id, canonical_integer_text(candidate)),
-    ).fetchone()
+    row = (
+        spool.internal_connection()
+        .execute(  # noqa: SLF001 - engine SQL
+            "SELECT 1 FROM numeric_observation WHERE domain_id = ? AND canonical = ?",
+            (domain_id, canonical_integer_text(candidate)),
+        )
+        .fetchone()
+    )
     return row is not None
 
 
-def _numeric_occupied_stream(
-    vault: VaultDatabase, domain_id: str
-) -> Iterator[int]:
+def _numeric_occupied_stream(vault: VaultDatabase, domain_id: str) -> Iterator[int]:
     """The occupied pseudonyms of one numeric domain (ascending stream)."""
     cursor = vault._internal_connection().execute(
         "SELECT pseudonym_value FROM numeric_key_mappings WHERE domain_id = ? "
@@ -663,6 +646,7 @@ def _select_numeric_candidate(
     free = domain.size - occupied
     if free < 1:
         raise _capacity_failure("ENGINE_NUMERIC_DOMAIN_EXHAUSTED")
+
     def occupied_stream() -> Iterator[int]:
         return _numeric_occupied_stream(vault, domain_id)
 
@@ -683,16 +667,12 @@ def _select_numeric_candidate(
         return True
 
     for _ in range(NUMERIC_KEY_PROBE_BUDGET):
-        candidate = _streaming_jth_free_numeric(
-            domain, occupied_stream(), _randbelow(free)
-        )
+        candidate = _streaming_jth_free_numeric(domain, occupied_stream(), _randbelow(free))
         if _accept(candidate):
             return candidate
     walk_limit = min(free, remaining + 2)
     for index in range(walk_limit):
-        candidate = _streaming_jth_free_numeric(
-            domain, occupied_stream(), index
-        )
+        candidate = _streaming_jth_free_numeric(domain, occupied_stream(), index)
         if _accept(candidate):
             return candidate
     raise _capacity_failure("ENGINE_NUMERIC_NO_COMPLETION")

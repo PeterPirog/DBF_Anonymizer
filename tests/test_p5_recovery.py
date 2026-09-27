@@ -20,7 +20,6 @@ import shutil
 import threading
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 import dbfbridge
 import pytest
@@ -380,9 +379,7 @@ def _prepare(tmp_path: Path) -> tuple[PseudonymizationResult, Path, Path, Path]:
     _write_dataset(source)
     output = tmp_path / "output"
     vault = tmp_path / "vault" / "dictionary.sqlite3"
-    plan = build_plan(
-        source, output, vault, relationship_document=_relationship_document()
-    )
+    plan = build_plan(source, output, vault, relationship_document=_relationship_document())
     assert preflight(plan).ready is True
     result = pseudonymize(plan)
     assert isinstance(result, dbf_anonymizer.PseudonymizationResult)
@@ -435,9 +432,7 @@ def _topology_of(root: Path) -> tuple[str, ...]:
     if not root.exists():
         return ()
     return tuple(
-        path.relative_to(root).as_posix()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
+        path.relative_to(root).as_posix() for path in sorted(root.rglob("*")) if path.is_file()
     )
 
 
@@ -454,14 +449,8 @@ def _compare_canonical(original: Path, recovered: Path) -> None:
     for relative in original_paths:
         if not relative.endswith(".dbf"):
             continue
-        assert _schema_facts_of(original, relative) == _schema_facts_of(
-            recovered, relative
-        )
-        assert _table_records(original, relative) == _table_records(
-            recovered, relative
-        )
-
-
+        assert _schema_facts_of(original, relative) == _schema_facts_of(recovered, relative)
+        assert _table_records(original, relative) == _table_records(recovered, relative)
 
 
 # ---------------------------------------------------------------------------
@@ -511,9 +500,9 @@ def test_full_supported_matrix_round_trip_recovers_canonical_dataset(
     assert not any(tmp_path.glob("*.staging*"))
     after_tmp = _hash_tree(tmp_path)
     created = set(after_tmp) - set(before_all)
-    assert created == {
-        relative for relative in after_tmp if relative.startswith("recovered/")
-    } | {name for name in created if name.endswith(".lock")}
+    assert created == {relative for relative in after_tmp if relative.startswith("recovered/")} | {
+        name for name in created if name.endswith(".lock")
+    }
     assert not any(name.endswith(".staging") for name in created)
     # The recovered tree exists and no staging root does.
     assert (tmp_path / "recovered").is_dir()
@@ -526,8 +515,7 @@ def test_full_supported_matrix_round_trip_recovers_canonical_dataset(
     # oracle proves the actual physical fact out-of-band.
     raw_source = _hash_tree(source)
     raw_recovered = {
-        relative: digest
-        for relative, digest in _hash_tree(tmp_path / "recovered").items()
+        relative: digest for relative, digest in _hash_tree(tmp_path / "recovered").items()
     }
     raw_equal = raw_source == raw_recovered
     assert isinstance(raw_equal, bool)
@@ -544,7 +532,9 @@ def test_full_supported_matrix_round_trip_recovers_canonical_dataset(
     )
 
 
-def test_recovery_is_source_free_in_production(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recovery_is_source_free_in_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Production recovery reconstructs the logical dataset from ONLY the
     pseudonymized dataset plus the vault. The original source is deleted
     before the recovery call and file-access instrumentation proves the
@@ -595,14 +585,30 @@ def test_public_progress_stream_is_one_operation_with_bounded_phases(
     assert events
     # ONE operation id across all events and the public result.
     assert {event.operation_id for event in events} == {recovery.operation_id}
-    for phase_code in ("OPERATION", "VAULT_VERIFICATION", "RECOVERY_SCAN", "VERIFICATION", "PUBLICATION"):
+    for phase_code in (
+        "OPERATION",
+        "VAULT_VERIFICATION",
+        "RECOVERY_SCAN",
+        "VERIFICATION",
+        "PUBLICATION",
+    ):
         started = [
-            event for event in events if event.phase_code == phase_code and event.event_code == "STARTED"
+            event
+            for event in events
+            if event.phase_code == phase_code and event.event_code == "STARTED"
         ]
         assert started, phase_code
     order = [
-        [event for event in events if event.phase_code == phase and event.event_code == "STARTED"][0]
-        for phase in ("OPERATION", "VAULT_VERIFICATION", "RECOVERY_SCAN", "VERIFICATION", "PUBLICATION")
+        [event for event in events if event.phase_code == phase and event.event_code == "STARTED"][
+            0
+        ]
+        for phase in (
+            "OPERATION",
+            "VAULT_VERIFICATION",
+            "RECOVERY_SCAN",
+            "VERIFICATION",
+            "PUBLICATION",
+        )
     ]
     assert [events.index(event) for event in order] == sorted(
         events.index(event) for event in order
@@ -612,10 +618,7 @@ def test_public_progress_stream_is_one_operation_with_bounded_phases(
     assert events[-1] is completed[0]
     assert set(threads) == {threading.get_ident()}
     serialized = json.dumps(
-        [
-            event.to_dict()
-            for event in events
-        ],
+        [event.to_dict() for event in events],
         sort_keys=True,
     )
     assert str(source) not in serialized
@@ -636,9 +639,7 @@ def _cancel_at(phase_code: str) -> tuple[object, object]:
     return progress, lambda: state["cancel"]
 
 
-@pytest.mark.parametrize(
-    "phase_code", ["VAULT_VERIFICATION", "RECOVERY_SCAN", "VERIFICATION"]
-)
+@pytest.mark.parametrize("phase_code", ["VAULT_VERIFICATION", "RECOVERY_SCAN", "VERIFICATION"])
 def test_cancellation_before_publication_is_typed_and_leaves_no_output(
     tmp_path: Path, phase_code: str
 ) -> None:
@@ -672,14 +673,10 @@ def test_cancellation_before_publication_is_typed_and_leaves_no_output(
     assert not any(name.endswith(".staging") for name in created)
     assert all(name.endswith(".lock") for name in created)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
 
 
@@ -713,14 +710,10 @@ def test_callback_failure_is_contained_and_typed(tmp_path: Path) -> None:
     assert not any(name.endswith(".staging") for name in created)
     # The pseudonymized dataset and the vault stay byte-identical.
     assert _hash_tree(output) == {
-        k[len("output/"):]: v
-        for k, v in before.items()
-        if k.startswith("output/")
+        k[len("output/") :]: v for k, v in before.items() if k.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        k[len("vault/"):]: v
-        for k, v in before.items()
-        if k.startswith("vault/")
+        k[len("vault/") :]: v for k, v in before.items() if k.startswith("vault/")
     }
 
 
@@ -796,9 +789,7 @@ def test_unsupported_vault_schema_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "UPDATE meta SET schema_version = '9.9' WHERE singleton = 1"
-        )
+        connection.execute("UPDATE meta SET schema_version = '9.9' WHERE singleton = 1")
         connection.commit()
     finally:
         connection.close()
@@ -867,9 +858,7 @@ def test_missing_completed_operation_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "DELETE FROM operations WHERE operation_id = ?", (result.operation_id,)
-        )
+        connection.execute("DELETE FROM operations WHERE operation_id = ?", (result.operation_id,))
         connection.commit()
     finally:
         connection.close()
@@ -893,9 +882,7 @@ def test_missing_text_reverse_mapping_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "DELETE FROM text_mappings WHERE original_value = 'PARENT-1'"
-        )
+        connection.execute("DELETE FROM text_mappings WHERE original_value = 'PARENT-1'")
         connection.commit()
     finally:
         connection.close()
@@ -931,9 +918,7 @@ def test_missing_numeric_reverse_mapping_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "DELETE FROM numeric_key_mappings WHERE original_value = '-7'"
-        )
+        connection.execute("DELETE FROM numeric_key_mappings WHERE original_value = '-7'")
         connection.commit()
     finally:
         connection.close()
@@ -1030,7 +1015,7 @@ def test_incomplete_field_ledger_fails_closed(tmp_path: Path) -> None:
 def test_missing_pseudonymized_table_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     (output / "south" / "data.dbf").unlink()
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(Exception):
         recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
@@ -1039,7 +1024,7 @@ def test_missing_pseudonymized_table_fails_closed(tmp_path: Path) -> None:
 def test_missing_pseudonymized_fpt_fails_closed(tmp_path: Path) -> None:
     result, source, output, vault = _prepare(tmp_path)
     (output / "north" / "data.fpt").unlink()
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(Exception):
         recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
@@ -1097,9 +1082,7 @@ def test_write_failure_keeps_inputs_and_cleans_staging(
     def failing_write(*args: object, **kwargs: object) -> object:
         raise DBFBridgeError(
             ErrorCode.DBFBRIDGE_FAILURE,
-            context=ErrorContext(
-                operation="recover", detail_code="INJECTED_WRITE_FAILURE"
-            ),
+            context=ErrorContext(operation="recover", detail_code="INJECTED_WRITE_FAILURE"),
         )
 
     monkeypatch.setattr(_recovery_module, "write_fresh_table", failing_write)
@@ -1110,21 +1093,16 @@ def test_write_failure_keeps_inputs_and_cleans_staging(
     created = set(after) - set(before)
     assert not any(name.endswith(".staging") for name in created)
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
 
 
 def test_promotion_failure_keeps_inputs_and_cleans_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dbf_anonymizer import PublicationError
 
     result, source, output, vault = _prepare(tmp_path)
     before = _hash_tree(tmp_path)
@@ -1135,9 +1113,7 @@ def test_promotion_failure_keeps_inputs_and_cleans_staging(
             context=ErrorContext(operation="recover", detail_code="INJECTED"),
         )
 
-    monkeypatch.setattr(
-        "dbf_anonymizer.engine.publication.DatasetStaging.promote", failing_promote
-    )
+    monkeypatch.setattr("dbf_anonymizer.engine.publication.DatasetStaging.promote", failing_promote)
     with pytest.raises(dbf_anonymizer.PublicationError):
         recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
@@ -1145,14 +1121,10 @@ def test_promotion_failure_keeps_inputs_and_cleans_staging(
     created = set(after) - set(before)
     assert not any(name.endswith(".staging") for name in created)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
 
 
@@ -1186,9 +1158,7 @@ def test_cleanup_failure_is_surfaced_and_primary_failure_preserved(
     def failing_cleanup(self: object) -> None:
         raise dbf_anonymizer.PublicationError(
             ErrorCode.PUBLICATION_INCOMPLETE,
-            context=ErrorContext(
-                operation="recover", detail_code="CLEANUP_INJECTED"
-            ),
+            context=ErrorContext(operation="recover", detail_code="CLEANUP_INJECTED"),
         )
 
     monkeypatch.setattr(
@@ -1205,9 +1175,7 @@ def test_cleanup_failure_is_surfaced_and_primary_failure_preserved(
     # typed secondary cause.
     cleanup_marker = caught.value.__cause__
     assert isinstance(cleanup_marker, _TypedRecoveryError)
-    assert cleanup_marker.context.detail_code == (
-        "RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED"
-    )
+    assert cleanup_marker.context.detail_code == ("RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED")
     # The residual original-bearing staging actually remains in this
     # injected-failure scenario (the caller must be able to detect the risk).
     staging_dirs = [path for path in tmp_path.glob("*.staging*")]
@@ -1231,16 +1199,11 @@ def test_cleanup_failure_is_surfaced_and_primary_failure_preserved(
     # The final output was never published, and the two production inputs
     # stay byte-identical (only the residual staging is new).
     assert not (tmp_path / "recovered").exists()
-    after = _hash_tree(tmp_path)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
     # Clean the injected residual so later assertions on this tmp stay sane.
     shutil.rmtree(staging_dirs[0], ignore_errors=True)
@@ -1255,17 +1218,13 @@ def test_staged_verification_failure_injection_leaves_no_output(
     def failing_staged_verify(**kwargs: object) -> None:
         raise _recovery_module._recovery_failure("INJECTED_STAGED_FAILURE")
 
-    monkeypatch.setattr(
-        _recovery_module, "_verify_staged_recovery", failing_staged_verify
-    )
+    monkeypatch.setattr(_recovery_module, "_verify_staged_recovery", failing_staged_verify)
     with pytest.raises(RecoveryError):
         recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert not (tmp_path / "recovered").exists()
     assert not any(tmp_path.glob("*.staging*"))
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
 
 
@@ -1291,9 +1250,7 @@ def test_public_diagnostics_never_leak_originals_or_paths(tmp_path: Path) -> Non
     # A typed recovery failure carries none of the protected values either.
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "DELETE FROM text_mappings WHERE original_value = 'PARENT-1'"
-        )
+        connection.execute("DELETE FROM text_mappings WHERE original_value = 'PARENT-1'")
         connection.commit()
     finally:
         connection.close()
@@ -1371,7 +1328,7 @@ def test_cancellation_during_record_streaming_of_large_staged_verification(
     vault = tmp_path / "vault" / "dictionary.sqlite3"
     plan = build_plan(source, output, vault, relationship_document=None)
     assert preflight(plan).ready is True
-    result = pseudonymize(plan)
+    pseudonymize(plan)
 
     before = _hash_tree(tmp_path)
     events: list[ProgressEvent] = []
@@ -1405,9 +1362,7 @@ def test_cancellation_during_record_streaming_of_large_staged_verification(
     # phase had started and the record-level checkpoints were already being
     # polled, while publication never began.
     assert state["verification_started"] is True
-    assert not any(
-        event.phase_code == "PUBLICATION" for event in events
-    )
+    assert not any(event.phase_code == "PUBLICATION" for event in events)
     assert not any(event.event_code == "COMPLETED" for event in events)
     # Bounded latency: the recovery aborted a few record boundaries after the
     # trigger (the deterministic trigger poll count stayed small).
@@ -1418,14 +1373,10 @@ def test_cancellation_during_record_streaming_of_large_staged_verification(
     created = set(after) - set(before)
     assert not any(name.endswith(".staging") for name in created)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
 
 

@@ -61,9 +61,7 @@ def test_any_known_residue_is_refused(tmp_path: Path, names: tuple[str, ...]) ->
     _residue(vault_dir, names)
     with pytest.raises(VaultError) as excinfo:
         PassOneSpool(vault_dir)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SPOOL_LEFTOVER_REFUSED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SPOOL_LEFTOVER_REFUSED"
     # The residue is untouched (no silent reuse, no silent wipe).
     for name in names:
         assert (vault_dir / name).is_file()
@@ -105,9 +103,7 @@ def test_live_spool_writes_no_sidecar_artifacts(tmp_path: Path) -> None:
             spool.observe_text(f"VALUE-{index:05d}", byte_width=12)
         spool.flush()
         assert spool_artifacts(tmp_path / "vault") == [tmp_path / "vault" / _MAIN]
-        mode = spool.internal_connection().execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0]
+        mode = spool.internal_connection().execute("PRAGMA journal_mode").fetchone()[0]
         assert str(mode).lower() == "off"
     finally:
         spool.cleanup()
@@ -150,21 +146,14 @@ def test_injected_cleanup_failure_is_surfaced(tmp_path: Path) -> None:
         real_unlink(self, missing_ok=missing_ok)
 
     with pytest.raises(VaultError) as excinfo:
-        with mock.patch.object(
-            Path, "unlink", failing_unlink
-        ):
+        with mock.patch.object(Path, "unlink", failing_unlink):
             spool.cleanup()
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_SPOOL_CLEANUP_FAILED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SPOOL_CLEANUP_FAILED"
     # The artifact that could not be removed stays (truthful, no lie).
     assert (tmp_path / "vault" / _MAIN).is_file()
     assert calls["count"] >= 1
     # The error boundary carries no path, no artifact name, no values.
-    boundary = str(excinfo.value) + repr(excinfo.value) + str(
-        excinfo.value.to_dict()
-    )
+    boundary = str(excinfo.value) + repr(excinfo.value) + str(excinfo.value.to_dict())
     assert str(tmp_path) not in boundary
     assert _MAIN not in boundary
     assert "SOMETHING" not in boundary

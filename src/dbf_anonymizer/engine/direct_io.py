@@ -59,7 +59,6 @@ from dbf_anonymizer.errors import (
     ErrorCode,
     ErrorContext,
     PathError,
-    PublicationError,
 )
 
 __all__ = [
@@ -74,9 +73,7 @@ __all__ = [
 _ENGINE_OPERATION = "engine"
 
 
-def engine_path_failure(
-    detail_code: str, *, table_path: str | None = None
-) -> PathError:
+def engine_path_failure(detail_code: str, *, table_path: str | None = None) -> PathError:
     """A stable typed, privacy-safe engine path refusal (no values)."""
     return PathError(
         ErrorCode.PATH_INVALID,
@@ -107,9 +104,7 @@ class DirectSourceTable:
 
     @property
     def memo_field_names(self) -> tuple[str, ...]:
-        return tuple(
-            str(field.name) for field in self.schema.fields if field.is_memo
-        )
+        return tuple(str(field.name) for field in self.schema.fields if field.is_memo)
 
 
 def read_source_table(

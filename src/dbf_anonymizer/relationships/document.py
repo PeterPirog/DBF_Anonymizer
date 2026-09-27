@@ -189,9 +189,7 @@ def _parse_group(payload: object) -> RelationGroup:
         comparison=raw_comparison,
         provenance=raw_provenance,
         source_digest=None if source_digest is None else str(source_digest),
-        numeric_strategy=(
-            NUMERIC_STRATEGY_IDENTITY if raw_strategy is None else str(raw_strategy)
-        ),
+        numeric_strategy=(NUMERIC_STRATEGY_IDENTITY if raw_strategy is None else str(raw_strategy)),
     )
 
 

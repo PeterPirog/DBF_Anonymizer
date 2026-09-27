@@ -18,9 +18,7 @@ from dbf_anonymizer.engine import run_two_pass
 from support.numeric_tables import (
     NULLABLE_FLAG,
     numeric_field,
-    read_numeric_records,
     write_numeric_table,
-    write_numeric_table_with_deleted,
 )
 
 SOURCE_FP = "src-" + "1" * 60

@@ -75,9 +75,7 @@ def _load_completed_result(plan: Plan) -> PseudonymizationResult:
 def _preflight_refusal() -> PublicationError:
     return PublicationError(
         ErrorCode.PUBLICATION_FAILED,
-        context=ErrorContext(
-            operation="pseudonymize", detail_code="PREFLIGHT_REJECTED"
-        ),
+        context=ErrorContext(operation="pseudonymize", detail_code="PREFLIGHT_REJECTED"),
     )
 
 
@@ -205,16 +203,14 @@ def pseudonymize(
         control,
         injected_backend_capability=(
             backend_contract.capability
-            if backend_contract is not None
-            and plan.output_profile is TransferProfile.VFP_INDEXED
+            if backend_contract is not None and plan.output_profile is TransferProfile.VFP_INDEXED
             else None
         ),
     )
     if not check.ready:
-        retry_only = (
-            set(check.error_codes) == {PreflightCode.DESTINATION_CONFLICT}
-            and _completed_retry_candidate(plan)
-        )
+        retry_only = set(check.error_codes) == {
+            PreflightCode.DESTINATION_CONFLICT
+        } and _completed_retry_candidate(plan)
         if not retry_only:
             raise _preflight_refusal()
 
@@ -223,7 +219,9 @@ def pseudonymize(
         workers=workers,
         control=control,
         operation_id=canonical_operation_id,
-        backend_contract=backend_contract if plan.output_profile is TransferProfile.VFP_INDEXED else None,
+        backend_contract=backend_contract
+        if plan.output_profile is TransferProfile.VFP_INDEXED
+        else None,
     )
     if result.operation_id is None or result.output_fingerprint is None:
         raise PublicationError(

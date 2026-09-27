@@ -134,9 +134,7 @@ def validate_document_compatibility(document: RelationshipDocument) -> None:
                 if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                     numeric_reversible.add(identity)
                 else:
-                    numeric_strategy_by_member.setdefault(
-                        identity, NUMERIC_STRATEGY_IDENTITY
-                    )
+                    numeric_strategy_by_member.setdefault(identity, NUMERIC_STRATEGY_IDENTITY)
     # Any numeric member whose declarations do not agree on exactly one
     # numeric strategy is an ambiguous/incompatible overlap.
     conflicts = numeric_reversible.intersection(set(numeric_strategy_by_member))

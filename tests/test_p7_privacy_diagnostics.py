@@ -218,23 +218,16 @@ class _VaultMaterial:
             *[original for original, _pseudonym in self.text_pairs],
             *[pseudonym for _original, pseudonym in self.text_pairs],
             *self.memo_text_payloads,
-            *(
-                payload.decode("ascii", errors="ignore")
-                for payload in self.memo_binary_payloads
-            ),
+            *(payload.decode("ascii", errors="ignore") for payload in self.memo_binary_payloads),
             str(self.offset_days),
         )
-        return tuple(
-            dict.fromkeys(token for token in candidates if len(token) >= 6)
-        )
+        return tuple(dict.fromkeys(token for token in candidates if len(token) >= 6))
 
 
 def _read_only_vault_connection(vault: Path) -> sqlite3.Connection:
     """Open the synthetic test vault strictly READ-ONLY (SQLite URI mode=ro
     plus immutable): no -shm/-wal sidecar is ever created or left behind."""
-    connection = sqlite3.connect(
-        vault.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
-    )
+    connection = sqlite3.connect(vault.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
     connection.execute("PRAGMA query_only = 1")
     return connection
 
@@ -261,9 +254,7 @@ def _extract_vault_material(vault: Path) -> _VaultMaterial:
             ).fetchall()
         )
         numeric_rows = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM numeric_key_mappings"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM numeric_key_mappings").fetchone()[0]
         )
     finally:
         connection.close()
@@ -277,9 +268,7 @@ def _extract_vault_material(vault: Path) -> _VaultMaterial:
     memo_text_payloads = tuple(
         payload.decode("utf-8") for kind, payload in memo_rows if kind == "TEXT"
     )
-    memo_binary_payloads = tuple(
-        payload for kind, payload in memo_rows if kind == "BINARY"
-    )
+    memo_binary_payloads = tuple(payload for kind, payload in memo_rows if kind == "BINARY")
     assert memo_text_payloads and memo_binary_payloads
     return _VaultMaterial(
         text_pairs=text_pairs,
@@ -296,9 +285,7 @@ def _assert_material_absent(text: str, material: _VaultMaterial) -> None:
     Failure messages report only counts — never any extracted vault value.
     """
     leak_count = sum(1 for token in material.tokens if token in text)
-    assert leak_count == 0, (
-        f"{leak_count} private vault value(s) leaked into diagnostics"
-    )
+    assert leak_count == 0, f"{leak_count} private vault value(s) leaked into diagnostics"
     assert "offset_days" not in text
     assert "temporal_offset" not in text
 
@@ -308,15 +295,11 @@ def test_real_success_workflow_reports_and_progress_are_value_free(
 ) -> None:
     source, output, vault, plan, result, events = _workflow(tmp_path)
     check = public.preflight(plan, progress=events.append)
-    verification = public.verify_dataset(
-        result, source=source, vault=vault, progress=events.append
-    )
+    verification = public.verify_dataset(result, source=source, vault=vault, progress=events.append)
     assert verification.status is public.VerificationStatus.PASS
 
     bundle_path = tmp_path / "bundle"
-    bundle = public.create_transfer_bundle(
-        result, destination=bundle_path, progress=events.append
-    )
+    bundle = public.create_transfer_bundle(result, destination=bundle_path, progress=events.append)
     standalone = public.verify_transfer_bundle(bundle_path, progress=events.append)
     recovered = public.recover(
         output,
@@ -362,14 +345,10 @@ def test_real_vault_material_stays_outward_value_free(tmp_path: Path) -> None:
     """REAL vault material (pairs, memo payloads, offset) never reaches any
     success-path diagnostic surface of the real workflow or the CLI."""
     source, output, vault, plan, result, events = _workflow(tmp_path / "service")
-    verification = public.verify_dataset(
-        result, source=source, vault=vault, progress=events.append
-    )
+    verification = public.verify_dataset(result, source=source, vault=vault, progress=events.append)
     assert verification.status is public.VerificationStatus.PASS
     bundle_path = tmp_path / "service" / "bundle"
-    bundle = public.create_transfer_bundle(
-        result, destination=bundle_path, progress=events.append
-    )
+    bundle = public.create_transfer_bundle(result, destination=bundle_path, progress=events.append)
     standalone = public.verify_transfer_bundle(bundle_path, progress=events.append)
     assert standalone.verified is True
     recovered = public.recover(
@@ -408,9 +387,7 @@ def test_real_vault_material_stays_outward_value_free(tmp_path: Path) -> None:
         *events,
     )
     service_texts = [_serialized(report) for report in service_surfaces]
-    service_texts.append(
-        (bundle_path / "transfer-manifest.json").read_text(encoding="ascii")
-    )
+    service_texts.append((bundle_path / "transfer-manifest.json").read_text(encoding="ascii"))
     service_combined = "\n".join(service_texts)
     _assert_private_data_absent(service_combined)
     _assert_material_absent(service_combined, material)
@@ -420,13 +397,16 @@ def test_real_vault_material_stays_outward_value_free(tmp_path: Path) -> None:
     _assert_private_data_absent(cli_combined)
     for cli_vault in cli_vaults:
         cli_material = _extract_vault_material(cli_vault)
-        assert len(
-            tuple(
-                pair
-                for pair in cli_material.text_pairs
-                if pair[0] == ORIGINAL_TEXT and pair[1] != pair[0]
+        assert (
+            len(
+                tuple(
+                    pair
+                    for pair in cli_material.text_pairs
+                    if pair[0] == ORIGINAL_TEXT and pair[1] != pair[0]
+                )
             )
-        ) == 1
+            == 1
+        )
         _assert_material_absent(cli_combined, cli_material)
 
 
@@ -443,12 +423,8 @@ def test_temporal_offset_is_a_real_persisted_secret_never_emitted(
 
     real_factory = engine_run_module.TemporalShiftDomain
 
-    def deterministic_factory(
-        vault: Any, *, domain_name: str | None = None
-    ) -> Any:
-        return real_factory(
-            vault, domain_name=domain_name, _random_below=lambda bound: 0
-        )
+    def deterministic_factory(vault: Any, *, domain_name: str | None = None) -> Any:
+        return real_factory(vault, domain_name=domain_name, _random_below=lambda bound: 0)
 
     monkeypatch.setattr(engine_run_module, "TemporalShiftDomain", deterministic_factory)
 
@@ -496,9 +472,7 @@ def test_real_vault_corruption_failures_keep_real_vault_material_private(
     # 1) delete one REAL text mapping row -> bijection refusal
     connection = sqlite3.connect(str(vault))
     try:
-        connection.execute(
-            "DELETE FROM text_mappings WHERE original_value = ?", (ORIGINAL_TEXT,)
-        )
+        connection.execute("DELETE FROM text_mappings WHERE original_value = ?", (ORIGINAL_TEXT,))
         connection.commit()
     finally:
         connection.close()
@@ -570,9 +544,7 @@ def test_real_vault_corruption_failures_keep_real_vault_material_private(
 
 
 def test_all_typed_error_families_keep_causes_private_and_codes_useful() -> None:
-    cases: tuple[
-        tuple[type[public.AnonymizerError], public.ErrorCode], ...
-    ] = (
+    cases: tuple[tuple[type[public.AnonymizerError], public.ErrorCode], ...] = (
         (public.PathError, public.ErrorCode.PATH_INVALID),
         (public.PolicyError, public.ErrorCode.POLICY_INVALID),
         (public.DBFBridgeError, public.ErrorCode.DBFBRIDGE_FAILURE),
@@ -714,9 +686,7 @@ def test_callback_cancellation_and_dbfbridge_failures_are_safe(
 
 class _HostileBackend:
     def capabilities(self) -> public.IndexBackendCapability:
-        raise RuntimeError(
-            f"{BACKEND_EXCEPTION}|{TOKEN}|{WINDOWS_PRIVATE_PATH}"
-        )
+        raise RuntimeError(f"{BACKEND_EXCEPTION}|{TOKEN}|{WINDOWS_PRIVATE_PATH}")
 
     def rebuild_index(self, request: object) -> object:
         del request
@@ -732,17 +702,13 @@ def test_injected_index_backend_exception_is_redacted_on_real_service_path(
 ) -> None:
     source = tmp_path / "source"
     _write_canary_source(source)
-    plan = public.build_plan(
-        source, tmp_path / "output", tmp_path / "vault.sqlite3"
-    )
+    plan = public.build_plan(source, tmp_path / "output", tmp_path / "vault.sqlite3")
     backend = _HostileBackend()
     assert isinstance(backend, IndexBackend)
     with pytest.raises(public.IndexBackendError) as backend_error:
         public.pseudonymize(plan, index_backend=backend)
     _assert_error_safe(backend_error.value)
-    assert backend_error.value.context.detail_code == (
-        "INDEX_BACKEND_CAPABILITIES_FAILED"
-    )
+    assert backend_error.value.context.detail_code == ("INDEX_BACKEND_CAPABILITIES_FAILED")
     with pytest.raises(public.IndexBackendError):
         validate_backend_capabilities(backend)
 
@@ -753,9 +719,7 @@ def test_verification_recovery_transfer_and_corrupt_vault_failures_are_safe(
     source, output, vault, _plan, result, events = _workflow(tmp_path / "valid")
     table = output / "people.dbf"
     table.write_bytes(table.read_bytes() + b"P7-SYNTHETIC-TAMPER")
-    verification = public.verify_dataset(
-        result, source=source, vault=vault, progress=events.append
-    )
+    verification = public.verify_dataset(result, source=source, vault=vault, progress=events.append)
     assert verification.status is public.VerificationStatus.FAIL
     assert "OUTPUT_FINGERPRINT_MISMATCH" in verification.check_codes
     _assert_private_data_absent(_serialized(verification), *map(_serialized, events))
@@ -778,9 +742,7 @@ def test_verification_recovery_transfer_and_corrupt_vault_failures_are_safe(
 
     corrupt_vault = tmp_path / "corrupt-vault" / f"{VAULT_ROW}.sqlite3"
     corrupt_vault.parent.mkdir()
-    corrupt_vault.write_text(
-        f"{VAULT_ROW}|{RECOVERY_SECRET}|{REVERSE_MAPPING}", encoding="ascii"
-    )
+    corrupt_vault.write_text(f"{VAULT_ROW}|{RECOVERY_SECRET}|{REVERSE_MAPPING}", encoding="ascii")
     recovery_events: list[public.ProgressEvent] = []
     with pytest.raises(public.RecoveryError) as recovery_error:
         public.recover(
@@ -828,9 +790,7 @@ def test_recovery_disabled_refuses_before_vault_access_without_disclosure(
 
 
 @pytest.mark.parametrize("json_mode", (True, False))
-def test_cli_success_and_failure_channels_are_private(
-    tmp_path: Path, json_mode: bool
-) -> None:
+def test_cli_success_and_failure_channels_are_private(tmp_path: Path, json_mode: bool) -> None:
     root = tmp_path / ("json" if json_mode else "human")
     source = root / "source"
     output = root / "pseudonymized"
@@ -954,18 +914,12 @@ def _diagnostic_violations(source: str, relative: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _is_diagnostic_sink(node.func):
             segment = ast.get_source_segment(source, node) or ""
-            if (
-                isinstance(node.func, ast.Name)
-                and node.func.id == "print"
-                and relative != "cli.py"
-            ):
+            if isinstance(node.func, ast.Name) and node.func.id == "print" and relative != "cli.py":
                 violations.append(f"{relative}:{node.lineno}:print outside CLI")
             lowered = segment.casefold()
             for fragment in _SENSITIVE_SINK_FRAGMENTS:
                 if fragment.casefold() in lowered:
-                    violations.append(
-                        f"{relative}:{node.lineno}:diagnostic value dump {fragment}"
-                    )
+                    violations.append(f"{relative}:{node.lineno}:diagnostic value dump {fragment}")
         if not isinstance(node, ast.ExceptHandler):
             continue
         names = _exception_names(node)
@@ -977,9 +931,7 @@ def _diagnostic_violations(source: str, relative: str) -> list[str]:
                     isinstance(argument, ast.Name) and argument.id in names
                     for argument in child.args
                 ):
-                    violations.append(
-                        f"{relative}:{child.lineno}:raw exception diagnostic sink"
-                    )
+                    violations.append(f"{relative}:{child.lineno}:raw exception diagnostic sink")
                 if (
                     isinstance(child.func, ast.Name)
                     and child.func.id in {"str", "repr"}
@@ -987,17 +939,13 @@ def _diagnostic_violations(source: str, relative: str) -> list[str]:
                     and isinstance(child.args[0], ast.Name)
                     and child.args[0].id in names
                 ):
-                    violations.append(
-                        f"{relative}:{child.lineno}:raw exception text"
-                    )
+                    violations.append(f"{relative}:{child.lineno}:raw exception text")
             if (
                 isinstance(child, ast.FormattedValue)
                 and isinstance(child.value, ast.Name)
                 and child.value.id in names
             ):
-                violations.append(
-                    f"{relative}:{child.lineno}:raw exception interpolation"
-                )
+                violations.append(f"{relative}:{child.lineno}:raw exception interpolation")
             if (
                 isinstance(child, ast.Attribute)
                 and child.attr == "args"
@@ -1012,9 +960,7 @@ def test_production_has_no_diagnostic_value_dump_or_raw_exception_text_sink() ->
     violations: list[str] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         relative = path.relative_to(PACKAGE_ROOT).as_posix()
-        violations.extend(
-            _diagnostic_violations(path.read_text(encoding="utf-8"), relative)
-        )
+        violations.extend(_diagnostic_violations(path.read_text(encoding="utf-8"), relative))
     assert violations == []
 
 
@@ -1024,12 +970,12 @@ def test_static_guard_accepts_safe_structured_diagnostics() -> None:
     safe_modules: tuple[tuple[str, str], ...] = (
         (
             "synthetic_safe.py",
-            'import logging\n\n\ndef audit(count: int) -> None:\n'
+            "import logging\n\n\ndef audit(count: int) -> None:\n"
             '    logger.info("verified %d tables", count)\n',
         ),
         (
             "synthetic_safe.py",
-            'import logging\n\n\ndef audit(relative_path: str, total: int) -> None:\n'
+            "import logging\n\n\ndef audit(relative_path: str, total: int) -> None:\n"
             '    logging.warning("dataset %s finished", relative_path)\n'
             '    logging.info("processed %d records", total)\n',
         ),
@@ -1042,7 +988,7 @@ def test_static_guard_accepts_safe_structured_diagnostics() -> None:
         ),
         (
             "cli.py",
-            'import sys\n\n\ndef emit(total: int) -> None:\n'
+            "import sys\n\n\ndef emit(total: int) -> None:\n"
             '    print(f"processed {total} records", file=sys.stderr)\n',
         ),
     )

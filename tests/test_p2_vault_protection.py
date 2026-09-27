@@ -94,9 +94,13 @@ def test_containment_is_refused_in_both_directions(tmp_path: Path) -> None:
     output = tmp_path / "out"
     output.mkdir()
     with pytest.raises(VaultError):
-        validate_protected_vault_root(output / "vault", source_root=outside, working_output_root=output)
+        validate_protected_vault_root(
+            output / "vault", source_root=outside, working_output_root=output
+        )
     with pytest.raises(VaultError):
-        validate_protected_vault_root(output, source_root=outside, working_output_root=output / "vault")
+        validate_protected_vault_root(
+            output, source_root=outside, working_output_root=output / "vault"
+        )
 
 
 def test_sibling_trees_are_valid(tmp_path: Path) -> None:
@@ -121,15 +125,11 @@ def test_alias_resolution_dots_and_case(tmp_path: Path) -> None:
         validate_protected_vault_root(alias, source_root=vault)
     if os.name == "nt":
         # A sibling with a different name stays a valid sibling on Windows...
-        validate_protected_vault_root(
-            vault, source_root=vault.parent / "S-IBLING"
-        )
+        validate_protected_vault_root(vault, source_root=vault.parent / "S-IBLING")
         # ...while a case-variant of the SAME overlapping root is refused
         # (case-insensitive filesystem equivalence).
         with pytest.raises(VaultError):
-            validate_protected_vault_root(
-                vault, source_root=vault.parent / vault.name.upper()
-            )
+            validate_protected_vault_root(vault, source_root=vault.parent / vault.name.upper())
 
 
 def test_symlinked_source_root_is_resolved(tmp_path: Path) -> None:
@@ -148,9 +148,7 @@ def test_refusals_expose_no_absolute_paths(tmp_path: Path) -> None:
     canary_directory = tmp_path / "secret-vault-location"
     canary_directory.mkdir()
     with pytest.raises(VaultError) as excinfo:
-        validate_protected_vault_root(
-            canary_directory / "vault", source_root=canary_directory
-        )
+        validate_protected_vault_root(canary_directory / "vault", source_root=canary_directory)
     boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     assert str(canary_directory) not in boundary
     assert "secret-vault" not in boundary
@@ -253,9 +251,7 @@ def test_hardening_failure_is_typed_not_swallowed(
         with pytest.raises(VaultError) as excinfo:
             harden_vault_directory(tmp_path)
         assert excinfo.value.code is ErrorCode.VAULT_ACCESS_DENIED
-        assert "HARDENING_DENIED" in (
-            str(excinfo.value) + "|" + str(excinfo.value.to_dict())
-        )
+        assert "HARDENING_DENIED" in (str(excinfo.value) + "|" + str(excinfo.value.to_dict()))
         assert str(tmp_path) not in str(excinfo.value)
     else:
         # Windows truthfully makes no POSIX chmod claim at all.
@@ -318,9 +314,7 @@ def test_close_checkpoint_failure_leaves_the_vault_diagnosable(
         def incomplete() -> None:
             raise VaultError(
                 ErrorCode.VAULT_UNAVAILABLE,
-                context=ErrorContext(
-                    operation="vault", detail_code="CLOSE_CHECKPOINT_INCOMPLETE"
-                ),
+                context=ErrorContext(operation="vault", detail_code="CLOSE_CHECKPOINT_INCOMPLETE"),
             )
 
         monkeypatch.setattr(vault, "_checkpoint_wal", incomplete)
@@ -414,9 +408,7 @@ def test_rollback_journal_cannot_escape_the_vault_root(tmp_path: Path) -> None:
     # Journal artifact naming derives from the dictionary path only.
     dictionary = tmp_path / "vault" / VAULT_DATABASE_FILENAME
     names = sensitive_artifact_names(VAULT_DATABASE_FILENAME)
-    assert all(
-        (dictionary.parent / name) == dictionary.with_name(name) for name in names
-    )
+    assert all((dictionary.parent / name) == dictionary.with_name(name) for name in names)
     with VaultDatabase.open(
         dictionary,
         create=True,

@@ -249,16 +249,12 @@ def fsync_tree(
             try:
                 descriptor = os.open(file_path, os.O_RDWR)
             except OSError as error:
-                raise _durability_failure(
-                    "DURABILITY_FILE_SYNC_FAILED"
-                ) from error
+                raise _durability_failure("DURABILITY_FILE_SYNC_FAILED") from error
             try:
                 os.fsync(descriptor)
                 count += 1
             except OSError as error:
-                raise _durability_failure(
-                    "DURABILITY_FILE_SYNC_FAILED"
-                ) from error
+                raise _durability_failure("DURABILITY_FILE_SYNC_FAILED") from error
             finally:
                 os.close(descriptor)
     for current, dirnames, _files in os.walk(directory, followlinks=False, topdown=False):

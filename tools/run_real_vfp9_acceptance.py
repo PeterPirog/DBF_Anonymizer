@@ -29,9 +29,7 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src"
 EXPECTED_PACKAGE_FILE = SOURCE_ROOT / "dbf_anonymizer" / "__init__.py"
-ARCHITECTURE_FILENAME = (
-    "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md"
-)
+ARCHITECTURE_FILENAME = "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md"
 ARCHITECTURE_PATH = REPO_ROOT.parent / ARCHITECTURE_FILENAME
 VFP_SHORTCUT = Path(
     r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"
@@ -259,9 +257,7 @@ def _require_sha256(facts: dict[str, str], key: str) -> str:
     return value
 
 
-def _build_evidence(
-    branch: str, commit: str, facts: dict[str, str]
-) -> dict[str, object]:
+def _build_evidence(branch: str, commit: str, facts: dict[str, str]) -> dict[str, object]:
     _require_bool(facts, "VFP_TABLE_OPENED", True)
     _require_bool(facts, "VFP_PUBLISHED_TABLE_OPENED", True)
     _require_bool(facts, "VFP_STAGED_TABLE_EXISTED_BEFORE_REBUILD", True)
@@ -389,9 +385,7 @@ def main() -> int:
     )
     combined_output = completed.stdout + "\n" + completed.stderr
     passed_node = TEST_IDENTIFIER in combined_output
-    passed_status = re.search(
-        r"(?m)^PASSED(?:\s+\[\s*100%\])?\s*$", combined_output
-    )
+    passed_status = re.search(r"(?m)^PASSED(?:\s+\[\s*100%\])?\s*$", combined_output)
     passed_summary = re.search(r"\b1 passed\b", combined_output)
     if (
         completed.returncode != 0

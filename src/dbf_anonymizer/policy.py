@@ -121,9 +121,7 @@ FIELD_CAPABILITY_MATRIX: tuple[FieldCapabilityRule, ...] = (
 )
 
 _RULE_BY_DBF_TYPE = {
-    dbf_type: rule
-    for rule in FIELD_CAPABILITY_MATRIX
-    for dbf_type in rule.dbf_types
+    dbf_type: rule for rule in FIELD_CAPABILITY_MATRIX for dbf_type in rule.dbf_types
 }
 
 
@@ -153,6 +151,7 @@ def field_capability_matrix_snapshot() -> dict[str, object]:
             for rule in FIELD_CAPABILITY_MATRIX
         ],
     }
+
 
 DEFAULT_POLICY: dict[str, Any] = {
     "schema_version": 1,
@@ -273,7 +272,9 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
 def compute_policy_fingerprint(policy: Mapping[str, Any]) -> str:
     """Compute a deterministic SHA-256 fingerprint from canonical policy JSON."""
     try:
-        canonical = json.dumps(dict(policy), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        canonical = json.dumps(
+            dict(policy), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
     except (TypeError, ValueError) as exc:
         raise PolicyError(
             ErrorCode.POLICY_INVALID,
@@ -291,7 +292,9 @@ def resolve_policy(
             if not isinstance(value, (type(None), bool, int, float, str)):
                 raise PolicyError(
                     ErrorCode.POLICY_INVALID,
-                    context=ErrorContext(operation="build_plan", detail_code="non_json_policy_value"),
+                    context=ErrorContext(
+                        operation="build_plan", detail_code="non_json_policy_value"
+                    ),
                 )
     merged = _merge_with_defaults(policy)
     _validate_policy(merged)

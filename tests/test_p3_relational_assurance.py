@@ -25,7 +25,6 @@ from dbf_anonymizer.models import (
 )
 from dbf_anonymizer.relationships import (
     EVIDENCE_SCHEMA_VERSION,
-    NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
     PROVENANCE_POLICY_FILE,
     RELATIONAL_ASSURANCE_SCOPE_NOTE,
@@ -35,9 +34,6 @@ from dbf_anonymizer.relationships import (
     verify_relationships,
 )
 from dbf_anonymizer.relationships.assurance import derive_relational_assurance
-from dbf_anonymizer.relationships.verification import (
-    RelationEvidenceCounts,
-)
 
 from tests.test_p3_relationship_verification import (
     _counts,
@@ -67,8 +63,26 @@ def _multi_toolchain_document() -> dict[str, object]:
                 "provenance": PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
                 "comparison": "EXACT_VALUE",
                 "members": [
-                    {"table": "p/x.dbf", "field": "A", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                    {"table": "c/y.dbf", "field": "A", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                    {
+                        "table": "p/x.dbf",
+                        "field": "A",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/y.dbf",
+                        "field": "A",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
                 ],
             },
             {
@@ -76,8 +90,26 @@ def _multi_toolchain_document() -> dict[str, object]:
                 "provenance": PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
                 "comparison": "EXACT_VALUE",
                 "members": [
-                    {"table": "p/x.dbf", "field": "B", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                    {"table": "c/y.dbf", "field": "B", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                    {
+                        "table": "p/x.dbf",
+                        "field": "B",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/y.dbf",
+                        "field": "B",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
                 ],
             },
         ],
@@ -369,9 +401,7 @@ def test_valid_binding_with_tampered_metadata_schema_fails_closed() -> None:
     assert excinfo.value.context.detail_code == "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH"
     # The tampered version value is never exposed in the failure boundary;
     # the typed refusal carries only the stable machine detail code.
-    boundary = (
-        str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     assert "2.0" not in boundary
     assert "2.0" not in str(excinfo.value.context.to_dict())
 
@@ -462,9 +492,7 @@ def test_binding_fingerprint_mismatch_fails_closed() -> None:
             None,
             authority_binding=hostile_binding,
         )
-    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(
-        metadata_only.value.to_dict()
-    )
+    assert "RELATIONSHIP_AUTHORITY_BINDING_MISMATCH" in str(metadata_only.value.to_dict())
 
 
 def test_binding_relation_count_mismatch_fails_closed() -> None:
@@ -580,9 +608,7 @@ def test_authority_error_boundaries_never_leak_structural_values() -> None:
             None,
             authority_binding=hostile_binding,
         )
-    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(
-        excinfo.value.to_dict()
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     assert CANARY_TEXT not in boundary
     assert str(CANARY_NUMERIC) not in boundary
     assert "C:\\" not in boundary and "C:/" not in boundary
@@ -595,9 +621,7 @@ def test_authoritative_adapter_refuses_policy_file_provenance() -> None:
     document = parse_relationship_document(payload)  # type: ignore[arg-type]
     with pytest.raises(PolicyError) as excinfo:
         authoritative_vfp_metadata_from_document(document)
-    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(
-        excinfo.value.to_dict()
-    )
+    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(excinfo.value.to_dict())
 
 
 def test_authoritative_adapter_refuses_mixed_provenance() -> None:
@@ -606,9 +630,7 @@ def test_authoritative_adapter_refuses_mixed_provenance() -> None:
     document = parse_relationship_document(payload)  # type: ignore[arg-type]
     with pytest.raises(PolicyError) as excinfo:
         authoritative_vfp_metadata_from_document(document)
-    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(
-        excinfo.value.to_dict()
-    )
+    assert "RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID" in str(excinfo.value.to_dict())
     # The ordinary adapter truthfully reports the ambiguity, non-authoritative.
     assert _ordinary_metadata(payload).provenance == "MIXED"  # type: ignore[arg-type]
 
@@ -644,10 +666,7 @@ def test_authoritative_vfp_metadata_with_complete_scope_is_verified() -> None:
     assert assurance.level is RelationalAssuranceLevel.VFP_METADATA_VERIFIED
     assert assurance.verified_relations == 1
     assert assurance.evidence_fingerprint == report.evidence_fingerprint  # type: ignore[attr-defined]
-    assert (
-        assurance.relationship_fingerprint
-        == authoritative.metadata.relationship_fingerprint
-    )
+    assert assurance.relationship_fingerprint == authoritative.metadata.relationship_fingerprint
     # Even this stronger level never claims full database correctness.
     assert assurance.scope_note == RELATIONAL_ASSURANCE_SCOPE_NOTE
 
@@ -739,9 +758,7 @@ def test_authoritative_fingerprint_mismatch_fails_closed() -> None:
     )
     with pytest.raises(VerificationError) as excinfo:
         derive_relational_assurance(authoritative.metadata, report)  # type: ignore[arg-type]
-    assert "RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH" in str(
-        excinfo.value.to_dict()
-    )
+    assert "RELATIONSHIP_EVIDENCE_FINGERPRINT_MISMATCH" in str(excinfo.value.to_dict())
 
 
 # ---------------------------------------------------------------------------
@@ -854,9 +871,7 @@ def test_canonical_assurance_model_is_registered_and_guarded() -> None:
         "secret",
         "secrets",
     }
-    assert forbidden.isdisjoint(
-        field.name for field in dataclass_fields(RelationalAssurance)
-    )
+    assert forbidden.isdisjoint(field.name for field in dataclass_fields(RelationalAssurance))
 
 
 # ---------------------------------------------------------------------------

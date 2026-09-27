@@ -113,8 +113,7 @@ def _assert_cli(arguments: list[str], expected_code: int) -> tuple[str, str]:
         code = cli_main(arguments)
     if code != expected_code:
         raise AssertionError(
-            f"CLI {arguments!r} returned {code}, expected {expected_code}: "
-            f"{stderr.getvalue()}"
+            f"CLI {arguments!r} returned {code}, expected {expected_code}: {stderr.getvalue()}"
         )
     return stdout.getvalue(), stderr.getvalue()
 
@@ -124,9 +123,7 @@ def _assert_installed_origin(repository_root: Path | None) -> Path:
     environment = Path(sys.prefix).resolve()
     if not origin.is_relative_to(environment):
         raise AssertionError(f"package import is outside the clean venv: {origin}")
-    if not {"site-packages", "dist-packages"} & {
-        part.lower() for part in origin.parts
-    }:
+    if not {"site-packages", "dist-packages"} & {part.lower() for part in origin.parts}:
         raise AssertionError(f"package import is not from site-packages: {origin}")
     if repository_root is not None:
         checkout = repository_root.resolve()
@@ -204,9 +201,7 @@ def run_contract(
             raise AssertionError(f"offline dataset verification failed: {verification}")
 
         bundle_path = api_root / "bundle"
-        bundle = public.create_transfer_bundle(
-            result, destination=bundle_path, profile="DATA_ONLY"
-        )
+        bundle = public.create_transfer_bundle(result, destination=bundle_path, profile="DATA_ONLY")
         standalone = public.verify_transfer_bundle(bundle_path)
         if not bundle.verified or not standalone.verified:
             raise AssertionError("offline DATA_ONLY bundle verification failed")
@@ -255,9 +250,7 @@ def run_contract(
             "self-test",
         }
         command_listing = re.search(r"\{([^}]+)\}", help_stdout)
-        if command_listing is None or set(
-            command_listing.group(1).split(",")
-        ) != target_commands:
+        if command_listing is None or set(command_listing.group(1).split(",")) != target_commands:
             raise AssertionError("installed CLI help command set is not exact")
 
         cli_root = work_root / "cli"
@@ -321,22 +314,23 @@ def run_contract(
         )
         if bundle_payload.get("verified") is not True:
             raise AssertionError("CLI bundle creation was not verified")
-        bundle_verification_payload = _json_cli(
-            ["verify-bundle", str(cli_bundle), "--json"]
-        )
+        bundle_verification_payload = _json_cli(["verify-bundle", str(cli_bundle), "--json"])
         if bundle_verification_payload.get("verified") is not True:
             raise AssertionError("CLI standalone bundle verification failed")
 
         self_test_payload = _json_cli(["self-test", "--json"])
-        if not all(
-            self_test_payload.get(field) is True
-            for field in (
-                "preflight_ready",
-                "recovery_verified",
-                "canonical_match",
-                "bundle_verified",
+        if (
+            not all(
+                self_test_payload.get(field) is True
+                for field in (
+                    "preflight_ready",
+                    "recovery_verified",
+                    "canonical_match",
+                    "bundle_verified",
+                )
             )
-        ) or self_test_payload.get("dataset_verification") != "PASS":
+            or self_test_payload.get("dataset_verification") != "PASS"
+        ):
             raise AssertionError("CLI self-test did not execute the complete workflow")
 
         disabled_stdout, disabled_stderr = _assert_cli(
@@ -360,9 +354,7 @@ def run_contract(
     if attempts:
         raise AssertionError(f"runtime attempted forbidden boundaries: {attempts}")
 
-    original_rows = tuple(
-        dbfbridge.iter_records(source / "people.dbf", include_deleted=True)
-    )
+    original_rows = tuple(dbfbridge.iter_records(source / "people.dbf", include_deleted=True))
     recovered_rows = tuple(
         dbfbridge.iter_records(recovered_path / "people.dbf", include_deleted=True)
     )

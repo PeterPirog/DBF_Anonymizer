@@ -47,10 +47,7 @@ def _synthetic_workflow(
         source,
         "people.dbf",
         (numeric_field("ID", "I", 4), numeric_field("SECRET", "C", 96)),
-        [
-            {"ID": index, "SECRET": value}
-            for index, value in enumerate(CANARIES, start=1)
-        ],
+        [{"ID": index, "SECRET": value} for index, value in enumerate(CANARIES, start=1)],
     )
     plan = public.build_plan(
         source=source,
@@ -105,9 +102,7 @@ def _logical_records(path: Path) -> tuple[tuple[object, ...], ...]:
 
 def _assert_canonical_dataset_equal(source: Path, recovered: Path) -> None:
     source_files = tuple(
-        path.relative_to(source).as_posix()
-        for path in sorted(source.rglob("*"))
-        if path.is_file()
+        path.relative_to(source).as_posix() for path in sorted(source.rglob("*")) if path.is_file()
     )
     recovered_files = tuple(
         path.relative_to(recovered).as_posix()
@@ -119,9 +114,7 @@ def _assert_canonical_dataset_equal(source: Path, recovered: Path) -> None:
         if not relative.lower().endswith(".dbf"):
             continue
         assert _schema_facts(recovered / relative) == _schema_facts(source / relative)
-        assert _logical_records(recovered / relative) == _logical_records(
-            source / relative
-        )
+        assert _logical_records(recovered / relative) == _logical_records(source / relative)
 
 
 def _tree_snapshot(root: Path) -> tuple[tuple[str, bool, int], ...]:
@@ -156,9 +149,7 @@ class HostAdapter:
     ) -> public.VerificationResult:
         return public.verify_dataset(result, source=source, vault=vault)
 
-    def recover(
-        self, pseudonymized: Path, *, vault: Path, output: Path
-    ) -> public.RecoveryResult:
+    def recover(self, pseudonymized: Path, *, vault: Path, output: Path) -> public.RecoveryResult:
         return public.recover(
             pseudonymized,
             vault=vault,
@@ -200,10 +191,7 @@ def test_host_adapter_allows_pseudonymization_and_verification_but_denies_recove
         source,
         "people.dbf",
         (numeric_field("ID", "I", 4), numeric_field("SECRET", "C", 96)),
-        [
-            {"ID": index, "SECRET": value}
-            for index, value in enumerate(CANARIES, start=1)
-        ],
+        [{"ID": index, "SECRET": value} for index, value in enumerate(CANARIES, start=1)],
     )
     plan = public.build_plan(
         source=source,
@@ -221,9 +209,7 @@ def test_host_adapter_allows_pseudonymization_and_verification_but_denies_recove
     pseudonymization = host.pseudonymize(plan)
     assert pseudonymization.table_count == 1
     assert pseudonymization.record_count == len(CANARIES)
-    verification = host.verify_dataset(
-        pseudonymization, source=source, vault=vault
-    )
+    verification = host.verify_dataset(pseudonymization, source=source, vault=vault)
     assert verification.status is public.VerificationStatus.PASS
     assert verification.verified is True
 
@@ -249,27 +235,17 @@ def test_host_adapter_allows_pseudonymization_and_verification_but_denies_recove
             method_name,
             forbidden("vault_metadata"),
         )
-    monkeypatch.setattr(
-        staging_type, "promote", forbidden("publication")
-    )
-    monkeypatch.setattr(
-        recovery_module, "_VerifyVault", forbidden("verify_vault_constructor")
-    )
+    monkeypatch.setattr(staging_type, "promote", forbidden("publication"))
+    monkeypatch.setattr(recovery_module, "_VerifyVault", forbidden("verify_vault_constructor"))
     monkeypatch.setattr(sqlite3, "connect", forbidden("sqlite_connect"))
-    monkeypatch.setattr(
-        recovery_module, "read_source_table", forbidden("recovery_dbf_read")
-    )
+    monkeypatch.setattr(recovery_module, "read_source_table", forbidden("recovery_dbf_read"))
     monkeypatch.setattr(
         recovery_module,
         "stream_table_records",
         forbidden("recovery_dbf_fpt_stream"),
     )
-    monkeypatch.setattr(
-        recovery_module, "DatasetStaging", forbidden("staging_constructor")
-    )
-    monkeypatch.setattr(
-        recovery_module, "DestinationLock", forbidden("destination_lock")
-    )
+    monkeypatch.setattr(recovery_module, "DatasetStaging", forbidden("staging_constructor"))
+    monkeypatch.setattr(recovery_module, "DestinationLock", forbidden("destination_lock"))
 
     recovered = tmp_path / "recovered"
     before = _tree_snapshot(tmp_path)

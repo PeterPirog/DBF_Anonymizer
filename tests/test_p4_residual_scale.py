@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import dbfbridge
-from dbf_anonymizer import VaultError, build_plan
+from dbf_anonymizer import build_plan
 from dbf_anonymizer.engine import run_two_pass
 from dbf_anonymizer.engine import text_residual as text_residual_module
 from dbf_anonymizer.engine.state import MAX_RECORD_BATCH
@@ -93,15 +93,11 @@ def _block_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
     so the patch cannot even be reached — success below is the proof."""
 
     def _forbidden(*args: object, **kwargs: object) -> None:
-        raise AssertionError(
-            "GlobalTextDomainMapping must never be constructed in production"
-        )
+        raise AssertionError("GlobalTextDomainMapping must never be constructed in production")
 
     from dbf_anonymizer.vault import text_allocation
 
-    monkeypatch.setattr(
-        text_allocation, "GlobalTextDomainMapping", _forbidden, raising=True
-    )
+    monkeypatch.setattr(text_allocation, "GlobalTextDomainMapping", _forbidden, raising=True)
 
 
 def test_forced_residual_derangement_is_exact_and_bounded(
@@ -133,9 +129,7 @@ def test_forced_residual_derangement_is_exact_and_bounded(
     )
     mapping = {
         original: pseudonym
-        for original, pseudonym, _length in text_mapping_rows(
-            vault, GLOBAL_TEXT_DOMAIN_ID
-        )
+        for original, pseudonym, _length in text_mapping_rows(vault, GLOBAL_TEXT_DOMAIN_ID)
     }
     vault.close()
     originals = set(mapping)
@@ -150,8 +144,7 @@ def test_forced_residual_derangement_is_exact_and_bounded(
     # The written output carries the exact pseudonyms (no value leakage of
     # the originals into the fresh output table).
     output_values = [
-        record.values["CODE"]
-        for record in dbfbridge.iter_records(output_root / "codes.dbf")
+        record.values["CODE"] for record in dbfbridge.iter_records(output_root / "codes.dbf")
     ]
     assert output_values == [mapping[value] for value in _VALUES]
     # BOUNDED Python buffers: the whole forced-residual run (planning is
@@ -200,9 +193,7 @@ def test_forced_residual_odd_derangement_at_production_scale(
     real_unwind = text_residual_module._unwind
 
     def spy_unwind(connection, found):
-        rows = int(
-            connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0]
-        )
+        rows = int(connection.execute("SELECT COUNT(*) FROM res_dfs").fetchone()[0])
         max_stack["depth"] = max(max_stack["depth"], int(rows))
         return real_unwind(connection, found)
 
@@ -241,14 +232,11 @@ def test_forced_residual_odd_derangement_at_production_scale(
     assert set(source_mapping) == set(_ODD_VALUES)  # no missing mappings
     assert len(source_mapping) == len(_ODD_VALUES)
     assert len(set(source_mapping.values())) == len(_ODD_VALUES)  # injective
-    assert all(
-        source_mapping[value] != value for value in source_mapping
-    )  # no self map
+    assert all(source_mapping[value] != value for value in source_mapping)  # no self map
     assert "A" not in set(source_mapping.values())  # occupied token stays
     assert all(len(p) <= 2 for p in source_mapping.values())
     output_values = [
-        record.values["CODE"]
-        for record in dbfbridge.iter_records(output_root / "codes.dbf")
+        record.values["CODE"] for record in dbfbridge.iter_records(output_root / "codes.dbf")
     ]
     assert output_values == [mapping[value] for value in _ODD_VALUES]
     assert peak < 8 * 1024 * 1024  # bounded Python buffers
@@ -268,9 +256,7 @@ def test_forced_residual_exhaustion_is_a_typed_refusal(
         run_two_pass(plan)
     payload = excinfo.value.to_dict()
     assert payload["code"] == "MAPPING_CAPACITY_EXHAUSTED"
-    assert (
-        payload["context"]["detail_code"] == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
-    )
+    assert payload["context"]["detail_code"] == "ENGINE_TEXT_RESIDUAL_INFEASIBLE"
     # No partial output, no value leakage, no source mutation.
     assert not (output_root / "codes.dbf").exists()
     assert not output_root.exists() or not any(output_root.rglob("*"))
@@ -303,7 +289,6 @@ def test_forced_residual_spool_state_stays_in_sqlite(
     the P2 planner, and every bounded buffer constant is dataset-independent.
     """
     from dbf_anonymizer.engine import state as spool_state
-    from dbf_anonymizer.engine import text_residual
 
     # Static structure: the complete traversal state (originals, tokens,
     # capacities, the visited set, the DFS stack, the assignment) lives in

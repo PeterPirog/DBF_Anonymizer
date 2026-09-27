@@ -62,7 +62,6 @@ import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Sequence
 
-import dbfbridge
 
 from dbf_anonymizer.engine.direct_io import (
     DirectSourceTable,
@@ -86,11 +85,9 @@ from dbf_anonymizer.errors import (
     TransferError,
 )
 from dbf_anonymizer.models import (
-    DatasetIdentity,
     OutputDataState,
     PseudonymizationResult,
     RelationalAssurance,
-    RelationalAssuranceLevel,
     TransferBundleResult,
     TransferProfile,
     VerificationStatus,
@@ -104,15 +101,6 @@ from dbf_anonymizer.progress import (
 from dbf_anonymizer.verification import (
     _schema_facts,
     _verify_dataset_core,
-)
-from dbf_anonymizer.vault.schema import VAULT_OPERATION_STATE_COMPLETED
-from dbf_anonymizer.engine.publication import (
-    result_from_receipt,
-)
-from dbf_anonymizer.dictionary_identity import (
-    connect_dictionary_readonly,
-    dictionary_sidecars,
-    read_dictionary_identity,
 )
 
 __all__ = [
@@ -277,18 +265,14 @@ def _transfer_failure(detail_code: str) -> TransferError:
     """Stable typed, value-free transfer failure (no protected values)."""
     return TransferError(
         ErrorCode.TRANSFER_FAILED,
-        context=ErrorContext(
-            operation=_CREATE_OPERATION, detail_code=detail_code
-        ),
+        context=ErrorContext(operation=_CREATE_OPERATION, detail_code=detail_code),
     )
 
 
 def _standalone_failure(detail_code: str) -> TransferError:
     return TransferError(
         ErrorCode.TRANSFER_FAILED,
-        context=ErrorContext(
-            operation=_VERIFY_OPERATION, detail_code=detail_code
-        ),
+        context=ErrorContext(operation=_VERIFY_OPERATION, detail_code=detail_code),
     )
 
 
@@ -405,9 +389,7 @@ def _validated_profile(profile: object) -> TransferProfile:
     raise _transfer_failure("TRANSFER_PROFILE_UNSUPPORTED")
 
 
-def _count_records(
-    table: DirectSourceTable, *, checkpoint: Callable[[], None]
-) -> int:
+def _count_records(table: DirectSourceTable, *, checkpoint: Callable[[], None]) -> int:
     """The truthful DBF record count (bounded streaming, checkpointed)."""
     header_count = int(table.schema.record_count)
     streamed = 0
@@ -450,9 +432,7 @@ def _copy_with_digest(
     return digest.hexdigest(), size
 
 
-def _digest_file(
-    path: Path, *, checkpoint: Callable[[], None]
-) -> tuple[str, int]:
+def _digest_file(path: Path, *, checkpoint: Callable[[], None]) -> tuple[str, int]:
     """The bounded streaming SHA-256 digest + size of one bundle artifact."""
     digest = hashlib.sha256()
     size = 0
@@ -549,21 +529,17 @@ def _iter_bundle_inventory(
 
     fail = failure if failure is not None else _standalone_failure
     try:
-        return {
-            relative: path for relative, path in _iter_dataset_files(bundle_root)
-        }
+        return {relative: path for relative, path in _iter_dataset_files(bundle_root)}
     except Exception:
         raise fail("TRANSFER_BUNDLE_UNREADABLE") from None
 
 
-def _bundle_identity(
-    destination: Path, operation_id: str
-) -> PublicationIdentity:
+def _bundle_identity(destination: Path, operation_id: str) -> PublicationIdentity:
     """The transfer staging/lock identity (distinct per bundle destination)."""
     destination_identity = derive_destination_identity(destination)
-    sibling_token = hashlib.sha256(
-        f"transfer-{destination_identity}".encode("ascii")
-    ).hexdigest()[:24]
+    sibling_token = hashlib.sha256(f"transfer-{destination_identity}".encode("ascii")).hexdigest()[
+        :24
+    ]
     parent = destination.resolve(strict=False).parent
     return PublicationIdentity(
         operation_id=operation_id,
@@ -600,13 +576,9 @@ def _bounded_manifest_text(
     return value
 
 
-def _bounded_manifest_token(
-    value: object, *, failure: Callable[[str], AnonymizerError]
-) -> str:
+def _bounded_manifest_token(value: object, *, failure: Callable[[str], AnonymizerError]) -> str:
     """A bounded machine token (no whitespace, no path syntax)."""
-    token = _bounded_manifest_text(
-        value, max_length=_MAX_TOKEN_LENGTH, failure=failure
-    )
+    token = _bounded_manifest_text(value, max_length=_MAX_TOKEN_LENGTH, failure=failure)
     if token != token.strip() or any(character.isspace() for character in token):
         raise failure("TRANSFER_MANIFEST_VALUE_INVALID")
     return token
@@ -662,9 +634,10 @@ def _validate_manifest_contract(
         raise fail("TRANSFER_DATA_STATE_UNTRUTHFUL")
     if manifest["verification_status"] not in _ALLOWED_VERIFICATION_STATUSES:
         raise fail("TRANSFER_VERIFICATION_STATUS_INVALID")
-    if not manifest["dataset_id"].startswith("ds-") or len(
-        manifest["dataset_id"]
-    ) != len("ds-") + 16:
+    if (
+        not manifest["dataset_id"].startswith("ds-")
+        or len(manifest["dataset_id"]) != len("ds-") + 16
+    ):
         raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
     entries = manifest["artifacts"]
     if not isinstance(entries, list) or not entries:
@@ -795,9 +768,7 @@ def _manifest_assurance(
         )
         # Every declared relation is classified into EXACTLY one category —
         # none may disappear from the accounting.
-        totals_complete = counts_ok and (
-            verified + failed + incomplete == declared
-        )
+        totals_complete = counts_ok and (verified + failed + incomplete == declared)
         # SEPARATE contracts (REQ-P5-005/REQ-P5-006 blocker A): the
         # evidence_fingerprint is produced by the canonical P3 evidence
         # digest kernel and is objectively 64-lowercase-hex (or None for
@@ -852,9 +823,7 @@ def _manifest_assurance(
                 raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
         elif level is RelationalAssuranceLevel.INCOMPLETE:
             if declared == 0 or (
-                verified + failed + incomplete == declared
-                and failed == 0
-                and incomplete == 0
+                verified + failed + incomplete == declared and failed == 0 and incomplete == 0
             ):
                 # INCOMPLETE may not carry a complete-level count pattern.
                 raise fail("TRANSFER_MANIFEST_VALUE_INVALID")
@@ -894,9 +863,7 @@ def _strict_json_loads(
             result[key] = value
         return result
 
-    loaded = json.loads(
-        manifest_bytes.decode("ascii"), object_pairs_hook=reject_pairs
-    )
+    loaded = json.loads(manifest_bytes.decode("ascii"), object_pairs_hook=reject_pairs)
     if not isinstance(loaded, dict):
         raise failure("TRANSFER_MANIFEST_UNREADABLE")
     return loaded
@@ -940,9 +907,7 @@ def _verify_bundle_core(
         raise fail("TRANSFER_MANIFEST_MISSING")
     for relative_path in inventory:
         control.check_cancelled()
-        if relative_path != manifest_relative and _forbidden_artifact_class(
-            relative_path
-        ):
+        if relative_path != manifest_relative and _forbidden_artifact_class(relative_path):
             raise fail("TRANSFER_FORBIDDEN_ARTIFACT")
     manifest_path = inventory[manifest_relative]
     try:
@@ -980,13 +945,8 @@ def _verify_bundle_core(
     for artifact_path, entry in sorted(declared.items()):
         control.check_cancelled()
         absolute = bundle_root / artifact_path
-        computed_digest, computed_size = _digest_file(
-            absolute, checkpoint=control.check_cancelled
-        )
-        if (
-            computed_size != entry["size_bytes"]
-            or computed_digest != entry["sha256"]
-        ):
+        computed_digest, computed_size = _digest_file(absolute, checkpoint=control.check_cancelled)
+        if computed_size != entry["size_bytes"] or computed_digest != entry["sha256"]:
             raise fail("TRANSFER_HASH_MISMATCH")
         if entry["artifact_type"] == "DBF":
             table = read_source_table(
@@ -1014,9 +974,7 @@ def _verify_bundle_core(
                 raise fail("TRANSFER_RECORD_COUNT_MISMATCH")
             for field in table.schema.fields:
                 if field.is_memo:
-                    companion = str(
-                        Path(artifact_path).with_suffix(".fpt").as_posix()
-                    )
+                    companion = str(Path(artifact_path).with_suffix(".fpt").as_posix())
                     if companion.casefold() not in declared:
                         raise fail("TRANSFER_FPT_COMPANION_MISSING")
         control.bump(ProgressPhase.VERIFICATION, table_path=artifact_path)
@@ -1038,9 +996,7 @@ def _verify_bundle_core(
         raise fail("TRANSFER_UNEXPECTED_FPT")
 
     manifest_fingerprint = "bundle-" + hashlib.sha256(manifest_bytes).hexdigest()
-    assurance = _manifest_assurance(
-        manifest.get("assurance"), fail=fail
-    )
+    assurance = _manifest_assurance(manifest.get("assurance"), fail=fail)
     return manifest_fingerprint, assurance, len(declared)
 
 
@@ -1146,9 +1102,7 @@ def create_transfer_bundle(
 
     # --- 2. Working-dataset identity proof (fail closed) --------------------
     control.start_phase(ProgressPhase.SOURCE_VERIFICATION)
-    current = fingerprint_dataset(
-        working_root, checkpoint=control.check_cancelled
-    )
+    current = fingerprint_dataset(working_root, checkpoint=control.check_cancelled)
     if current != result.output_fingerprint:
         raise _transfer_failure("TRANSFER_WORKING_DATASET_MISMATCH")
 
@@ -1156,9 +1110,7 @@ def create_transfer_bundle(
     expected_payload: list[tuple[str, str]] = []
     for relative_path in result.dataset.table_paths:
         control.check_cancelled()
-        table = read_source_table(
-            working_root, relative_path, cancel_check=control.check_cancelled
-        )
+        table = read_source_table(working_root, relative_path, cancel_check=control.check_cancelled)
         expected_payload.append((relative_path, "DBF"))
         if table.has_memo_fields:
             companion = str(Path(relative_path).with_suffix(".fpt").as_posix())
@@ -1185,9 +1137,7 @@ def create_transfer_bundle(
             staging.create()
             try:
                 artifacts: list[dict[str, object]] = []
-                for casefolded, (artifact_path, artifact_type) in sorted(
-                    allowlist.items()
-                ):
+                for casefolded, (artifact_path, artifact_type) in sorted(allowlist.items()):
                     control.check_cancelled()
                     staged_path = staging.dataset_root / artifact_path
                     source_path = working_root / artifact_path
@@ -1213,9 +1163,7 @@ def create_transfer_bundle(
                         )
                         entry["schema_fingerprint"] = _schema_digest(table)
                     artifacts.append(entry)
-                    control.bump(
-                        ProgressPhase.TRANSFER_SCAN, table_path=artifact_path
-                    )
+                    control.bump(ProgressPhase.TRANSFER_SCAN, table_path=artifact_path)
 
                 # --- 5. Sanitized manifest finalization ---------------------
                 manifest = _build_manifest(result=result, artifacts=artifacts)
@@ -1225,12 +1173,8 @@ def create_transfer_bundle(
                     separators=(",", ":"),
                     ensure_ascii=True,
                 ).encode("ascii")
-                (staging.dataset_root / TRANSFER_MANIFEST_FILENAME).write_bytes(
-                    manifest_bytes
-                )
-                manifest_fingerprint = "bundle-" + hashlib.sha256(
-                    manifest_bytes
-                ).hexdigest()
+                (staging.dataset_root / TRANSFER_MANIFEST_FILENAME).write_bytes(manifest_bytes)
+                manifest_fingerprint = "bundle-" + hashlib.sha256(manifest_bytes).hexdigest()
 
                 # --- 5b. REQ-P5-008 steps 5/6: flush + fsync every staged
                 # file and persist directory entries where supported, with
@@ -1255,9 +1199,7 @@ def create_transfer_bundle(
 
                 # --- 7. Atomic promotion ------------------------------------
                 # REQ-P5-008 step 8: durable READY_TO_PROMOTE state.
-                staging.mark_ready_to_promote(
-                    payload_fingerprint=manifest_fingerprint
-                )
+                staging.mark_ready_to_promote(payload_fingerprint=manifest_fingerprint)
                 control.start_phase(ProgressPhase.PUBLICATION)
                 # The last cancellation checkpoint immediately before the
                 # atomic promotion; the committed publication is never
@@ -1278,7 +1220,7 @@ def create_transfer_bundle(
                 if isinstance(primary, Exception):
                     try:
                         staging.cleanup_owned()
-                    except Exception as cleanup_exc:
+                    except Exception:
                         cleanup_failure = _transfer_failure(
                             "TRANSFER_SENSITIVE_STAGING_CLEANUP_FAILED"
                         )
@@ -1331,9 +1273,7 @@ def verify_transfer_bundle(
     single terminal completion is emitted only after the genuine verified
     result.
     """
-    if isinstance(bundle, (str, Path)) is False or isinstance(
-        bundle, (bytes, bytearray)
-    ):
+    if isinstance(bundle, (str, Path)) is False or isinstance(bundle, (bytes, bytearray)):
         raise TypeError("verify_transfer_bundle requires a bundle PATH")
     bundle_root = Path(bundle)
     if not bundle_root.is_dir():

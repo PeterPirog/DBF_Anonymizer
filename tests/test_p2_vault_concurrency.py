@@ -20,7 +20,6 @@ import pytest
 
 from dbf_anonymizer import ErrorCode, VaultError
 from dbf_anonymizer.vault import (
-    VAULT_DATABASE_FILENAME,
     VaultDatabase,
     new_writer_token,
 )
@@ -281,9 +280,7 @@ def test_process_level_second_writer_is_rejected(tmp_path: Path) -> None:
     holder_token = new_writer_token()
     holder.acquire_writer_lease(holder_token)
     result_queue = context.Queue()
-    process = context.Process(
-        target=attempt_acquire, args=(payload, result_queue)
-    )
+    process = context.Process(target=attempt_acquire, args=(payload, result_queue))
     process.start()
     process.join(timeout=120)
     assert process.exitcode == 0
@@ -296,9 +293,7 @@ def test_process_level_second_writer_is_rejected(tmp_path: Path) -> None:
     # Phase 2: authority released -> the child process acquires it.
     payload["token"] = new_writer_token()
     result_queue = context.Queue()
-    process = context.Process(
-        target=attempt_acquire, args=(payload, result_queue)
-    )
+    process = context.Process(target=attempt_acquire, args=(payload, result_queue))
     process.start()
     process.join(timeout=120)
     assert process.exitcode == 0

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import random
 
-import pytest
 
 from dbf_anonymizer.engine.state import (
     EVIDENCE_SPOOL_SCHEMA_VERSION,
@@ -112,9 +111,7 @@ def test_spool_evidence_matches_the_p3_kernel(tmp_path) -> None:
         if null:
             spool.observe_relation_side("before", "rel", "parent", rows=1, nulls=1)
         else:
-            spool.observe_relation_key(
-                "before", "rel", "parent", canonical_composite_identity(key)
-            )
+            spool.observe_relation_key("before", "rel", "parent", canonical_composite_identity(key))
             spool.observe_relation_side("before", "rel", "parent", rows=1, nulls=0)
     foreign_mask = [False, False, False, False, True]
     for key, null in zip(foreign, foreign_mask):
@@ -206,7 +203,7 @@ def test_numeric_residual_kernel_matches_plan_numeric_bijection(tmp_path) -> Non
             for value in values:
                 spool.observe_numeric(domain_id, str(value))
             spool.flush()
-            candidate = rng.randint(domain.pseudonym_low, domain.pseudonym_high)
+            rng.randint(domain.pseudonym_low, domain.pseudonym_high)
             aggregate = _numeric_residual_feasible(
                 domain=domain,
                 occupied_after=occupied + 1,
@@ -233,4 +230,3 @@ def test_spool_batch_bounds_are_bounded_constants() -> None:
     assert 0 < MAX_SQL_BATCH <= 4096
     assert 0 < MAX_RECORD_BATCH <= 65536
     assert EVIDENCE_SPOOL_SCHEMA_VERSION == "1.0"
-

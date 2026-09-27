@@ -37,9 +37,7 @@ def file_sha256(path: Path) -> str:
 def sidecar_inventory(directory: Path) -> list[str]:
     """Names of all SQLite sidecar/rollforward artifacts in *directory*."""
     return sorted(
-        name
-        for name in os.listdir(directory)
-        if name.endswith(("-wal", "-shm", "-journal"))
+        name for name in os.listdir(directory) if name.endswith(("-wal", "-shm", "-journal"))
     )
 
 
@@ -90,9 +88,7 @@ def install_failing_execute(
     exception: type[Exception] | None = None,
 ) -> FailingExecuteConnection:
     """Wrap the vault's connection so matching statements fail (test seam)."""
-    proxy = FailingExecuteConnection(
-        vault._internal_connection(), fail_when, exception
-    )
+    proxy = FailingExecuteConnection(vault._internal_connection(), fail_when, exception)
     if monkeypatch is not None:
         monkeypatch.setattr(vault, "_connection", proxy)
     return proxy

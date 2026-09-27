@@ -16,7 +16,6 @@ from dbf_anonymizer import (
     CancellationError,
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     IndexBackendError,
-    PublicationError,
     VerificationStatus,
     build_plan,
     preflight,
@@ -31,7 +30,7 @@ from dbf_anonymizer.index_backend import (
     StandaloneIdxAssociationOutcome,
     StandaloneIdxAssociationRequest,
 )
-from dbf_anonymizer.models import ProgressEvent, StandaloneIdxAssociationResult
+from dbf_anonymizer.models import ProgressEvent
 from tests.support.deterministic_index_backend import DeterministicIndexBackend
 from tests.support.numeric_tables import numeric_field, write_numeric_table
 
@@ -112,9 +111,7 @@ class _WrongRebuildIdentityBackend(DeterministicIndexBackend):
 
 
 class _WrongVerificationIdentityBackend(DeterministicIndexBackend):
-    def verify_index(
-        self, request: IndexVerificationRequest
-    ) -> IndexVerificationOutcome:
+    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationOutcome:
         outcome = super().verify_index(request)
         return IndexVerificationOutcome(
             result=replace(outcome.result, artifact_path="foreign.idx"),
@@ -134,9 +131,7 @@ class _WrongTargetBackend(DeterministicIndexBackend):
 
 
 class _MutatingVerificationBackend(DeterministicIndexBackend):
-    def verify_index(
-        self, request: IndexVerificationRequest
-    ) -> IndexVerificationOutcome:
+    def verify_index(self, request: IndexVerificationRequest) -> IndexVerificationOutcome:
         outcome = super().verify_index(request)
         assert request.staged_idx_path is not None
         request.staged_idx_path.write_bytes(b"MUTATED-AFTER-VERIFY")
@@ -322,16 +317,12 @@ def test_authoritative_backend_associates_without_filename_inference(
     assert rebuild.staged_idx_path == verify.staged_idx_path
     assert rebuild.staged_idx_path is not None
     assert ".staging/" in rebuild.staged_idx_path.as_posix()
-    assert (output / "indexes/code.idx").read_bytes() == (
-        b"DETERMINISTIC_FRESH_IDX_CONTENT"
-    )
+    assert (output / "indexes/code.idx").read_bytes() == (b"DETERMINISTIC_FRESH_IDX_CONTENT")
     evidence = result.index_artifacts[0]
     assert evidence.status == "REBUILT_VERIFIED"
     assert evidence.table_path == "north/registry.dbf"
     assert evidence.source_sha256 == source_before["indexes/code.idx"]
-    assert evidence.output_sha256 == hashlib.sha256(
-        b"DETERMINISTIC_FRESH_IDX_CONTENT"
-    ).hexdigest()
+    assert evidence.output_sha256 == hashlib.sha256(b"DETERMINISTIC_FRESH_IDX_CONTENT").hexdigest()
     assert _hash_tree(source) == source_before
 
 
@@ -501,9 +492,7 @@ def test_mismatched_per_idx_identity_fails_closed(
     tmp_path: Path, backend_type: type[DeterministicIndexBackend]
 ) -> None:
     plan, _source, output, _vault = _indexed_plan(tmp_path)
-    backend = backend_type(
-        standalone_idx_associations={"indexes/code.idx": "north/registry.dbf"}
-    )
+    backend = backend_type(standalone_idx_associations={"indexes/code.idx": "north/registry.dbf"})
 
     with pytest.raises(IndexBackendError) as caught:
         pseudonymize(plan, index_backend=backend)
@@ -625,9 +614,7 @@ def test_cancellation_after_idx_backend_step_has_no_completed_output(
 
 
 @pytest.mark.parametrize("failure_stage", ("rebuild", "verification"))
-def test_backend_operation_exception_is_sanitized(
-    tmp_path: Path, failure_stage: str
-) -> None:
+def test_backend_operation_exception_is_sanitized(tmp_path: Path, failure_stage: str) -> None:
     plan, source, output, vault = _indexed_plan(tmp_path)
     backend = DeterministicIndexBackend(
         standalone_idx_associations={"indexes/code.idx": "north/registry.dbf"}

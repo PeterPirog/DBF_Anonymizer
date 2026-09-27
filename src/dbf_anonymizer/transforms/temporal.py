@@ -87,9 +87,7 @@ def _zero_only_infeasible() -> MappingError:
     """Stable typed failure when only offset 0 would fit the whole domain."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="TEMPORAL_ONLY_ZERO_FEASIBLE"
-        ),
+        context=ErrorContext(operation="transform", detail_code="TEMPORAL_ONLY_ZERO_FEASIBLE"),
     )
 
 
@@ -97,9 +95,7 @@ def _out_of_range() -> MappingError:
     """Stable typed failure for a shift outside the proven logical range."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="TEMPORAL_SHIFT_OUT_OF_RANGE"
-        ),
+        context=ErrorContext(operation="transform", detail_code="TEMPORAL_SHIFT_OUT_OF_RANGE"),
     )
 
 
@@ -186,9 +182,7 @@ def temporal_nonzero_count(lower: int, upper: int) -> int:
     return total - 1 if lower <= 0 <= upper else total
 
 
-def temporal_offset_at(
-    lower: int, upper: int, index: int
-) -> int:
+def temporal_offset_at(lower: int, upper: int, index: int) -> int:
     """The *index*-th feasible NON-ZERO offset of ``[lower, upper]``.
 
     Uniform index semantics for the CSPRNG selection: the candidate order is

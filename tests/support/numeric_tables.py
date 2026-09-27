@@ -77,14 +77,10 @@ def with_nullflags(fields: Sequence[FieldInfo]) -> tuple[FieldInfo, ...]:
     column carrying the VFP system flag; its declared width must cover the
     allocated NULL bits (the writer derives the canonical bitmap itself).
     """
-    needs_bitmap = any(
-        (field.flags & NULLABLE_FLAG) or field.dbf_type == "V" for field in fields
-    )
+    needs_bitmap = any((field.flags & NULLABLE_FLAG) or field.dbf_type == "V" for field in fields)
     if not needs_bitmap:
         return tuple(fields)
-    null_bits = sum(
-        1 for field in fields if (field.flags & NULLABLE_FLAG) or field.dbf_type == "V"
-    )
+    null_bits = sum(1 for field in fields if (field.flags & NULLABLE_FLAG) or field.dbf_type == "V")
     byte_count = (null_bits + 7) // 8
     return (
         *fields,

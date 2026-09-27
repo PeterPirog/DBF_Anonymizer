@@ -10,7 +10,7 @@ P3 planner.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dbf_anonymizer.models import Plan, StandaloneIdxEvidence
 from dbf_anonymizer.transforms.numeric_keys import (

@@ -195,9 +195,7 @@ def _vault_counts(plan: object, vault_path: Path) -> tuple[int, int, int, int]:
 def test_public_workers_one_and_many_publish_equivalent_rich_datasets(
     tmp_path: Path,
 ) -> None:
-    serial_plan, source, serial_output, serial_vault = _plan(
-        tmp_path, name="serial"
-    )
+    serial_plan, source, serial_output, serial_vault = _plan(tmp_path, name="serial")
     parallel_output = tmp_path / "output-parallel"
     parallel_plan = build_plan(
         source,
@@ -627,9 +625,7 @@ def test_public_source_revalidation_reports_bounded_progress(tmp_path: Path) -> 
     assert all(event.table_path is not None for event in revalidation_progress)
     # One STARTED precedes the progress events of its phase.
     started = recorder.phase("SOURCE_REVALIDATION", "STARTED")
-    assert events_index(recorder, started[0]) < events_index(
-        recorder, revalidation_progress[0]
-    )
+    assert events_index(recorder, started[0]) < events_index(recorder, revalidation_progress[0])
 
 
 def events_index(recorder: _ProgressRecorder, event: ProgressEvent) -> int:
@@ -728,9 +724,7 @@ def test_cancellation_requested_after_promotion_does_not_reclassify_success(
 def test_public_assurance_reports_global_and_failed_declared_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    global_plan, _source, _output, _vault = _plan(
-        tmp_path / "global", relationships=False
-    )
+    global_plan, _source, _output, _vault = _plan(tmp_path / "global", relationships=False)
     global_result = pseudonymize(global_plan)
     assert global_result.assurance.level is RelationalAssuranceLevel.GLOBAL_EXACT_VALUE
     assert global_result.assurance.declared_relations == 0
@@ -739,9 +733,7 @@ def test_public_assurance_reports_global_and_failed_declared_evidence(
     declared_plan, _source, _output, _vault = _plan(tmp_path / "failed")
     real_compare = pass2_module._compare_relations
 
-    def failed_compare(
-        engine_plan: Any, spool: Any
-    ) -> list[RelationPassSummary]:
+    def failed_compare(engine_plan: Any, spool: Any) -> list[RelationPassSummary]:
         summaries = real_compare(engine_plan, spool)
         return [dataclasses.replace(summary, verified=False) for summary in summaries]
 

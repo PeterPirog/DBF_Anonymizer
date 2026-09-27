@@ -71,9 +71,9 @@ def test_source_record_padding_sentinel_is_not_reconstructed(tmp_path: Path) -> 
         [({"PUBLIC": "VISIBLE"}, False), ({"PUBLIC": "SECOND"}, False)],
     )
     public_schema = dbfbridge.read_schema(source)
-    eof_offset = int(public_schema.header_length) + int(
-        public_schema.record_count
-    ) * int(public_schema.record_length)
+    eof_offset = int(public_schema.header_length) + int(public_schema.record_count) * int(
+        public_schema.record_length
+    )
     raw = source.read_bytes()
     # TEST-ONLY: the sentinel is placed in unreferenced physical slack beyond
     # the last record (before the EOF marker when one is present, appended
@@ -119,8 +119,7 @@ def test_unused_header_sentinel_is_not_reconstructed(tmp_path: Path) -> None:
         stream.write(_HEADER_SENTINEL)
     assert _HEADER_SENTINEL in source.read_bytes()
     assert [
-        record.values["PUBLIC"]
-        for record in dbfbridge.iter_records(source, include_deleted=True)
+        record.values["PUBLIC"] for record in dbfbridge.iter_records(source, include_deleted=True)
     ] == ["VISIBLE"]
 
     _result, output_root = _run(source_root, tmp_path)
@@ -145,10 +144,7 @@ def test_unreachable_fpt_sentinel_is_not_reconstructed(tmp_path: Path) -> None:
 
     source_records = read_memo_records(source)
     assert [record.values["NOTE"] for record in source_records] == [legitimate]
-    assert all(
-        _FPT_SENTINEL not in str(record.values).encode("utf-8")
-        for record in source_records
-    )
+    assert all(_FPT_SENTINEL not in str(record.values).encode("utf-8") for record in source_records)
     assert _FPT_SENTINEL in source_fpt.read_bytes()
 
     _result, output_root = _run(source_root, tmp_path)
@@ -213,8 +209,7 @@ def test_reconstruction_modules_forbid_source_copy_raw_and_private_io() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 assert all(
-                    alias.name.split(".")[0] not in forbidden_import_roots
-                    for alias in node.names
+                    alias.name.split(".")[0] not in forbidden_import_roots for alias in node.names
                 )
                 assert all(not alias.name.startswith("dbfbridge.") for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
@@ -231,8 +226,7 @@ def test_reconstruction_modules_forbid_source_copy_raw_and_private_io() -> None:
                     if node.func.attr == "open":
                         receiver = node.func.value
                         assert (
-                            isinstance(receiver, ast.Name)
-                            and receiver.id in allowed_open_receivers
+                            isinstance(receiver, ast.Name) and receiver.id in allowed_open_receivers
                         )
                 direct_name = (
                     node.func.id

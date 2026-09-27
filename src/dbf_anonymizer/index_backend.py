@@ -121,17 +121,14 @@ def _validated_tag_inventory(
         raise TypeError(f"{field_name} must be a tuple of strings")
     minimum = 0 if allow_empty else 1
     if len(tags) < minimum or len(tags) > _MAX_TAG_COUNT:
-        raise ValueError(
-            f"{field_name} must contain from {minimum} to {_MAX_TAG_COUNT} tags"
-        )
+        raise ValueError(f"{field_name} must contain from {minimum} to {_MAX_TAG_COUNT} tags")
     normalized: list[str] = []
     for tag in tags:
         if not isinstance(tag, str):
             raise TypeError(f"each {field_name} item must be a string")
         if not tag or len(tag) > _MAX_TAG_NAME_LENGTH:
             raise ValueError(
-                f"each {field_name} item must contain from 1 to "
-                f"{_MAX_TAG_NAME_LENGTH} characters"
+                f"each {field_name} item must contain from 1 to {_MAX_TAG_NAME_LENGTH} characters"
             )
         normalized.append(tag.upper())
     if len(set(normalized)) != len(normalized):
@@ -179,8 +176,7 @@ class StandaloneIdxAssociationRequest:
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         artifact_path = _normalized_relative_path(self.artifact_path)
         if Path(artifact_path).suffix.lower() != ".idx":
@@ -189,9 +185,7 @@ class StandaloneIdxAssociationRequest:
         source_root = _resolved_absolute_path(
             self.source_dataset_root, field_name="source_dataset_root"
         )
-        source_idx = _resolved_absolute_path(
-            self.source_idx_path, field_name="source_idx_path"
-        )
+        source_idx = _resolved_absolute_path(self.source_idx_path, field_name="source_idx_path")
         object.__setattr__(self, "source_dataset_root", source_root)
         object.__setattr__(self, "source_idx_path", source_idx)
         _require_exact_dataset_path(
@@ -200,12 +194,8 @@ class StandaloneIdxAssociationRequest:
             relative_path=artifact_path,
             field_name="source_idx_path",
         )
-        normalized_tables = tuple(
-            _normalized_relative_path(path) for path in self.table_paths
-        )
-        if not normalized_tables or len(set(normalized_tables)) != len(
-            normalized_tables
-        ):
+        normalized_tables = tuple(_normalized_relative_path(path) for path in self.table_paths)
+        if not normalized_tables or len(set(normalized_tables)) != len(normalized_tables):
             raise ValueError("table_paths must be a non-empty unique tuple")
         object.__setattr__(self, "table_paths", normalized_tables)
 
@@ -247,27 +237,20 @@ class IndexRebuildRequest:
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
+            raise ValueError("artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES))
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         object.__setattr__(
             self,
             "source_table_path",
-            _validated_absolute_path(
-                self.source_table_path, field_name="source_table_path"
-            ),
+            _validated_absolute_path(self.source_table_path, field_name="source_table_path"),
         )
         object.__setattr__(
             self,
             "staged_table_path",
-            _validated_absolute_path(
-                self.staged_table_path, field_name="staged_table_path"
-            ),
+            _validated_absolute_path(self.staged_table_path, field_name="staged_table_path"),
         )
         if self.source_table_path == self.staged_table_path:
             raise ValueError("source_table_path and staged_table_path must differ")
@@ -279,9 +262,7 @@ class IndexRebuildRequest:
                 or self.source_dataset_root is None
                 or self.staged_dataset_root is None
             ):
-                raise ValueError(
-                    "STANDALONE_IDX requires artifact and dataset-root paths"
-                )
+                raise ValueError("STANDALONE_IDX requires artifact and dataset-root paths")
             artifact_path = _normalized_relative_path(self.artifact_path)
             if Path(artifact_path).suffix.lower() != ".idx":
                 raise ValueError("artifact_path must identify an IDX artifact")
@@ -295,16 +276,12 @@ class IndexRebuildRequest:
             object.__setattr__(
                 self,
                 "source_idx_path",
-                _resolved_absolute_path(
-                    self.source_idx_path, field_name="source_idx_path"
-                ),
+                _resolved_absolute_path(self.source_idx_path, field_name="source_idx_path"),
             )
             object.__setattr__(
                 self,
                 "staged_idx_path",
-                _resolved_absolute_path(
-                    self.staged_idx_path, field_name="staged_idx_path"
-                ),
+                _resolved_absolute_path(self.staged_idx_path, field_name="staged_idx_path"),
             )
             object.__setattr__(self, "source_dataset_root", source_root)
             object.__setattr__(self, "staged_dataset_root", staged_root)
@@ -345,9 +322,7 @@ class IndexRebuildRequest:
                     self.staged_dataset_root,
                 )
             ):
-                raise ValueError(
-                    "standalone IDX paths are only valid for STANDALONE_IDX"
-                )
+                raise ValueError("standalone IDX paths are only valid for STANDALONE_IDX")
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,10 +353,7 @@ class IndexRebuildOutcome:
             and not self.expected_tag_inventory
         ):
             raise ValueError("REBUILT requires expected tag inventory")
-        if (
-            self.result.artifact_class == "STANDALONE_IDX"
-            and self.expected_tag_inventory
-        ):
+        if self.result.artifact_class == "STANDALONE_IDX" and self.expected_tag_inventory:
             raise ValueError("STANDALONE_IDX does not use CDX tag inventory")
         if self.result.status != "REBUILT" and self.expected_tag_inventory:
             raise ValueError("non-REBUILT outcomes must not claim expected tags")
@@ -402,20 +374,15 @@ class IndexVerificationRequest:
     def __post_init__(self) -> None:
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
+            raise ValueError("artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES))
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         object.__setattr__(
             self,
             "staged_table_path",
-            _validated_absolute_path(
-                self.staged_table_path, field_name="staged_table_path"
-            ),
+            _validated_absolute_path(self.staged_table_path, field_name="staged_table_path"),
         )
         if self.artifact_class == "STANDALONE_IDX":
             if (
@@ -434,9 +401,7 @@ class IndexVerificationRequest:
             object.__setattr__(
                 self,
                 "staged_idx_path",
-                _resolved_absolute_path(
-                    self.staged_idx_path, field_name="staged_idx_path"
-                ),
+                _resolved_absolute_path(self.staged_idx_path, field_name="staged_idx_path"),
             )
             object.__setattr__(self, "staged_dataset_root", staged_root)
             _require_exact_dataset_path(
@@ -460,9 +425,7 @@ class IndexVerificationRequest:
                     self.staged_dataset_root,
                 )
             ):
-                raise ValueError(
-                    "standalone IDX paths are only valid for STANDALONE_IDX"
-                )
+                raise ValueError("standalone IDX paths are only valid for STANDALONE_IDX")
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,22 +460,15 @@ class IndexVerificationOutcome:
                 ),
             ),
         )
-        if (
-            self.result.artifact_class == "STANDALONE_IDX"
-            and self.actual_tag_inventory
-        ):
+        if self.result.artifact_class == "STANDALONE_IDX" and self.actual_tag_inventory:
             raise ValueError("STANDALONE_IDX does not use CDX tag inventory")
         if self.result.status in {"VERIFIED", "MISMATCH"} and not self.table_opened:
-            raise ValueError(
-                f"{self.result.status} requires table_opened evidence"
-            )
+            raise ValueError(f"{self.result.status} requires table_opened evidence")
         if self.result.detail_code == "OPEN_FAILED" and self.table_opened:
             raise ValueError("OPEN_FAILED requires table_opened=False")
 
 
-def index_backend_failure(
-    detail_code: str, *, table_path: str | None = None
-) -> IndexBackendError:
+def index_backend_failure(detail_code: str, *, table_path: str | None = None) -> IndexBackendError:
     """A stable typed, privacy-safe index-backend refusal (no values).
 
     Only the closed internal machine vocabulary can cross the public error
@@ -568,8 +524,7 @@ class StandaloneIdxBackend(Protocol):
 
     def associate_standalone_idx(
         self, request: StandaloneIdxAssociationRequest
-    ) -> StandaloneIdxAssociationOutcome:
-        ...
+    ) -> StandaloneIdxAssociationOutcome: ...
 
 
 def validate_backend_capabilities(
@@ -613,10 +568,7 @@ def run_backend_standalone_idx_association(
     if (
         verdict.protocol_schema_version != request.protocol_schema_version
         or verdict.artifact_path != request.artifact_path
-        or (
-            verdict.table_path is not None
-            and verdict.table_path not in request.table_paths
-        )
+        or (verdict.table_path is not None and verdict.table_path not in request.table_paths)
     ):
         raise index_backend_failure("INDEX_BACKEND_ASSOCIATION_MISMATCH")
     return result

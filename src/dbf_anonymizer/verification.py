@@ -247,10 +247,7 @@ def _load_completed_result(plan: Plan) -> PseudonymizationResult:
             "destination_identity": destination_identity,
             "binding_fingerprint": binding_fingerprint,
         }
-        if any(
-            operation[field] != expected
-            for field, expected in expected_operation.items()
-        ):
+        if any(operation[field] != expected for field, expected in expected_operation.items()):
             raise _verification_failure("COMPLETED_RESULT_IDENTITY_MISMATCH")
 
         receipt_json = operation["result_json"]
@@ -327,9 +324,7 @@ class _VerifyVault:
             raise self._failure("VAULT_STATE_UNVERIFIABLE")
         try:
             self._connection = connect_dictionary_readonly(path)
-            vault_id, schema_version, fingerprints = read_dictionary_identity(
-                self._connection
-            )
+            vault_id, schema_version, fingerprints = read_dictionary_identity(self._connection)
         except (sqlite3.DatabaseError, VaultError):
             raise self._failure("VAULT_UNREADABLE") from None
         self.vault_id = vault_id
@@ -341,9 +336,7 @@ class _VerifyVault:
     def close(self) -> None:
         self._connection.close()
 
-    def completed_operation(
-        self, operation_id: str
-    ) -> dict[str, str | None] | None:
+    def completed_operation(self, operation_id: str) -> dict[str, str | None] | None:
         row = self._connection.execute(
             "SELECT state, source_fingerprint, policy_fingerprint, "
             "relationship_fingerprint, vault_fingerprint, destination_identity, "
@@ -366,10 +359,7 @@ class _VerifyVault:
             "output_fingerprint",
             "result_json",
         )
-        return {
-            name: None if value is None else str(value)
-            for name, value in zip(names, row)
-        }
+        return {name: None if value is None else str(value) for name, value in zip(names, row)}
 
     def dataset_row(self) -> tuple[str, str, str]:
         row = self._connection.execute(
@@ -462,9 +452,7 @@ class _VerifyVault:
     def domain_bijection(self, domain_id: str, table: str) -> tuple[int, int, int]:
         row = self._connection.execute(
             "SELECT COUNT(*), COUNT(DISTINCT original_value), "
-            "COUNT(DISTINCT pseudonym_value) FROM "
-            + table
-            + " WHERE domain_id = ?",
+            "COUNT(DISTINCT pseudonym_value) FROM " + table + " WHERE domain_id = ?",
             (domain_id,),
         ).fetchone()
         if row is None or not all(isinstance(value, int) for value in row):
@@ -499,8 +487,7 @@ class _VerifyVault:
     def temporal_offset(self, domain_id: str | None) -> int | None:
         if domain_id is None:
             row = self._connection.execute(
-                "SELECT domain_id, offset_days, typeof(offset_days) "
-                "FROM temporal_parameters"
+                "SELECT domain_id, offset_days, typeof(offset_days) FROM temporal_parameters"
             ).fetchone()
         else:
             row = self._connection.execute(
@@ -590,9 +577,7 @@ def _output_table(
                 detail_code="VERIFY_OUTPUT_SCHEMA_UNREADABLE",
             ),
         ) from None
-    return DirectSourceTable(
-        relative_path=relative_path, schema=schema, absolute_path=absolute
-    )
+    return DirectSourceTable(relative_path=relative_path, schema=schema, absolute_path=absolute)
 
 
 def _schema_facts(
@@ -847,9 +832,7 @@ def _verify(
 
     # --- TOPOLOGY: expected output inventory from the SOURCE topology --------
     rebuilt_idx_paths = tuple(
-        item.artifact_path
-        for item in result.index_artifacts
-        if item.status == "REBUILT_VERIFIED"
+        item.artifact_path for item in result.index_artifacts if item.status == "REBUILT_VERIFIED"
     )
     rebuilt_idx_set = set(rebuilt_idx_paths)
     expected_output, expected_memo_companions, observed_dbc_bound_tables = (
@@ -896,10 +879,7 @@ def _verify(
         elif item.status == "REBUILT_VERIFIED":
             output_idx = output_root / item.artifact_path
             try:
-                if (
-                    item.output_sha256 is None
-                    or _artifact_sha256(output_idx) != item.output_sha256
-                ):
+                if item.output_sha256 is None or _artifact_sha256(output_idx) != item.output_sha256:
                     findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
             except OSError:
                 findings.fail("STANDALONE_IDX_EVIDENCE_MISMATCH")
@@ -918,9 +898,7 @@ def _verify(
             # totals (the aggregate mismatch then also reports truthfully).
             continue
         memo_relative = Path(relative_path).with_suffix(".fpt").as_posix()
-        if memo_relative in expected_memo_companions and memo_relative not in (
-            output_paths
-        ):
+        if memo_relative in expected_memo_companions and memo_relative not in (output_paths):
             # A dangling memo companion cannot be streamed; the topology
             # finding is authoritative.
             continue
@@ -1053,8 +1031,8 @@ def _verify_vault(
     for domain_id, domain_kind in vault_reader.domains():
         control.check_cancelled()
         if domain_kind == VAULT_TABLE_DOMAIN_KIND_TEXT:
-            count, distinct_originals, distinct_pseudonyms = (
-                vault_reader.domain_bijection(domain_id, "text_mappings")
+            count, distinct_originals, distinct_pseudonyms = vault_reader.domain_bijection(
+                domain_id, "text_mappings"
             )
             if count != distinct_originals or count != distinct_pseudonyms:
                 findings.fail("VAULT_MAPPING_INVALID")
@@ -1062,8 +1040,8 @@ def _verify_vault(
                 # NULL/empty is a preserved identity and is never mapped.
                 findings.fail("VAULT_MAPPING_INVALID")
         elif domain_kind == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
-            count, distinct_originals, distinct_pseudonyms = (
-                vault_reader.domain_bijection(domain_id, "numeric_key_mappings")
+            count, distinct_originals, distinct_pseudonyms = vault_reader.domain_bijection(
+                domain_id, "numeric_key_mappings"
             )
             if count != distinct_originals or count != distinct_pseudonyms:
                 findings.fail("VAULT_MAPPING_INVALID")
@@ -1135,9 +1113,7 @@ def _verify_table(
     """
     fail = failure if failure is not None else _verification_failure
     try:
-        source_table = read_source_table(
-            source_root, relative_path, cancel_check=checkpoint
-        )
+        source_table = read_source_table(source_root, relative_path, cancel_check=checkpoint)
     except (CancellationError, CallbackError):
         raise
     except Exception:
@@ -1259,16 +1235,12 @@ def _verify_field_ledger(
             findings.fail("POLICY_BINDING_MISMATCH")
             continue
         expected_type, expected_width, expected_encoding = schema_facts[name]
-        if dbf_type != expected_type or width != expected_width or (
-            encoding != expected_encoding
-        ):
+        if dbf_type != expected_type or width != expected_width or (encoding != expected_encoding):
             findings.fail("POLICY_BINDING_MISMATCH")
         if action not in _LEDGER_ACTIONS:
             findings.fail("POLICY_BINDING_MISMATCH")
             continue
-        domain_kind = (
-            vault_reader.domain_kind(domain_id) if domain_id is not None else None
-        )
+        domain_kind = vault_reader.domain_kind(domain_id) if domain_id is not None else None
         if action == "KEEP" or action == "MASK_REVERSIBLE":
             if domain_id is not None:
                 findings.fail("POLICY_BINDING_MISMATCH")
@@ -1279,9 +1251,7 @@ def _verify_field_ledger(
             ):
                 findings.fail("POLICY_BINDING_MISMATCH")
         elif action == "SHIFT_REVERSIBLE":
-            if domain_id is not None and domain_kind not in (
-                VAULT_TABLE_DOMAIN_KIND_TEMPORAL,
-            ):
+            if domain_id is not None and domain_kind not in (VAULT_TABLE_DOMAIN_KIND_TEMPORAL,):
                 findings.fail("POLICY_BINDING_MISMATCH")
     for name in schema_facts:
         if name not in bindings:
@@ -1343,8 +1313,7 @@ def _verify_record_values(
         elif action == "PSEUDONYMIZE_REVERSIBLE":
             if (
                 domain_id is not None
-                and vault_reader.domain_kind(domain_id)
-                == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY
+                and vault_reader.domain_kind(domain_id) == VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY
             ):
                 _verify_numeric_value(
                     domain_id=domain_id,
@@ -1447,9 +1416,7 @@ def _verify_memo_value(
     if payload_kind == "BINARY" and not isinstance(output_value, bytes):
         findings.fail("MEMO_PAYLOAD_MISMATCH")
         return
-    original_logical: object = (
-        original.decode("utf-8") if payload_kind == "TEXT" else original
-    )
+    original_logical: object = original.decode("utf-8") if payload_kind == "TEXT" else original
     if original_logical != source_value:
         findings.fail("MEMO_PAYLOAD_MISMATCH")
         return

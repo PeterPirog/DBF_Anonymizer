@@ -243,12 +243,8 @@ def test_public_nullable_logical_fidelity_projection_pagination_and_round_trip(
     assert [row.values["TXT"] for row in projected_c[:3]] == [None, "", "ABC"]
     assert [row.values["VC"] for row in projected_v[:3]] == [None, "", "A"]
 
-    first = read_records(
-        source, offset=0, limit=2, fields=["TXT", "VC"], include_deleted=True
-    )
-    rest = read_records(
-        source, offset=2, limit=10, fields=["TXT", "VC"], include_deleted=True
-    )
+    first = read_records(source, offset=0, limit=2, fields=["TXT", "VC"], include_deleted=True)
+    rest = read_records(source, offset=2, limit=10, fields=["TXT", "VC"], include_deleted=True)
     paged = first.records + rest.records
     assert [row.values["TXT"] for row in paged[:3]] == [None, "", "ABC"]
     assert [row.values["VC"] for row in paged[:3]] == [None, "", "A"]
@@ -260,7 +256,7 @@ def test_public_nullable_logical_fidelity_projection_pagination_and_round_trip(
     )
     roundtrip = tuple(iter_records(output, include_deleted=True))
     application_names = ("TXT", "VC", "QTY", "CNT")
-    assert [
-        tuple(row.values[name] for name in application_names) for row in roundtrip
-    ] == [tuple(row.values[name] for name in application_names) for row in streamed]
+    assert [tuple(row.values[name] for name in application_names) for row in roundtrip] == [
+        tuple(row.values[name] for name in application_names) for row in streamed
+    ]
     assert [row.deleted for row in roundtrip] == [row.deleted for row in streamed]

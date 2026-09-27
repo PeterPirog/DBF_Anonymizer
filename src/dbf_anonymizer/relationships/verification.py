@@ -178,9 +178,7 @@ class RelationSideMetrics(PublicModel):
         if self.unique_tuple_count != len(profile):
             raise ValueError("unique_tuple_count must equal the profile length")
         if self.duplicate_row_count != sum(profile) - len(profile):
-            raise ValueError(
-                "duplicate_row_count must equal rows beyond the distinct tuples"
-            )
+            raise ValueError("duplicate_row_count must equal rows beyond the distinct tuples")
         if self.rows_considered != self.null_tuple_count + sum(profile):
             raise ValueError("rows_considered must equal NULL tuples plus non-NULL rows")
 
@@ -322,13 +320,9 @@ class RelationVerificationEvidence(PublicModel):
                     "a VERIFIED/FAILED relation carries the full canonical invariant set"
                 )
             preserved = all(result.preserved for result in self.invariants)
-            expected = (
-                VerificationStatus.VERIFIED if preserved else VerificationStatus.FAILED
-            )
+            expected = VerificationStatus.VERIFIED if preserved else VerificationStatus.FAILED
             if self.status is not expected:
-                raise ValueError(
-                    "the relation status must agree with the invariant results"
-                )
+                raise ValueError("the relation status must agree with the invariant results")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -363,12 +357,8 @@ class RelationshipVerificationReport(PublicModel):
 
     def __post_init__(self) -> None:
         if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported relationship-evidence schema version (fail closed)"
-            )
-        _validated_code(
-            self.relationship_fingerprint, field_name="relationship_fingerprint"
-        )
+            raise ValueError("unsupported relationship-evidence schema version (fail closed)")
+        _validated_code(self.relationship_fingerprint, field_name="relationship_fingerprint")
         if not isinstance(self.relations, tuple) or not all(
             isinstance(entry, RelationVerificationEvidence) for entry in self.relations
         ):
@@ -381,12 +371,9 @@ class RelationshipVerificationReport(PublicModel):
         if not isinstance(self.complete, bool):
             raise TypeError("complete must be a genuine boolean")
         if self.complete is not all(
-            entry.status is not VerificationStatus.INCOMPLETE
-            for entry in self.relations
+            entry.status is not VerificationStatus.INCOMPLETE for entry in self.relations
         ):
-            raise ValueError(
-                "complete must reflect the absence of INCOMPLETE relations"
-            )
+            raise ValueError("complete must reflect the absence of INCOMPLETE relations")
         canonical = json.dumps(
             {
                 "complete": self.complete,
@@ -455,15 +442,11 @@ class RelationshipEvidenceAccumulator:
     def composite_arity(self) -> int:
         return self._arity
 
-    def observe_parent(
-        self, key: tuple[Hashable, ...], *, null: bool = False
-    ) -> None:
+    def observe_parent(self, key: tuple[Hashable, ...], *, null: bool = False) -> None:
         """Observe one parent-side row (active or deleted; never a value)."""
         self._observe(self._parent_counts, self._bump_parent_null, key, null)
 
-    def observe_foreign(
-        self, key: tuple[Hashable, ...], *, null: bool = False
-    ) -> None:
+    def observe_foreign(self, key: tuple[Hashable, ...], *, null: bool = False) -> None:
         """Observe one foreign-side row (active or deleted; value-free)."""
         self._observe(self._foreign_counts, self._bump_foreign_null, key, null)
 
@@ -472,9 +455,7 @@ class RelationshipEvidenceAccumulator:
         parent = _side_metrics(self._parent_counts, self._parent_nulls)
         foreign = _side_metrics(self._foreign_counts, self._foreign_nulls)
         matched = sum(
-            count
-            for key, count in self._foreign_counts.items()
-            if key in self._parent_counts
+            count for key, count in self._foreign_counts.items() if key in self._parent_counts
         )
         orphan = sum(self._foreign_counts.values()) - matched
         return RelationEvidenceCounts(
@@ -517,9 +498,7 @@ class RelationshipEvidenceAccumulator:
             ) from None
 
 
-def _side_metrics(
-    counts: Mapping[tuple[Hashable, ...], int], nulls: int
-) -> RelationSideMetrics:
+def _side_metrics(counts: Mapping[tuple[Hashable, ...], int], nulls: int) -> RelationSideMetrics:
     """The frozen side metrics of one histogram (sorted profile, no keys)."""
     profile = tuple(sorted(counts.values(), reverse=True))
     return RelationSideMetrics(
@@ -554,8 +533,7 @@ def compare_relation_metrics(
     return (
         RelationInvariantResult(
             invariant=INVARIANT_PARENT_UNIQUENESS,
-            preserved=before.parent.multiplicity_profile
-            == after.parent.multiplicity_profile,
+            preserved=before.parent.multiplicity_profile == after.parent.multiplicity_profile,
         ),
         RelationInvariantResult(
             invariant=INVARIANT_ORPHAN_COUNT,
@@ -575,8 +553,7 @@ def compare_relation_metrics(
         ),
         RelationInvariantResult(
             invariant=INVARIANT_FOREIGN_MULTIPLICITY,
-            preserved=before.foreign.multiplicity_profile
-            == after.foreign.multiplicity_profile,
+            preserved=before.foreign.multiplicity_profile == after.foreign.multiplicity_profile,
         ),
     )
 
@@ -617,16 +594,10 @@ def verify_relationships(
     for side_name, side in (("before", before), ("after", after)):
         for relation_id, counts in side.items():
             if not isinstance(relation_id, str) or relation_id not in declared:
-                raise _verification_failure(
-                    "RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION"
-                )
-            _validate_bounded_token(
-                relation_id, "RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION"
-            )
+                raise _verification_failure("RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION")
+            _validate_bounded_token(relation_id, "RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION")
             if not isinstance(counts, RelationEvidenceCounts):
-                raise TypeError(
-                    f"the {side_name} evidence must be RelationEvidenceCounts"
-                )
+                raise TypeError(f"the {side_name} evidence must be RelationEvidenceCounts")
     entries: list[RelationVerificationEvidence] = []
     for relation_id, group in declared.items():
         before_counts = before.get(relation_id)
@@ -644,13 +615,8 @@ def verify_relationships(
             )
             continue
         arity = _group_arity(group)
-        if (
-            before_counts.composite_arity != arity
-            or after_counts.composite_arity != arity
-        ):
-            raise _verification_failure(
-                "RELATIONSHIP_VERIFICATION_ARITY_MISMATCH", relation_id
-            )
+        if before_counts.composite_arity != arity or after_counts.composite_arity != arity:
+            raise _verification_failure("RELATIONSHIP_VERIFICATION_ARITY_MISMATCH", relation_id)
         invariants = compare_relation_metrics(before_counts, after_counts)
         status = (
             VerificationStatus.VERIFIED
@@ -671,7 +637,5 @@ def verify_relationships(
         evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
         relationship_fingerprint=fingerprint,
         relations=tuple(entries),
-        complete=all(
-            entry.status is not VerificationStatus.INCOMPLETE for entry in entries
-        ),
+        complete=all(entry.status is not VerificationStatus.INCOMPLETE for entry in entries),
     )

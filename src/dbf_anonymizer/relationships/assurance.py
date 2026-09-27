@@ -327,9 +327,7 @@ def derive_relational_assurance(
         if relation_count and report is not None:
             # An empty report against declared relations is a structural
             # inconsistency: fail closed instead of a partial truth.
-            raise _evidence_failure(
-                "RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH"
-            )
+            raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
         evidence_fingerprint = None
     else:
         if report.relationship_fingerprint != relationships.relationship_fingerprint:
@@ -337,15 +335,9 @@ def derive_relational_assurance(
         if len(report.relations) != relation_count:
             raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
         verified = sum(
-            1
-            for entry in report.relations
-            if entry.status is VerificationStatus.VERIFIED
+            1 for entry in report.relations if entry.status is VerificationStatus.VERIFIED
         )
-        failed = sum(
-            1
-            for entry in report.relations
-            if entry.status is VerificationStatus.FAILED
-        )
+        failed = sum(1 for entry in report.relations if entry.status is VerificationStatus.FAILED)
         if verified + failed > relation_count:
             raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
         if verified == relation_count and relation_count > 0:
@@ -355,9 +347,7 @@ def derive_relational_assurance(
                 # The trust credential: a valid internal binding minted ONLY
                 # by the tested authoritative ingestion adapter.  The public
                 # boolean and provenance label alone are descriptive facts.
-                and _validated_authority_binding(
-                    relationships, report, authority_binding
-                )
+                and _validated_authority_binding(relationships, report, authority_binding)
             ):
                 authoritative_verified = True
         evidence_fingerprint = report.evidence_fingerprint

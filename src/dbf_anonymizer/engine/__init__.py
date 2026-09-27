@@ -40,7 +40,6 @@ from dbf_anonymizer.engine.state import (
     MAX_SQL_BATCH,
     EVIDENCE_SPOOL_SCHEMA_VERSION,
     PASS1_STATE_FILENAME,
-    PassOneSpool,
 )
 
 __all__ = [

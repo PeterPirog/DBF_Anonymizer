@@ -80,9 +80,7 @@ def test_git_provenance_rejects_every_worktree_change(
 def test_git_provenance_accepts_clean_head_and_canonical_architecture(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _architecture, calls, architecture_sha256 = _configure_git_provenance(
-        monkeypatch, tmp_path
-    )
+    _architecture, calls, architecture_sha256 = _configure_git_provenance(monkeypatch, tmp_path)
 
     assert _verify_test_state(architecture_sha256) == (_TEST_BRANCH, _TEST_HEAD)
 
@@ -97,9 +95,7 @@ def test_git_provenance_accepts_clean_head_and_canonical_architecture(
 def test_git_provenance_rejects_wrong_architecture_hash_without_path_leak(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    architecture, _calls, architecture_sha256 = _configure_git_provenance(
-        monkeypatch, tmp_path
-    )
+    architecture, _calls, architecture_sha256 = _configure_git_provenance(monkeypatch, tmp_path)
     architecture.write_bytes(b"tampered architecture\n")
 
     with pytest.raises(SystemExit, match="architecture file hash") as caught:

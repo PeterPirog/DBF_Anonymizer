@@ -51,9 +51,10 @@ def test_temporal_ordinal_is_the_bounded_collection_information() -> None:
 
     feb_29 = date(2020, 2, 29)
     assert temporal_kernels.temporal_ordinal(feb_29) == feb_29.toordinal()
-    assert temporal_kernels.temporal_ordinal(
-        datetime(2020, 2, 29, 23, 59, 59, 999999)
-    ) == feb_29.toordinal()
+    assert (
+        temporal_kernels.temporal_ordinal(datetime(2020, 2, 29, 23, 59, 59, 999999))
+        == feb_29.toordinal()
+    )
     # Date and DateTime share the calendar-date level.
     assert temporal_kernels.temporal_ordinal(feb_29) == temporal_kernels.temporal_ordinal(
         datetime(2020, 2, 29, 0, 0)
@@ -87,7 +88,7 @@ def test_shift_semantics_for_dates() -> None:
 
 
 def test_shift_semantics_for_datetimes_preserve_time_of_day() -> None:
-    from datetime import date, datetime
+    from datetime import datetime
 
     assert temporal_kernels.temporal_shift(None, 3) is None
     value = datetime(2020, 2, 29, 23, 59, 58, 999999)
@@ -172,9 +173,8 @@ def test_out_of_range_shift_is_typed_never_overflow() -> None:
         with pytest.raises(MappingError) as excinfo:
             temporal_kernels.temporal_shift(value, -1)
         assert excinfo.value.code is ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE
-        assert (
-            "TEMPORAL_SHIFT_OUT_OF_RANGE"
-            in str(excinfo.value.to_dict()) + repr(excinfo.value.to_dict())
+        assert "TEMPORAL_SHIFT_OUT_OF_RANGE" in str(excinfo.value.to_dict()) + repr(
+            excinfo.value.to_dict()
         )
     for value in (date(9999, 12, 31), datetime(9999, 12, 31, 23, 59, 59)):
         with pytest.raises(MappingError):

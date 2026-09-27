@@ -111,9 +111,7 @@ class ErrorDefinition:
 
 ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
     ErrorDefinition(ErrorCode.PATH_INVALID, ErrorCategory.PATH, "A path is invalid."),
-    ErrorDefinition(
-        ErrorCode.PATH_NOT_FOUND, ErrorCategory.PATH, "A required path was not found."
-    ),
+    ErrorDefinition(ErrorCode.PATH_NOT_FOUND, ErrorCategory.PATH, "A required path was not found."),
     ErrorDefinition(
         ErrorCode.PATH_OVERLAP,
         ErrorCategory.PATH,
@@ -124,9 +122,7 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCategory.PATH,
         "The requested destination conflicts with existing state.",
     ),
-    ErrorDefinition(
-        ErrorCode.POLICY_INVALID, ErrorCategory.POLICY, "The policy is invalid."
-    ),
+    ErrorDefinition(ErrorCode.POLICY_INVALID, ErrorCategory.POLICY, "The policy is invalid."),
     ErrorDefinition(
         ErrorCode.POLICY_UNSUPPORTED,
         ErrorCategory.POLICY,
@@ -212,9 +208,7 @@ ERROR_REGISTRY: tuple[ErrorDefinition, ...] = (
         ErrorCategory.VERIFICATION,
         "Dataset verification failed.",
     ),
-    ErrorDefinition(
-        ErrorCode.RECOVERY_FAILED, ErrorCategory.RECOVERY, "Recovery failed."
-    ),
+    ErrorDefinition(ErrorCode.RECOVERY_FAILED, ErrorCategory.RECOVERY, "Recovery failed."),
     ErrorDefinition(
         ErrorCode.RECOVERY_NOT_PERMITTED,
         ErrorCategory.RECOVERY,
@@ -256,11 +250,7 @@ def _validate_token(value: str, *, field_name: str) -> str:
     """Validate a bounded machine token without interpreting its meaning."""
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string")
-    if (
-        not value
-        or len(value) > PUBLIC_JSON_MAX_TOKEN_LENGTH
-        or value.strip() != value
-    ):
+    if not value or len(value) > PUBLIC_JSON_MAX_TOKEN_LENGTH or value.strip() != value:
         raise ValueError(
             f"{field_name} must be a non-empty token of at most "
             f"{PUBLIC_JSON_MAX_TOKEN_LENGTH} characters"
@@ -330,9 +320,7 @@ class ErrorContext:
         ):
             value = getattr(self, field_name)
             if value is not None:
-                object.__setattr__(
-                    self, field_name, _validate_token(value, field_name=field_name)
-                )
+                object.__setattr__(self, field_name, _validate_token(value, field_name=field_name))
         for field_name in ("artifact_path", "table_path"):
             value = getattr(self, field_name)
             if value is not None:

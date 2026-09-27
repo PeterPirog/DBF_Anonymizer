@@ -151,9 +151,7 @@ def test_full_nullable_matrix_and_memo_vault_pipeline(
             nonlocal outgoing_records
             for record in records:  # type: ignore[union-attr]
                 outgoing_records += 1
-                assert "_NULLFLAGS" not in {
-                    str(name).upper() for name in record.values
-                }
+                assert "_NULLFLAGS" not in {str(name).upper() for name in record.values}
                 yield record
 
         kwargs["records"] = logical_records()
@@ -162,19 +160,28 @@ def test_full_nullable_matrix_and_memo_vault_pipeline(
     monkeypatch.setattr(direct_io.dbfbridge, "write_table", inspect_write)
     plan, result, events, output_root, vault_path = _run(source_root, tmp_path)
     output_path = output_root / "nullable_memo.dbf"
-    records = tuple(
-        dbfbridge.iter_records(output_path, memo="inline", include_deleted=True)
-    )
+    records = tuple(dbfbridge.iter_records(output_path, memo="inline", include_deleted=True))
 
     assert outgoing_records == result.pass2_records_written == len(records) == 4
     assert [record.physical_index for record in records] == [0, 1, 2, 3]
     assert [record.deleted for record in records] == [False, False, False, True]
 
     assert records[0].values == {
-        **{name: None for name in (
-            "CVAL", "VVAL", "IVAL", "YVAL", "MVAL", "GVAL", "PVAL",
-            "DVAL", "TVAL", "LVAL",
-        )},
+        **{
+            name: None
+            for name in (
+                "CVAL",
+                "VVAL",
+                "IVAL",
+                "YVAL",
+                "MVAL",
+                "GVAL",
+                "PVAL",
+                "DVAL",
+                "TVAL",
+                "LVAL",
+            )
+        },
         "_NULLFLAGS": records[0].values["_NULLFLAGS"],
     }
     assert records[1].values["CVAL"] == ""
@@ -219,12 +226,16 @@ def test_full_nullable_matrix_and_memo_vault_pipeline(
         expected_policy_fingerprint=plan.policy.policy_fingerprint,
         expected_relationship_fingerprint=plan.relationships.relationship_fingerprint,
     ) as vault:
-        rows = vault._internal_connection().execute(
-            "SELECT m.physical_record_index, f.name, m.original_payload, "
-            "m.payload_kind FROM memo_recovery AS m "
-            "JOIN fields AS f ON f.field_id = m.field_id "
-            "ORDER BY m.physical_record_index, f.name"
-        ).fetchall()
+        rows = (
+            vault._internal_connection()
+            .execute(
+                "SELECT m.physical_record_index, f.name, m.original_payload, "
+                "m.payload_kind FROM memo_recovery AS m "
+                "JOIN fields AS f ON f.field_id = m.field_id "
+                "ORDER BY m.physical_record_index, f.name"
+            )
+            .fetchall()
+        )
         assert len(rows) == 9
         assert {int(row[0]) for row in rows} == {1, 2, 3}
         assert all(str(row[1]).upper() != "_NULLFLAGS" for row in rows)
@@ -385,16 +396,16 @@ def test_unsupported_field_metadata_fails_before_vault_or_publication(
             is_binary=is_binary,
             flags=(original.flags | 0x04) if nocptrans else original.flags,
         )
-        return dataclasses.replace(
-            table, schema=dataclasses.replace(table.schema, fields=(field,))
-        )
+        return dataclasses.replace(table, schema=dataclasses.replace(table.schema, fields=(field,)))
 
     monkeypatch.setattr(run_module.direct_io, "read_source_table", unsafe_schema)
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
 
-    boundary = str(excinfo.value) + repr(excinfo.value) + json.dumps(
-        excinfo.value.to_dict(), sort_keys=True
+    boundary = (
+        str(excinfo.value)
+        + repr(excinfo.value)
+        + json.dumps(excinfo.value.to_dict(), sort_keys=True)
     )
     assert "SAFE-FIXTURE" not in boundary
     assert str(tmp_path) not in boundary
@@ -409,7 +420,7 @@ def test_engine_large_memos_do_not_accumulate_total_dataset_in_memory(
     source_root = tmp_path / "source"
     payload_size = 1024 * 1024
     record_count = 16
-    payload = (bytes(range(256)) * (payload_size // 256))
+    payload = bytes(range(256)) * (payload_size // 256)
     assert len(payload) == payload_size
     write_numeric_table(
         source_root,
@@ -432,8 +443,6 @@ def test_engine_large_memos_do_not_accumulate_total_dataset_in_memory(
     assert peak - baseline < 8 * payload_size
     assert current - baseline < 2 * payload_size
     assert (vault_path.stat().st_size) > record_count * payload_size
-    output = tuple(
-        dbfbridge.iter_records(output_root / "large.dbf", memo="inline")
-    )
+    output = tuple(dbfbridge.iter_records(output_root / "large.dbf", memo="inline"))
     assert len(output) == record_count
     assert all(record.values["OBJECT"] != payload for record in output)

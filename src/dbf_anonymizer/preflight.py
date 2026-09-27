@@ -99,7 +99,6 @@ from dbf_anonymizer.errors import (
     CallbackError,
     DBFBridgeError,
     ErrorContext,
-    ErrorCode,
     VaultError,
 )
 from dbf_anonymizer.index_backend import IndexBackend, validate_backend_capabilities
@@ -372,9 +371,7 @@ def _enumerate_in_scope_strict(
     to exhaustion unobserved.  The probe's typed cancellation/control
     exceptions propagate; they are never converted into findings.
     """
-    return discovery.enumerate_in_scope_paths(
-        source_root, strict=True, cancel_probe=cancel_probe
-    )
+    return discovery.enumerate_in_scope_paths(source_root, strict=True, cancel_probe=cancel_probe)
 
 
 def _source_footprint_bytes(source_files: dict[str, Path] | None) -> int | None:
@@ -586,9 +583,7 @@ def _check_policy_consistency(plan: Plan, findings: _Findings) -> None:
     if policy.recovery_enabled != (len(policy.transformation_classes) > 0):
         findings.error(PreflightCode.POLICY_INCONSISTENT)
     expected_vault = (
-        VaultStrategy.SINGLE_DATASET_SQLITE
-        if policy.recovery_enabled
-        else VaultStrategy.NONE
+        VaultStrategy.SINGLE_DATASET_SQLITE if policy.recovery_enabled else VaultStrategy.NONE
     )
     if policy.vault_strategy is not expected_vault:
         findings.error(PreflightCode.POLICY_INCONSISTENT)
@@ -632,12 +627,10 @@ def _check_output_profile_and_capabilities(
             not index_backend_capability.supports_verification
             or not index_backend_capability.vfp_runtime_available
             or (
-                structural_required
-                and not index_backend_capability.supports_structural_cdx_rebuild
+                structural_required and not index_backend_capability.supports_structural_cdx_rebuild
             )
             or (
-                standalone_required
-                and not index_backend_capability.supports_standalone_idx_rebuild
+                standalone_required and not index_backend_capability.supports_standalone_idx_rebuild
             )
         ):
             findings.error(PreflightCode.CAPABILITY_MISSING)
@@ -703,11 +696,7 @@ def _check_relationships(plan: Plan, findings: _Findings) -> None:
         for group in relationships.groups:
             for member in group.members:
                 fact = bindings.get((member.table_path, member.field_name))
-                if (
-                    fact is None
-                    or member.dbf_type != fact[0]
-                    or member.byte_width != fact[1]
-                ):
+                if fact is None or member.dbf_type != fact[0] or member.byte_width != fact[1]:
                     findings.error(PreflightCode.RELATIONSHIP_DOMAIN_UNVERIFIED)
                     return
                 if member.is_numeric_member and (
@@ -815,11 +804,7 @@ def _capacity_sufficient(
         return _CAPACITY_OK
 
     execution_context = plan.execution_context
-    merged_policy = (
-        execution_context.resolved_policy
-        if execution_context is not None
-        else None
-    )
+    merged_policy = execution_context.resolved_policy if execution_context is not None else None
     if not isinstance(merged_policy, Mapping):
         _LAST_CAPACITY_SCAN_STATS["outcome"] = _CAPACITY_UNPROVEN
         return _CAPACITY_UNPROVEN
@@ -1072,7 +1057,6 @@ def _numeric_relation_capacity(
     from dbf_anonymizer.transforms.numeric_keys import (
         MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE,
         MEMBER_ORIGINAL_RECOVERY_UNWRITABLE,
-        MEMBER_ORIGINAL_REVERSIBLE,
         NumericKeyDomain,
         NumericKeyMemberRange,
         classify_member_original,
@@ -1082,9 +1066,7 @@ def _numeric_relation_capacity(
         plan_numeric_bijection,
     )
 
-    tasks: list[
-        tuple[str, NumericKeyDomain, list[tuple[str, str, NumericKeyMemberRange]]]
-    ] = []
+    tasks: list[tuple[str, NumericKeyDomain, list[tuple[str, str, NumericKeyMemberRange]]]] = []
     for group in reversible_groups:
         members: list[tuple[str, str, NumericKeyMemberRange]] = []
         domain_members = []
@@ -1397,9 +1379,7 @@ def _evaluate_plan_readonly(
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_INSUFFICIENT)
         elif outcome == _CAPACITY_UNPROVEN:
             findings.error(PreflightCode.PSEUDONYM_CAPACITY_UNPROVEN)
-        numeric_outcome, unwritable = _numeric_relation_capacity(
-            source_files, plan, control
-        )
+        numeric_outcome, unwritable = _numeric_relation_capacity(source_files, plan, control)
         if unwritable:
             findings.error(PreflightCode.NUMERIC_KEY_RECOVERY_UNWRITABLE)
         if numeric_outcome == _CAPACITY_INSUFFICIENT:
@@ -1460,9 +1440,7 @@ def preflight(
         raise TypeError("index_backend must implement the IndexBackend protocol")
 
     backend_capability = (
-        validate_backend_capabilities(index_backend)
-        if index_backend is not None
-        else None
+        validate_backend_capabilities(index_backend) if index_backend is not None else None
     )
 
     control = ProgressController(
@@ -1473,9 +1451,7 @@ def preflight(
         plan,
         control,
         injected_backend_capability=(
-            backend_capability
-            if plan.output_profile is TransferProfile.VFP_INDEXED
-            else None
+            backend_capability if plan.output_profile is TransferProfile.VFP_INDEXED else None
         ),
     )
     # The single terminal completion event is emitted only now — after the

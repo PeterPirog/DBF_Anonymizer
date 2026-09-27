@@ -34,10 +34,6 @@ from dbf_anonymizer.errors import (  # noqa: E402
     ErrorCode,
     PublicationError,
 )
-from tests.support.numeric_tables import (  # noqa: E402
-    numeric_field,
-    write_numeric_table,
-)
 
 _TINY_WORKLOAD = {"customers": 60, "orders": 30, "archived": 20}
 _SMALL_WORKLOAD = {"customers": 160, "orders": 80, "archived": 40}
@@ -152,9 +148,7 @@ def test_transient_publication_interruption_restarts_in_a_fresh_attempt(
     real_atomic_replace = publication_module.atomic_replace
     observed: list[str] = []
 
-    def transiently_failing_replace(
-        source: object, destination: object
-    ) -> object:
+    def transiently_failing_replace(source: object, destination: object) -> object:
         if not observed:
             observed.append("failed")
             raise PermissionError(5, "simulated transient handle race")
@@ -162,9 +156,7 @@ def test_transient_publication_interruption_restarts_in_a_fresh_attempt(
         observed.append("ok")
         return result
 
-    monkeypatch.setattr(
-        publication_module, "atomic_replace", transiently_failing_replace
-    )
+    monkeypatch.setattr(publication_module, "atomic_replace", transiently_failing_replace)
     workspace = tmp_path / "bench"
     run = bench.run_final_pipeline_benchmark(
         workspace, customers=40, orders=20, archived=10, workers=1
@@ -191,9 +183,7 @@ def test_permanent_publication_interruption_surfaces_after_bounded_retries(
         attempts.append(1)
         raise PermissionError(5, "simulated permanent handle race")
 
-    monkeypatch.setattr(
-        publication_module, "atomic_replace", always_failing_replace
-    )
+    monkeypatch.setattr(publication_module, "atomic_replace", always_failing_replace)
     workspace = tmp_path / "bench"
     with pytest.raises(PublicationError) as excinfo:
         bench.run_final_pipeline_benchmark(
@@ -219,14 +209,10 @@ def test_non_transient_publication_failure_is_never_retried(
         calls.append(1)
         raise PublicationError(
             ErrorCode.PUBLICATION_INCOMPLETE,
-            context=ErrorContext(
-                operation="publication", detail_code="STAGING_CLEANUP_FAILED"
-            ),
+            context=ErrorContext(operation="publication", detail_code="STAGING_CLEANUP_FAILED"),
         )
 
-    monkeypatch.setattr(
-        publication_module, "atomic_replace", typed_non_transient_replace
-    )
+    monkeypatch.setattr(publication_module, "atomic_replace", typed_non_transient_replace)
     workspace = tmp_path / "bench"
     with pytest.raises(PublicationError) as excinfo:
         bench.run_final_pipeline_benchmark(
@@ -242,9 +228,7 @@ def test_non_transient_publication_failure_is_never_retried(
 # ---------------------------------------------------------------------------
 def test_harness_creates_no_alternative_dbf_parser_or_writer() -> None:
     source = (
-        Path(__file__).resolve().parents[1]
-        / "tools"
-        / "final_pipeline_benchmark.py"
+        Path(__file__).resolve().parents[1] / "tools" / "final_pipeline_benchmark.py"
     ).read_text(encoding="utf-8")
     # The synthetic workload is built through the reviewed tests.support
     # public writer boundary; the harness itself never touches DBF/FPT bytes.
@@ -261,9 +245,7 @@ def test_harness_creates_no_alternative_dbf_parser_or_writer() -> None:
     ):
         assert forbidden not in source, forbidden
     # The only dbfbridge usage is the version read for the report.
-    dbfbridge_uses = [
-        line.strip() for line in source.splitlines() if "dbfbridge." in line
-    ]
+    dbfbridge_uses = [line.strip() for line in source.splitlines() if "dbfbridge." in line]
     assert dbfbridge_uses == ['"dbfbridge_version": dbfbridge.__version__,']
 
 
@@ -279,9 +261,7 @@ def test_source_files_remain_byte_identical_after_benchmark(
     reference = benchmark.workspace / "reference-source"
     bench.write_benchmark_workload(reference, customers=60, orders=30, archived=20)
     reference_hashes = {
-        path.relative_to(reference).as_posix(): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+        path.relative_to(reference).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(reference.rglob("*"))
         if path.is_file()
     }
@@ -338,9 +318,7 @@ def test_report_contains_no_absolute_paths(benchmark: SimpleNamespace) -> None:
         "verification_seconds",
     ),
 )
-@pytest.mark.parametrize(
-    "bad_value", (float("nan"), float("inf"), float("-inf"), float(-1.0))
-)
+@pytest.mark.parametrize("bad_value", (float("nan"), float("inf"), float("-inf"), float(-1.0)))
 def test_report_rejects_non_finite_and_negative_timing_fields(
     benchmark: SimpleNamespace, field: str, bad_value: float
 ) -> None:
@@ -373,9 +351,7 @@ def test_serialized_report_is_strict_machine_json(benchmark: SimpleNamespace) ->
     """The machine artifact must be STRICT JSON: no NaN/Infinity tokens can
     ever be emitted for a validated report (defense in depth with the
     schema-level rejection above)."""
-    serialized = json.dumps(
-        benchmark.report, sort_keys=True, ensure_ascii=True, allow_nan=False
-    )
+    serialized = json.dumps(benchmark.report, sort_keys=True, ensure_ascii=True, allow_nan=False)
     assert "NaN" not in serialized
     assert "Infinity" not in serialized
     assert json.loads(serialized) == benchmark.report
@@ -436,9 +412,7 @@ def test_records_per_second_is_mathematically_derived(
     # The rounded values must satisfy the documented derivation within the
     # rounding tolerance of both rounded quantities (5e-7 each) — the same
     # bound the harness itself enforces, so it holds on slow environments too.
-    tolerance = 0.01 + 5e-7 * (
-        float(report["wall_seconds"]) + float(report["records_per_second"])
-    )
+    tolerance = 0.01 + 5e-7 * (float(report["wall_seconds"]) + float(report["records_per_second"]))
     assert (
         abs(
             float(report["records_per_second"]) * float(report["wall_seconds"])
@@ -806,11 +780,11 @@ def test_workload_identity_is_deterministic_across_runs(
 # Q. the committed baseline profile agrees with its generated summary
 # ---------------------------------------------------------------------------
 def test_committed_baseline_is_closed_schema_and_privacy_safe() -> None:
-    baseline_json = Path(__file__).resolve().parents[1] / "benchmarks" / (
-        "final-pipeline-baseline.json"
+    baseline_json = (
+        Path(__file__).resolve().parents[1] / "benchmarks" / ("final-pipeline-baseline.json")
     )
-    baseline_md = Path(__file__).resolve().parents[1] / "benchmarks" / (
-        "final-pipeline-baseline.md"
+    baseline_md = (
+        Path(__file__).resolve().parents[1] / "benchmarks" / ("final-pipeline-baseline.md")
     )
     report = json.loads(baseline_json.read_text(encoding="utf-8"))
     bench._validate_report_shape(report)
@@ -840,9 +814,7 @@ def test_public_api_surface_remains_unchanged_by_the_benchmark() -> None:
     import importlib
 
     importlib.reload(bench)
-    assert all(
-        "benchmark" not in name.lower() for name in dbf_anonymizer.__all__
-    )
+    assert all("benchmark" not in name.lower() for name in dbf_anonymizer.__all__)
 
 
 # ---------------------------------------------------------------------------
