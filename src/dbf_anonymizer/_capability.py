@@ -11,9 +11,6 @@ operation is :func:`dbf_anonymizer.capabilities.capabilities` (REQ-P1-007),
 which delegates to :func:`snapshot`. Preflight consumes the same logic
 through the ``capabilities_provider`` seam — there is exactly one discovery
 implementation in the package.
-
-REQ-P7-003: The ``capabilities_provider`` seam now accepts an optional
-``recovery_policy`` parameter for host policy projection.
 """
 
 from __future__ import annotations
@@ -116,5 +113,5 @@ def snapshot(recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED) -> Capabi
 
 #: Provider seam for preflight. Tests may replace this callable to simulate a
 #: missing direct-read/write capability deterministically.
-#: REQ-P7-003: accepts optional recovery_policy for host policy projection.
-capabilities_provider: Callable[[RecoveryPolicy], Capabilities] = snapshot
+#: This is a zero-argument callable to preserve the P1 preflight contract.
+capabilities_provider: Callable[[], Capabilities] = snapshot

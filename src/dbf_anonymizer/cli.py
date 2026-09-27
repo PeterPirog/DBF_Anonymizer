@@ -5,7 +5,6 @@ implementation.  Common machine integration uses ``--json``; human progress
 goes to stderr; machine result JSON goes to stdout.
 
 Implemented commands:
-* ``capabilities`` — side-effect-free capability discovery (REQ-P1-007)
 * ``recover`` — protected canonical dataset recovery (REQ-P5-002/REQ-P5-003,
   REQ-P7-003) with explicit ``--recovery-policy enabled|disabled`` control
 """
@@ -20,7 +19,6 @@ from pathlib import Path
 
 from dbf_anonymizer import __version__
 from dbf_anonymizer.api import (
-    capabilities,
     recover,
     RecoveryPolicy,
 )
@@ -47,17 +45,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="print the installed package version and exit",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # capabilities
-    cap_parser = subparsers.add_parser(
-        "capabilities",
-        help="show side-effect-free capability snapshot",
-    )
-    cap_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="emit machine-readable JSON to stdout",
-    )
 
     # recover
     rec_parser = subparsers.add_parser(
@@ -92,20 +79,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-
-
-def _run_capabilities(json_output: bool) -> int:
-    caps = capabilities()
-    if json_output:
-        print(json.dumps(caps.to_dict(), separators=(",", ":"), ensure_ascii=True))
-    else:
-        print(f"direct_read: {caps.direct_read}")
-        print(f"direct_write: {caps.direct_write}")
-        print(f"recovery: {caps.recovery}")
-        print(f"transfer_bundle: {caps.transfer_bundle}")
-        print(f"vfp_index_backend: {caps.vfp_index_backend}")
-        print(f"dbfbridge_version: {caps.dbfbridge_version}")
-    return 0
 
 
 def _progress_to_stderr(event: ProgressEvent) -> None:
@@ -161,8 +134,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exit_request:
         return int(exit_request.code or 0)
 
-    if parsed.command == "capabilities":
-        return _run_capabilities(parsed.json)
     if parsed.command == "recover":
         return _run_recover(parsed)
 

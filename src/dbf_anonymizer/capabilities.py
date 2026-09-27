@@ -63,14 +63,4 @@ def capabilities(recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED) -> Ca
     truthfully representing ``recovery = false`` without changing physical
     package support.
     """
-    base = snapshot()
-    if recovery_policy is RecoveryPolicy.DISABLED:
-        return Capabilities(
-            direct_read=base.direct_read,
-            direct_write=base.direct_write,
-            recovery=False,
-            transfer_bundle=base.transfer_bundle,
-            vfp_index_backend=base.vfp_index_backend,
-            dbfbridge_version=base.dbfbridge_version,
-        )
-    return base
+    return snapshot(recovery_policy)

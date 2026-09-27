@@ -95,9 +95,12 @@ def test_cli_unknown_command_fails_without_pretending_success() -> None:
 
 
 def test_cli_bare_invocation_is_not_a_fake_success() -> None:
-    code, _, stderr = _run_cli([])
-    assert code != 0
-    assert "are implemented yet" in stderr
+    code, stdout, stderr = _run_cli([])
+    assert code == 2
+    assert stdout == ""
+    assert "usage:" in stderr.lower()
+    assert "the following arguments are required: command" in stderr.lower()
+    assert "recover" in stderr
 
 
 def test_version_sources_agree() -> None:
