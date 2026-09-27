@@ -1,0 +1,90 @@
+name: P6 trusted real-VFP9 acceptance (isolated)
+
+# REQ-P7-006 TRUSTED LANE — security-critical.
+#
+# UNTRUSTED PULL-REQUEST CODE MUST NEVER EXECUTE ON THE TRUSTED SELF-HOSTED
+# WINDOWS/VFP9 MACHINE.  This workflow therefore:
+#
+# * is triggered by workflow_dispatch ONLY (never pull_request, never
+#   pull_request_target, never workflow_run, never push from a PR context);
+# * requires write access on the repository to dispatch (collaborator-only);
+# * refuses every ref except the protected main branch before any checkout;
+# * checks out ONLY the dispatched trusted ref (never
+#   github.event.pull_request.head.sha, never an arbitrary user-provided
+#   SHA/branch input);
+# * records and verifies the exact trusted revision identity;
+# * delegates ALL real-VFP9 semantics (trusted-machine checks, source
+#   immutability, no-skip enforcement, sanitized evidence) to the established
+#   REQ-P6-003 acceptance runner tool — no second acceptance protocol.
+#
+# The trusted runner label is NOT committed to this repository.  It is read
+# from the authoritative repository variable DBF_TRUSTED_VFP9_RUNNER_LABELS,
+# which MUST be configured together with the trusted self-hosted Windows VFP9
+# runner provisioning (infrastructure step, separate from this repository
+# work).  Until the variable and the runner exist, dispatching is refused by
+# GitHub and this lane produces no evidence — it is never a silent pass.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-vfp9-acceptance:
+    name: Trusted real VFP9 acceptance (isolated self-hosted Windows runner)
+    runs-on: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}
+    timeout-minutes: 60
+    steps:
+      - name: Trust guard — the trusted machine runs ONLY the protected main ref
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "trusted VFP lane refuses non-main ref: $env:GITHUB_REF"
+          }
+          if ($env:GITHUB_EVENT_NAME -ne "workflow_dispatch") {
+            throw "trusted VFP lane refuses event: $env:GITHUB_EVENT_NAME"
+          }
+          Write-Output "trusted ref accepted: $env:GITHUB_REF"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No explicit ref: checks out exactly the dispatched GITHUB_REF (main),
+        # never github.event.pull_request.head.sha or a caller-provided SHA.
+      - name: Exact trusted revision identity
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $originHead = git rev-parse origin/main
+          Write-Output "trusted_head=$head"
+          Write-Output "origin_main=$originHead"
+          if ($head -ne $originHead) {
+            throw "trusted checkout is not the pushed protected main commit"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "TRUSTED_HEAD=$head"
+      - name: Set up the acceptance Python (trusted machine, hosted-equivalent tooling only)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the tested acceptance environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Real VFP9 acceptance (established REQ-P6-003 trusted runner tool)
+        shell: pwsh
+        env:
+          DBF_EXPECTED_ARCHITECTURE_SHA256: 483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $evidence = Join-Path $env:RUNNER_TEMP "p6-real-vfp9-evidence.json"
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Force
+          }
+          python tools/run_real_vfp9_acceptance.py `
+            --output "$evidence" `
+            --expected-branch main `
+            --expected-head "$env:TRUSTED_HEAD" `
+            --expected-architecture-sha256 "$env:DBF_EXPECTED_ARCHITECTURE_SHA256"
+          Write-Output "--- sanitized evidence ---"
+          Get-Content -LiteralPath $evidence

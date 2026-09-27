@@ -34,6 +34,10 @@ PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
 BOUNDARY_WORKFLOW = "p0-package-boundary.yml"
 GATES_WORKFLOW = "p7-comprehensive-gates.yml"
+TRUSTED_WORKFLOW = "p6-trusted-vfp-acceptance.yml"
+TRUSTED_JOB = "real-vfp9-acceptance"
+TRUSTED_RUNNER_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS"
+ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
 
 ACCEPTED_BOUNDARY_JOBS = (
     "dbfbridge-floor-compatibility",
@@ -142,7 +146,12 @@ def test_no_untrusted_trigger_reaches_any_runner() -> None:
 
 
 def _resolved_runs_on(job: dict[str, Any]) -> set[str]:
-    """The concrete runner labels of one job (matrix expressions resolved)."""
+    """The concrete runner labels of one job (matrix expressions resolved).
+
+    A ``vars.*`` reference is reported as the authoritative repository
+    configuration point itself (``vars.<NAME>``) — the trusted runner label
+    is deliberately NOT committed as a literal in this repository.
+    """
     runs_on = job.get("runs-on")
     if isinstance(runs_on, str) and "${{" in runs_on:
         strategy = job.get("strategy") or {}
@@ -156,16 +165,22 @@ def _resolved_runs_on(job: dict[str, Any]) -> set[str]:
                     if isinstance(include, dict) and include.get("os")
                 ]
             return {str(value) for value in os_values}
+        if re.search(r"\bvars\.\w+", runs_on):
+            match = re.search(r"vars\.\w+", runs_on)
+            assert match is not None
+            return {match.group(0)}
         return set()
     return {str(runs_on)}
 
 
-def test_only_hosted_runners_are_used() -> None:
-    """Every job runs on a disposable hosted runner (Linux/Windows), so no
-    untrusted pull-request code can ever reach a trusted self-hosted VFP9
-    runner; real VFP acceptance stays manual and trusted (see the next
-    test)."""
+def test_ordinary_workflows_cannot_target_the_trusted_vfp_runner() -> None:
+    """UNTRUSTED ZONE: every ordinary workflow (push/pull_request/dispatch on
+    hosted runners) runs ONLY on disposable hosted Linux/Windows runners and
+    never on the trusted self-hosted VFP9 machine — untrusted pull-request
+    code can therefore never reach the trusted machine."""
     for name, document in _load_workflows().items():
+        if name == TRUSTED_WORKFLOW:
+            continue
         for job_name, job in _jobs(document).items():
             resolved = _resolved_runs_on(job)
             assert resolved, f"{name}:{job_name}: unresolved runs-on"
@@ -173,16 +188,100 @@ def test_only_hosted_runners_are_used() -> None:
             assert not unexpected, f"{name}:{job_name}: {unexpected}"
 
 
-def test_trusted_real_vfp_acceptance_never_runs_in_ci() -> None:
-    """The real-VFP acceptance tool is MANUAL and trusted-only: no workflow
-    may invoke it or declare the VFP availability sentinel."""
-    for name, runs in {
-        workflow: _step_runs(document) for workflow, document in _load_workflows().items()
+def test_dedicated_trusted_vfp_workflow_exists() -> None:
+    """TRUSTED ZONE: the real-VFP9 acceptance lane exists as its own
+    version-controlled workflow, separate from every ordinary workflow."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    assert _jobs(document), "the trusted VFP workflow has no jobs"
+
+
+def test_trusted_vfp_workflow_is_dispatch_only() -> None:
+    """The trusted lane may only be dispatched manually: no pull_request, no
+    pull_request_target, no workflow_run and no push trigger may start it,
+    so untrusted pull-request code can never schedule work on the trusted
+    machine."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    triggers = _triggers(document)
+    assert set(triggers) == {"workflow_dispatch"}
+    assert document.get("name") is not None
+    assert "trusted" in str(document.get("name", "")).lower()
+
+
+def test_trusted_vfp_workflow_targets_the_authoritative_runner_configuration() -> None:
+    """The trusted job's runner label comes from the authoritative repository
+    variable (configured together with the trusted runner provisioning), and
+    NO invented literal runner label is committed to the repository."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    job = _jobs(document)[TRUSTED_JOB]
+    runs_on = str(job.get("runs-on"))
+    assert TRUSTED_RUNNER_VARIABLE in runs_on, runs_on
+    for name, document in _load_workflows().items():
+        for job_name, job in _jobs(document).items():
+            if name == TRUSTED_WORKFLOW:
+                continue
+            resolved = _resolved_runs_on(job)
+            for label in resolved:
+                assert not label.startswith("vars."), (
+                    f"{name}:{job_name}: untrusted workflow targets a "
+                    f"trusted-runner configuration: {label}"
+                )
+
+
+def test_trusted_vfp_workflow_never_executes_untrusted_pr_code() -> None:
+    """The trusted workflow must never check out pull-request code: no
+    ``github.event.pull_request`` reference anywhere, and a trust guard
+    refuses every ref except the protected main branch."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    for step in (
+        step
+        for job in _jobs(document).values()
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict)
+    ):
+        run = str(step.get("run", ""))
+        assert "github.event.pull_request" not in run
+        assert "pull_request" not in run
+        if str(step.get("uses", "")):
+            assert "github.event.pull_request.head.sha" not in str(step.get("with", {}))
+    runs = "\n".join(_step_runs(document))
+    assert "refs/heads/main" in runs, "the trust guard must pin the trusted ref"
+
+
+def test_trusted_vfp_workflow_invokes_the_established_acceptance_tool() -> None:
+    """The trusted lane delegates ALL real-VFP semantics to the established
+    REQ-P6-003 acceptance runner tool — no second acceptance protocol exists
+    in the repository workflows."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    runs = "\n".join(_step_runs(document))
+    assert "tools/run_real_vfp9_acceptance.py" in runs
+    assert "run_real_vfp9_acceptance.py" in runs
+    for name, runs_ in {
+        workflow: "\n".join(_step_runs(document_))
+        for workflow, document_ in _load_workflows().items()
+        if workflow != TRUSTED_WORKFLOW
     }.items():
-        for run in runs:
-            assert "run_real_vfp9_acceptance" not in run, name
-            assert "DBF_ANONYMIZER_REAL_VFP9_AVAILABLE" not in run, name
-            assert "DBF_ANONYMIZER_REAL_VFP9_BACKEND_FACTORY" not in run, name
+        assert "run_real_vfp9_acceptance" not in runs_, name
+
+
+def test_trusted_vfp_workflow_verifies_exact_revision_identity() -> None:
+    """The trusted lane records the exact HEAD and verifies it against
+    origin/main plus the canonical immutable architecture hash."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    job = _jobs(document)[TRUSTED_JOB]
+    job_texts: list[str] = []
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        job_texts.append(str(step.get("run", "")))
+        step_env = step.get("env") or {}
+        job_texts.extend(str(value) for value in step_env.values())
+    text = "\n".join(job_texts)
+    assert "git rev-parse HEAD" in text
+    assert "origin/main" in text
+    assert "--expected-head" in text
+    assert "--expected-branch main" in text
+    assert "--expected-architecture-sha256" in text
+    assert ARCHITECTURE_SHA256 in text
 
 
 def test_format_lint_typecheck_and_compile_gates_exist() -> None:
