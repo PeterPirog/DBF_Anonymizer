@@ -47,7 +47,10 @@ from dbf_anonymizer.transfer_bundle import (
     create_transfer_bundle,
     verify_transfer_bundle,
 )
-from dbf_anonymizer.verification import verify_dataset
+from dbf_anonymizer.verification import (
+    _load_completed_result as _load_completed_result_from_receipt,
+    verify_dataset,
+)
 
 __all__ = [
     "capabilities",
@@ -62,6 +65,11 @@ __all__ = [
 ]
 
 _MAX_PUBLIC_WORKERS = 32
+
+
+def _load_completed_result(plan: Plan) -> PseudonymizationResult:
+    """Resolve an existing operation receipt for standalone service adapters."""
+    return _load_completed_result_from_receipt(plan)
 
 
 def _preflight_refusal() -> PublicationError:

@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -143,6 +144,31 @@ def _assert_installed_origin(repository_root: Path | None) -> Path:
     return origin
 
 
+def _write_synthetic_source(source: Path) -> None:
+    source.mkdir(parents=True)
+    dbfbridge.write_table(
+        source / "people.dbf",
+        schema=_synthetic_schema(),
+        records=[
+            dbfbridge.DirectRecord(
+                physical_index=0,
+                deleted=False,
+                values={"NAME": "SYNTHETIC-OFFLINE"},
+            )
+        ],
+    )
+
+
+def _json_cli(arguments: list[str], expected_code: int = 0) -> dict[str, object]:
+    stdout, stderr = _assert_cli(arguments, expected_code)
+    if stderr:
+        raise AssertionError(f"JSON CLI wrote diagnostics to stderr: {arguments!r}")
+    payload = json.loads(stdout)
+    if not isinstance(payload, dict):
+        raise AssertionError(f"JSON CLI returned a non-object: {arguments!r}")
+    return payload
+
+
 def run_contract(
     work_root: Path,
     *,
@@ -158,28 +184,17 @@ def run_contract(
         else Path(public.__file__).resolve()
     )
 
-    source = work_root / "source"
-    source.mkdir()
-    dbfbridge.write_table(
-        source / "people.dbf",
-        schema=_synthetic_schema(),
-        records=[
-            dbfbridge.DirectRecord(
-                physical_index=0,
-                deleted=False,
-                values={"NAME": "SYNTHETIC-OFFLINE"},
-            )
-        ],
-    )
-
     attempts: list[str] = []
     with _runtime_sentinels(attempts):
         caps = public.capabilities()
         if not caps.direct_read or not caps.direct_write or not caps.recovery:
             raise AssertionError(f"standalone capabilities unavailable: {caps}")
 
-        output = work_root / "pseudonymized"
-        vault = work_root / "protected" / "recovery.sqlite3"
+        api_root = work_root / "api"
+        source = api_root / "source"
+        _write_synthetic_source(source)
+        output = api_root / "pseudonymized"
+        vault = api_root / "protected" / "recovery.sqlite3"
         plan = public.build_plan(source, output, vault)
         if not public.preflight(plan).ready:
             raise AssertionError("offline standalone preflight is not ready")
@@ -188,7 +203,7 @@ def run_contract(
         if verification.status is not public.VerificationStatus.PASS:
             raise AssertionError(f"offline dataset verification failed: {verification}")
 
-        bundle_path = work_root / "bundle"
+        bundle_path = api_root / "bundle"
         bundle = public.create_transfer_bundle(
             result, destination=bundle_path, profile="DATA_ONLY"
         )
@@ -196,7 +211,7 @@ def run_contract(
         if not bundle.verified or not standalone.verified:
             raise AssertionError("offline DATA_ONLY bundle verification failed")
 
-        disabled_output = work_root / "disabled-recovery"
+        disabled_output = api_root / "disabled-recovery"
         try:
             public.recover(
                 output,
@@ -212,7 +227,7 @@ def run_contract(
         if disabled_output.exists():
             raise AssertionError("disabled recovery created output")
 
-        recovered_path = work_root / "recovered"
+        recovered_path = api_root / "recovered"
         recovered = public.recover(
             output,
             vault=vault,
@@ -222,17 +237,114 @@ def run_contract(
         if not recovered.canonical_verified:
             raise AssertionError("enabled recovery was not canonically verified")
 
-        help_stdout, _ = _assert_cli(["--help"], 0)
+        help_stdout, help_stderr = _assert_cli(["--help"], 0)
         version_stdout, _ = _assert_cli(["--version"], 0)
         if "dbf-anonymizer" not in help_stdout or public.__version__ not in version_stdout:
             raise AssertionError("installed CLI help/version contract failed")
+        if help_stderr:
+            raise AssertionError("CLI help unexpectedly wrote to stderr")
+        target_commands = {
+            "capabilities",
+            "plan",
+            "preflight",
+            "pseudonymize",
+            "verify",
+            "recover",
+            "export-bundle",
+            "verify-bundle",
+            "self-test",
+        }
+        command_listing = re.search(r"\{([^}]+)\}", help_stdout)
+        if command_listing is None or set(
+            command_listing.group(1).split(",")
+        ) != target_commands:
+            raise AssertionError("installed CLI help command set is not exact")
+
+        cli_root = work_root / "cli"
+        cli_source = cli_root / "source"
+        _write_synthetic_source(cli_source)
+        cli_output = cli_root / "pseudonymized"
+        cli_vault = cli_root / "protected" / "recovery.sqlite3"
+        common = [str(cli_source), str(cli_output), str(cli_vault)]
+
+        capabilities_payload = _json_cli(["capabilities", "--json"])
+        if capabilities_payload.get("model_type") != "Capabilities":
+            raise AssertionError("CLI capabilities did not return Capabilities")
+
+        plan_payload = _json_cli(["plan", *common, "--json"])
+        if plan_payload.get("model_type") != "Plan":
+            raise AssertionError("CLI plan did not return Plan")
+        if cli_output.exists() or cli_vault.exists():
+            raise AssertionError("CLI plan created output or vault")
+
+        preflight_payload = _json_cli(["preflight", *common, "--json"])
+        if preflight_payload.get("ready") is not True:
+            raise AssertionError("CLI preflight was not ready")
+        if cli_output.exists() or cli_vault.exists():
+            raise AssertionError("CLI preflight created output or vault")
+
+        pseudonymize_payload = _json_cli(["pseudonymize", *common, "--json"])
+        if pseudonymize_payload.get("model_type") != "PseudonymizationResult":
+            raise AssertionError("CLI pseudonymize did not return its public result")
+
+        human_stdout, human_stderr = _assert_cli(["pseudonymize", *common], 0)
+        if human_stdout or not human_stderr:
+            raise AssertionError("human CLI did not keep progress exclusively on stderr")
+
+        verification_payload = _json_cli(["verify", *common, "--json"])
+        if verification_payload.get("status") != "PASS":
+            raise AssertionError("CLI dataset verification failed")
+
+        cli_recovered = cli_root / "recovered"
+        recovery_payload = _json_cli(
+            [
+                "recover",
+                str(cli_output),
+                str(cli_vault),
+                str(cli_recovered),
+                "--recovery-policy",
+                "enabled",
+                "--json",
+            ]
+        )
+        if recovery_payload.get("canonical_verified") is not True:
+            raise AssertionError("CLI recovery was not canonically verified")
+
+        cli_bundle = cli_root / "bundle"
+        bundle_payload = _json_cli(
+            [
+                "export-bundle",
+                *common,
+                str(cli_bundle),
+                "--json",
+            ]
+        )
+        if bundle_payload.get("verified") is not True:
+            raise AssertionError("CLI bundle creation was not verified")
+        bundle_verification_payload = _json_cli(
+            ["verify-bundle", str(cli_bundle), "--json"]
+        )
+        if bundle_verification_payload.get("verified") is not True:
+            raise AssertionError("CLI standalone bundle verification failed")
+
+        self_test_payload = _json_cli(["self-test", "--json"])
+        if not all(
+            self_test_payload.get(field) is True
+            for field in (
+                "preflight_ready",
+                "recovery_verified",
+                "canonical_match",
+                "bundle_verified",
+            )
+        ) or self_test_payload.get("dataset_verification") != "PASS":
+            raise AssertionError("CLI self-test did not execute the complete workflow")
 
         disabled_stdout, disabled_stderr = _assert_cli(
             [
                 "recover",
-                str(output),
-                str(vault),
-                str(work_root / "cli-disabled"),
+                str(cli_output),
+                str(cli_vault),
+                str(cli_root / "disabled-recovery"),
                 "--recovery-policy",
                 "disabled",
                 "--json",
@@ -242,23 +354,8 @@ def run_contract(
         disabled_payload = json.loads(disabled_stdout)
         if disabled_payload["code"] != public.ErrorCode.RECOVERY_NOT_PERMITTED.value:
             raise AssertionError("CLI disabled recovery policy was not enforced")
-        if str(vault) in disabled_stdout + disabled_stderr:
+        if str(cli_vault) in disabled_stdout + disabled_stderr:
             raise AssertionError("CLI disclosed the protected vault path")
-
-        cli_stdout, _ = _assert_cli(
-            [
-                "recover",
-                str(output),
-                str(vault),
-                str(work_root / "cli-recovered"),
-                "--recovery-policy",
-                "enabled",
-                "--json",
-            ],
-            0,
-        )
-        if json.loads(cli_stdout)["canonical_verified"] is not True:
-            raise AssertionError("CLI enabled recovery was not verified")
 
     if attempts:
         raise AssertionError(f"runtime attempted forbidden boundaries: {attempts}")
@@ -271,6 +368,14 @@ def run_contract(
     )
     if original_rows != recovered_rows:
         raise AssertionError("offline recovery did not reproduce the synthetic dataset")
+    cli_original_rows = tuple(
+        dbfbridge.iter_records(cli_source / "people.dbf", include_deleted=True)
+    )
+    cli_recovered_rows = tuple(
+        dbfbridge.iter_records(cli_recovered / "people.dbf", include_deleted=True)
+    )
+    if cli_original_rows != cli_recovered_rows:
+        raise AssertionError("CLI recovery did not reproduce the synthetic dataset")
 
     return {
         "package_origin": str(origin),
@@ -286,6 +391,12 @@ def run_contract(
         "cli_help": "PASS",
         "cli_version": "PASS",
         "cli_recovery_policy": "PASS",
+        "cli_commands": sorted(target_commands),
+        "cli_complete_workflow": "PASS",
+        "cli_machine_stdout": "PASS",
+        "cli_machine_stderr": "EMPTY",
+        "cli_human_stdout": "EMPTY",
+        "cli_human_stderr": "PROGRESS",
     }
 
 

@@ -228,7 +228,7 @@ jobs:
           python tools/check_p7_offline_wheelhouse.py `
             requirements/p7-offline-wheelhouse.txt `
             "$env:SMOKE_ROOT\wheelhouse"
-      - name: Offline acceptance / local wheels only, empty cache, external runtime
+      - name: Offline acceptance / all nine CLI commands, local wheels only, empty cache
         shell: pwsh
         env:
           PIP_NO_INDEX: "1"
@@ -252,9 +252,17 @@ jobs:
           & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --help
           & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --version
           & $venvPython -c "import dbf_anonymizer; f = dbf_anonymizer.__file__; assert 'site-packages' in f.lower(), f; print('site-packages import:', f)"
-          & $venvPython check_p7_offline_runtime.py `
+          $runtimeEvidence = & $venvPython check_p7_offline_runtime.py `
             --work-root "$env:SMOKE_ROOT\runtime" `
             --repository-root "$env:GITHUB_WORKSPACE"
+          $runtimeEvidence
+          $evidence = $runtimeEvidence | ConvertFrom-Json
+          if ($evidence.cli_complete_workflow -ne "PASS") {
+            throw "installed wheel did not complete the nine-command CLI workflow"
+          }
+          if (@($evidence.cli_commands).Count -ne 9) {
+            throw "installed wheel did not expose exactly nine production commands"
+          }
           $cacheEntries = @(Get-ChildItem -LiteralPath $env:PIP_CACHE_DIR -Force)
           if ($cacheEntries.Count -ne 0) {
             throw "offline installation unexpectedly used pip cache"

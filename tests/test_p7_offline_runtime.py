@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import ast
+import argparse
+import io
+import json
 import re
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import cast
 
+from dbf_anonymizer.cli import COMMANDS, _build_parser, main as cli_main
 from tools.check_p7_offline_runtime import run_contract
 from tools.check_p7_offline_wheelhouse import (
     EXPECTED_APPLICATION,
@@ -50,6 +56,17 @@ PROCESS_CALLS = frozenset(
         "os.popen",
     }
 )
+TARGET_CLI_COMMANDS = {
+    "capabilities",
+    "plan",
+    "preflight",
+    "pseudonymize",
+    "verify",
+    "recover",
+    "export-bundle",
+    "verify-bundle",
+    "self-test",
+}
 
 
 def _import_names(node: ast.Import | ast.ImportFrom) -> set[str]:
@@ -178,6 +195,82 @@ def test_process_command_guard_is_precise() -> None:
     ) == []
 
 
+def test_cli_exposes_exact_target_command_set_in_parser_and_help() -> None:
+    parser = _build_parser()
+    subparser_actions = [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    assert len(subparser_actions) == 1
+    choices = cast(dict[str, argparse.ArgumentParser], subparser_actions[0].choices)
+    assert set(choices) == TARGET_CLI_COMMANDS
+    assert set(COMMANDS) == TARGET_CLI_COMMANDS
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = cli_main(["--help"])
+    assert code == 0
+    assert stderr.getvalue() == ""
+    help_text = stdout.getvalue()
+    command_listing = re.search(r"\{([^}]+)\}", help_text)
+    assert command_listing is not None
+    assert set(command_listing.group(1).split(",")) == TARGET_CLI_COMMANDS
+
+
+def test_json_cli_failure_is_structured_bounded_and_path_private(
+    tmp_path: Path,
+) -> None:
+    protected_vault = tmp_path / "PROTECTED_VAULT_CANARY.sqlite3"
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = cli_main(
+            [
+                "plan",
+                str(tmp_path / "PRIVATE_SOURCE_CANARY"),
+                str(tmp_path / "output"),
+                str(protected_vault),
+                "--json",
+            ]
+        )
+    assert code == 1
+    assert stderr.getvalue() == ""
+    payload = json.loads(stdout.getvalue())
+    assert payload["code"] == "PATH_NOT_FOUND"
+    assert len(stdout.getvalue().encode("utf-8")) < 4096
+    assert str(tmp_path.resolve()) not in stdout.getvalue()
+    assert "PROTECTED_VAULT_CANARY" not in stdout.getvalue()
+
+
+def test_cli_is_an_adapter_without_engine_or_dbfbridge_implementation() -> None:
+    source = (SRC_ROOT / "cli.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imports = _import_names_from_tree(tree)
+    assert "dbfbridge" not in imports
+    assert not any(name.startswith("dbf_anonymizer.engine") for name in imports)
+    for service in (
+        "capabilities",
+        "build_plan",
+        "preflight",
+        "pseudonymize",
+        "verify_dataset",
+        "recover",
+        "create_transfer_bundle",
+        "verify_transfer_bundle",
+    ):
+        assert service in source
+
+
+def _import_names_from_tree(tree: ast.Module) -> set[str]:
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    return imported
+
+
 def test_standalone_workflow_crosses_no_network_or_process_boundary(
     tmp_path: Path,
 ) -> None:
@@ -191,6 +284,14 @@ def test_standalone_workflow_crosses_no_network_or_process_boundary(
     assert evidence["bundle_verified"] is True
     assert evidence["enabled_recovery_verified"] is True
     assert evidence["cli_recovery_policy"] == "PASS"
+    cli_commands = evidence["cli_commands"]
+    assert isinstance(cli_commands, list)
+    assert set(cli_commands) == TARGET_CLI_COMMANDS
+    assert evidence["cli_complete_workflow"] == "PASS"
+    assert evidence["cli_machine_stdout"] == "PASS"
+    assert evidence["cli_machine_stderr"] == "EMPTY"
+    assert evidence["cli_human_stdout"] == "EMPTY"
+    assert evidence["cli_human_stderr"] == "PROGRESS"
 
 
 def test_windows_ci_proves_local_only_clean_offline_installation() -> None:
@@ -208,6 +309,8 @@ def test_windows_ci_proves_local_only_clean_offline_installation() -> None:
         "python -m venv",
         "python -m pip check",
         "site-packages",
+        "cli_complete_workflow",
+        "cli_commands",
     )
     for evidence in required_evidence:
         assert evidence in workflow
