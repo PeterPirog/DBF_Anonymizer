@@ -81,6 +81,7 @@ jobs:
         env:
           PYTHONUTF8: "1"
         run: |
+          clean-env/bin/python tools/check_p7_installed_wheel.py
           clean-env/bin/python -m pytest \
             tests/test_dependency_contract.py \
             tests/test_dbfbridge_capability_contract.py \
@@ -157,6 +158,7 @@ jobs:
           "$VENV_PY" -c "import dbf_anonymizer, sys; f = dbf_anonymizer.__file__; assert f.startswith('$SMOKE_ROOT'), f; assert 'site-packages' in f, f; assert not f.startswith('$GITHUB_WORKSPACE'), f; print('import origin:', f)"
           "$VENV_CLI" --help
           "$VENV_CLI" --version
+          "$VENV_PY" "$GITHUB_WORKSPACE/tools/check_p7_installed_wheel.py"
       - name: Install pytest into the external smoke venv
         env:
           SMOKE_ROOT: ${{ runner.temp }}/dbf-anonymizer-p1-${{ matrix.python-version }}

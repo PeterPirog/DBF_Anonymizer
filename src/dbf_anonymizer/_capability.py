@@ -21,6 +21,7 @@ from typing import Callable
 import dbfbridge
 
 from dbf_anonymizer.models import Capabilities
+from dbf_anonymizer.recovery_policy import RecoveryPolicy
 
 __all__ = ["snapshot", "direct_read_available", "direct_write_available"]
 
@@ -78,7 +79,7 @@ def direct_write_available() -> bool:
     )
 
 
-def snapshot() -> Capabilities:
+def snapshot(recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED) -> Capabilities:
     """Return a truthful, side-effect-free capability snapshot.
 
     Direct read/write truthfulness requires both the public API symbol and
@@ -92,16 +93,19 @@ def snapshot() -> Capabilities:
     probing, no DBF/vault open, no subprocess/COM/network.
     ``vfp_index_backend`` remains false in standalone discovery. REQ-P6-003
     validates an explicitly injected backend only for its current operation.
+
+    REQ-P7-003: ``recovery_policy`` controls the projected recovery capability.
     """
+    direct_read = direct_read_available()
+    direct_write = direct_write_available()
+    recovery = direct_read and direct_write
+    if recovery_policy is RecoveryPolicy.DISABLED:
+        recovery = False
     return Capabilities(
-        direct_read=direct_read_available(),
-        direct_write=direct_write_available(),
-        recovery=(
-            direct_read_available() and direct_write_available()
-        ),
-        transfer_bundle=(
-            direct_read_available() and direct_write_available()
-        ),
+        direct_read=direct_read,
+        direct_write=direct_write,
+        recovery=recovery,
+        transfer_bundle=direct_read and direct_write,
         vfp_index_backend=False,
         dbfbridge_version=_importlib_metadata_version(),
     )
@@ -109,4 +113,5 @@ def snapshot() -> Capabilities:
 
 #: Provider seam for preflight. Tests may replace this callable to simulate a
 #: missing direct-read/write capability deterministically.
+#: This is a zero-argument callable to preserve the P1 preflight contract.
 capabilities_provider: Callable[[], Capabilities] = snapshot

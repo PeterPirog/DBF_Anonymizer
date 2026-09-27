@@ -55,6 +55,11 @@ cause, never through a staging path or any protected value.
 Original values, memo/binary payloads, reverse mappings, temporal offsets
 and absolute private paths never appear in any public result, error,
 progress event or log.
+
+REQ-P7-003: Recovery capability is controlled by an explicit host policy.
+When ``recovery_policy`` is ``RecoveryPolicy.DISABLED``, the refusal occurs
+BEFORE any vault access (no sqlite3.connect, no vault metadata read, no
+staging, no locking).
 """
 
 from __future__ import annotations
@@ -106,6 +111,7 @@ from dbf_anonymizer.progress import (
     ProgressController,
     ProgressPhase,
 )
+from dbf_anonymizer.recovery_policy import RecoveryPolicy
 from dbf_anonymizer.transforms.numeric_keys import (
     canonical_integer_text,
     parse_canonical_integer_text,
@@ -119,7 +125,7 @@ from dbf_anonymizer.vault.schema import (
     VAULT_TABLE_DOMAIN_KIND_TEXT,
 )
 
-__all__ = ["recover"]
+__all__ = ["recover", "RecoveryPolicy"]
 
 _RECOVER_OPERATION = "recover"
 
@@ -129,6 +135,14 @@ def _recovery_failure(detail_code: str) -> RecoveryError:
     return RecoveryError(
         ErrorCode.RECOVERY_FAILED,
         context=ErrorContext(operation=_RECOVER_OPERATION, detail_code=detail_code),
+    )
+
+
+def _recovery_not_permitted() -> RecoveryError:
+    """Stable typed refusal when recovery is disabled by host policy."""
+    return RecoveryError(
+        ErrorCode.RECOVERY_NOT_PERMITTED,
+        context=ErrorContext(operation=_RECOVER_OPERATION, detail_code="POLICY_DISABLED"),
     )
 
 
@@ -197,6 +211,7 @@ def recover(
     output: str | Path,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED,
 ) -> RecoveryResult:
     """Reconstruct the original logical dataset (REQ-P5-002/REQ-P5-003).
 
@@ -224,20 +239,32 @@ def recover(
     Cancellation before promotion leaves no final recovered tree and cleans
     owned staging; the pseudonymized input and the protected vault are never
     modified. A staging cleanup failure over original-bearing residuals is
-    never suppressed: the primary failure keeps its classification and the
-    sensitive cleanup risk is machine-detectably surfaced as a typed
+    never suppressed: the primary failure keeps its exact classification and
+    the sensitive cleanup risk is machine-detectably surfaced as a typed
     secondary cause (``RECOVERY_SENSITIVE_STAGING_CLEANUP_FAILED``).
 
     REQ-P1-008: ONE :class:`ProgressController` (``operation="recover"``)
     with one bounded invocation id drives the bounded phases; the single
     terminal completion is emitted only after the genuine atomic promotion
-    (never after a pre-publication cancellation, rejection or callback
-    failure, and never with a post-promotion cancellation poll).
+    (never after a cancellation, rejection or callback failure, and never
+    with a post-promotion cancellation poll).
+
+    REQ-P7-003: The ``recovery_policy`` argument controls whether recovery
+    is permitted. When ``RecoveryPolicy.DISABLED``, a stable typed refusal
+    (``RECOVERY_NOT_PERMITTED``) is returned BEFORE any vault access — no
+    sqlite3.connect, no vault metadata read, no staging creation, no
+    destination locking, no DBF/FPT reads for recovery. The vault path is
+    never disclosed in the error.
 
     The public verdict is CANONICAL LOGICAL + SCHEMA EQUIVALENCE; the raw
     DBF/FPT byte fact is truthfully ``NOT_EVALUATED`` because no
     original-source comparison oracle exists in production.
     """
+    if not isinstance(recovery_policy, RecoveryPolicy):
+        raise TypeError("recovery_policy must be a RecoveryPolicy enum value")
+    if recovery_policy is RecoveryPolicy.DISABLED:
+        raise _recovery_not_permitted()
+
     if isinstance(pseudonymized, (str, Path)) is False or isinstance(
         pseudonymized, (bytes, bytearray)
     ):

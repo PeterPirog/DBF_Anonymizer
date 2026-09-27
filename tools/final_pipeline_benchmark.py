@@ -112,6 +112,7 @@ import dbf_anonymizer  # noqa: E402
 import dbfbridge  # noqa: E402
 from dbf_anonymizer import build_plan, pseudonymize, verify_dataset  # noqa: E402
 from dbf_anonymizer.engine import pass2 as pass2_module  # noqa: E402
+from dbf_anonymizer.engine import publication as publication_module  # noqa: E402
 from dbf_anonymizer.engine.state import (  # noqa: E402
     PASS1_STATE_FILENAME,
     PASS2_EVIDENCE_PREFIX,
@@ -633,10 +634,22 @@ class _TransientSampler:
         return total
 
     def _sample(self) -> None:
-        observed = self._observed_bytes()
         with self._lock:
+            observed = self._observed_bytes()
             if observed > self._peak:
                 self._peak = observed
+
+    def replace_while_sampling_paused(
+        self, replacing: Any, source: Path, destination: Path
+    ) -> Any:
+        """Run atomic publication without a concurrent staging-tree scan.
+
+        On Windows an open ``scandir`` handle prevents the directory rename.
+        Serializing only the atomic replace with sampling keeps the observer
+        truthful without making the benchmark cause its own publication retry.
+        """
+        with self._lock:
+            return replacing(source, destination)
 
     def _loop(self) -> None:
         while not self._stop.wait(_SAMPLE_INTERVAL_SECONDS):
@@ -777,9 +790,17 @@ def _run_benchmark_once(
 
     sampler = _TransientSampler(workspace, vault_dir)
     real_connect = sqlite3.connect
+    real_atomic_replace = publication_module.atomic_replace
+
+    def observed_atomic_replace(source: Path, destination: Path) -> Any:
+        return sampler.replace_while_sampling_paused(
+            real_atomic_replace, source, destination
+        )
+
     try:
         sqlite3.connect = connecting
         pass2_module.write_fresh_table = timed_write_fresh_table
+        publication_module.atomic_replace = observed_atomic_replace
         sampler.start()
         tracemalloc.start()
         try:
@@ -797,6 +818,7 @@ def _run_benchmark_once(
     finally:
         sqlite3.connect = real_connect
         pass2_module.write_fresh_table = real_write_fresh_table
+        publication_module.atomic_replace = real_atomic_replace
         temporary_peak_bytes = sampler.stop()
 
     # --- objective pipeline facts (public result models; never serialized)
