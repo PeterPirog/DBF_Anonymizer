@@ -68,6 +68,7 @@ from dbf_anonymizer.engine.direct_io import (
 from dbf_anonymizer.engine.publication import (
     derive_binding_fingerprint,
     derive_destination_identity,
+    derive_operation_id,
     derive_vault_fingerprint,
     fingerprint_dataset,
     result_from_receipt,
@@ -84,11 +85,13 @@ from dbf_anonymizer.errors import (
 )
 from dbf_anonymizer.models import (
     DatasetIdentity,
+    Plan,
     PseudonymizationResult,
     RelationalAssurance,
     RelationalAssuranceLevel,
     VerificationResult,
     VerificationStatus,
+    _PseudonymizationExecutionContext,
 )
 from dbf_anonymizer.progress import (
     CancelCheck,
@@ -96,7 +99,10 @@ from dbf_anonymizer.progress import (
     ProgressController,
     ProgressPhase,
 )
-from dbf_anonymizer.relationships.assurance import bounded_evidence_fingerprint
+from dbf_anonymizer.relationships.assurance import (
+    _derive_relational_assurance_from_bounded_evidence,
+    bounded_evidence_fingerprint,
+)
 from dbf_anonymizer.transforms.numeric_keys import canonical_integer_text
 from dbf_anonymizer.transforms.temporal import temporal_shift
 from dbf_anonymizer.vault.memo_allocation import mask_memo_value
@@ -180,6 +186,110 @@ def _verification_failure(detail_code: str) -> VerificationError:
         ErrorCode.VERIFICATION_FAILED,
         context=ErrorContext(operation=_VERIFY_OPERATION, detail_code=detail_code),
     )
+
+
+def _load_completed_result(plan: Plan) -> PseudonymizationResult:
+    """Resolve a completed public result from its existing durable receipt.
+
+    This is the read-only operation-boundary adapter used when a standalone
+    command runs in a process different from ``pseudonymize``.  It creates no
+    persistence format: the canonical plan identity is matched against the
+    immutable vault snapshot and the engine's versioned publication receipt.
+    """
+    if not isinstance(plan, Plan):
+        raise TypeError("completed result resolution requires a Plan")
+    context = plan.execution_context
+    if context is None:
+        raise _verification_failure("VERIFY_PLAN_CONTEXT_MISSING")
+
+    output_root = Path(context.output_root)
+    destination_identity = derive_destination_identity(output_root)
+    operation_id = derive_operation_id(
+        source_fingerprint=plan.dataset.source_fingerprint,
+        policy_fingerprint=plan.policy.policy_fingerprint,
+        relationship_fingerprint=plan.relationships.relationship_fingerprint,
+        destination_identity=destination_identity,
+    )
+    vault_reader = _VerifyVault(Path(context.vault_path))
+    try:
+        dataset_row = vault_reader.dataset_row()
+        expected_dataset = (
+            plan.dataset.source_fingerprint,
+            plan.policy.policy_fingerprint,
+            plan.relationships.relationship_fingerprint,
+        )
+        if dataset_row != expected_dataset:
+            raise _verification_failure("COMPLETED_RESULT_IDENTITY_MISMATCH")
+
+        operation = vault_reader.completed_operation(operation_id)
+        if operation is None or operation["state"] != VAULT_OPERATION_STATE_COMPLETED:
+            raise _verification_failure("OPERATION_NOT_COMPLETED")
+
+        vault_fingerprint = derive_vault_fingerprint(
+            schema_version=vault_reader.schema_version,
+            vault_id=vault_reader.vault_id,
+            source_fingerprint=dataset_row[0],
+            policy_fingerprint=dataset_row[1],
+            relationship_fingerprint=dataset_row[2],
+        )
+        binding_fingerprint = derive_binding_fingerprint(
+            source_fingerprint=dataset_row[0],
+            policy_fingerprint=dataset_row[1],
+            relationship_fingerprint=dataset_row[2],
+            vault_fingerprint=vault_fingerprint,
+            destination_identity=destination_identity,
+        )
+        expected_operation = {
+            "source_fingerprint": dataset_row[0],
+            "policy_fingerprint": dataset_row[1],
+            "relationship_fingerprint": dataset_row[2],
+            "vault_fingerprint": vault_fingerprint,
+            "destination_identity": destination_identity,
+            "binding_fingerprint": binding_fingerprint,
+        }
+        if any(
+            operation[field] != expected
+            for field, expected in expected_operation.items()
+        ):
+            raise _verification_failure("COMPLETED_RESULT_IDENTITY_MISMATCH")
+
+        receipt_json = operation["result_json"]
+        if receipt_json is None:
+            raise _verification_failure("RECEIPT_IDENTITY_MISMATCH")
+        try:
+            receipt = result_from_receipt(receipt_json)
+        except Exception:
+            raise _verification_failure("RECEIPT_IDENTITY_MISMATCH") from None
+        if (
+            receipt.operation_id != operation_id
+            or receipt.output_fingerprint is None
+            or receipt.output_fingerprint != operation["output_fingerprint"]
+            or receipt.tables_written != plan.dataset.table_paths
+        ):
+            raise _verification_failure("RECEIPT_IDENTITY_MISMATCH")
+
+        assurance = _derive_relational_assurance_from_bounded_evidence(
+            plan.relationships, receipt.relations
+        )
+        return PseudonymizationResult(
+            operation_id=operation_id,
+            dataset=plan.dataset,
+            output_path=output_root.name,
+            table_count=len(receipt.tables_written),
+            record_count=receipt.pass2_records_written,
+            vault_created=receipt.protected_state_created,
+            output_fingerprint=receipt.output_fingerprint,
+            assurance=assurance,
+            output_data_state=plan.output_data_state,
+            index_artifacts=receipt.index_artifacts,
+            execution_context=_PseudonymizationExecutionContext(
+                output_root=context.output_root,
+                source_root=context.source_root,
+                vault_path=context.vault_path,
+            ),
+        )
+    finally:
+        vault_reader.close()
 
 
 class _VerifyVault:
