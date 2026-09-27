@@ -1,14 +1,26 @@
-"""REQ-P7-005 privacy-safe diagnostics and public-report evidence."""
+"""REQ-P7-005 privacy-safe diagnostics and public-report evidence.
+
+The canary labels below are HOSTILE CONTENT canaries: they are injected into
+records, paths, policies and synthetic dependency/callback exceptions and
+must never reach an outward surface.  The SEPARATE semantic evidence tests
+extract the REAL private vault material (actual ``text_mappings`` original/
+pseudonym pairs, actual ``memo_recovery.original_payload`` images, the actual
+persisted ``temporal_parameters.offset_days``) from the synthetic vault of a
+real public workflow — read-only — and prove THAT material stays out of every
+diagnostic channel on success and on a real valid-vault corruption failure.
+"""
 
 from __future__ import annotations
 
 import ast
 import io
 import json
+import sqlite3
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 import dbfbridge
 import pytest
@@ -141,12 +153,154 @@ def _workflow(
     return source, output, vault, plan, result, events
 
 
+def _drive_cli_channels(root: Path) -> tuple[list[str], tuple[Path, ...]]:
+    """Run all nine accepted CLI commands in BOTH modes (separate roots per
+    mode); collect stdout+stderr and the resulting vault paths."""
+    outputs: list[str] = []
+    vaults: list[Path] = []
+    for json_mode in (True, False):
+        run_root = root / ("json" if json_mode else "human")
+        source = run_root / "source"
+        output = run_root / "pseudonymized"
+        vault = run_root / "protected" / f"{VAULT_ROW}.sqlite3"
+        recovered = run_root / "recovered"
+        bundle = run_root / "bundle"
+        _write_canary_source(source)
+        suffix = ["--json"] if json_mode else []
+        commands = (
+            ["capabilities", *suffix],
+            ["plan", str(source), str(output), str(vault), *suffix],
+            ["preflight", str(source), str(output), str(vault), *suffix],
+            ["pseudonymize", str(source), str(output), str(vault), *suffix],
+            ["verify", str(source), str(output), str(vault), *suffix],
+            [
+                "export-bundle",
+                str(source),
+                str(output),
+                str(vault),
+                str(bundle),
+                *suffix,
+            ],
+            ["verify-bundle", str(bundle), *suffix],
+            ["recover", str(output), str(vault), str(recovered), *suffix],
+            ["self-test", *suffix],
+        )
+        for command in commands:
+            code, stdout, stderr = _capture_cli(command)
+            assert code == 0
+            outputs.extend((stdout, stderr))
+        vaults.append(vault)
+    return outputs, tuple(vaults)
+
+
 def _capture_cli(arguments: list[str]) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
         code = cli_main(arguments)
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+@dataclass(frozen=True)
+class _VaultMaterial:
+    """The REAL private material extracted from one synthetic vault."""
+
+    text_pairs: tuple[tuple[str, str], ...]
+    memo_text_payloads: tuple[str, ...]
+    memo_binary_payloads: tuple[bytes, ...]
+    offset_days: int
+    numeric_mapping_rows: int
+
+    @property
+    def tokens(self) -> tuple[str, ...]:
+        """Bounded text forms of the private material (never emitted)."""
+        candidates = (
+            *[original for original, _pseudonym in self.text_pairs],
+            *[pseudonym for _original, pseudonym in self.text_pairs],
+            *self.memo_text_payloads,
+            *(
+                payload.decode("ascii", errors="ignore")
+                for payload in self.memo_binary_payloads
+            ),
+            str(self.offset_days),
+        )
+        return tuple(
+            dict.fromkeys(token for token in candidates if len(token) >= 6)
+        )
+
+
+def _read_only_vault_connection(vault: Path) -> sqlite3.Connection:
+    """Open the synthetic test vault strictly READ-ONLY (SQLite URI mode=ro
+    plus immutable): no -shm/-wal sidecar is ever created or left behind."""
+    connection = sqlite3.connect(
+        vault.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+    )
+    connection.execute("PRAGMA query_only = 1")
+    return connection
+
+
+def _extract_vault_material(vault: Path) -> _VaultMaterial:
+    """Inspect the frozen vault schema read-only; zero-row queries fail."""
+    connection = _read_only_vault_connection(vault)
+    try:
+        text_pairs = tuple(
+            (str(original), str(pseudonym))
+            for original, pseudonym in connection.execute(
+                "SELECT original_value, pseudonym_value FROM text_mappings"
+            ).fetchall()
+        )
+        memo_rows = tuple(
+            (str(kind), bytes(payload))
+            for kind, payload in connection.execute(
+                "SELECT payload_kind, original_payload FROM memo_recovery"
+            ).fetchall()
+        )
+        temporal_rows = tuple(
+            connection.execute(
+                "SELECT offset_days, typeof(offset_days) FROM temporal_parameters"
+            ).fetchall()
+        )
+        numeric_rows = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM numeric_key_mappings"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    assert text_pairs, "the fixture must produce real text_mappings rows"
+    assert memo_rows, "the fixture must produce real memo_recovery rows"
+    assert len(temporal_rows) == 1, "the fixture must produce one temporal row"
+    offset_storage = str(temporal_rows[0][1])
+    assert offset_storage == "integer"
+    offset = int(temporal_rows[0][0])
+    assert offset != 0
+    memo_text_payloads = tuple(
+        payload.decode("utf-8") for kind, payload in memo_rows if kind == "TEXT"
+    )
+    memo_binary_payloads = tuple(
+        payload for kind, payload in memo_rows if kind == "BINARY"
+    )
+    assert memo_text_payloads and memo_binary_payloads
+    return _VaultMaterial(
+        text_pairs=text_pairs,
+        memo_text_payloads=memo_text_payloads,
+        memo_binary_payloads=memo_binary_payloads,
+        offset_days=offset,
+        numeric_mapping_rows=numeric_rows,
+    )
+
+
+def _assert_material_absent(text: str, material: _VaultMaterial) -> None:
+    """No actual vault material (values, pairs, payloads, offset) in *text*.
+
+    Failure messages report only counts — never any extracted vault value.
+    """
+    leak_count = sum(1 for token in material.tokens if token in text)
+    assert leak_count == 0, (
+        f"{leak_count} private vault value(s) leaked into diagnostics"
+    )
+    assert "offset_days" not in text
+    assert "temporal_offset" not in text
 
 
 def test_real_success_workflow_reports_and_progress_are_value_free(
@@ -202,6 +356,217 @@ def test_real_success_workflow_reports_and_progress_are_value_free(
     assert all(len(_serialized(event).encode("ascii")) < 2048 for event in events)
     assert recovered.canonical_verified is True
     assert bundle.verified is True and standalone.verified is True
+
+
+def test_real_vault_material_stays_outward_value_free(tmp_path: Path) -> None:
+    """REAL vault material (pairs, memo payloads, offset) never reaches any
+    success-path diagnostic surface of the real workflow or the CLI."""
+    source, output, vault, plan, result, events = _workflow(tmp_path / "service")
+    verification = public.verify_dataset(
+        result, source=source, vault=vault, progress=events.append
+    )
+    assert verification.status is public.VerificationStatus.PASS
+    bundle_path = tmp_path / "service" / "bundle"
+    bundle = public.create_transfer_bundle(
+        result, destination=bundle_path, progress=events.append
+    )
+    standalone = public.verify_transfer_bundle(bundle_path, progress=events.append)
+    assert standalone.verified is True
+    recovered = public.recover(
+        output, vault=vault, output=tmp_path / "service" / "recovered", progress=events.append
+    )
+    assert recovered.canonical_verified is True
+
+    material = _extract_vault_material(vault)
+    # REAL reverse-mapping pair: the actual original Character canary has
+    # exactly one persisted, distinct pseudonym in the real vault.
+    distinct_pseudonyms = tuple(
+        pseudonym
+        for original, pseudonym in material.text_pairs
+        if original == ORIGINAL_TEXT and pseudonym != original
+    )
+    assert len(distinct_pseudonyms) == 1, (
+        "the real vault must hold exactly one reverse mapping for the actual original"
+    )
+    # REAL memo evidence: the text canary payload and the binary marker row.
+    assert any(MEMO_PAYLOAD in payload for payload in material.memo_text_payloads)
+    assert MEMO_BINARY_MARKER in material.memo_binary_payloads
+    # REAL numeric-key scope: the accepted policy vocabulary only supports
+    # numeric KEEP, so the minimal fixture legitimately has no numeric rows;
+    # text mapping evidence is the mandatory mapping class here.
+    assert material.numeric_mapping_rows == 0
+
+    service_surfaces = (
+        public.capabilities(),
+        plan,
+        result,
+        verification,
+        recovered,
+        bundle,
+        standalone,
+        run_self_test(),
+        *events,
+    )
+    service_texts = [_serialized(report) for report in service_surfaces]
+    service_texts.append(
+        (bundle_path / "transfer-manifest.json").read_text(encoding="ascii")
+    )
+    service_combined = "\n".join(service_texts)
+    _assert_private_data_absent(service_combined)
+    _assert_material_absent(service_combined, material)
+
+    cli_outputs, cli_vaults = _drive_cli_channels(tmp_path / "cli")
+    cli_combined = "\n".join(cli_outputs)
+    _assert_private_data_absent(cli_combined)
+    for cli_vault in cli_vaults:
+        cli_material = _extract_vault_material(cli_vault)
+        assert len(
+            tuple(
+                pair
+                for pair in cli_material.text_pairs
+                if pair[0] == ORIGINAL_TEXT and pair[1] != pair[0]
+            )
+        ) == 1
+        _assert_material_absent(cli_combined, cli_material)
+
+
+def test_temporal_offset_is_a_real_persisted_secret_never_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted temporal_parameters.offset_days is REAL, deterministic
+    through the accepted test-only randomness seam, and never outward."""
+    import dbf_anonymizer.engine.run as engine_run_module
+    from dbf_anonymizer.transforms.temporal import (
+        temporal_feasible_interval,
+        temporal_offset_at,
+    )
+
+    real_factory = engine_run_module.TemporalShiftDomain
+
+    def deterministic_factory(
+        vault: Any, *, domain_name: str | None = None
+    ) -> Any:
+        return real_factory(
+            vault, domain_name=domain_name, _random_below=lambda bound: 0
+        )
+
+    monkeypatch.setattr(engine_run_module, "TemporalShiftDomain", deterministic_factory)
+
+    source, output, vault, _plan, result, events = _workflow(tmp_path)
+    assert events
+    material = _extract_vault_material(vault)
+    lower, upper = temporal_feasible_interval(
+        date(2026, 1, 1).toordinal(), date(2026, 1, 14).toordinal()
+    )
+    expected_offset = temporal_offset_at(lower, upper, 0)
+    assert material.offset_days == expected_offset
+    assert material.offset_days != 0
+    assert abs(material.offset_days) > 1000  # collision-safe versus small counts
+
+    surfaces = (
+        public.capabilities(),
+        result,
+        public.verify_dataset(result, source=source, vault=vault),
+        *events,
+    )
+    combined = "\n".join([_serialized(surface) for surface in surfaces])
+    cli_outputs, cli_vaults = _drive_cli_channels(tmp_path / "cli")
+    combined = "\n".join([combined, *cli_outputs])
+    _assert_private_data_absent(combined)
+    for cli_vault in cli_vaults:
+        cli_material = _extract_vault_material(cli_vault)
+        assert cli_material.offset_days == expected_offset
+        _assert_material_absent("\n".join(cli_outputs), cli_material)
+
+
+def test_real_vault_corruption_failures_keep_real_vault_material_private(
+    tmp_path: Path,
+) -> None:
+    """A REAL valid vault with actual private material fails typed and safe
+    under controlled architecture-relevant corruption."""
+    source, output, vault, _plan, result, _events = _workflow(tmp_path / "valid")
+    material = _extract_vault_material(vault)
+    assert any(
+        original == ORIGINAL_TEXT and pseudonym != original
+        for original, pseudonym in material.text_pairs
+    )
+    snapshot = vault.read_bytes()
+    failure_surfaces: list[tuple[str, list[public.ProgressEvent]]] = []
+
+    # 1) delete one REAL text mapping row -> bijection refusal
+    connection = sqlite3.connect(str(vault))
+    try:
+        connection.execute(
+            "DELETE FROM text_mappings WHERE original_value = ?", (ORIGINAL_TEXT,)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    mapping_events: list[public.ProgressEvent] = []
+    with pytest.raises(public.RecoveryError) as mapping_error:
+        public.recover(
+            output,
+            vault=vault,
+            output=tmp_path / "recovered-mapping",
+            progress=mapping_events.append,
+        )
+    _assert_error_safe(mapping_error.value)
+    failure_surfaces.append(
+        (
+            "\n".join(
+                (
+                    str(mapping_error.value),
+                    repr(mapping_error.value),
+                    _serialized(mapping_error.value),
+                    *(_serialized(event) for event in mapping_events),
+                )
+            ),
+            mapping_events,
+        )
+    )
+    vault.write_bytes(snapshot)
+
+    # 2) delete one REAL memo_recovery row -> recovery-row refusal
+    connection = sqlite3.connect(str(vault))
+    try:
+        connection.execute(
+            "DELETE FROM memo_recovery WHERE physical_record_index = "
+            "(SELECT MIN(physical_record_index) FROM memo_recovery)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    memo_events: list[public.ProgressEvent] = []
+    with pytest.raises(public.RecoveryError) as memo_error:
+        public.recover(
+            output,
+            vault=vault,
+            output=tmp_path / "recovered-memo",
+            progress=memo_events.append,
+        )
+    _assert_error_safe(memo_error.value)
+    failure_surfaces.append(
+        (
+            "\n".join(
+                (
+                    str(memo_error.value),
+                    repr(memo_error.value),
+                    _serialized(memo_error.value),
+                    *(_serialized(event) for event in memo_events),
+                )
+            ),
+            memo_events,
+        )
+    )
+
+    for text, events_for_surface in failure_surfaces:
+        _assert_private_data_absent(text)
+        _assert_material_absent(text, material)
+        assert events_for_surface
+        _assert_private_data_absent(*(_serialized(event) for event in events_for_surface))
+    assert str((tmp_path / "valid").resolve()) not in "\n".join(
+        text for text, _events in failure_surfaces
+    )
 
 
 def test_all_typed_error_families_keep_causes_private_and_codes_useful() -> None:
@@ -522,118 +887,217 @@ def test_cli_success_and_failure_channels_are_private(
     assert str(root.resolve()) not in combined
 
 
-def _call_name(node: ast.expr) -> str | None:
-    parts: list[str] = []
-    current = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if not isinstance(current, ast.Name):
-        return None
-    return ".".join((current.id, *reversed(parts)))
+_SINK_ATTRS = frozenset(
+    {
+        "debug",
+        "info",
+        "warning",
+        "warn",
+        "error",
+        "exception",
+        "critical",
+        "log",
+        "print_exc",
+        "print_exception",
+        "format_exc",
+        "format_exception",
+    }
+)
+_NAME_SINKS = frozenset({"print", "pprint"})
+_SENSITIVE_SINK_FRAGMENTS = (
+    ".values",
+    "original_value",
+    "pseudonym_value",
+    "original_payload",
+    "memo_payload",
+    "reverse_mapping",
+    "temporal_offset",
+    "offset_days",
+    "vault_row",
+    "exc.args",
+    "error.args",
+    "repr(",
+    "vars(",
+)
+
+
+def _is_diagnostic_sink(func: ast.expr) -> bool:
+    """Behavior-based sink detection: ANY diagnostic-style call receiver.
+
+    Normal logging is ALLOWED by the architecture; a sink call becomes a
+    violation only when it carries sensitive material (see fragments and the
+    raw-exception rules).  A bare module import is never a violation.
+    """
+    if isinstance(func, ast.Name):
+        return func.id in _NAME_SINKS
+    if isinstance(func, ast.Attribute):
+        return func.attr in _SINK_ATTRS
+    return False
 
 
 def _exception_names(handler: ast.ExceptHandler) -> set[str]:
     return {handler.name} if handler.name is not None else set()
 
 
-def test_production_has_no_diagnostic_value_dump_or_raw_exception_text_sink() -> None:
+def _diagnostic_violations(source: str, relative: str) -> list[str]:
+    """Privacy-unsafe diagnostic BEHAVIOR in one module (REQ-P7-005).
+
+    Encodes the architecture requirement, not an invented style rule:
+    normal logs are permitted and must stay privacy-safe, so the guard
+    flags SENSITIVE MATERIAL flowing into diagnostic sinks (original
+    values, memo payloads, mapping pairs, temporal offsets, vault rows,
+    raw exception text/args/interpolation) — never the mere presence of a
+    logging import.
+    """
     violations: list[str] = []
-    diagnostic_sinks = {
-        "print",
-        "pprint",
-        "warnings.warn",
-        "traceback.print_exc",
-        "traceback.print_exception",
-        "traceback.format_exc",
-        "logger.debug",
-        "logger.info",
-        "logger.warning",
-        "logger.error",
-        "logger.exception",
-        "logging.debug",
-        "logging.info",
-        "logging.warning",
-        "logging.error",
-        "logging.exception",
-    }
-    sensitive_fragments = {
-        ".values",
-        "original_value",
-        "original_payload",
-        "memo_payload",
-        "reverse_mapping",
-        "temporal_offset",
-        "offset_days",
-        "vault_row",
-        "exc.args",
-        "error.args",
-        "repr(",
-        "vars(",
-    }
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        relative = path.relative_to(PACKAGE_ROOT).as_posix()
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=relative)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                imported = (
-                    {alias.name.split(".")[0] for alias in node.names}
-                    if isinstance(node, ast.Import)
-                    else {(node.module or "").split(".")[0]}
-                )
-                if imported & {"logging", "pprint", "traceback"}:
-                    violations.append(
-                        f"{relative}:{node.lineno}:diagnostic dump module import"
-                    )
-            if not isinstance(node, ast.Call):
-                continue
-            name = _call_name(node.func)
-            if name not in diagnostic_sinks:
-                continue
+    tree = ast.parse(source, filename=relative)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_diagnostic_sink(node.func):
             segment = ast.get_source_segment(source, node) or ""
-            if relative != "cli.py" and name == "print":
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+                and relative != "cli.py"
+            ):
                 violations.append(f"{relative}:{node.lineno}:print outside CLI")
             lowered = segment.casefold()
-            for fragment in sensitive_fragments:
+            for fragment in _SENSITIVE_SINK_FRAGMENTS:
                 if fragment.casefold() in lowered:
                     violations.append(
                         f"{relative}:{node.lineno}:diagnostic value dump {fragment}"
                     )
-
-        for handler in (
-            item for item in ast.walk(tree) if isinstance(item, ast.ExceptHandler)
-        ):
-            names = _exception_names(handler)
-            if not names:
-                continue
-            for child in ast.walk(handler):
-                if isinstance(child, ast.Call) and _call_name(child.func) in diagnostic_sinks:
-                    if any(
-                        isinstance(argument, ast.Name) and argument.id in names
-                        for argument in child.args
-                    ):
-                        violations.append(
-                            f"{relative}:{child.lineno}:raw exception diagnostic sink"
-                        )
-                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
-                    if child.func.id not in {"str", "repr"} or not child.args:
-                        continue
-                    argument = child.args[0]
-                    if isinstance(argument, ast.Name) and argument.id in names:
-                        violations.append(
-                            f"{relative}:{child.lineno}:raw exception text"
-                        )
-                if (
-                    isinstance(child, ast.Attribute)
-                    and child.attr == "args"
-                    and isinstance(child.value, ast.Name)
-                    and child.value.id in names
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        names = _exception_names(node)
+        if not names:
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                if _is_diagnostic_sink(child.func) and any(
+                    isinstance(argument, ast.Name) and argument.id in names
+                    for argument in child.args
                 ):
                     violations.append(
-                        f"{relative}:{child.lineno}:raw exception args"
+                        f"{relative}:{child.lineno}:raw exception diagnostic sink"
                     )
+                if (
+                    isinstance(child.func, ast.Name)
+                    and child.func.id in {"str", "repr"}
+                    and child.args
+                    and isinstance(child.args[0], ast.Name)
+                    and child.args[0].id in names
+                ):
+                    violations.append(
+                        f"{relative}:{child.lineno}:raw exception text"
+                    )
+            if (
+                isinstance(child, ast.FormattedValue)
+                and isinstance(child.value, ast.Name)
+                and child.value.id in names
+            ):
+                violations.append(
+                    f"{relative}:{child.lineno}:raw exception interpolation"
+                )
+            if (
+                isinstance(child, ast.Attribute)
+                and child.attr == "args"
+                and isinstance(child.value, ast.Name)
+                and child.value.id in names
+            ):
+                violations.append(f"{relative}:{child.lineno}:raw exception args")
+    return violations
+
+
+def test_production_has_no_diagnostic_value_dump_or_raw_exception_text_sink() -> None:
+    violations: list[str] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT).as_posix()
+        violations.extend(
+            _diagnostic_violations(path.read_text(encoding="utf-8"), relative)
+        )
     assert violations == []
+
+
+def test_static_guard_accepts_safe_structured_diagnostics() -> None:
+    """SAFE logging examples (counts, statuses, bounded paths, structured
+    codes) must be ACCEPTED — the guard is behavior-based, not censorship."""
+    safe_modules: tuple[tuple[str, str], ...] = (
+        (
+            "synthetic_safe.py",
+            'import logging\n\n\ndef audit(count: int) -> None:\n'
+            '    logger.info("verified %d tables", count)\n',
+        ),
+        (
+            "synthetic_safe.py",
+            'import logging\n\n\ndef audit(relative_path: str, total: int) -> None:\n'
+            '    logging.warning("dataset %s finished", relative_path)\n'
+            '    logging.info("processed %d records", total)\n',
+        ),
+        (
+            "synthetic_safe.py",
+            "import logging\n\n\ndef audit() -> None:\n"
+            "    try:\n        pass\n"
+            "    except Exception as exc:\n"
+            '        logging.info("classified failure %s", exc.code)\n',
+        ),
+        (
+            "cli.py",
+            'import sys\n\n\ndef emit(total: int) -> None:\n'
+            '    print(f"processed {total} records", file=sys.stderr)\n',
+        ),
+    )
+    for relative, source in safe_modules:
+        assert _diagnostic_violations(source, relative) == []
+
+
+def test_static_guard_rejects_sensitive_and_raw_exception_diagnostics() -> None:
+    """UNSAFE diagnostics (original values, mapping pairs, memo payloads,
+    temporal offsets, raw exception text/args/interpolation) must be REJECTED."""
+    unsafe_modules: tuple[tuple[str | None, str], ...] = (
+        (
+            ".values",
+            "import logging\n\n\ndef leak(record) -> None:\n"
+            '    logging.info("original values: %s", record.values)\n',
+        ),
+        (
+            "original_payload",
+            "import logging\n\n\ndef leak(memo) -> None:\n"
+            '    logger.debug("memo payload %s", memo.original_payload)\n',
+        ),
+        (
+            "pseudonym_value",
+            'def leak(pair) -> None:\n    print(f"reverse mapping {pair.pseudonym_value}")\n',
+        ),
+        (
+            "raw exception text",
+            "import logging\n\n\ndef leak() -> None:\n"
+            "    try:\n        pass\n"
+            "    except Exception as exc:\n"
+            '        logging.error("failure detail: %s", str(exc))\n',
+        ),
+        (
+            "raw exception interpolation",
+            "import logging\n\n\ndef leak() -> None:\n"
+            "    try:\n        pass\n"
+            "    except Exception as exc:\n"
+            '        logging.warning(f"failure: {exc}")\n',
+        ),
+        (
+            "exc.args",
+            "def leak() -> None:\n"
+            "    try:\n        pass\n"
+            "    except Exception as exc:\n        print(exc.args)\n",
+        ),
+        (
+            "offset_days",
+            "import logging\n\n\ndef leak(domain) -> None:\n"
+            '    logging.info("temporal offset %s", domain.offset_days)\n',
+        ),
+    )
+    for expected, source in unsafe_modules:
+        violations = _diagnostic_violations(source, "synthetic_unsafe.py")
+        assert violations, "an unsafe synthetic diagnostic module was accepted"
+        assert any(expected in violation for violation in violations)
 
 
 def test_public_path_boundaries_reject_private_absolute_paths() -> None:
