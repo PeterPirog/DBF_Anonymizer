@@ -37,7 +37,7 @@ import hashlib
 import os
 import sqlite3
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, VaultError
 
@@ -134,8 +134,7 @@ _SENSITIVE_SCHEMA = (
     # partial UNIQUE index enforces the other direction for kind='token'
     # rows, so a double occupancy of a reserved resource is a hard SQLite
     # refusal, never a silent algorithmic slip.
-    "CREATE UNIQUE INDEX res_assign_token_once "
-    "ON res_assign (token_idx) WHERE kind = 'token'",
+    "CREATE UNIQUE INDEX res_assign_token_once ON res_assign (token_idx) WHERE kind = 'token'",
     "CREATE TABLE res_visited (orig_idx INTEGER PRIMARY KEY)",
     "CREATE TABLE res_dfs ("
     " depth INTEGER PRIMARY KEY,"
@@ -171,9 +170,7 @@ def _spool_failure(detail_code: str) -> VaultError:
     """A stable typed, privacy-safe spool failure (no values, no paths)."""
     return VaultError(
         ErrorCode.VAULT_STATE_INVALID,
-        context=ErrorContext(
-            operation="engine", detail_code="ENGINE_SPOOL_" + detail_code
-        ),
+        context=ErrorContext(operation="engine", detail_code="ENGINE_SPOOL_" + detail_code),
     )
 
 
@@ -286,9 +283,7 @@ def canonical_composite_identity(components: tuple[object, ...]) -> bytes:
             raise _spool_failure("KEY_COMPONENT_UNSUPPORTED")
         else:
             text = str(int(component))
-            parts.append(
-                b"N" + str(len(text)).encode("ascii") + b"|" + text.encode("ascii")
-            )
+            parts.append(b"N" + str(len(text)).encode("ascii") + b"|" + text.encode("ascii"))
     return b"\x00".join(parts)
 
 
@@ -339,14 +334,8 @@ class PassOneSpool:
             self._create_schema()
         except BaseException as original:
             self._closed = True
-            cleanup_failed = _cleanup_incomplete_spool(
-                self._path.parent, self._connection
-            )
-            detail = (
-                "INITIALIZATION_CLEANUP_FAILED"
-                if cleanup_failed
-                else "INITIALIZATION_FAILED"
-            )
+            cleanup_failed = _cleanup_incomplete_spool(self._path.parent, self._connection)
+            detail = "INITIALIZATION_CLEANUP_FAILED" if cleanup_failed else "INITIALIZATION_FAILED"
             raise _spool_failure(detail) from original
 
     def _track_high_water(self) -> None:
@@ -388,14 +377,8 @@ class PassOneSpool:
                 # O_EXCL lost a race to new residue: never delete an artifact
                 # this constructor did not create.
                 raise _spool_failure("LEFTOVER_REFUSED") from original
-            cleanup_failed = created and _cleanup_incomplete_spool(
-                path.parent, connection
-            )
-            detail = (
-                "INITIALIZATION_CLEANUP_FAILED"
-                if cleanup_failed
-                else "INITIALIZATION_FAILED"
-            )
+            cleanup_failed = created and _cleanup_incomplete_spool(path.parent, connection)
+            detail = "INITIALIZATION_CLEANUP_FAILED" if cleanup_failed else "INITIALIZATION_FAILED"
             raise _spool_failure(detail) from original
 
     def _create_schema(self) -> None:
@@ -441,8 +424,7 @@ class PassOneSpool:
         if not self._pending_numeric:
             return
         self._connection.executemany(
-            "INSERT OR IGNORE INTO numeric_observation (domain_id, canonical) "
-            "VALUES (?, ?)",
+            "INSERT OR IGNORE INTO numeric_observation (domain_id, canonical) VALUES (?, ?)",
             self._pending_numeric,
         )
         self._pending_numeric.clear()
@@ -535,8 +517,7 @@ class PassOneSpool:
     def text_free_reserved_count(self, length: int) -> int:
         """Free reserved tokens of one length class (SQL aggregate)."""
         row = self._connection.execute(
-            "SELECT COUNT(*) FROM text_observation "
-            "WHERE value_length = ? AND min_width >= ?",
+            "SELECT COUNT(*) FROM text_observation WHERE value_length = ? AND min_width >= ?",
             (length, length),
         ).fetchone()
         return int(row[0])
@@ -549,15 +530,12 @@ class PassOneSpool:
         return row is not None
 
     def text_unpersisted_count(self) -> int:
-        row = self._connection.execute(
-            "SELECT COUNT(*) FROM text_observation"
-        ).fetchone()
+        row = self._connection.execute("SELECT COUNT(*) FROM text_observation").fetchone()
         return int(row[0])
 
     def numeric_observation_stream(self, domain_id: str) -> Iterator[str]:
         cursor = self._connection.execute(
-            "SELECT canonical FROM numeric_observation WHERE domain_id = ? "
-            "ORDER BY canonical ASC",
+            "SELECT canonical FROM numeric_observation WHERE domain_id = ? ORDER BY canonical ASC",
             (domain_id,),
         )
         while True:
@@ -593,8 +571,7 @@ class PassOneSpool:
     def text_values_of_length(self, length: int) -> Iterator[str]:
         """Stream the remaining observed text values of one length class."""
         cursor = self._connection.execute(
-            "SELECT canonical FROM text_observation WHERE value_length = ? "
-            "ORDER BY canonical ASC",
+            "SELECT canonical FROM text_observation WHERE value_length = ? ORDER BY canonical ASC",
             (length,),
         )
         while True:
@@ -604,9 +581,7 @@ class PassOneSpool:
             for (canonical,) in rows:
                 yield bytes(canonical).decode("utf-8")
 
-    def relation_side_facts(
-        self, side: str, relation_id: str, role: str
-    ) -> tuple[int, int]:
+    def relation_side_facts(self, side: str, relation_id: str, role: str) -> tuple[int, int]:
         row = self._connection.execute(
             "SELECT rows_considered, null_tuple_count FROM relation_side_facts "
             "WHERE side = ? AND relation_id = ? AND role = ?",
@@ -634,8 +609,7 @@ class PassOneSpool:
 
     def relation_unique_count(self, side: str, relation_id: str, role: str) -> int:
         row = self._connection.execute(
-            "SELECT COUNT(*) FROM relation_keys "
-            "WHERE side = ? AND relation_id = ? AND role = ?",
+            "SELECT COUNT(*) FROM relation_keys WHERE side = ? AND relation_id = ? AND role = ?",
             (side, relation_id, role),
         ).fetchone()
         return int(row[0])
@@ -686,9 +660,7 @@ class PassOneSpool:
         """
         digest = hashlib.sha256()
         digest.update(b"RELATION-PROFILE/v1")
-        for _canonical, occurrences in self.relation_histogram_stream(
-            side, relation_id, role
-        ):
+        for _canonical, occurrences in self.relation_histogram_stream(side, relation_id, role):
             digest.update(str(occurrences).encode("ascii") + b",")
         return digest.hexdigest()
 

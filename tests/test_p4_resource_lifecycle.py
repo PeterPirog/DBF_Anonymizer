@@ -45,9 +45,7 @@ def _plan(tmp_path: Path) -> tuple[Plan, Path, Path, Path]:
     return build_plan(str(source), str(output), str(vault_path)), source, output, vault_path
 
 
-def _open_vault(
-    plan: Plan, vault_path: Path, *, create: bool = False
-) -> VaultDatabase:
+def _open_vault(plan: Plan, vault_path: Path, *, create: bool = False) -> VaultDatabase:
     return VaultDatabase.open(
         vault_path,
         create=create,
@@ -207,9 +205,7 @@ def test_evidence_shard_create_cleanup_failure_is_typed(
     with pytest.raises(VaultError) as excinfo:
         RelationEvidenceShard(path)
 
-    assert _detail(excinfo.value) == (
-        "ENGINE_SPOOL_EVIDENCE_SHARD_CREATE_CLEANUP_FAILED"
-    )
+    assert _detail(excinfo.value) == ("ENGINE_SPOOL_EVIDENCE_SHARD_CREATE_CLEANUP_FAILED")
     assert path.is_file()
     _assert_safe_boundary(excinfo.value, tmp_path)
     monkeypatch.setattr(Path, "unlink", real_unlink)
@@ -281,9 +277,7 @@ def test_vault_close_failure_does_not_skip_spool_cleanup(
         real_vault_close(self)
         raise VaultError(
             ErrorCode.VAULT_UNAVAILABLE,
-            context=ErrorContext(
-                operation="vault", detail_code="CLOSE_FAILED_INJECTED"
-            ),
+            context=ErrorContext(operation="vault", detail_code="CLOSE_FAILED_INJECTED"),
         )
 
     monkeypatch.setattr(PassOneSpool, "cleanup", tracked_spool_cleanup)
@@ -405,10 +399,7 @@ def test_operation_and_cleanup_failures_both_remain_identifiable(
 
     assert _detail(excinfo.value) == "ENGINE_SPOOL_CLEANUP_FAILED"
     assert isinstance(excinfo.value.__cause__, MappingError)
-    assert (
-        excinfo.value.__cause__.context.detail_code
-        == "ENGINE_OPERATION_FAILED_INJECTED"
-    )
+    assert excinfo.value.__cause__.context.detail_code == "ENGINE_OPERATION_FAILED_INJECTED"
     cleanup_failures = getattr(excinfo.value, "_resource_cleanup_failures")
     assert len(cleanup_failures) == 1
     assert isinstance(cleanup_failures[0][1], VaultError)

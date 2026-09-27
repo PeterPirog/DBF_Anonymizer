@@ -108,10 +108,14 @@ def create_domain(
 
 
 def mapping_domains(database: VaultDatabase) -> tuple[dict[str, str | None], ...]:
-    rows = database._internal_connection().execute(
-        "SELECT domain_id, domain_kind, normalization, relational_role "
-        "FROM mapping_domains ORDER BY domain_id"
-    ).fetchall()
+    rows = (
+        database._internal_connection()
+        .execute(
+            "SELECT domain_id, domain_kind, normalization, relational_role "
+            "FROM mapping_domains ORDER BY domain_id"
+        )
+        .fetchall()
+    )
     return tuple(
         {
             "domain_id": str(row[0]),
@@ -160,11 +164,15 @@ def _corrupt_recovery_state(detail_code: str) -> VaultError:
 
 
 def get_text_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
-    row = database._internal_connection().execute(
-        "SELECT pseudonym_value, typeof(pseudonym_value) FROM text_mappings "
-        "WHERE domain_id = ? AND original_value = ?",
-        (domain_id, original_value),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT pseudonym_value, typeof(pseudonym_value) FROM text_mappings "
+            "WHERE domain_id = ? AND original_value = ?",
+            (domain_id, original_value),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     # Adversarial corruption hardening: SQLite dynamic typing means a hostile
@@ -176,11 +184,15 @@ def get_text_pseudonym(database: VaultDatabase, domain_id: str, original_value: 
 
 
 def get_text_original(database: VaultDatabase, domain_id: str, pseudonym_value: str) -> str | None:
-    row = database._internal_connection().execute(
-        "SELECT original_value, typeof(original_value) FROM text_mappings "
-        "WHERE domain_id = ? AND pseudonym_value = ?",
-        (domain_id, pseudonym_value),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT original_value, typeof(original_value) FROM text_mappings "
+            "WHERE domain_id = ? AND pseudonym_value = ?",
+            (domain_id, pseudonym_value),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     if row[1] != "text":
@@ -189,13 +201,17 @@ def get_text_original(database: VaultDatabase, domain_id: str, pseudonym_value: 
 
 
 def text_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple[str, str, int], ...]:
-    rows = database._internal_connection().execute(
-        "SELECT original_value, pseudonym_value, logical_byte_length, "
-        "typeof(original_value), typeof(pseudonym_value), "
-        "typeof(logical_byte_length) FROM text_mappings "
-        "WHERE domain_id = ? ORDER BY original_value",
-        (domain_id,),
-    ).fetchall()
+    rows = (
+        database._internal_connection()
+        .execute(
+            "SELECT original_value, pseudonym_value, logical_byte_length, "
+            "typeof(original_value), typeof(pseudonym_value), "
+            "typeof(logical_byte_length) FROM text_mappings "
+            "WHERE domain_id = ? ORDER BY original_value",
+            (domain_id,),
+        )
+        .fetchall()
+    )
     for row in rows:
         if row[3] != "text" or row[4] != "text" or row[5] != "integer":
             raise _corrupt_recovery_state("TEXT_MAPPING_CORRUPT")
@@ -270,18 +286,24 @@ def _validated_numeric_row(original: object, pseudonym: object) -> tuple[str, st
     return (original, pseudonym)
 
 
-def get_numeric_pseudonym(database: VaultDatabase, domain_id: str, original_value: str) -> str | None:
+def get_numeric_pseudonym(
+    database: VaultDatabase, domain_id: str, original_value: str
+) -> str | None:
     """The persisted pseudonym of one numeric original (canonical TEXT).
 
     Adversarial corruption hardening: a hostile row with an unexpected
     storage class or a non-canonical value raises the typed
     ``NUMERIC_MAPPING_CORRUPT`` vault state refusal.
     """
-    row = database._internal_connection().execute(
-        "SELECT pseudonym_value, typeof(pseudonym_value) FROM numeric_key_mappings "
-        "WHERE domain_id = ? AND original_value = ?",
-        (domain_id, original_value),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT pseudonym_value, typeof(pseudonym_value) FROM numeric_key_mappings "
+            "WHERE domain_id = ? AND original_value = ?",
+            (domain_id, original_value),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     if row[1] != "text":
@@ -289,17 +311,23 @@ def get_numeric_pseudonym(database: VaultDatabase, domain_id: str, original_valu
     return _validated_numeric_row(row[0], row[0])[1]
 
 
-def get_numeric_original(database: VaultDatabase, domain_id: str, pseudonym_value: str) -> str | None:
+def get_numeric_original(
+    database: VaultDatabase, domain_id: str, pseudonym_value: str
+) -> str | None:
     """The persisted original of one numeric pseudonym (reverse lookup).
 
     The recovery-direction retrieval of the numeric key mapping path, with
     the same corruption hardening as the forward direction.
     """
-    row = database._internal_connection().execute(
-        "SELECT original_value, typeof(original_value) FROM numeric_key_mappings "
-        "WHERE domain_id = ? AND pseudonym_value = ?",
-        (domain_id, pseudonym_value),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT original_value, typeof(original_value) FROM numeric_key_mappings "
+            "WHERE domain_id = ? AND pseudonym_value = ?",
+            (domain_id, pseudonym_value),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     if row[1] != "text":
@@ -314,12 +342,16 @@ def numeric_mapping_rows(database: VaultDatabase, domain_id: str) -> tuple[tuple
     non-canonical values fail closed with the typed
     ``NUMERIC_MAPPING_CORRUPT`` refusal before they can reach any consumer.
     """
-    rows = database._internal_connection().execute(
-        "SELECT original_value, pseudonym_value, "
-        "typeof(original_value), typeof(pseudonym_value) FROM numeric_key_mappings "
-        "WHERE domain_id = ? ORDER BY original_value",
-        (domain_id,),
-    ).fetchall()
+    rows = (
+        database._internal_connection()
+        .execute(
+            "SELECT original_value, pseudonym_value, "
+            "typeof(original_value), typeof(pseudonym_value) FROM numeric_key_mappings "
+            "WHERE domain_id = ? ORDER BY original_value",
+            (domain_id,),
+        )
+        .fetchall()
+    )
     for row in rows:
         if row[2] != "text" or row[3] != "text":
             raise _corrupt_numeric_state("NUMERIC_MAPPING_CORRUPT")
@@ -355,12 +387,9 @@ def add_memo_recovery(
     _validate_token(field_id, field_name="field_id")
     if payload_kind not in (VAULT_PAYLOAD_KIND_TEXT, VAULT_PAYLOAD_KIND_BINARY):
         raise ValueError(
-            "payload_kind must be exactly VAULT_PAYLOAD_KIND_TEXT or "
-            "VAULT_PAYLOAD_KIND_BINARY"
+            "payload_kind must be exactly VAULT_PAYLOAD_KIND_TEXT or VAULT_PAYLOAD_KIND_BINARY"
         )
-    if isinstance(physical_record_index, bool) or not isinstance(
-        physical_record_index, int
-    ):
+    if isinstance(physical_record_index, bool) or not isinstance(physical_record_index, int):
         raise TypeError("physical_record_index must be an int")
     if physical_record_index < 0:
         raise ValueError("physical_record_index must be non-negative")
@@ -399,18 +428,20 @@ def get_memo_recovery(
     """
     _validate_token(table_id, field_name="table_id")
     _validate_token(field_id, field_name="field_id")
-    if isinstance(physical_record_index, bool) or not isinstance(
-        physical_record_index, int
-    ):
+    if isinstance(physical_record_index, bool) or not isinstance(physical_record_index, int):
         raise TypeError("physical_record_index must be an int")
     if physical_record_index < 0:
         raise ValueError("physical_record_index must be non-negative")
-    row = database._internal_connection().execute(
-        "SELECT original_payload, payload_kind, typeof(original_payload), "
-        "typeof(payload_kind) FROM memo_recovery "
-        "WHERE table_id = ? AND physical_record_index = ? AND field_id = ?",
-        (table_id, physical_record_index, field_id),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT original_payload, payload_kind, typeof(original_payload), "
+            "typeof(payload_kind) FROM memo_recovery "
+            "WHERE table_id = ? AND physical_record_index = ? AND field_id = ?",
+            (table_id, physical_record_index, field_id),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     if row[2] != "blob" or row[3] != "text":
@@ -419,11 +450,15 @@ def get_memo_recovery(
 
 
 def memo_recovery_rows(database: VaultDatabase, table_id: str) -> tuple[dict[str, Any], ...]:
-    rows = database._internal_connection().execute(
-        "SELECT physical_record_index, field_id, original_payload, payload_kind "
-        "FROM memo_recovery WHERE table_id = ? ORDER BY physical_record_index",
-        (table_id,),
-    ).fetchall()
+    rows = (
+        database._internal_connection()
+        .execute(
+            "SELECT physical_record_index, field_id, original_payload, payload_kind "
+            "FROM memo_recovery WHERE table_id = ? ORDER BY physical_record_index",
+            (table_id,),
+        )
+        .fetchall()
+    )
     return tuple(
         {
             "physical_record_index": int(row[0]),
@@ -435,9 +470,7 @@ def memo_recovery_rows(database: VaultDatabase, table_id: str) -> tuple[dict[str
     )
 
 
-def set_temporal_parameter(
-    database: VaultDatabase, domain_id: str, *, offset_days: int
-) -> None:
+def set_temporal_parameter(database: VaultDatabase, domain_id: str, *, offset_days: int) -> None:
     """Persist the Date/DateTime recovery parameter of one temporal domain.
 
     The internal write boundary refuses logically invalid temporal state:
@@ -460,11 +493,14 @@ def set_temporal_parameter(
 
 
 def temporal_parameter(database: VaultDatabase, domain_id: str) -> int | None:
-    row = database._internal_connection().execute(
-        "SELECT offset_days, typeof(offset_days) FROM temporal_parameters "
-        "WHERE domain_id = ?",
-        (domain_id,),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT offset_days, typeof(offset_days) FROM temporal_parameters WHERE domain_id = ?",
+            (domain_id,),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     # Adversarial corruption hardening: only an INTEGER storage class is a

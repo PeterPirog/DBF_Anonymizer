@@ -16,20 +16,15 @@ This suite proves the P2-007 transformation/vault boundary directly:
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from dbf_anonymizer import ErrorCode, MappingError, VaultError
 from dbf_anonymizer.vault import (
-    GLOBAL_TEXT_DOMAIN_ID,
     VAULT_DATABASE_FILENAME,
     VaultDatabase,
-    mappings,
-    new_writer_token,
 )
 from dbf_anonymizer.vault import (
     persist_memo_recovery,
@@ -40,7 +35,7 @@ from dbf_anonymizer.vault.mappings import (
     get_memo_recovery,
     memo_recovery_rows,
 )
-from support.memo_tables import field_triplet, source_hashes
+from support.memo_tables import source_hashes
 from support.vault_sessions import writer_session
 
 SOURCE_FP = "src-" + "1" * 60
@@ -83,9 +78,7 @@ def _register(
     with writer_session(vault), vault.transaction():
         table_id = vault.register_table(relative_path)
         field_ids = {
-            name: vault.register_field(
-                table_id, name, dbf_type=dbf_type, width=4
-            )
+            name: vault.register_field(table_id, name, dbf_type=dbf_type, width=4)
             for name, dbf_type in fields.items()
         }
     return table_id, field_ids
@@ -100,9 +93,7 @@ def _memo_rows(vault: VaultDatabase, table_id: str) -> int:
 # ---------------------------------------------------------------------------
 def test_store_then_mask_returns_mask_only_after_commit(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        table_id, field_ids = _register(
-            vault, "memo/suite.dbf", {"TXT": "M", "GEN": "G"}
-        )
+        table_id, field_ids = _register(vault, "memo/suite.dbf", {"TXT": "M", "GEN": "G"})
         with writer_session(vault):
             mask = persist_memo_recovery(
                 vault,
@@ -135,12 +126,18 @@ def test_store_then_mask_returns_mask_only_after_commit(tmp_path: Path) -> None:
                 is None
             )
         assert _memo_rows(vault, table_id) == 2
-        assert recover_memo_value(
-            vault, table_id=table_id, physical_record_index=0, field_id=field_ids["TXT"]
-        ) == CANARY_TEXT
-        assert recover_memo_value(
-            vault, table_id=table_id, physical_record_index=1, field_id=field_ids["GEN"]
-        ) == CANARY_BYTES
+        assert (
+            recover_memo_value(
+                vault, table_id=table_id, physical_record_index=0, field_id=field_ids["TXT"]
+            )
+            == CANARY_TEXT
+        )
+        assert (
+            recover_memo_value(
+                vault, table_id=table_id, physical_record_index=1, field_id=field_ids["GEN"]
+            )
+            == CANARY_BYTES
+        )
         assert (
             recover_memo_value(
                 vault,
@@ -179,9 +176,7 @@ def test_null_never_creates_a_recovery_row(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_identity_is_stable_across_reopen(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        table_id, field_ids = _register(
-            vault, "north/registry.dbf", {"NOTE": "M"}
-        )
+        table_id, field_ids = _register(vault, "north/registry.dbf", {"NOTE": "M"})
         with writer_session(vault):
             persist_memo_recovery(
                 vault,
@@ -242,9 +237,7 @@ def test_repeated_equal_payloads_are_independent_rows(tmp_path: Path) -> None:
 
 def test_different_fields_of_one_record_are_independent(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        table_id, field_ids = _register(
-            vault, "t/one.dbf", {"TXT": "M", "BIN": "M", "GEN": "G"}
-        )
+        table_id, field_ids = _register(vault, "t/one.dbf", {"TXT": "M", "BIN": "M", "GEN": "G"})
         with writer_session(vault):
             persist_memo_recovery(
                 vault,
@@ -349,22 +342,14 @@ def test_negative_and_malformed_identities_are_refused(tmp_path: Path) -> None:
                     vault, table_id, True, field_ids["TXT"], b"x", payload_kind="BINARY"
                 )
             with pytest.raises(ValueError):
-                add_memo_recovery(
-                    vault, table_id, 0, field_ids["TXT"], b"x", payload_kind="CLOB"
-                )
+                add_memo_recovery(vault, table_id, 0, field_ids["TXT"], b"x", payload_kind="CLOB")
             with pytest.raises(ValueError):
                 # A TEXT row with a bytes payload is a type mismatch.
-                add_memo_recovery(
-                    vault, table_id, 0, field_ids["TXT"], b"x", payload_kind="TEXT"
-                )
+                add_memo_recovery(vault, table_id, 0, field_ids["TXT"], b"x", payload_kind="TEXT")
             with pytest.raises(ValueError):
-                add_memo_recovery(
-                    vault, table_id, 0, field_ids["TXT"], "s", payload_kind="BINARY"
-                )
+                add_memo_recovery(vault, table_id, 0, field_ids["TXT"], "s", payload_kind="BINARY")
         assert _memo_rows(vault, table_id) == 0
-        assert (
-            get_memo_recovery(vault, table_id, 99, field_ids["TXT"]) is None
-        )
+        assert get_memo_recovery(vault, table_id, 99, field_ids["TXT"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -488,9 +473,7 @@ def test_rollback_preserves_prior_committed_rows(tmp_path: Path) -> None:
 
 def test_close_reopen_preserves_committed_recovery_data(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
-        table_id, field_ids = _register(
-            vault, "t/reopen.dbf", {"TXT": "M", "PIC": "P"}
-        )
+        table_id, field_ids = _register(vault, "t/reopen.dbf", {"TXT": "M", "PIC": "P"})
         with writer_session(vault):
             persist_memo_recovery(
                 vault,
@@ -603,11 +586,7 @@ def test_row_rejection_error_never_carries_payload_values(tmp_path: Path) -> Non
                     payload_kind="BINARY",
                 )
         boundary = (
-            str(excinfo.value)
-            + "|"
-            + repr(excinfo.value)
-            + "|"
-            + str(excinfo.value.to_dict())
+            str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
         )
         assert CANARY_TEXT not in boundary
         assert CANARY_BYTES.decode("latin-1") not in boundary
@@ -619,12 +598,8 @@ def test_committed_fixture_rows_survive_reopen_and_match_the_manifest(
     """The committed synthetic fixture's memo identity is recoverable."""
     import json
 
-    manifest = json.loads(
-        (FIXTURE_ROOT / "manifest.json").read_text(encoding="utf-8")
-    )
-    fixture = next(
-        f for f in manifest["fixtures"] if f["id"] == "memos.memo_payloads"
-    )
+    manifest = json.loads((FIXTURE_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    fixture = next(f for f in manifest["fixtures"] if f["id"] == "memos.memo_payloads")
     expectations = fixture["expectations"]
     hashes_before = source_hashes(MEMO_FIXTURE)
     with _create(tmp_path) as vault:

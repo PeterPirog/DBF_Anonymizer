@@ -34,7 +34,6 @@ production modules.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -114,9 +113,7 @@ def _seed_rows(vault: VaultDatabase, rows: list[tuple[str, str, int]]) -> None:
 def _seed_rows_excluding(free: list[str]) -> list[tuple[str, str, int]]:
     """Persisted rows occupying every one-character token except *free*."""
     return [
-        (f"SEED-{index:02d}", token, 1)
-        for index, token in enumerate(ALPHABET)
-        if token not in free
+        (f"SEED-{index:02d}", token, 1) for index, token in enumerate(ALPHABET) if token not in free
     ]
 
 
@@ -128,9 +125,7 @@ class _Lcg:
         self.calls: list[int] = []
 
     def _next(self) -> int:
-        self._state = (
-            self._state * 6364136223846793005 + 1442695040888963407
-        ) & ((1 << 64) - 1)
+        self._state = (self._state * 6364136223846793005 + 1442695040888963407) & ((1 << 64) - 1)
         return self._state
 
     def below(self, bound: int) -> int:
@@ -198,9 +193,7 @@ def _oracle_augmenting_path(
     return None
 
 
-def _oracle_max_flow(
-    graph: list[dict[int, int]], source: int, sink: int, demand: int
-) -> int:
+def _oracle_max_flow(graph: list[dict[int, int]], source: int, sink: int, demand: int) -> int:
     """Independent reference: DFS augmentation on a residual dictionary.
 
     Deliberately a DIFFERENT algorithm family from the production Dinic
@@ -232,9 +225,7 @@ class _PhaseCountingFlow(_ResidualFlow):
         return super()._bfs(source, sink)
 
 
-def _production_network(
-    edges: list[tuple[int, int, int]], node_count: int
-) -> _PhaseCountingFlow:
+def _production_network(edges: list[tuple[int, int, int]], node_count: int) -> _PhaseCountingFlow:
     network = _PhaseCountingFlow(node_count)
     for u, v, cap in edges:
         network.add_edge(u, v, cap)
@@ -326,19 +317,13 @@ def test_residual_flow_zero_and_astronomical_capacities() -> None:
     network = _production_network([(0, 1, 0), (0, 1, 0), (0, 2, 1), (2, 1, 1)], 3)
     assert network.max_flow(0, 2, 5) == 1  # only the cap-1 route survives
     huge = 10**40
-    network = _production_network(
-        [(0, 1, huge), (0, 2, huge), (1, 3, huge), (2, 3, huge)], 4
-    )
+    network = _production_network([(0, 1, huge), (0, 2, huge), (1, 3, huge), (2, 3, huge)], 4)
     assert network.max_flow(0, 3, 2 * huge) == 2 * huge
-    fresh = _production_network(
-        [(0, 1, huge), (0, 2, huge), (1, 3, huge), (2, 3, huge)], 4
-    )
+    fresh = _production_network([(0, 1, huge), (0, 2, huge), (1, 3, huge), (2, 3, huge)], 4)
     assert fresh.max_flow(0, 3, 10**18) == 10**18  # early termination at demand
 
 
-@pytest.mark.parametrize(
-    "capacities", [(1, 1, 1), (2, 1), (3,), (1, 2, 2), (4, 4)]
-)
+@pytest.mark.parametrize("capacities", [(1, 1, 1), (2, 1), (3,), (1, 2, 2), (4, 4)])
 def test_residual_flow_assignment_graphs_alternative_matchings(
     capacities: tuple[int, ...],
 ) -> None:
@@ -412,11 +397,7 @@ def test_jth_free_in_class_matches_brute_force_scan() -> None:
         blocked: set[int] = set()
         for _ in range(lcg.below(class_size + 1)):
             blocked.add(class_low + lcg.below(class_size))
-        free = [
-            index
-            for index in range(class_low, class_low + class_size)
-            if index not in blocked
-        ]
+        free = [index for index in range(class_low, class_low + class_size) if index not in blocked]
         for j, expected in enumerate(free):
             chosen = _jth_free_in_class(class_low, class_size, sorted(blocked), j)
             assert chosen == expected, (class_low, class_size, sorted(blocked), j)
@@ -426,11 +407,7 @@ def test_jth_free_in_class_walks_the_whole_class_block() -> None:
     """Every free index is reachable in order; blocked indices never returned."""
     class_low, class_size = 40, 9  # a class block of the 36-symbol alphabet
     blocked = {41, 44, 48}
-    free = [
-        index
-        for index in range(class_low, class_low + class_size)
-        if index not in blocked
-    ]
+    free = [index for index in range(class_low, class_low + class_size) if index not in blocked]
     for j, expected in enumerate(free):
         assert _jth_free_in_class(class_low, class_size, sorted(blocked), j) == expected
 
@@ -456,9 +433,7 @@ def _all_tokens(max_width: int) -> list[str]:
     return cached
 
 
-def _oracle_matching(
-    widths: dict[str, int], occupied: set[str]
-) -> tuple[bool, dict[str, str]]:
+def _oracle_matching(widths: dict[str, int], occupied: set[str]) -> tuple[bool, dict[str, str]]:
     """Concrete bipartite matching: distinct free tokens, len<=width, != own.
 
     Fully independent of the production planner: it enumerates CONCRETE
@@ -612,15 +587,12 @@ def test_planning_semantics_greedy_trap(tmp_path: Path) -> None:
         tmp_path,
         "greedy-trap",
         [],
-        [(f"NARROW-{index:02d}", 1) for index in range(35)]
-        + [("WIDE-1", 2), ("WIDE-2", 2)],
+        [(f"NARROW-{index:02d}", 1) for index in range(35)] + [("WIDE-1", 2), ("WIDE-2", 2)],
     )
 
 
 @pytest.mark.parametrize("seed", list(range(24)))
-def test_planning_semantics_random_scenarios_match_oracle(
-    tmp_path: Path, seed: int
-) -> None:
+def test_planning_semantics_random_scenarios_match_oracle(tmp_path: Path, seed: int) -> None:
     """Deterministic random residual scenarios: feasible iff oracle feasible."""
     lcg = _Lcg(0xC0DE + seed)
     pool1 = list(ALPHABET)
@@ -641,11 +613,7 @@ def test_planning_semantics_random_scenarios_match_oracle(
     seed_rows: list[tuple[str, str, int]] = []
     occupied: set[str] = set()
     for index in range(lcg.below(3)):
-        pseudonym = (
-            pool1[lcg.below(BASE)]
-            if lcg.below(2) == 0
-            else pool2[lcg.below(len(pool2))]
-        )
+        pseudonym = pool1[lcg.below(BASE)] if lcg.below(2) == 0 else pool2[lcg.below(len(pool2))]
         if pseudonym in occupied:
             continue
         occupied.add(pseudonym)
@@ -753,9 +721,7 @@ def test_partial_persistence_generic_named_mixture_matrix(tmp_path: Path) -> Non
         with _create(tmp_path / f"mixture-{mask}") as vault:
             _seed_rows(vault, prefix_rows)
             with writer_session(vault):
-                allocator = GlobalTextDomainMapping(
-                    vault, _random_below=lambda bound: bound - 1
-                )
+                allocator = GlobalTextDomainMapping(vault, _random_below=lambda bound: bound - 1)
                 for original, width in originals:
                     allocator.observe(original, encoding="cp1250", byte_width=width)
                 allocator.finalize()
@@ -854,9 +820,7 @@ def test_persisted_prefix_forces_a_different_completion(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         _seed_rows(vault, prefix)
         with writer_session(vault):
-            first = GlobalTextDomainMapping(
-                vault, _random_below=_CountingRandom(0, cycle=True)
-            )
+            first = GlobalTextDomainMapping(vault, _random_below=_CountingRandom(0, cycle=True))
             first.observe("C", encoding="cp1250", byte_width=2)
             first.observe("FLEX-1", encoding="cp1250", byte_width=1)
             first.observe("FLEX-2", encoding="cp1250", byte_width=1)
@@ -866,9 +830,7 @@ def test_persisted_prefix_forces_a_different_completion(tmp_path: Path) -> None:
             assert plan_in_memory["FLEX-2"] == ("generic", 1)
             # A previous operation of the same writer persists two more rows,
             # consuming the fungible class-1 tokens "B" and "D".
-            second = GlobalTextDomainMapping(
-                vault, _random_below=_CountingRandom(1, 3)
-            )
+            second = GlobalTextDomainMapping(vault, _random_below=_CountingRandom(1, 3))
             second.observe("EXT-1", encoding="cp1250", byte_width=1)
             second.observe("EXT-2", encoding="cp1250", byte_width=1)
             second.finalize()
@@ -920,9 +882,7 @@ def test_csprng_exact_completion_excludes_self_token_for_every_j(
             _seed_rows(vault, _seed_rows_excluding(free))
             stream = _CountingRandom(*([0] * GLOBAL_TEXT_PROBE_BUDGET), j)
             with writer_session(vault):
-                allocator = GlobalTextDomainMapping(
-                    vault, _random_below=stream.__call__
-                )
+                allocator = GlobalTextDomainMapping(vault, _random_below=stream.__call__)
                 allocator.observe("Q", encoding="cp1250", byte_width=1)
                 allocator.finalize()
                 pseudonym = allocator.pseudonym_for("Q")
@@ -1010,9 +970,7 @@ def test_replan_not_repeated_after_external_prefix(
     with _create(tmp_path) as vault:
         _seed_rows(vault, prefix)
         with writer_session(vault):
-            allocator = GlobalTextDomainMapping(
-                vault, _random_below=_CountingRandom(2, cycle=True)
-            )
+            allocator = GlobalTextDomainMapping(vault, _random_below=_CountingRandom(2, cycle=True))
             allocator.observe("C", encoding="cp1250", byte_width=2)
             allocator.observe("FLEX-1", encoding="cp1250", byte_width=1)
             allocator.observe("FLEX-2", encoding="cp1250", byte_width=1)
@@ -1026,9 +984,7 @@ def test_replan_not_repeated_after_external_prefix(
             # An external operation persists two more rows (fixed set changed):
             # exactly ONE further replan is justified; own allocations must
             # then keep the plan without rebuilding again.
-            second = GlobalTextDomainMapping(
-                vault, _random_below=_CountingRandom(1, 3, cycle=True)
-            )
+            second = GlobalTextDomainMapping(vault, _random_below=_CountingRandom(1, 3, cycle=True))
             second.observe("EXT-1", encoding="cp1250", byte_width=1)
             second.observe("EXT-2", encoding="cp1250", byte_width=1)
             second.finalize()

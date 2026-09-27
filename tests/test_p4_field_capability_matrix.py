@@ -117,9 +117,7 @@ def test_field_capability_matrix_snapshot_is_exact_and_deterministic() -> None:
         ("T", False, "SHIFT_REVERSIBLE"),
     ],
 )
-def test_supported_transform_class(
-    dbf_type: str, is_binary: bool, expected_action: str
-) -> None:
+def test_supported_transform_class(dbf_type: str, is_binary: bool, expected_action: str) -> None:
     assert classify_field_capability(
         dbf_type,
         "VALUE",
@@ -133,9 +131,11 @@ def test_supported_transform_class(
 
 @pytest.mark.parametrize("dbf_type", ["N", "F", "I", "Y", "B", "L"])
 def test_default_identity_class(dbf_type: str) -> None:
-    assert classify_field_capability(
-        dbf_type, "VALUE", True, False, False, False, _policy()
-    ) == (None, False, False)
+    assert classify_field_capability(dbf_type, "VALUE", True, False, False, False, _policy()) == (
+        None,
+        False,
+        False,
+    )
 
 
 @pytest.mark.parametrize("dbf_type", ["C", "V", "M"])
@@ -156,24 +156,32 @@ def test_binary_or_nocptrans_textual_field_fails_closed(
 
 @pytest.mark.parametrize("dbf_type", ["Q", "W", "X", "O", "?"])
 def test_opaque_or_unknown_user_class_fails_closed(dbf_type: str) -> None:
-    assert classify_field_capability(
-        dbf_type, "VALUE", True, False, False, False, _policy()
-    ) == (None, True, False)
+    assert classify_field_capability(dbf_type, "VALUE", True, False, False, False, _policy()) == (
+        None,
+        True,
+        False,
+    )
 
 
 def test_reader_unsupported_user_field_fails_closed() -> None:
-    assert classify_field_capability(
-        "M", "VALUE", False, False, False, False, _policy()
-    ) == (None, True, False)
+    assert classify_field_capability("M", "VALUE", False, False, False, False, _policy()) == (
+        None,
+        True,
+        False,
+    )
 
 
 def test_only_trusted_nullflags_is_writer_managed() -> None:
-    assert classify_field_capability(
-        "0", "_NullFlags", True, True, True, False, _policy()
-    ) == (None, False, True)
-    assert classify_field_capability(
-        "0", "USER_BITMAP", True, True, True, False, _policy()
-    ) == (None, True, False)
+    assert classify_field_capability("0", "_NullFlags", True, True, True, False, _policy()) == (
+        None,
+        False,
+        True,
+    )
+    assert classify_field_capability("0", "USER_BITMAP", True, True, True, False, _policy()) == (
+        None,
+        True,
+        False,
+    )
 
 
 def test_planning_preflight_and_engine_consume_the_same_classifier() -> None:

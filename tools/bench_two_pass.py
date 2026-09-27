@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 import tracemalloc
-from datetime import date, timezone
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -74,19 +74,13 @@ def _write_dataset(source_root: Path, customers: int, orders: int) -> None:
         source_root,
         "north/customers.dbf",
         (numeric_field("CUST_ID", "C", 14), numeric_field("AMT", "N", 9)),
-        [
-            {"CUST_ID": f"CUST{index:09d}", "AMT": index}
-            for index in range(customers)
-        ],
+        [{"CUST_ID": f"CUST{index:09d}", "AMT": index} for index in range(customers)],
     )
     write_numeric_table(
         source_root,
         "south/orders.dbf",
         (numeric_field("CUST_ID", "C", 14), numeric_field("AMT", "N", 9)),
-        [
-            {"CUST_ID": f"CUST{index % customers:09d}", "AMT": index}
-            for index in range(orders)
-        ],
+        [{"CUST_ID": f"CUST{index % customers:09d}", "AMT": index} for index in range(orders)],
     )
 
 

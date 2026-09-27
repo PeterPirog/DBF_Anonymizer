@@ -139,10 +139,7 @@ def test_source_dbf_mutated_after_planning_refused_before_side_effects(
     mutated = _hash_tree(source_root)
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
     assert _hash_tree(source_root) == mutated  # never "repaired"
     assert not (tmp_path / "output").exists() or not any((tmp_path / "output").rglob("*"))
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
@@ -161,10 +158,7 @@ def test_source_fpt_mutated_after_planning_refused_before_side_effects(
     mutated = _hash_tree(source_root)
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
     assert _hash_tree(source_root) == mutated
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []
@@ -185,10 +179,7 @@ def test_source_topology_change_after_planning_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []
 
@@ -218,10 +209,7 @@ def test_compatible_foreign_source_tree_refused(tmp_path: Path) -> None:
     _swap_context(plan, source_root=str(foreign_root))
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_SOURCE_FINGERPRINT_MISMATCH"
     assert _hash_tree(source_root) == _hash_tree(source_root)
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
 
@@ -235,9 +223,7 @@ def test_output_inside_source_refused(tmp_path: Path) -> None:
     _swap_context(plan, output_root=str(source_root / "output"))
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
     assert not (source_root / "output").exists()
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
 
@@ -248,9 +234,7 @@ def test_vault_inside_source_refused(tmp_path: Path) -> None:
     _swap_context(plan, vault_path=str(source_root / "vault" / "dictionary.sqlite3"))
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
     assert not (source_root / "vault").exists()
     assert spool_artifacts(source_root / "vault") == []
 
@@ -262,9 +246,7 @@ def test_vault_inside_output_refused(tmp_path: Path) -> None:
     _swap_context(plan, vault_path=str(output_root / "dictionary.sqlite3"))
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(output_root) == []
 
@@ -288,9 +270,7 @@ def test_junction_alias_overlap_refused(tmp_path: Path) -> None:
     _swap_context(plan, output_root=str(alias / "output"))
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_PATH_OVERLAP"
     assert not (alias / "output").exists()
 
 
@@ -316,10 +296,7 @@ def test_tampered_policy_in_context_refused(tmp_path: Path) -> None:
     _swap_context(plan, resolved_policy=tampered)
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_POLICY_IDENTITY_MISMATCH"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_POLICY_IDENTITY_MISMATCH"
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []
 
@@ -333,16 +310,12 @@ def test_tampered_relationship_document_in_context_refused(
     other["relations"] = [
         dict(_DOCUMENT["relations"][0], relation_id="rel-OTHER"),  # type: ignore[index]
     ]
-    from dbf_anonymizer.relationships.document import parse_relationship_document
 
-    _swap_context(
-        plan, relationship_document=parse_relationship_document(other)
-    )
+    _swap_context(plan, relationship_document=parse_relationship_document(other))
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan)
     assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_RELATIONSHIP_IDENTITY_MISMATCH"
+        excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_RELATIONSHIP_IDENTITY_MISMATCH"
     )
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []
@@ -386,8 +359,7 @@ def test_cancellation_during_pre_execution_refingerprint(tmp_path: Path) -> None
 
     def forbidden_iter_records(*args: object, **kwargs: object):
         raise AssertionError(
-            "no PASS1 source record stream may open before the "
-            "pre-execution revalidation completes"
+            "no PASS1 source record stream may open before the pre-execution revalidation completes"
         )
 
     mp.setattr(dbfbridge, "iter_records", forbidden_iter_records)
@@ -398,15 +370,11 @@ def test_cancellation_during_pre_execution_refingerprint(tmp_path: Path) -> None
         mp.undo()
     # The probe was really polled during the refingerprint scan.
     assert probes["count"] >= 1
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "CANCELLED_BY_CHECK"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "CANCELLED_BY_CHECK"
     assert _hash_tree(source_root) == failure_time
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []
-    assert not (tmp_path / "output").exists() or not any(
-        (tmp_path / "output").rglob("*")
-    )
+    assert not (tmp_path / "output").exists() or not any((tmp_path / "output").rglob("*"))
 
 
 def test_raising_cancel_check_during_refingerprint_stays_classified(
@@ -426,9 +394,7 @@ def test_raising_cancel_check_during_refingerprint_stays_classified(
 
     with pytest.raises(CallbackError) as excinfo:
         run_two_pass(plan, cancel_check=bad_check)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"] == "CANCEL_CHECK"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "CANCEL_CHECK"
     assert _hash_tree(source_root) == failure_time
     assert not (tmp_path / "vault" / "dictionary.sqlite3").exists()
     assert spool_artifacts(_vault_dir(tmp_path)) == []

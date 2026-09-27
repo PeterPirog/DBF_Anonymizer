@@ -114,21 +114,14 @@ def test_injected_unlink_failure_surfaces_typed_cleanup_error(
     # The original operation failure (the cancellation) is preserved as the
     # chained cause of the typed cleanup-safety refusal.
     assert isinstance(excinfo.value.__cause__, CancellationError)
-    assert (
-        excinfo.value.to_dict()["context"]["detail_code"]
-        == "ENGINE_OUTPUT_CLEANUP_FAILED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == "ENGINE_OUTPUT_CLEANUP_FAILED"
     # The cleanup attempt really failed: staging stays, but the final target
     # was never exposed as a partial dataset.
     assert failed
     assert not (tmp_path / "output").exists()
     assert len(tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))) == 1
     # No path or value leakage in the typed boundary.
-    boundary = (
-        str(excinfo.value)
-        + repr(excinfo.value)
-        + str(excinfo.value.to_dict())
-    )
+    boundary = str(excinfo.value) + repr(excinfo.value) + str(excinfo.value.to_dict())
     assert str(tmp_path) not in boundary
     assert _TABLES[0] not in boundary
     assert "KEY-01" not in boundary

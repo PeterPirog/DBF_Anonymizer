@@ -46,7 +46,6 @@ from dbf_anonymizer.transforms import temporal as temporal_kernels
 from dbf_anonymizer.vault.mappings import (
     create_domain,
     set_temporal_parameter,
-    temporal_parameter,
 )
 from dbf_anonymizer.vault.schema import VAULT_TABLE_DOMAIN_KIND_TEMPORAL
 from dbf_anonymizer.vault.store import VaultDatabase, _sha16
@@ -58,9 +57,7 @@ def _only_zero_feasible() -> MappingError:
     """Stable typed failure when only offset 0 would fit the whole domain."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="TEMPORAL_ONLY_ZERO_FEASIBLE"
-        ),
+        context=ErrorContext(operation="transform", detail_code="TEMPORAL_ONLY_ZERO_FEASIBLE"),
     )
 
 
@@ -68,9 +65,7 @@ def _not_finalized() -> MappingError:
     """Stable typed failure for shifting before the offset was allocated."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="TEMPORAL_NOT_FINALIZED"
-        ),
+        context=ErrorContext(operation="transform", detail_code="TEMPORAL_NOT_FINALIZED"),
     )
 
 
@@ -124,12 +119,16 @@ def _persisted_temporal_state(database: VaultDatabase, domain_id: str) -> int | 
     (SQLite dynamic typing admits hostile TEXT/REAL/BLOB rows) or is zero.
     Values never reach errors.
     """
-    row = database._internal_connection().execute(
-        "SELECT d.domain_kind, t.offset_days, typeof(t.offset_days) FROM mapping_domains d "
-        "LEFT JOIN temporal_parameters t ON t.domain_id = d.domain_id "
-        "WHERE d.domain_id = ?",
-        (domain_id,),
-    ).fetchone()
+    row = (
+        database._internal_connection()
+        .execute(
+            "SELECT d.domain_kind, t.offset_days, typeof(t.offset_days) FROM mapping_domains d "
+            "LEFT JOIN temporal_parameters t ON t.domain_id = d.domain_id "
+            "WHERE d.domain_id = ?",
+            (domain_id,),
+        )
+        .fetchone()
+    )
     if row is None:
         return None  # no state at all: a fresh domain
     kind, offset = str(row[0]), row[1]

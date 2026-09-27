@@ -73,10 +73,7 @@ def direct_read_available() -> bool:
 def direct_write_available() -> bool:
     """True only when the public dbfbridge direct-write API and its runtime
     dependency (dbf) are both present."""
-    return (
-        callable(getattr(dbfbridge, "write_table", None))
-        and _write_dependency_available()
-    )
+    return callable(getattr(dbfbridge, "write_table", None)) and _write_dependency_available()
 
 
 def snapshot(recovery_policy: RecoveryPolicy = RecoveryPolicy.ENABLED) -> Capabilities:

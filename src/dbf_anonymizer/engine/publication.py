@@ -68,9 +68,9 @@ def _target_conflict(detail_code: str) -> PathError:
 
 
 def _digest(prefix: str, payload: object) -> str:
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("ascii")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "ascii"
+    )
     return prefix + hashlib.sha256(encoded).hexdigest()
 
 
@@ -171,10 +171,14 @@ def derive_operation_id(
         "relationships": relationship_fingerprint,
         "destination": destination_identity,
     }
-    return "vop-" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        .encode("ascii")
-    ).hexdigest()[:32]
+    return (
+        "vop-"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "ascii"
+            )
+        ).hexdigest()[:32]
+    )
 
 
 def build_publication_identity(
@@ -370,9 +374,9 @@ class DatasetStaging:
             # supports it) BEFORE any payload byte is written.
             write_durable_bytes(
                 root / "transaction.json",
-                json.dumps(
-                    marker, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-                ).encode("ascii"),
+                json.dumps(marker, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                    "ascii"
+                ),
             )
         except FileExistsError:
             raise _publication_failure("STALE_STAGING_DETECTED") from None
@@ -479,9 +483,9 @@ class DatasetStaging:
             payload["output_fingerprint"] = self._recorded_fingerprint
         write_durable_bytes(
             self.identity.staging_root / "transaction.json",
-            json.dumps(
-                payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-            ).encode("ascii"),
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "ascii"
+            ),
         )
 
     def transaction_state(self) -> dict[str, object] | None:
@@ -704,9 +708,7 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
         payload = json.loads(receipt)
         if payload.get("schema_version") != RECEIPT_SCHEMA_VERSION:
             raise ValueError
-        relations = tuple(
-            RelationPassSummary(**item) for item in payload["relations"]
-        )
+        relations = tuple(RelationPassSummary(**item) for item in payload["relations"])
         index_artifacts: list[StandaloneIdxEvidence] = []
         for item in payload["index_artifacts"]:
             if not isinstance(item, dict) or set(item) != {
@@ -760,15 +762,12 @@ def result_from_receipt(receipt: str) -> TwoPassResult:
             text_allocated=int(payload["text_allocated"]),
             text_reused=int(payload["text_reused"]),
             numeric_allocated={
-                str(key): int(value)
-                for key, value in payload["numeric_allocated"].items()
+                str(key): int(value) for key, value in payload["numeric_allocated"].items()
             },
             temporal_offset_allocated=bool(payload["temporal_offset_allocated"]),
             relations=relations,
             evidence_spool_bytes=int(payload["evidence_spool_bytes"]),
-            read_streams=tuple(
-                (str(item[0]), str(item[1])) for item in payload["read_streams"]
-            ),
+            read_streams=tuple((str(item[0]), str(item[1])) for item in payload["read_streams"]),
             operation_id=str(payload["operation_id"]),
             output_fingerprint=str(payload["output_fingerprint"]),
             reused_existing=True,

@@ -123,19 +123,22 @@ def _build_residual_graph(
     ):
         connection.execute(f"DELETE FROM {table}")
     occupied_by_length: dict[int, int] = {}
-    for length, count in vault._internal_connection().execute(
-        "SELECT logical_byte_length, COUNT(*) FROM text_mappings "
-        "WHERE domain_id = ? GROUP BY logical_byte_length",
-        (domain_id,),
-    ).fetchall():
+    for length, count in (
+        vault._internal_connection()
+        .execute(
+            "SELECT logical_byte_length, COUNT(*) FROM text_mappings "
+            "WHERE domain_id = ? GROUP BY logical_byte_length",
+            (domain_id,),
+        )
+        .fetchall()
+    ):
         occupied_by_length[int(length)] = int(count)
 
     originals = 0
     tokens = 0
     max_width = 0
     cursor = connection.execute(
-        "SELECT canonical, min_width FROM text_observation "
-        "ORDER BY min_width ASC, canonical ASC"
+        "SELECT canonical, min_width FROM text_observation ORDER BY min_width ASC, canonical ASC"
     )
     while True:
         rows = cursor.fetchmany(MAX_SQL_BATCH)
@@ -149,9 +152,7 @@ def _build_residual_graph(
             own_token: str | None = None
             if is_safe_token(value, alphabet):
                 length = len(value)
-                if length <= int(width) and not _token_occupied(
-                    vault, domain_id, value
-                ):
+                if length <= int(width) and not _token_occupied(vault, domain_id, value):
                     own_token = value
             batch.append((originals, int(width), canonical, own_token))
             if own_token is not None:
@@ -160,8 +161,7 @@ def _build_residual_graph(
                 max_width = int(width)
             originals += 1
         connection.executemany(
-            "INSERT INTO res_original (idx, width, canonical, own_token) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO res_original (idx, width, canonical, own_token) VALUES (?, ?, ?, ?)",
             batch,
         )
     connection.execute(
@@ -182,33 +182,31 @@ def _build_residual_graph(
             - reserved_by_length.get(length, 0)
         )
         cap_batch.append((length, fungible))
-    connection.executemany(
-        "INSERT INTO res_cap (length, fungible) VALUES (?, ?)", cap_batch
-    )
+    connection.executemany("INSERT INTO res_cap (length, fungible) VALUES (?, ?)", cap_batch)
     connection.commit()
     return originals, sum(reserved_by_length.values())
 
 
 def _token_occupied(vault: VaultDatabase, domain_id: str, token: str) -> bool:
-    row = vault._internal_connection().execute(
-        "SELECT 1 FROM text_mappings WHERE domain_id = ? AND pseudonym_value = ?",
-        (domain_id, token),
-    ).fetchone()
+    row = (
+        vault._internal_connection()
+        .execute(
+            "SELECT 1 FROM text_mappings WHERE domain_id = ? AND pseudonym_value = ?",
+            (domain_id, token),
+        )
+        .fetchone()
+    )
     return row is not None
 
 
 def _cap_of(connection: sqlite3.Connection, length: int) -> int:
-    row = connection.execute(
-        "SELECT fungible FROM res_cap WHERE length = ?", (length,)
-    ).fetchone()
+    row = connection.execute("SELECT fungible FROM res_cap WHERE length = ?", (length,)).fetchone()
     if row is None:
         return 0
     return int(row[0])
 
 
-def _assigned_to_class(
-    connection: sqlite3.Connection, length: int, after_idx: int
-) -> int | None:
+def _assigned_to_class(connection: sqlite3.Connection, length: int, after_idx: int) -> int | None:
     row = connection.execute(
         "SELECT orig_idx FROM res_assign WHERE kind = 'class' AND length = ? "
         "AND orig_idx > ? AND orig_idx NOT IN (SELECT orig_idx FROM res_visited) "
@@ -400,20 +398,14 @@ def solve_text_residual(
         connection, vault=vault, domain_id=domain_id, originals=originals, base=base
     )
     class_assignments = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM res_assign WHERE kind = 'class'"
-        ).fetchone()[0]
+        connection.execute("SELECT COUNT(*) FROM res_assign WHERE kind = 'class'").fetchone()[0]
     )
     token_assignments = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM res_assign WHERE kind = 'token'"
-        ).fetchone()[0]
+        connection.execute("SELECT COUNT(*) FROM res_assign WHERE kind = 'token'").fetchone()[0]
     )
     return TextResidualPlan(
         originals=originals,
-        reserved_tokens=int(
-            connection.execute("SELECT COUNT(*) FROM res_token").fetchone()[0]
-        ),
+        reserved_tokens=int(connection.execute("SELECT COUNT(*) FROM res_token").fetchone()[0]),
         class_assignments=class_assignments,
         token_assignments=token_assignments,
     )
@@ -446,15 +438,11 @@ def _validate_residual_assignment(
     Any violation is a stable, privacy-safe typed refusal.
     """
     _corrupt = _mapping_failure("ENGINE_TEXT_RESIDUAL_CORRUPT")
-    total = int(
-        connection.execute("SELECT COUNT(*) FROM res_assign").fetchone()[0]
-    )
+    total = int(connection.execute("SELECT COUNT(*) FROM res_assign").fetchone()[0])
     if total != originals:
         raise _corrupt
     distinct_originals = int(
-        connection.execute(
-            "SELECT COUNT(DISTINCT orig_idx) FROM res_assign"
-        ).fetchone()[0]
+        connection.execute("SELECT COUNT(DISTINCT orig_idx) FROM res_assign").fetchone()[0]
     )
     if distinct_originals != originals:
         raise _corrupt
@@ -471,8 +459,7 @@ def _validate_residual_assignment(
         raise _corrupt
     unknown_kinds = int(
         connection.execute(
-            "SELECT COUNT(*) FROM res_assign "
-            "WHERE kind NOT IN ('class','token')"
+            "SELECT COUNT(*) FROM res_assign WHERE kind NOT IN ('class','token')"
         ).fetchone()[0]
     )
     if unknown_kinds:
@@ -528,17 +515,17 @@ def _validate_residual_assignment(
         raise _corrupt
     occupied_by_length = dict(
         (int(row[0]), int(row[1]))
-        for row in vault._internal_connection().execute(
+        for row in vault._internal_connection()
+        .execute(
             "SELECT logical_byte_length, COUNT(*) FROM text_mappings "
             "WHERE domain_id = ? GROUP BY logical_byte_length",
             (domain_id,),
-        ).fetchall()
+        )
+        .fetchall()
     )
     capacity_by_length = {
         int(row[0]): int(row[1])
-        for row in connection.execute(
-            "SELECT length, fungible FROM res_cap"
-        ).fetchall()
+        for row in connection.execute("SELECT length, fungible FROM res_cap").fetchall()
     }
     for length, fungible_remaining in capacity_by_length.items():
         reserved = int(
@@ -549,16 +536,16 @@ def _validate_residual_assignment(
         )
         class_taken = int(
             connection.execute(
-                "SELECT COUNT(*) FROM res_assign WHERE kind = 'class' "
-                "AND length = ?",
+                "SELECT COUNT(*) FROM res_assign WHERE kind = 'class' AND length = ?",
                 (int(length),),
             ).fetchone()[0]
         )
-        expected_remaining = _stored_capacity(
-            _class_size(base, int(length))
-            - occupied_by_length.get(int(length), 0)
-            - reserved
-        ) - class_taken
+        expected_remaining = (
+            _stored_capacity(
+                _class_size(base, int(length)) - occupied_by_length.get(int(length), 0) - reserved
+            )
+            - class_taken
+        )
         if int(fungible_remaining) != expected_remaining or expected_remaining < 0:
             raise _corrupt
 
@@ -639,8 +626,7 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
             class_pos += 1
             displace_from = -1
             connection.execute(
-                "UPDATE res_dfs SET class_pos = ?, displace_from = -1 "
-                "WHERE depth = ?",
+                "UPDATE res_dfs SET class_pos = ?, displace_from = -1 WHERE depth = ?",
                 (class_pos, depth),
             )
         if advanced:
@@ -650,9 +636,7 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
             # FAST PATH: the first FREE reserved token edge is found by ONE
             # indexed probe — the common case that keeps the whole solve
             # near-linear even when every original holds a reserved token.
-            free_tid = _first_free_token_edge(
-                connection, orig_idx, width, own_token, token_pos
-            )
+            free_tid = _first_free_token_edge(connection, orig_idx, width, own_token, token_pos)
             if free_tid is not None:
                 _unwind(connection, ("token", None, free_tid))
                 connection.commit()
@@ -679,9 +663,7 @@ def _augment(connection: sqlite3.Connection, v0: int) -> bool:
             # parent.  Using token_idx as orig_idx here would search for a
             # resource of a NONEXISTENT/WRONG original (resource ids are
             # not original ids).
-            connection.execute(
-                "INSERT INTO res_visited (orig_idx) VALUES (?)", (occupant,)
-            )
+            connection.execute("INSERT INTO res_visited (orig_idx) VALUES (?)", (occupant,))
             connection.execute(
                 "INSERT INTO res_dfs (depth, orig_idx, vacate_kind, "
                 "vacate_length, vacate_token_idx, class_pos, token_pos, "
@@ -781,9 +763,7 @@ def _reserved_token_blocked(connection: sqlite3.Connection, candidate: str) -> b
     solved until every assignment is materialized, regardless of when its
     own observation is dropped.
     """
-    row = connection.execute(
-        "SELECT 1 FROM res_token WHERE value = ?", (candidate,)
-    ).fetchone()
+    row = connection.execute("SELECT 1 FROM res_token WHERE value = ?", (candidate,)).fetchone()
     return row is not None
 
 
@@ -806,9 +786,7 @@ def _select_fungible_token(
     class_size = _class_size(base, length)
     connection = spool.internal_connection()
     for _ in range(_TEXT_PROBE_BUDGET):
-        candidate = token_at(
-            class_low + _randbelow(class_size), length, alphabet
-        )
+        candidate = token_at(class_low + _randbelow(class_size), length, alphabet)
         if candidate == value:
             continue
         if _token_occupied(vault, domain_id, candidate):
@@ -848,9 +826,7 @@ def _exact_fungible_walk(
     """
     class_low = token_space(length - 1, base)
     connection = spool.internal_connection()
-    connection.execute(
-        "CREATE TEMP TABLE IF NOT EXISTS blocked_index (idx INTEGER PRIMARY KEY)"
-    )
+    connection.execute("CREATE TEMP TABLE IF NOT EXISTS blocked_index (idx INTEGER PRIMARY KEY)")
     connection.execute("DELETE FROM blocked_index")
     for token in _occupied_tokens_of_length(vault, domain_id, length):
         connection.execute(
@@ -872,9 +848,7 @@ def _exact_fungible_walk(
     connection.commit()
 
     def sorted_indices() -> Iterator[int]:
-        index_cursor = connection.execute(
-            "SELECT idx FROM blocked_index ORDER BY idx"
-        )
+        index_cursor = connection.execute("SELECT idx FROM blocked_index ORDER BY idx")
         while True:
             index_rows = index_cursor.fetchmany(MAX_SQL_BATCH)
             if not index_rows:
@@ -882,9 +856,7 @@ def _exact_fungible_walk(
             for (index,) in index_rows:
                 yield int(index)
 
-    blocked_count = int(
-        connection.execute("SELECT COUNT(*) FROM blocked_index").fetchone()[0]
-    )
+    blocked_count = int(connection.execute("SELECT COUNT(*) FROM blocked_index").fetchone()[0])
     free_count = _class_size(base, length) - blocked_count
     previous = class_low - 1
     remaining = _randbelow(free_count)
@@ -907,12 +879,9 @@ def _supply_of_class(base: int, length: int) -> int:
     return size
 
 
-def _occupied_tokens_of_length(
-    vault: VaultDatabase, domain_id: str, length: int
-) -> Iterator[str]:
+def _occupied_tokens_of_length(vault: VaultDatabase, domain_id: str, length: int) -> Iterator[str]:
     cursor = vault._internal_connection().execute(
-        "SELECT pseudonym_value FROM text_mappings "
-        "WHERE domain_id = ? AND logical_byte_length = ?",
+        "SELECT pseudonym_value FROM text_mappings WHERE domain_id = ? AND logical_byte_length = ?",
         (domain_id, length),
     )
     while True:

@@ -81,14 +81,10 @@ def relation_metrics(
         not isinstance(flagged, bool) for flagged in foreign_mask
     ):
         raise TypeError("null mask entries must be genuine booleans")
-    primary_arities = {
-        len(key) for key, flagged in zip(primary_keys, primary_mask) if not flagged
-    }
+    primary_arities = {len(key) for key, flagged in zip(primary_keys, primary_mask) if not flagged}
     if len(primary_arities) > 1:
         raise ValueError("primary key arity must be uniform")
-    foreign_arities = {
-        len(key) for key, flagged in zip(foreign_keys, foreign_mask) if not flagged
-    }
+    foreign_arities = {len(key) for key, flagged in zip(foreign_keys, foreign_mask) if not flagged}
     if len(foreign_arities) > 1:
         raise ValueError("foreign key arity must be uniform")
     if primary_arities and foreign_arities and primary_arities != foreign_arities:
@@ -117,9 +113,7 @@ def relation_metrics(
         key_unique_count=counts.parent.unique_tuple_count,
         key_null_count=counts.parent.null_tuple_count,
         max_duplicate_multiplicity=(
-            counts.parent.multiplicity_profile[0]
-            if counts.parent.multiplicity_profile
-            else 0
+            counts.parent.multiplicity_profile[0] if counts.parent.multiplicity_profile else 0
         ),
         matched_row_count=counts.matched_row_count,
         orphan_count=counts.orphan_count,

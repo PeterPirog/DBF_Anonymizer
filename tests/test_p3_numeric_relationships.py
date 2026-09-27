@@ -66,7 +66,6 @@ from dbf_anonymizer.vault.mappings import (
 )
 from dbf_anonymizer.vault.numeric_allocation import (
     NumericKeyDomainMapping,
-    numeric_key_domain_id as domain_id_alias,
 )
 from dbf_anonymizer.vault.text_allocation import GLOBAL_TEXT_DOMAIN_ID
 from support.vault_sessions import writer_session
@@ -89,13 +88,7 @@ CANARY_RECOVERED = 555111
 
 
 def _detail(excinfo: pytest.ExceptionInfo[PolicyError]) -> str:
-    return (
-        str(excinfo.value)
-        + "|"
-        + repr(excinfo.value)
-        + "|"
-        + str(excinfo.value.to_dict())
-    )
+    return str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
 
 
 def _no_leak(excinfo: pytest.ExceptionInfo[BaseException]) -> None:
@@ -272,7 +265,9 @@ def test_numeric_member_encoding_must_be_the_explicit_bounded_token() -> None:
 
 def test_strategy_change_changes_the_fingerprint_and_order_irrelevance_keeps_it() -> None:
     identity = parse_relationship_document(_i_document(strategy=NUMERIC_STRATEGY_IDENTITY))
-    reversible = parse_relationship_document(_i_document(strategy=NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE))
+    reversible = parse_relationship_document(
+        _i_document(strategy=NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE)
+    )
     assert relationship_fingerprint(identity) != relationship_fingerprint(reversible)
     # Irrelevant JSON key/member-order changes keep the same fingerprint.
     reordered = json.loads(json.dumps(_i_document()))
@@ -291,8 +286,26 @@ def test_cv_behavior_is_unchanged_and_text_domain_still_global() -> None:
                 "provenance": "POLICY_FILE",
                 "comparison": "EXACT_VALUE",
                 "members": [
-                    {"table": "a.dbf", "field": "K", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                    {"table": "b.dbf", "field": "K", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                    {
+                        "table": "a.dbf",
+                        "field": "K",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "b.dbf",
+                        "field": "K",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -307,11 +320,15 @@ def test_cv_behavior_is_unchanged_and_text_domain_still_global() -> None:
 # ---------------------------------------------------------------------------
 def _write_i_relation_fixture(root: Path) -> Path:
     write_numeric_table(
-        root, "north/customers.dbf", (numeric_field("CUST_ID", "I", 4),),
+        root,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "I", 4),),
         [{"CUST_ID": -5}, {"CUST_ID": 0}, {"CUST_ID": 7}],
     )
     write_numeric_table(
-        root, "south/orders.dbf", (numeric_field("CUST_ID", "I", 4),),
+        root,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "I", 4),),
         [{"CUST_ID": 7}, {"CUST_ID": -5}],
     )
     return root
@@ -349,11 +366,15 @@ def test_declared_type_mismatch_fails_closed(tmp_path: Path) -> None:
 def test_declared_numeric_width_mismatch_fails_closed(tmp_path: Path) -> None:
     source = tmp_path / "src"
     write_numeric_table(
-        source, "north/customers.dbf", (numeric_field("CUST_ID", "N", 5),),
+        source,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "N", 5),),
         [{"CUST_ID": 1}],
     )
     write_numeric_table(
-        source, "south/orders.dbf", (numeric_field("CUST_ID", "N", 5),),
+        source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "N", 5),),
         [{"CUST_ID": 1}],
     )
     payload = _i_document()
@@ -379,7 +400,9 @@ def test_non_integral_numeric_domain_fails_closed(tmp_path: Path) -> None:
         [{"CUST_ID": 12}],
     )
     write_numeric_table(
-        source, "south/orders.dbf", (numeric_field("CUST_ID", "N", 8, decimal_count=2),),
+        source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "N", 8, decimal_count=2),),
         [{"CUST_ID": 12}],
     )
     payload = _i_document()
@@ -407,7 +430,9 @@ def test_autoincrement_numeric_key_fails_closed(tmp_path: Path) -> None:
         [{"CUST_ID": 1}],
     )
     write_numeric_table(
-        source, "south/orders.dbf", (numeric_field("CUST_ID", "I", 4),),
+        source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "I", 4),),
         [{"CUST_ID": 1}],
     )
     with pytest.raises(PolicyError) as excinfo:
@@ -432,7 +457,9 @@ def test_identity_strategy_autoincrement_member_remains_identity_and_marked(
         [{"CUST_ID": 1}],
     )
     write_numeric_table(
-        source, "south/orders.dbf", (numeric_field("CUST_ID", "I", 4),),
+        source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "I", 4),),
         [{"CUST_ID": 1}],
     )
     plan = build_plan(
@@ -441,9 +468,7 @@ def test_identity_strategy_autoincrement_member_remains_identity_and_marked(
         tmp_path / "vault" / VAULT_DATABASE_FILENAME,
         relationship_document=_i_document(strategy=NUMERIC_STRATEGY_IDENTITY),
     )
-    marked = {
-        (e.table_path, e.field_name): e.status for e in plan.numeric_identity_review
-    }
+    marked = {(e.table_path, e.field_name): e.status for e in plan.numeric_identity_review}
     assert marked[("north/customers.dbf", "CUST_ID")] == "IDENTITY_PRIVACY_REVIEW_REQUIRED"
 
 
@@ -585,7 +610,9 @@ def _n_domain():
 def test_integer_domain_round_trip_and_bijection(tmp_path: Path) -> None:
     """I round-trip: bijection, self-exclusion, reversibility, boundaries."""
     domain = _i_domain()
-    domain_id = numeric_key_domain_id(relationship_fingerprint(parse_relationship_document(_i_document())), "rel-numeric-key")
+    domain_id = numeric_key_domain_id(
+        relationship_fingerprint(parse_relationship_document(_i_document())), "rel-numeric-key"
+    )
     originals = [-2147483647, -5, 0, 7, 2147483646, -2147483646]
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -616,9 +643,7 @@ def test_integer_extreme_original_fails_closed_before_publication(tmp_path: Path
     domain = _i_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "9" * 16, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "9" * 16, domain=domain)
             with pytest.raises(MappingError) as low:
                 service.observe_original(-(2**31), member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(low.value.to_dict())
@@ -636,9 +661,7 @@ def test_integral_numeric_domain_round_trip_with_widths(tmp_path: Path) -> None:
     domain = numeric_key_domain_for([integral_numeric_member(5)])
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "c" * 16, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "c" * 16, domain=domain)
             for value in (-9999, -1, 0, 7, 99999):
                 service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
@@ -659,9 +682,7 @@ def test_mixed_i_n_composite_members_share_one_domain(tmp_path: Path) -> None:
     assert domain.pseudonym_range == (-9999, 99999)
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "d" * 16, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "d" * 16, domain=domain)
             service.observe_original(2147483646, member=integer_member())
             service.observe_original(-9999, member=integral_numeric_member(5))
             service.finalize()
@@ -733,9 +754,7 @@ def test_fresh_vault_mappings_are_independent(tmp_path: Path) -> None:
         vault_dir = tmp_path / f"vault{index}"
         with _open_vault(vault_dir) as vault:
             with writer_session(vault):
-                service = NumericKeyDomainMapping(
-                    vault, domain_id="dom-" + "f" * 16, domain=domain
-                )
+                service = NumericKeyDomainMapping(vault, domain_id="dom-" + "f" * 16, domain=domain)
                 for value in originals:
                     service.observe_original(value, member=integral_numeric_member(5))
                 service.finalize()
@@ -799,16 +818,19 @@ def test_wrong_domain_kind_fails_closed(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # STEP 12 — corruption hardening of numeric mapping storage
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("corrupt_sql", [
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', 5.5, '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', x'0506', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '007', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '+7', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '-0', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', ' 7', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', 'NaN', '6')",
-    "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '5', 'Infinity')",
-])
+@pytest.mark.parametrize(
+    "corrupt_sql",
+    [
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', 5.5, '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', x'0506', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '007', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '+7', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '-0', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', ' 7', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', 'NaN', '6')",
+        "INSERT INTO numeric_key_mappings (domain_id, original_value, pseudonym_value) VALUES ('{dom}', '5', 'Infinity')",
+    ],
+)
 def test_hostile_numeric_rows_fail_closed(tmp_path: Path, corrupt_sql: str) -> None:
     """Hostile numeric mapping storage fails closed (REQ-P3-005 hardening).
 
@@ -829,9 +851,7 @@ def test_hostile_numeric_rows_fail_closed(tmp_path: Path, corrupt_sql: str) -> N
                 create_domain(
                     vault, domain_kind=VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY, domain_id=domain_id
                 )
-                vault._internal_connection().execute(
-                    corrupt_sql.format(dom=domain_id)
-                )
+                vault._internal_connection().execute(corrupt_sql.format(dom=domain_id))
             from dbf_anonymizer.vault.mappings import numeric_mapping_rows
 
             with pytest.raises(VaultError) as excinfo:
@@ -857,7 +877,6 @@ def test_integer_hostile_insert_is_normalized_to_canonical_text(
     that REMAINS non-text or non-canonical is refused (see the parametrized
     corrupt-state evidence above).
     """
-    domain = _n_domain()
     domain_id = "dom-" + "8" * 16
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -870,11 +889,15 @@ def test_integer_hostile_insert_is_normalized_to_canonical_text(
                     "pseudonym_value) VALUES (?, 5, '6')",
                     (domain_id,),
                 )
-            row = vault._internal_connection().execute(
-                "SELECT typeof(original_value), typeof(pseudonym_value) "
-                "FROM numeric_key_mappings WHERE domain_id = ?",
-                (domain_id,),
-            ).fetchone()
+            row = (
+                vault._internal_connection()
+                .execute(
+                    "SELECT typeof(original_value), typeof(pseudonym_value) "
+                    "FROM numeric_key_mappings WHERE domain_id = ?",
+                    (domain_id,),
+                )
+                .fetchone()
+            )
             assert row == ("text", "text")
             from dbf_anonymizer.vault.mappings import numeric_mapping_rows
 
@@ -897,7 +920,6 @@ def test_non_canonical_numeric_write_is_refused(tmp_path: Path) -> None:
 
 
 def test_reverse_lookup_matches_the_text_recovery_path_shape(tmp_path: Path) -> None:
-    domain = _n_domain()
     domain_id = "dom-" + "6" * 16
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -916,11 +938,14 @@ def test_reverse_lookup_matches_the_text_recovery_path_shape(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 def _write_i_fixture(tmp_path: Path) -> tuple[Path, Path]:
     pk_path = write_numeric_table(
-        tmp_path, "north/customers.dbf", (numeric_field("CUST_ID", "I", 4),),
+        tmp_path,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "I", 4),),
         [{"CUST_ID": -5}, {"CUST_ID": 0}, {"CUST_ID": 7}, {"CUST_ID": 2147483646}],
     )
     fk_path = write_numeric_table(
-        tmp_path, "south/orders.dbf",
+        tmp_path,
+        "south/orders.dbf",
         (numeric_field("CUST_ID", "I", 4), numeric_field("AMOUNT", "N", 8)),
         [
             {"CUST_ID": 7, "AMOUNT": 100},
@@ -953,8 +978,7 @@ def test_fixture_a_integer_relation_before_after_metrics_and_round_trip(
                 service.observe_original(value, member=integer_member())
             service.finalize()
             shifted = {
-                value: service.pseudonym_for(value)
-                for value in sorted(set(pk_values + fk_values))
+                value: service.pseudonym_for(value) for value in sorted(set(pk_values + fk_values))
             }
             pk_after = [shifted[v] for v in pk_values]
             fk_after = [shifted[v] for v in fk_values]
@@ -986,11 +1010,15 @@ def test_fixture_b_integral_numeric_relation_with_differing_widths(
     assert domain.pseudonym_range == (-9999, 99999)
     domain_id = resolved_numeric_domain(document, document.groups[0])
     pk_path = write_numeric_table(
-        tmp_path, "north/customers.dbf", (numeric_field("CUST_ID", "N", 8),),
+        tmp_path,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "N", 8),),
         [{"CUST_ID": -9999999}, {"CUST_ID": 0}, {"CUST_ID": 7}, {"CUST_ID": 99999999}],
     )
     fk_path = write_numeric_table(
-        tmp_path, "south/orders.dbf", (numeric_field("CUST_ID", "N", 5),),
+        tmp_path,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "N", 5),),
         [{"CUST_ID": 7}, {"CUST_ID": 7}, {"CUST_ID": 0}, {"CUST_ID": -9999}, {"CUST_ID": 12345}],
     )
     pk_values = [record.values["CUST_ID"] for record in read_numeric_records(pk_path)]
@@ -1008,8 +1036,7 @@ def test_fixture_b_integral_numeric_relation_with_differing_widths(
                 service.observe_original(value, member=integral_numeric_member(5))
             service.finalize()
             shifted = {
-                value: service.pseudonym_for(value)
-                for value in sorted(set(pk_values + fk_values))
+                value: service.pseudonym_for(value) for value in sorted(set(pk_values + fk_values))
             }
             pk_after = [shifted[v] for v in pk_values]
             fk_after = [shifted[v] for v in fk_values]
@@ -1050,10 +1077,46 @@ def test_fixture_c_composite_numeric_relation_ordered_tuples(tmp_path: Path) -> 
                 "comparison": "EXACT_VALUE",
                 "numeric_strategy": NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
                 "members": [
-                    {"table": "p/devices.dbf", "field": "SITE", "role": "PRIMARY", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "p/devices.dbf", "field": "DEVICE", "role": "PRIMARY", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": False},
-                    {"table": "c/jobs.dbf", "field": "SITE", "role": "FOREIGN", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "c/jobs.dbf", "field": "DEVICE", "role": "FOREIGN", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": False},
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "SITE",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "DEVICE",
+                        "role": "PRIMARY",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "SITE",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "DEVICE",
+                        "role": "FOREIGN",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -1062,7 +1125,8 @@ def test_fixture_c_composite_numeric_relation_ordered_tuples(tmp_path: Path) -> 
     validate_document_compatibility(document)
     domain_id = resolved_numeric_domain(document, document.groups[0])
     pk_path = write_numeric_table(
-        tmp_path, "p/devices.dbf",
+        tmp_path,
+        "p/devices.dbf",
         (numeric_field("SITE", "I", 4), numeric_field("DEVICE", "N", 5)),
         [
             {"SITE": 1, "DEVICE": 101},
@@ -1071,7 +1135,8 @@ def test_fixture_c_composite_numeric_relation_ordered_tuples(tmp_path: Path) -> 
         ],
     )
     fk_path = write_numeric_table(
-        tmp_path, "c/jobs.dbf",
+        tmp_path,
+        "c/jobs.dbf",
         (numeric_field("SITE", "I", 4), numeric_field("DEVICE", "N", 5)),
         [
             {"SITE": 1, "DEVICE": 101},
@@ -1099,7 +1164,8 @@ def test_fixture_c_composite_numeric_relation_ordered_tuples(tmp_path: Path) -> 
             after = relation_metrics(pk_after, fk_after)
             # Ordered tuple semantics survive: (A,B) != (B,A) after the shift.
             assert pk_after[0] != (pk_after[0][1], pk_after[0][0]) or pk_tuples[0] == (
-                pk_tuples[0][1], pk_tuples[0][0]
+                pk_tuples[0][1],
+                pk_tuples[0][0],
             )
     assert before.to_dict() == after.to_dict()
     assert before.orphan_count == after.orphan_count == 1
@@ -1197,15 +1263,14 @@ def test_mapping_enumeration_stays_internal(tmp_path: Path) -> None:
     domain = _n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "7" * 16, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "7" * 16, domain=domain)
             service.observe_original(CANARY_N, member=integral_numeric_member(5))
             service.finalize()
             pseudonym = service.pseudonym_for(CANARY_N)
             rows = service.mapping_rows()
             assert rows == ((CANARY_N, pseudonym),)
             assert canonical_integer_text(CANARY_N) == str(CANARY_N)
+
 
 # ---------------------------------------------------------------------------
 # BLOCKER 1 — self-exclusion on EVERY allocation path (probe and exact
@@ -1226,9 +1291,9 @@ def test_adversarial_rng_self_collision_never_self_maps(tmp_path: Path) -> None:
     del domain
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyMemberRange, NumericKeyDomain
 
-    exact_domain = NumericKeyDomain(pseudonym_low=5, pseudonym_high=6, members=(
-        NumericKeyMemberRange(5, 6, 5, 6),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=5, pseudonym_high=6, members=(NumericKeyMemberRange(5, 6, 5, 6),)
+    )
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             service = NumericKeyDomainMapping(
@@ -1263,9 +1328,9 @@ def test_forced_exact_completion_never_self_maps(
     monkeypatch.setattr(numeric_allocation, "NUMERIC_KEY_PROBE_BUDGET", 0)
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=5, pseudonym_high=6, members=(
-        NumericKeyMemberRange(5, 6, 5, 6),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=5, pseudonym_high=6, members=(NumericKeyMemberRange(5, 6, 5, 6),)
+    )
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             service = NumericKeyDomainMapping(
@@ -1293,9 +1358,9 @@ def test_original_already_occupied_is_never_unblocked(
     monkeypatch.setattr(numeric_allocation, "NUMERIC_KEY_PROBE_BUDGET", 0)
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=5, pseudonym_high=7, members=(
-        NumericKeyMemberRange(5, 7, 5, 7),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=5, pseudonym_high=7, members=(NumericKeyMemberRange(5, 7, 5, 7),)
+    )
     domain_id = "dom-" + "b" * 16
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -1340,9 +1405,9 @@ def test_three_token_greedy_trap_completes_as_derangement(tmp_path: Path) -> Non
     """
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=3, members=(
-        NumericKeyMemberRange(1, 3, 1, 3),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=3, members=(NumericKeyMemberRange(1, 3, 1, 3),)
+    )
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             service = NumericKeyDomainMapping(
@@ -1368,9 +1433,9 @@ def test_two_token_swap_always_completes(tmp_path: Path) -> None:
     """Domain {1,2} with originals {1,2} always completes as 1->2, 2->1."""
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=2, members=(
-        NumericKeyMemberRange(1, 2, 1, 2),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=2, members=(NumericKeyMemberRange(1, 2, 1, 2),)
+    )
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             service = NumericKeyDomainMapping(
@@ -1392,9 +1457,9 @@ def test_persisted_fixed_assignment_preserves_residual_feasibility(
     """C. Persisted fixed assignments are part of the residual problem."""
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=3, members=(
-        NumericKeyMemberRange(1, 3, 1, 3),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=3, members=(NumericKeyMemberRange(1, 3, 1, 3),)
+    )
     domain_id = "dom-" + "d" * 16
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -1426,9 +1491,9 @@ def test_infeasible_persisted_residual_fails_closed_at_finalize(
     fail closed at finalize (before ANY commitment)."""
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=3, members=(
-        NumericKeyMemberRange(1, 3, 1, 3),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=3, members=(NumericKeyMemberRange(1, 3, 1, 3),)
+    )
     domain_id = "dom-" + "e" * 16
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
@@ -1438,9 +1503,7 @@ def test_infeasible_persisted_residual_fails_closed_at_finalize(
                 )
                 add_numeric_key_mapping(vault, domain_id, "1", "2")
                 add_numeric_key_mapping(vault, domain_id, "2", "1")
-            service = NumericKeyDomainMapping(
-                vault, domain_id=domain_id, domain=exact_domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id=domain_id, domain=exact_domain)
             service.observe_original(1, member=exact_domain.members[0])
             service.observe_original(2, member=exact_domain.members[0])
             service.observe_original(3, member=exact_domain.members[0])
@@ -1457,9 +1520,9 @@ def test_genuinely_infeasible_candidate_is_never_committed(tmp_path: Path) -> No
     residual problem (the old greedy trap), then completes feasibly."""
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyDomain, NumericKeyMemberRange
 
-    exact_domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=3, members=(
-        NumericKeyMemberRange(1, 3, 1, 3),
-    ))
+    exact_domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=3, members=(NumericKeyMemberRange(1, 3, 1, 3),)
+    )
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
             queue = [0, 0, 0, 1, 0, 0]
@@ -1510,9 +1573,7 @@ def test_reversible_i_only_plan_requires_recovery_and_vault(tmp_path: Path) -> N
     assert plan.policy.vault_strategy.value == "SINGLE_DATASET_SQLITE"
     # The declared reversible numeric members are truthfully transformed.
     assert plan.policy.transformation_classes == ("PSEUDONYMIZE_REVERSIBLE",)
-    transformed = {
-        table.table_path: table.transform_field_count for table in plan.tables
-    }
+    transformed = {table.table_path: table.transform_field_count for table in plan.tables}
     assert transformed == {"north/customers.dbf": 1, "south/orders.dbf": 1}
     assert plan.policy.transformed_field_count == 2
 
@@ -1522,11 +1583,15 @@ def test_reversible_n_only_plan_requires_recovery_and_vault(tmp_path: Path) -> N
     recovery too."""
     source = tmp_path / "src"
     write_numeric_table(
-        source, "north/customers.dbf", (numeric_field("CUST_ID", "N", 8),),
+        source,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "N", 8),),
         [{"CUST_ID": 1}],
     )
     write_numeric_table(
-        source, "south/orders.dbf", (numeric_field("CUST_ID", "N", 5),),
+        source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "N", 5),),
         [{"CUST_ID": 1}],
     )
     plan = build_plan(
@@ -1624,16 +1689,10 @@ def test_integer_extreme_direct_write_public_boundary_probe(tmp_path: Path) -> N
             assert error.code == ErrorCode.WRITE_PUBLICATION_FAILED  # type: ignore[attr-defined]
             outcome = f"REFUSED:{type(error).__name__}:{error.code.value}"  # type: ignore[attr-defined]
         outcomes[value] = outcome
-    assert (
-        outcomes[-(2**31)]
-        == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
-    )
+    assert outcomes[-(2**31)] == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
     assert outcomes[-(2**31) + 1] == "WRITABLE"
     assert outcomes[2**31 - 2] == "WRITABLE"
-    assert (
-        outcomes[2**31 - 1]
-        == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
-    )
+    assert outcomes[2**31 - 1] == "REFUSED:WritePublicationFailedError:WRITE_PUBLICATION_FAILED"
     # Every WRITABLE point round-trips exactly through the public boundary.
     for value in (-(2**31) + 1, 2**31 - 2):
         target = tmp_path / f"probe_{value}.dbf"
@@ -1828,8 +1887,26 @@ def test_numeric_capacity_insufficient_detected_before_any_creation(
                 "comparison": "EXACT_VALUE",
                 "numeric_strategy": NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
                 "members": [
-                    {"table": "north/customers.dbf", "field": "CUST_ID", "role": "PRIMARY", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "south/orders.dbf", "field": "CUST_ID", "role": "FOREIGN", "ordinal": 1, "dbf_type": "N", "byte_width": 1, "encoding": "none", "nullable": False},
+                    {
+                        "table": "north/customers.dbf",
+                        "field": "CUST_ID",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "south/orders.dbf",
+                        "field": "CUST_ID",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "N",
+                        "byte_width": 1,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -1877,8 +1954,26 @@ def test_numeric_capacity_scan_includes_deleted_records(tmp_path: Path) -> None:
                 "comparison": "EXACT_VALUE",
                 "numeric_strategy": NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
                 "members": [
-                    {"table": "north/customers.dbf", "field": "CUST_ID", "role": "PRIMARY", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "south/orders.dbf", "field": "CUST_ID", "role": "FOREIGN", "ordinal": 1, "dbf_type": "N", "byte_width": 1, "encoding": "none", "nullable": False},
+                    {
+                        "table": "north/customers.dbf",
+                        "field": "CUST_ID",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "south/orders.dbf",
+                        "field": "CUST_ID",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "N",
+                        "byte_width": 1,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -1933,11 +2028,15 @@ def test_numeric_capacity_feasible_cases_remain_green(tmp_path: Path) -> None:
 
     n_source = tmp_path / "src_n"
     write_numeric_table(
-        n_source, "north/customers.dbf", (numeric_field("CUST_ID", "N", 8),),
+        n_source,
+        "north/customers.dbf",
+        (numeric_field("CUST_ID", "N", 8),),
         [{"CUST_ID": -9999999}, {"CUST_ID": 0}, {"CUST_ID": 99999999}],
     )
     write_numeric_table(
-        n_source, "south/orders.dbf", (numeric_field("CUST_ID", "N", 5),),
+        n_source,
+        "south/orders.dbf",
+        (numeric_field("CUST_ID", "N", 5),),
         [{"CUST_ID": 7}, {"CUST_ID": -9999}],
     )
     plan = build_plan(
@@ -1957,10 +2056,46 @@ def test_numeric_capacity_feasible_cases_remain_green(tmp_path: Path) -> None:
                 "comparison": "EXACT_VALUE",
                 "numeric_strategy": NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
                 "members": [
-                    {"table": "p/devices.dbf", "field": "SITE", "role": "PRIMARY", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": True},
-                    {"table": "p/devices.dbf", "field": "DEVICE", "role": "PRIMARY", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": True},
-                    {"table": "c/jobs.dbf", "field": "SITE", "role": "FOREIGN", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": True},
-                    {"table": "c/jobs.dbf", "field": "DEVICE", "role": "FOREIGN", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": True},
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "SITE",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": True,
+                    },
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "DEVICE",
+                        "role": "PRIMARY",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": True,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "SITE",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": True,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "DEVICE",
+                        "role": "FOREIGN",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": True,
+                    },
                 ],
             }
         ],
@@ -2054,9 +2189,7 @@ def test_numeric_capacity_progress_and_cancellation_remain_bounded(
     # first, because a random hex can COINCIDENTALLY contain a canary-looking
     # digit run (e.g. "op-5..." contains "-5") without any value ever
     # leaking — a false positive, not a privacy failure.
-    operation_ids = {
-        str(json.loads(payload)["operation_id"]) for payload in payloads
-    }
+    operation_ids = {str(json.loads(payload)["operation_id"]) for payload in payloads}
     boundary = joined
     for operation_id in operation_ids:
         boundary = boundary.replace(operation_id, "")
@@ -2099,8 +2232,10 @@ def test_unwritable_integer_original_is_caught_in_preflight(
     def extreme_iter_records(path: object, **kwargs: object) -> object:
         rel = Path(str(path)).as_posix().replace("\\", "/")
         if rel.endswith("north/customers.dbf"):
+
             def stream():
                 yield DirectRecord(physical_index=0, deleted=False, values={"CUST_ID": 2**31 - 1})
+
             return stream()
         return real_iter_records(path, **kwargs)
 
@@ -2141,9 +2276,7 @@ def test_i_high_extreme_refused_in_mixed_i_n_domain(tmp_path: Path) -> None:
     domain = _mixed_i_n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a1" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a1" * 8, domain=domain)
             with pytest.raises(MappingError) as excinfo:
                 service.observe_original(2147483647, member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
@@ -2157,9 +2290,7 @@ def test_i_low_extreme_refused_in_mixed_i_n_domain(tmp_path: Path) -> None:
     domain = _mixed_i_n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a2" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a2" * 8, domain=domain)
             with pytest.raises(MappingError) as excinfo:
                 service.observe_original(-(2**31), member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
@@ -2177,9 +2308,7 @@ def test_n_origin_high_value_is_reversible_in_mixed_domain(tmp_path: Path) -> No
     assert domain.pseudonym_range == (-999999999, 2147483646)
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a3" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a3" * 8, domain=domain)
             service.observe_original(2147483647, member=integral_numeric_member(10))
             service.finalize()
             pseudonym = service.pseudonym_for(2147483647)
@@ -2196,9 +2325,7 @@ def test_n_first_then_i_occurrence_still_fails(tmp_path: Path) -> None:
     domain = _mixed_i_n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a4" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a4" * 8, domain=domain)
             service.observe_original(2147483647, member=integral_numeric_member(10))
             with pytest.raises(MappingError) as excinfo:
                 service.observe_original(2147483647, member=integer_member())
@@ -2212,9 +2339,7 @@ def test_i_first_then_n_cannot_retroactively_validate(tmp_path: Path) -> None:
     domain = _mixed_i_n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a5" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a5" * 8, domain=domain)
             with pytest.raises(MappingError) as excinfo:
                 service.observe_original(2147483647, member=integer_member())
             assert "NUMERIC_KEY_RECOVERY_UNWRITABLE" in str(excinfo.value.to_dict())
@@ -2236,9 +2361,7 @@ def test_ordinary_shared_value_maps_to_one_shared_pseudonym(
     domain = numeric_key_domain_for([integer_member(), integral_numeric_member(5)])
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a6" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a6" * 8, domain=domain)
             service.observe_original(42, member=integer_member())
             service.observe_original(42, member=integral_numeric_member(5))
             service.finalize()
@@ -2257,14 +2380,10 @@ def test_narrow_n_width_is_not_rescued_by_a_wider_n_member(
     """G. An occurrence must satisfy its ACTUAL originating N width: a wider
     N(10) member in the same relation can never make an out-of-range N(5)
     occurrence valid."""
-    domain = numeric_key_domain_for(
-        [integral_numeric_member(5), integral_numeric_member(10)]
-    )
+    domain = numeric_key_domain_for([integral_numeric_member(5), integral_numeric_member(10)])
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a7" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a7" * 8, domain=domain)
             # 100000 does not fit N(5,0) (99999 is the boundary) even though
             # the relation also contains N(10,0).
             with pytest.raises(ValueError):
@@ -2280,9 +2399,7 @@ def test_origin_refusal_carries_no_source_value(tmp_path: Path) -> None:
     domain = _mixed_i_n_domain()
     with _open_vault(tmp_path) as vault:
         with writer_session(vault):
-            service = NumericKeyDomainMapping(
-                vault, domain_id="dom-" + "a8" * 8, domain=domain
-            )
+            service = NumericKeyDomainMapping(vault, domain_id="dom-" + "a8" * 8, domain=domain)
             with pytest.raises(MappingError) as excinfo:
                 service.observe_original(2147483647, member=integer_member())
             boundary = (

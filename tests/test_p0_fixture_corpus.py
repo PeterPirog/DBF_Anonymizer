@@ -225,7 +225,7 @@ def test_committed_vfp_evidence_is_sanitized() -> None:
     prg_text = (VFP_FIXTURE_ROOT / "generate_vfp_fixtures.prg").read_text(encoding="utf-8")
     provenance_text = (VFP_FIXTURE_ROOT / "PROVENANCE_VFP.md").read_text(encoding="utf-8")
     for text in (evidence_text, log_text, prg_text, provenance_text):
-        assert not re.search(r"[A-Za-z]:[\\/]", text_of := text), "absolute path leaked"
+        assert not re.search(r"[A-Za-z]:[\\/]", text), "absolute path leaked"
         for token in ("Project_dbfanonymizer", "_p0_vfp_fixture_staging", "peter", "AppData"):
             assert token not in text, token
     assert "Visual FoxPro 09.00.0000.5815 for Windows" in evidence_text
@@ -261,16 +261,18 @@ def test_vfp_evidence_metadata_is_consistent() -> None:
     assert evidence["generation"]["log_file"] == "vfp_gen_log.txt"
     inspection = evidence["dbfbridge_1_1_0_inspection"]
     assert inspection["import_namespace"] == "dbfbridge"
-    assert "no production or test code of DBF_Anonymizer imports dbf_bridge" in (
-        inspection["import_namespace_note"]
+    assert (
+        "no production or test code of DBF_Anonymizer imports dbf_bridge"
+        in (inspection["import_namespace_note"])
     )
     module_object = inspection.get("module_object_name")
     if module_object is not None:
         # The pinned distribution also installs the historical compatibility
         # facade; that module OBJECT name is descriptive evidence only.
         assert module_object != inspection["import_namespace"]
-        assert "must not be interpreted as the allowed import namespace" in (
-            inspection["module_object_note"]
+        assert (
+            "must not be interpreted as the allowed import namespace"
+            in (inspection["module_object_note"])
         )
 
 
@@ -314,7 +316,9 @@ def test_gitignore_allowlist_is_narrow() -> None:
             not_ignored = subprocess.run(
                 ["git", "check-ignore", "-q", committed], cwd=REPO_ROOT, check=False
             ).returncode
-            assert not_ignored != 0, f"committed synthetic artifact must not be ignored: {committed}"
+            assert not_ignored != 0, (
+                f"committed synthetic artifact must not be ignored: {committed}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +453,9 @@ def test_duplicate_basenames_and_shared_keys() -> None:
     assert north_path.name == south_path.name == "registry.dbf"
     assert north_path.parent != south_path.parent
     north_keys = [r.values["KEY"] for r in iter_records(north_path) if not r.deleted]
-    south_rows = [(r.values["KEY"], r.deleted) for r in iter_records(south_path, include_deleted=True)]
+    south_rows = [
+        (r.values["KEY"], r.deleted) for r in iter_records(south_path, include_deleted=True)
+    ]
     active_south_keys = [key for key, deleted in south_rows if not deleted]
     assert sorted(set(north_keys)) == ["KEY0001", "KEY0002", "KEY0003", "KEY0004"]
     assert active_south_keys.count("KEY0002") == 2  # duplicate FK multiplicity
@@ -519,30 +525,58 @@ def test_missing_memo_companion_behavior() -> None:
         list(iter_records(path, memo="inline"))
     assert excinfo.value.code == ErrorCode.FPT_REQUIRED_MISSING
     lazy_records = list(iter_records(path))  # default memo='lazy' never fails
-    assert all(
-        type(record.values["TXT"]).__name__ == "LazyMemoValue" for record in lazy_records
-    )
+    assert all(type(record.values["TXT"]).__name__ == "LazyMemoValue" for record in lazy_records)
 
 
 def test_opaque_field_write_refusal() -> None:
     for dbf_type in ("Q", "W"):
-        fields = (dbfbridge.FieldInfo(
-            ordinal=0, name="OPAQUE", dbf_type=dbf_type, length=8, decimal_count=0,
-            address=0, flags=0, index_field_flag=0, autoincrement_next_value=0,
-            autoincrement_step=1, is_memo=False, is_binary=True, supported=True,
-            dbversion_byte=0x30,
-        ),)
+        fields = (
+            dbfbridge.FieldInfo(
+                ordinal=0,
+                name="OPAQUE",
+                dbf_type=dbf_type,
+                length=8,
+                decimal_count=0,
+                address=0,
+                flags=0,
+                index_field_flag=0,
+                autoincrement_next_value=0,
+                autoincrement_step=1,
+                is_memo=False,
+                is_binary=True,
+                supported=True,
+                dbversion_byte=0x30,
+            ),
+        )
         schema = dbfbridge.TableSchema(
-            path=Path("memory:negative"), record_count=0, header_length=65,
-            record_length=9, language_driver=0xC8, encoding="cp1250", has_memo=False,
-            has_memo_flag=False, has_structural_cdx=False, is_database_container=False,
-            dbc_bound=False, dbc_backlink_path=None, table_flags=0, fields=fields,
-            warnings=(), dbversion_byte=0x30, dbversion_name="Visual FoxPro",
-            last_update=None, incomplete_transaction=False, encryption_flag=False,
-            memo_companion_format=None, memo_companion_present=False,
-            memo_companion_path=None, memo_companion_size_bytes=None,
-            memo_block_size=None, memo_next_free_block=None,
-            companion_cdx_present=False, companion_cdx_path=None,
+            path=Path("memory:negative"),
+            record_count=0,
+            header_length=65,
+            record_length=9,
+            language_driver=0xC8,
+            encoding="cp1250",
+            has_memo=False,
+            has_memo_flag=False,
+            has_structural_cdx=False,
+            is_database_container=False,
+            dbc_bound=False,
+            dbc_backlink_path=None,
+            table_flags=0,
+            fields=fields,
+            warnings=(),
+            dbversion_byte=0x30,
+            dbversion_name="Visual FoxPro",
+            last_update=None,
+            incomplete_transaction=False,
+            encryption_flag=False,
+            memo_companion_format=None,
+            memo_companion_present=False,
+            memo_companion_path=None,
+            memo_companion_size_bytes=None,
+            memo_block_size=None,
+            memo_next_free_block=None,
+            companion_cdx_present=False,
+            companion_cdx_path=None,
         )
         with tempfile.TemporaryDirectory() as tmp:
             with pytest.raises(WriteFieldUnsupportedError):
@@ -563,26 +597,57 @@ def test_structural_cdx_capability_fact(tmp_path: object) -> None:
     """Truthful structural-CDX evidence: the flag is accepted but not persisted."""
     fields = (
         dbfbridge.FieldInfo(
-            ordinal=0, name="CODE", dbf_type="C", length=8, decimal_count=0, address=0,
-            flags=0, index_field_flag=0, autoincrement_next_value=0, autoincrement_step=1,
-            is_memo=False, is_binary=False, supported=True, dbversion_byte=0x30,
+            ordinal=0,
+            name="CODE",
+            dbf_type="C",
+            length=8,
+            decimal_count=0,
+            address=0,
+            flags=0,
+            index_field_flag=0,
+            autoincrement_next_value=0,
+            autoincrement_step=1,
+            is_memo=False,
+            is_binary=False,
+            supported=True,
+            dbversion_byte=0x30,
         ),
     )
     schema = dbfbridge.TableSchema(
-        path=Path("memory:cdx"), record_count=0, header_length=65, record_length=9,
-        language_driver=0xC8, encoding="cp1250", has_memo=False, has_memo_flag=False,
-        has_structural_cdx=True, is_database_container=False, dbc_bound=False,
-        dbc_backlink_path=None, table_flags=0, fields=fields, warnings=(),
-        dbversion_byte=0x30, dbversion_name="Visual FoxPro", last_update=None,
-        incomplete_transaction=False, encryption_flag=False,
-        memo_companion_format=None, memo_companion_present=False,
-        memo_companion_path=None, memo_companion_size_bytes=None,
-        memo_block_size=None, memo_next_free_block=None,
-        companion_cdx_present=False, companion_cdx_path=None,
+        path=Path("memory:cdx"),
+        record_count=0,
+        header_length=65,
+        record_length=9,
+        language_driver=0xC8,
+        encoding="cp1250",
+        has_memo=False,
+        has_memo_flag=False,
+        has_structural_cdx=True,
+        is_database_container=False,
+        dbc_bound=False,
+        dbc_backlink_path=None,
+        table_flags=0,
+        fields=fields,
+        warnings=(),
+        dbversion_byte=0x30,
+        dbversion_name="Visual FoxPro",
+        last_update=None,
+        incomplete_transaction=False,
+        encryption_flag=False,
+        memo_companion_format=None,
+        memo_companion_present=False,
+        memo_companion_path=None,
+        memo_companion_size_bytes=None,
+        memo_block_size=None,
+        memo_next_free_block=None,
+        companion_cdx_present=False,
+        companion_cdx_path=None,
     )
     destination = Path(str(tmp_path)) / "structural_cdx.dbf"
     result = dbfbridge.write_table(
-        destination, schema=schema, records=[dbfbridge.DirectRecord(0, False, {"CODE": "SYNTH"})],
+        destination,
+        schema=schema,
+        records=[dbfbridge.DirectRecord(0, False, {"CODE": "SYNTH"})],
         overwrite=True,
     )
     assert result.structural_cdx is True
@@ -727,9 +792,7 @@ def test_regeneration_is_byte_deterministic() -> None:
     with tempfile.TemporaryDirectory(prefix="p0-corpus-regen-") as tmp:
         regenerated_root = Path(tmp) / "p0"
         module.generate(regenerated_root)
-        regenerated = json.loads(
-            (regenerated_root / "manifest.json").read_text(encoding="utf-8")
-        )
+        regenerated = json.loads((regenerated_root / "manifest.json").read_text(encoding="utf-8"))
         assert regenerated == manifest, "regenerated corpus differs from the committed corpus"
         for entry in regenerated["fixtures"]:
             artifact = regenerated_root / entry["path"]

@@ -17,7 +17,6 @@ from dbf_anonymizer.relationships import (
     COMPARISON_UNSPECIFIED,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
     PROVENANCE_POLICY_FILE,
-    RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RelationGroup,
     RelationMember,
     canonical_relationship_bytes,
@@ -88,10 +87,46 @@ def test_valid_composite_relation_document_parses() -> None:
                 "comparison": "EXACT_VALUE",
                 "source_digest": "digest01",
                 "members": [
-                    {"table": "site/devices.dbf", "field": "site_code", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                    {"table": "site/devices.dbf", "field": "device_code", "role": "PRIMARY", "ordinal": 2, "dbf_type": "C", "byte_width": 6, "encoding": "cp1250", "nullable": False},
-                    {"table": "logs/jobs.dbf", "field": "parent_site_code", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 8, "encoding": "cp1250", "nullable": False},
-                    {"table": "logs/jobs.dbf", "field": "parent_device_code", "role": "FOREIGN", "ordinal": 2, "dbf_type": "V", "byte_width": 8, "encoding": "cp1250", "nullable": True},
+                    {
+                        "table": "site/devices.dbf",
+                        "field": "site_code",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "site/devices.dbf",
+                        "field": "device_code",
+                        "role": "PRIMARY",
+                        "ordinal": 2,
+                        "dbf_type": "C",
+                        "byte_width": 6,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "logs/jobs.dbf",
+                        "field": "parent_site_code",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 8,
+                        "encoding": "cp1250",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "logs/jobs.dbf",
+                        "field": "parent_device_code",
+                        "role": "FOREIGN",
+                        "ordinal": 2,
+                        "dbf_type": "V",
+                        "byte_width": 8,
+                        "encoding": "cp1250",
+                        "nullable": True,
+                    },
                 ],
             }
         ],
@@ -109,9 +144,7 @@ def test_valid_composite_relation_document_parses() -> None:
 def test_document_roundtrip_and_canonicalization_is_deterministic() -> None:
     document = parse_relationship_document(SINGLE_DOCUMENT)
     # JSON roundtrip with different key order and whitespace stays identical.
-    reloaded = parse_relationship_document(
-        json.loads(json.dumps(SINGLE_DOCUMENT, indent=3))
-    )
+    reloaded = parse_relationship_document(json.loads(json.dumps(SINGLE_DOCUMENT, indent=3)))
     assert canonical_relationship_bytes(document) == canonical_relationship_bytes(reloaded)
     # Member-list input order is irrelevant; (role, ordinal, identity) is not.
     reordered = {
@@ -146,9 +179,6 @@ def test_changed_semantic_metadata_changes_the_fingerprint() -> None:
     swapped["relations"][0]["members"][0]["table"] = "clients.dbf"
     assert relationship_fingerprint(parse_relationship_document(swapped)) != baseline
     # The (A,B) vs (B,A) composite distinction is preserved.
-    composite_a = parse_relationship_document(
-        json.loads(json.dumps(SINGLE_DOCUMENT))
-    )
     composite_b = json.loads(json.dumps(SINGLE_DOCUMENT))
     composite_b["relations"][0]["relation_id"] = "rel-swapped"
     assert relationship_fingerprint(parse_relationship_document(composite_b)) != baseline
@@ -286,10 +316,7 @@ def test_provenance_serialization_is_bounded() -> None:
     metadata_payload = json.dumps(metadata.to_dict())
     assert "C:\\" not in metadata_payload
     # The bounded source identifier (formerly "source_digest") is a
-    # NON-SECRET identifier — never a key value.
-    document_with_source = parse_relationship_document(
-        json.loads(json.dumps(SINGLE_DOCUMENT))
-    )
+    # NON-SECRET identifier - never a key value.
 
 
 def test_missing_required_document_keys_fail_closed() -> None:
@@ -308,7 +335,16 @@ def test_missing_required_document_keys_fail_closed() -> None:
         with pytest.raises(PolicyError) as excinfo:
             parse_relationship_document(payload)
         assert "RELATIONSHIP_GROUP_KEY_MISSING" in _detail(excinfo)
-    member_keys = ("table", "field", "role", "ordinal", "dbf_type", "byte_width", "encoding", "nullable")
+    member_keys = (
+        "table",
+        "field",
+        "role",
+        "ordinal",
+        "dbf_type",
+        "byte_width",
+        "encoding",
+        "nullable",
+    )
     for key in member_keys:
         payload = json.loads(json.dumps(base))
         del payload["relations"][0]["members"][0][key]
@@ -411,8 +447,7 @@ def test_document_order_is_canonicalized_by_relation_id() -> None:
     reversed_ordinal["relations"][0]["members"][0]["ordinal"] = 2
     reversed_ordinal["relations"][0]["members"][2]["ordinal"] = 1
     assert (
-        relationship_fingerprint(parse_relationship_document(reversed_ordinal))
-        != base_fingerprint
+        relationship_fingerprint(parse_relationship_document(reversed_ordinal)) != base_fingerprint
     )
     # PRIMARY-only, FOREIGN-only, CANDIDATE-only and ambiguous groups.
     # FOREIGN only -> refuse.

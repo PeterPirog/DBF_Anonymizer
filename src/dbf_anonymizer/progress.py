@@ -177,7 +177,7 @@ def _bounded_operation_id_valid(value: object) -> bool:
     if not isinstance(value, str):
         return False
     for prefix in _OPERATION_ID_PREFIXES:
-        digits = value[len(prefix):]
+        digits = value[len(prefix) :]
         if (
             value.startswith(prefix)
             and len(digits) == 32

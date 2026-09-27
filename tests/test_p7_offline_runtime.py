@@ -39,9 +39,7 @@ NETWORK_MODULES = frozenset(
         "xmlrpc.client",
     }
 )
-PACKAGE_INSTALL_MODULES = frozenset(
-    {"pip", "ensurepip", "setuptools", "pkg_resources", "venv"}
-)
+PACKAGE_INSTALL_MODULES = frozenset({"pip", "ensurepip", "setuptools", "pkg_resources", "venv"})
 PROCESS_MODULES = frozenset({"subprocess"})
 OPTIONAL_PROCESS_MODULES = frozenset({"index_backend.py"})
 FORBIDDEN_COMMANDS = frozenset({"pip", "git", "uv", "poetry", "conda"})
@@ -94,9 +92,7 @@ def _import_aliases(tree: ast.Module) -> dict[str, str]:
                 aliases[imported.asname or imported.name.split(".")[0]] = imported.name
         elif isinstance(node, ast.ImportFrom) and node.module:
             for imported in node.names:
-                aliases[imported.asname or imported.name] = (
-                    f"{node.module}.{imported.name}"
-                )
+                aliases[imported.asname or imported.name] = f"{node.module}.{imported.name}"
     return aliases
 
 
@@ -121,9 +117,7 @@ def _forbidden_process_commands(source: str) -> list[tuple[int, list[str]]]:
             continue
         target = _call_name(node.func, aliases)
         if target is None or not (
-            target in PROCESS_CALLS
-            or target.startswith("os.spawn")
-            or target.startswith("os.exec")
+            target in PROCESS_CALLS or target.startswith("os.spawn") or target.startswith("os.exec")
         ):
             continue
         strings = {
@@ -180,27 +174,26 @@ def test_production_has_no_git_or_package_manager_command_calls() -> None:
 
 
 def test_process_command_guard_is_precise() -> None:
-    assert _forbidden_process_commands(
-        "import subprocess as sp\nsp.run(['git', 'status'])\n"
-    ) == [(2, ["git"])]
+    assert _forbidden_process_commands("import subprocess as sp\nsp.run(['git', 'status'])\n") == [
+        (2, ["git"])
+    ]
     assert _forbidden_process_commands(
         "from subprocess import check_call as launch\n"
         "launch(['python', '-m', 'pip', 'install', 'x'])\n"
     ) == [(2, ["pip"])]
-    assert _forbidden_process_commands(
-        "import subprocess\nsubprocess.run(['vfp9.exe', '-t', 'job'])\n"
-    ) == []
-    assert _forbidden_process_commands(
-        "raise RuntimeError('git is unavailable')\n"
-    ) == []
+    assert (
+        _forbidden_process_commands(
+            "import subprocess\nsubprocess.run(['vfp9.exe', '-t', 'job'])\n"
+        )
+        == []
+    )
+    assert _forbidden_process_commands("raise RuntimeError('git is unavailable')\n") == []
 
 
 def test_cli_exposes_exact_target_command_set_in_parser_and_help() -> None:
     parser = _build_parser()
     subparser_actions = [
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     ]
     assert len(subparser_actions) == 1
     choices = cast(dict[str, argparse.ArgumentParser], subparser_actions[0].choices)

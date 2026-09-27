@@ -26,7 +26,6 @@ from dbf_anonymizer.transforms.numeric_keys import (
     integer_writable_pseudonym_range,
     integral_numeric_member,
     integral_numeric_range,
-    intersect_ranges,
     jth_free_token,
     numeric_key_domain_for,
     parse_canonical_integer_text,
@@ -73,7 +72,21 @@ def test_parse_canonical_integer_text_round_trip(text: str, expected: int) -> No
 
 @pytest.mark.parametrize(
     "invalid",
-    ["+5", "007", "-0", " 5", "5 ", "", "-00", "1.0", "1e3", "NaN", "Infinity", "-Infinity", "0x10"],
+    [
+        "+5",
+        "007",
+        "-0",
+        " 5",
+        "5 ",
+        "",
+        "-00",
+        "1.0",
+        "1e3",
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "0x10",
+    ],
 )
 def test_parse_canonical_integer_text_rejects_malformed_text(invalid: str) -> None:
     with pytest.raises(ValueError):
@@ -131,16 +144,12 @@ def test_integral_numeric_width_bounds_are_verified_contract() -> None:
 
 
 def test_numeric_domain_is_the_intersection_of_member_writable_ranges() -> None:
-    domain = numeric_key_domain_for(
-        [integer_member(), integral_numeric_member(5)]
-    )
+    domain = numeric_key_domain_for([integer_member(), integral_numeric_member(5)])
     assert domain.member_ranges == ((-(2**31) + 1, 2**31 - 2), (-9999, 99999))
     assert domain.pseudonym_range == (-9999, 99999)
     assert domain.member_original_ranges == ((-(2**31) + 1, 2**31 - 2), (-9999, 99999))
     # Differing compatible widths across tables: N(8) and N(5) intersect.
-    narrowed = numeric_key_domain_for(
-        [integral_numeric_member(8), integral_numeric_member(5)]
-    )
+    narrowed = numeric_key_domain_for([integral_numeric_member(8), integral_numeric_member(5)])
     assert narrowed.pseudonym_range == (-9999, 99999)
 
 
@@ -194,18 +203,18 @@ def test_single_self_token_with_self_exclusion_fails_closed() -> None:
     # A domain with exactly one token [5, 5] whose only original is 5: the
     # single available token is the original's own value and self-exclusion
     # leaves no alternative -> fail closed.
-    domain = NumericKeyDomain(pseudonym_low=5, pseudonym_high=5, members=(
-        NumericKeyMemberRange(5, 5, 5, 5),
-    ))
+    domain = NumericKeyDomain(
+        pseudonym_low=5, pseudonym_high=5, members=(NumericKeyMemberRange(5, 5, 5, 5),)
+    )
     assert plan_numeric_bijection(domain, [5], []) is False
 
 
 def test_two_token_domain_with_two_originals_is_feasible_through_the_swap() -> None:
     from dbf_anonymizer.transforms.numeric_keys import NumericKeyMemberRange
 
-    domain = NumericKeyDomain(pseudonym_low=1, pseudonym_high=2, members=(
-        NumericKeyMemberRange(1, 2, 1, 2),
-    ))
+    domain = NumericKeyDomain(
+        pseudonym_low=1, pseudonym_high=2, members=(NumericKeyMemberRange(1, 2, 1, 2),)
+    )
     assert plan_numeric_bijection(domain, [1, 2], []) is True
 
 

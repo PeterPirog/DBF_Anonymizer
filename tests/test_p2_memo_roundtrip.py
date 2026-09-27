@@ -106,9 +106,7 @@ def _vault(tmp_path: Path, *, create: bool) -> VaultDatabase:
     return VaultDatabase.open(tmp_path / "vault" / VAULT_DATABASE_FILENAME, **kwargs)
 
 
-def _write_source(
-    tmp_path: Path, stem: str
-) -> tuple[Path, list[DirectRecord]]:
+def _write_source(tmp_path: Path, stem: str) -> tuple[Path, list[DirectRecord]]:
     """Build the synthetic source table; returns (dbf_path, original values)."""
     dbf_path = tmp_path / "src" / "memo" / f"{stem}.dbf"
     dbf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,9 +131,7 @@ def _register(
     with writer_session(vault), vault.transaction():
         table_id = vault.register_table(relative_path)
         field_ids = {
-            name: vault.register_field(
-                table_id, name, dbf_type=_MEMO_TYPES[name], width=4
-            )
+            name: vault.register_field(table_id, name, dbf_type=_MEMO_TYPES[name], width=4)
             for name in names
         }
     return table_id, field_ids
@@ -169,9 +165,7 @@ def _masked_record(record: DirectRecord, masks: Mapping[str, object]) -> DirectR
     values = dict(record.values)
     for name, mask in masks.items():
         values[name] = mask
-    return DirectRecord(
-        physical_index=record.physical_index, deleted=record.deleted, values=values
-    )
+    return DirectRecord(physical_index=record.physical_index, deleted=record.deleted, values=values)
 
 
 def _masked_records(
@@ -317,9 +311,7 @@ def test_large_payload_bounded_memory_no_dataset_retention(tmp_path: Path) -> No
     """Large-payload bounded-memory acceptance evidence (deterministic)."""
     # A deterministic >8 MiB binary payload spanning the full byte spectrum.
     pattern = bytes(range(256))
-    payload = (pattern + b"SYNTH-LARGE-MEMO-BOUNDARY-") * (
-        8 * 1024 * 1024 // len(pattern) + 1
-    )
+    payload = (pattern + b"SYNTH-LARGE-MEMO-BOUNDARY-") * (8 * 1024 * 1024 // len(pattern) + 1)
     assert len(payload) > 8 * 1024 * 1024
 
     fields = (field("CODE", "C", 8), field("GEN", "G", 4))
@@ -329,9 +321,7 @@ def test_large_payload_bounded_memory_no_dataset_retention(tmp_path: Path) -> No
         source,
         schema=schema_of(fields),
         records=[
-            DirectRecord(
-                physical_index=0, deleted=False, values={"CODE": "L0", "GEN": b""}
-            ),
+            DirectRecord(physical_index=0, deleted=False, values={"CODE": "L0", "GEN": b""}),
         ],
     )
 

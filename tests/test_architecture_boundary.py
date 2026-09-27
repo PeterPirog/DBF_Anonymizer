@@ -88,7 +88,6 @@ def _import_targets(node: ast.Import | ast.ImportFrom) -> list[tuple[str, str]]:
     """
     if isinstance(node, ast.Import):
         return [(alias.name, alias.asname or alias.name) for alias in node.names]
-    module = node.module or ""
     targets = []
     for alias in node.names:
         name = alias.name if node.module else f"{(node.level or 0)}.{alias.name}"
@@ -226,7 +225,13 @@ def _open_modes(call: ast.Call) -> str:
 
 def _is_open_call(call: ast.Call) -> bool:
     func = call.func
-    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+    name = (
+        func.id
+        if isinstance(func, ast.Name)
+        else func.attr
+        if isinstance(func, ast.Attribute)
+        else ""
+    )
     return name == "open"
 
 
@@ -246,9 +251,7 @@ def _check_calls(tree: ast.Module, source: str) -> None:
     # surgery or the raw-record sentinel) turns a binary update open into
     # evidence of the historical raw DBF patch path.  Without that context a
     # binary update open on an unrelated artifact stays allowed.
-    module_has_dbf_context = bool(
-        DBF_ARTIFACT_RE.search(source) or RAW_RECORD_SENTINEL in source
-    )
+    module_has_dbf_context = bool(DBF_ARTIFACT_RE.search(source) or RAW_RECORD_SENTINEL in source)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not _is_open_call(node):
             continue
@@ -388,12 +391,8 @@ def test_guard_rejects_dbfbridge_private_submodule_imports() -> None:
 
 
 def test_guard_rejects_dbfbridge_private_symbol_imports() -> None:
-    _assert_forbidden(
-        "from dbfbridge import _LAZY_SYMBOLS\n", r"private dbfbridge internal"
-    )
-    _assert_forbidden(
-        "from dbfbridge import core\n", r"private dbfbridge internal imported"
-    )
+    _assert_forbidden("from dbfbridge import _LAZY_SYMBOLS\n", r"private dbfbridge internal")
+    _assert_forbidden("from dbfbridge import core\n", r"private dbfbridge internal imported")
 
 
 def test_guard_rejects_dbfbridge_private_submodule_references() -> None:
@@ -420,8 +419,7 @@ def test_guard_rejects_obsolete_export_reconstruct_pipeline() -> None:
         "from dbfbridge import export_dbf\n", r"obsolete 0\.3 JSONL pipeline operation"
     )
     _assert_forbidden(
-        "def convert(source, output):\n"
-        "    reconstruct_dbf(source, output)\n",
+        "def convert(source, output):\n    reconstruct_dbf(source, output)\n",
         r"obsolete 0\.3 JSONL pipeline operation",
     )
     _assert_forbidden(
@@ -473,9 +471,7 @@ def test_guard_rejects_binary_update_with_dbf_layout_surgery_context() -> None:
 
 
 def test_guard_rejects_raw_record_restoration_sentinel() -> None:
-    _assert_forbidden(
-        "RAW_KEY = '__dbfbridge_raw_record__'\n", r"raw-record restoration sentinel"
-    )
+    _assert_forbidden("RAW_KEY = '__dbfbridge_raw_record__'\n", r"raw-record restoration sentinel")
 
 
 def test_guard_rejects_struct_based_dbf_byte_surgery() -> None:
@@ -508,11 +504,7 @@ def test_guard_allows_unrelated_binary_update_io() -> None:
 
 def test_guard_allows_generic_struct_use() -> None:
     # struct without DBF artifact references in the same module is allowed.
-    _assert_allowed(
-        "import struct\n\n"
-        "def encode(value):\n"
-        "    return struct.pack('<i', value)\n"
-    )
+    _assert_allowed("import struct\n\ndef encode(value):\n    return struct.pack('<i', value)\n")
 
 
 def test_guard_allows_text_append_mode() -> None:
@@ -597,9 +589,18 @@ def _manual_dbf_writer_evidence(source: str) -> str | None:
             chain = _base_attribute_chain(node.func)
             if chain is not None:
                 base, attrs = chain
-                if base.id == "struct" and attrs and attrs[0] in {
-                    "pack", "pack_into", "unpack", "unpack_from",
-                } and has_dbf_context:
+                if (
+                    base.id == "struct"
+                    and attrs
+                    and attrs[0]
+                    in {
+                        "pack",
+                        "pack_into",
+                        "unpack",
+                        "unpack_from",
+                    }
+                    and has_dbf_context
+                ):
                     return "struct-based DBF/FPT byte surgery"
     return None
 
@@ -659,16 +660,20 @@ def test_writer_scanner_flags_raw_dbf_writer_snippets() -> None:
 
 def test_writer_scanner_allows_public_dbfbridge_writes() -> None:
     # Public dbfbridge writes and unrelated binary I/O stay allowed.
-    assert _manual_dbf_writer_evidence(
-        "import dbfbridge\n\n"
-        "def make_table(path):\n"
-        "    dbfbridge.write_table(path / 'table.dbf', schema=schema, records=[])\n"
-    ) is None
-    assert _manual_dbf_writer_evidence(
-        "import struct\n\n"
-        "def encode(value):\n"
-        "    return struct.pack('<i', value)\n"
-    ) is None
+    assert (
+        _manual_dbf_writer_evidence(
+            "import dbfbridge\n\n"
+            "def make_table(path):\n"
+            "    dbfbridge.write_table(path / 'table.dbf', schema=schema, records=[])\n"
+        )
+        is None
+    )
+    assert (
+        _manual_dbf_writer_evidence(
+            "import struct\n\ndef encode(value):\n    return struct.pack('<i', value)\n"
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -761,9 +766,7 @@ def test_no_mcp_or_server_framework_imports_in_the_python_api() -> None:
         roots = _top_level_import_roots(path.read_text(encoding="utf-8"))
         offending_roots = sorted(roots & MCP_SERVER_IMPORT_ROOTS)
         if offending_roots:
-            offending.append(
-                f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
-            )
+            offending.append(f"{path.relative_to(SRC_ROOT)}: {offending_roots}")
     assert not offending, "MCP/server framework import: " + "; ".join(offending)
 
 
@@ -785,9 +788,7 @@ def test_no_runtime_package_installation_imports() -> None:
         roots = _top_level_import_roots(path.read_text(encoding="utf-8"))
         offending_roots = sorted(roots & PACKAGE_INSTALL_IMPORT_ROOTS)
         if offending_roots:
-            offending.append(
-                f"{path.relative_to(SRC_ROOT)}: {offending_roots}"
-            )
+            offending.append(f"{path.relative_to(SRC_ROOT)}: {offending_roots}")
     assert not offending, "runtime package installation: " + "; ".join(offending)
 
 
@@ -914,9 +915,8 @@ def test_no_sqlite_database_files_in_package_or_fixtures() -> None:
             if not path.is_file():
                 continue
             name = path.name
-            if (
-                path.suffix.lower() in {".sqlite", ".sqlite3", ".db"}
-                or name.endswith(("-wal", "-shm", ".journal"))
+            if path.suffix.lower() in {".sqlite", ".sqlite3", ".db"} or name.endswith(
+                ("-wal", "-shm", ".journal")
             ):
                 offending.append(str(path.relative_to(repo_root)))
     assert not offending, f"committed SQLite vault artifacts: {offending}"
@@ -1104,14 +1104,16 @@ def test_relationships_package_is_independent_from_dbf_parsing() -> None:
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                assert not node.module.startswith(
-                    ("dbfbridge", "dbf_bridge", "dbf.")
-                ), (path, node.module)
+                assert not node.module.startswith(("dbfbridge", "dbf_bridge", "dbf.")), (
+                    path,
+                    node.module,
+                )
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert not alias.name.startswith(
-                        ("dbfbridge", "dbf_bridge", "dbf.")
-                    ), (path, alias.name)
+                    assert not alias.name.startswith(("dbfbridge", "dbf_bridge", "dbf.")), (
+                        path,
+                        alias.name,
+                    )
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert not node.module.startswith("logging"), path
         assert "import socket" not in source, path
@@ -1120,6 +1122,4 @@ def test_relationships_package_is_independent_from_dbf_parsing() -> None:
         assert "win32com" not in source, path
 
 
-EXPECTED_VAULT_TABLE_SCAN_PATTERN = re.compile(
-    r"CREATE TABLE (\w+)", re.IGNORECASE
-)
+EXPECTED_VAULT_TABLE_SCAN_PATTERN = re.compile(r"CREATE TABLE (\w+)", re.IGNORECASE)

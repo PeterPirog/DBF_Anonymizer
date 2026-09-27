@@ -124,9 +124,7 @@ def _logical_tree(root: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
                 record.deleted,
                 tuple(sorted(record.values.items())),
             )
-            for record in dbfbridge.iter_records(
-                path, include_deleted=True, memo="inline"
-            )
+            for record in dbfbridge.iter_records(path, include_deleted=True, memo="inline")
         )
         result[path.relative_to(root).as_posix()] = rows
     return result
@@ -174,9 +172,7 @@ def test_workers_one_and_many_are_same_vault_equivalent_and_bounded(
     source_before = _hash_tree(source)
     vault_path = tmp_path / "vault" / "dictionary.sqlite3"
     output_one = tmp_path / "output-one"
-    plan_one = build_plan(
-        source, output_one, vault_path, relationship_document=_relationships()
-    )
+    plan_one = build_plan(source, output_one, vault_path, relationship_document=_relationships())
     result_one = run_two_pass(plan_one, workers=1)
     mapping_snapshot = _vault_mapping_snapshot(plan_one, vault_path)
 
@@ -207,9 +203,7 @@ def test_workers_one_and_many_are_same_vault_equivalent_and_bounded(
     monkeypatch.setattr(pass2_module, "write_fresh_table", coordinated_write)
     callback_threads: list[int] = []
     output_many = tmp_path / "output-many"
-    plan_many = build_plan(
-        source, output_many, vault_path, relationship_document=_relationships()
-    )
+    plan_many = build_plan(source, output_many, vault_path, relationship_document=_relationships())
     result_many = run_two_pass(
         plan_many,
         workers=3,
@@ -250,9 +244,7 @@ def test_parallel_same_vault_stress_is_deterministic(tmp_path: Path) -> None:
 
     for iteration in range(3):
         output = tmp_path / f"parallel-{iteration}"
-        plan = build_plan(
-            source, output, vault_path, relationship_document=_relationships()
-        )
+        plan = build_plan(source, output, vault_path, relationship_document=_relationships())
         result = run_two_pass(plan, workers=3)
         assert result.all_relations_verified
         assert _logical_tree(output) == reference_logical

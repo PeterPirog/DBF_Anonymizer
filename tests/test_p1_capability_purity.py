@@ -495,7 +495,9 @@ finish(0)
 '''
 
 
-def _run_isolated_purity_child(tmp_path: Path, scenario: str) -> tuple[dict, subprocess.CompletedProcess[str]]:
+def _run_isolated_purity_child(
+    tmp_path: Path, scenario: str
+) -> tuple[dict, subprocess.CompletedProcess[str]]:
     """Run one isolated purity scenario in a fresh ``-I`` Python interpreter.
 
     The harness (this pytest process) creates the child script and the empty
@@ -537,8 +539,7 @@ def _run_isolated_purity_child(tmp_path: Path, scenario: str) -> tuple[dict, sub
 
 def _assert_clean(verdict: dict, completed: subprocess.CompletedProcess[str]) -> None:
     assert completed.returncode == 0, (
-        f"isolated purity child failed\nverdict={verdict!r}\n"
-        f"stderr={completed.stderr!r}"
+        f"isolated purity child failed\nverdict={verdict!r}\nstderr={completed.stderr!r}"
     )
     assert verdict["ok"] is True, verdict
     assert verdict["violations"] == [], verdict
@@ -585,12 +586,8 @@ def test_req_p1_007_isolated_capability_purity(tmp_path: Path) -> None:
     # a supported dbfbridge[write] environment truthfully reports True
     # without any filesystem probing. Transfer bundles and the VFP index
     # backend stay false until their owning requirements exist.
-    assert caps["recovery"] == (
-        caps["direct_read"] and caps["direct_write"]
-    )
-    assert caps["transfer_bundle"] == (
-        caps["direct_read"] and caps["direct_write"]
-    )
+    assert caps["recovery"] == (caps["direct_read"] and caps["direct_write"])
+    assert caps["transfer_bundle"] == (caps["direct_read"] and caps["direct_write"])
     assert caps["vfp_index_backend"] is False
 
     # The isolated discovery must agree with the parent-process environment
@@ -613,9 +610,7 @@ def test_req_p1_007_forbidden_import_sentinel_negative_control(
     sentinel intercepts the attempt, records the violation and prevents the
     module from actually loading.
     """
-    verdict, completed = _run_isolated_purity_child(
-        tmp_path, "forbidden-import-negative"
-    )
+    verdict, completed = _run_isolated_purity_child(tmp_path, "forbidden-import-negative")
     assert completed.returncode == 0, (
         f"forbidden-import negative control failed\nverdict={verdict!r}\n"
         f"stderr={completed.stderr!r}"
@@ -638,20 +633,14 @@ def test_req_p1_007_com_activation_sentinel_negative_control(
     sentinel abstraction).  The sentinel must fire BEFORE any real library
     load or COM object instantiation; no real COM object is ever created.
     """
-    verdict, completed = _run_isolated_purity_child(
-        tmp_path, "com-activation-negative"
-    )
+    verdict, completed = _run_isolated_purity_child(tmp_path, "com-activation-negative")
     assert completed.returncode == 0, (
-        f"COM activation negative control failed\nverdict={verdict!r}\n"
-        f"stderr={completed.stderr!r}"
+        f"COM activation negative control failed\nverdict={verdict!r}\nstderr={completed.stderr!r}"
     )
     assert verdict["ok"] is True
     assert verdict["sentinel_fired"] is True
     assert len(verdict["violations"]) == 2
-    assert all(
-        violation.startswith("com-activation")
-        for violation in verdict["violations"]
-    )
+    assert all(violation.startswith("com-activation") for violation in verdict["violations"])
     assert verdict["forbidden_loaded"] == []
     assert verdict["unexpected"] is None
 
@@ -674,12 +663,8 @@ def test_capabilities_to_dict_is_deterministic_json_safe_and_leak_free() -> None
     # REQ-P1-007 truthfulness: the implemented REQ-P5-002/REQ-P5-003
     # recovery service derives its capability from the same required direct
     # read/write runtime facts.
-    assert payload["recovery"] == (
-        result.direct_read and result.direct_write
-    )
-    assert payload["transfer_bundle"] == (
-        result.direct_read and result.direct_write
-    )
+    assert payload["recovery"] == (result.direct_read and result.direct_write)
+    assert payload["transfer_bundle"] == (result.direct_read and result.direct_write)
     assert payload["vfp_index_backend"] is False
     for key, value in payload.items():
         if isinstance(value, str):
@@ -695,11 +680,10 @@ def test_capability_discovery_never_invokes_dbfbridge_data_operations(
     calls: list[str] = []
 
     for operation in DBFBRIDGE_DATA_OPERATIONS:
+
         def _guard(*args: object, _operation: str = operation, **kwargs: object) -> None:
             calls.append(_operation)
-            raise AssertionError(
-                f"capability discovery invoked dbfbridge.{_operation}"
-            )
+            raise AssertionError(f"capability discovery invoked dbfbridge.{_operation}")
 
         monkeypatch.setattr(dbfbridge, operation, _guard, raising=False)  # type: ignore[attr-defined]
 
@@ -713,9 +697,7 @@ def test_import_and_discovery_load_no_com_or_vfp_backend_modules() -> None:
     dbf_anonymizer.capabilities()
     added = set(sys.modules) - before
     loaded = sorted(
-        name
-        for name in added
-        if name.split(".")[0] in FORBIDDEN_BACKEND_MODULES.split(",")
+        name for name in added if name.split(".")[0] in FORBIDDEN_BACKEND_MODULES.split(",")
     )
     assert loaded == []
     assert dbf_anonymizer.capabilities().vfp_index_backend is False

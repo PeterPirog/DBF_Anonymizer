@@ -184,7 +184,11 @@ def validate_protected_vault_root(
         if other_root is None:
             continue
         other_key = _overlap_key(other_root)
-        if vault_key == other_key or _is_within(vault_key, other_key) or _is_within(other_key, vault_key):
+        if (
+            vault_key == other_key
+            or _is_within(vault_key, other_key)
+            or _is_within(other_key, vault_key)
+        ):
             raise _overlap_failure(detail_code)
 
 

@@ -194,9 +194,7 @@ def _validated_operation_id(value: str, *, field_name: str = "operation_id") -> 
     )
 
 
-def _bounded_tuple(
-    value: object, *, field_name: str, max_items: int
-) -> tuple[Any, ...]:
+def _bounded_tuple(value: object, *, field_name: str, max_items: int) -> tuple[Any, ...]:
     if not isinstance(value, tuple):
         raise TypeError(f"{field_name} must be a tuple")
     if len(value) > max_items:
@@ -244,8 +242,7 @@ def validate_relationship_fingerprint(
             error: Exception = failure("TRANSFER_MANIFEST_VALUE_INVALID")
             return error
         return ValueError(
-            f"{field_name} must be a non-empty bounded "
-            f"relationship-fingerprint token"
+            f"{field_name} must be a non-empty bounded relationship-fingerprint token"
         )
 
     if not isinstance(value, str):
@@ -260,10 +257,7 @@ def validate_relationship_fingerprint(
         or "\\" in value
         or value.startswith("/")
         or PurePosixPath(value.lower()).is_absolute()
-        or any(
-            part == ".."
-            for part in PurePosixPath(value.lower()).parts
-        )
+        or any(part == ".." for part in PurePosixPath(value.lower()).parts)
         or PureWindowsPath(value).drive
         or PureWindowsPath(value).root
         or PureWindowsPath(value).is_absolute()
@@ -276,9 +270,7 @@ def _non_negative(value: int, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{field_name} must be an integer")
     if value < 0 or value > PUBLIC_JSON_MAX_COUNT:
-        raise ValueError(
-            f"{field_name} must be from 0 to {PUBLIC_JSON_MAX_COUNT}"
-        )
+        raise ValueError(f"{field_name} must be from 0 to {PUBLIC_JSON_MAX_COUNT}")
     return value
 
 
@@ -385,10 +377,7 @@ class DatasetIdentity(PublicModel):
         )
         dbc_paths = tuple(
             sorted(
-                (
-                    _normalized_relative_path(path)
-                    for path in dbc_bound_table_paths
-                ),
+                (_normalized_relative_path(path) for path in dbc_bound_table_paths),
                 key=lambda path: (path.casefold(), path),
             )
         )
@@ -459,11 +448,10 @@ class TablePlan(PublicModel):
         if self.system_field_count > self.field_count:
             raise ValueError("system_field_count cannot exceed field_count")
         if (
-            self.transform_field_count
-            + self.unsafe_field_count
-            + self.system_field_count
+            self.transform_field_count + self.unsafe_field_count + self.system_field_count
         ) > self.field_count:
             raise ValueError("transformed + unsafe + system cannot exceed field_count")
+
     def to_dict(self) -> JsonDict:
         return _payload(
             "TablePlan",
@@ -552,9 +540,7 @@ class RelationshipMetadata(PublicModel):
         # accepted malformed public input.
         if not isinstance(self.metadata_schema_version, str):
             raise TypeError("metadata_schema_version must be a string")
-        _validated_code(
-            self.metadata_schema_version, field_name="metadata_schema_version"
-        )
+        _validated_code(self.metadata_schema_version, field_name="metadata_schema_version")
         _validated_code(self.provenance, field_name="provenance")
         # REQ-P5-005/006 producer/verifier coherence: the canonical
         # relationship-fingerprint contract is enforced at the PUBLIC typed
@@ -619,9 +605,7 @@ class RelationalAssurance(PublicModel):
         _non_negative(self.failed_relations, field_name="failed_relations")
         _non_negative(self.incomplete_relations, field_name="incomplete_relations")
         if (
-            self.verified_relations
-            + self.failed_relations
-            + self.incomplete_relations
+            self.verified_relations + self.failed_relations + self.incomplete_relations
             > self.declared_relations
         ):
             raise ValueError(
@@ -630,13 +614,9 @@ class RelationalAssurance(PublicModel):
         if self.evidence_fingerprint is not None:
             _validated_code(self.evidence_fingerprint, field_name="evidence_fingerprint")
         if self.relationship_fingerprint is not None:
-            _validated_code(
-                self.relationship_fingerprint, field_name="relationship_fingerprint"
-            )
+            _validated_code(self.relationship_fingerprint, field_name="relationship_fingerprint")
         if self.evidence_schema_version is not None:
-            _validated_code(
-                self.evidence_schema_version, field_name="evidence_schema_version"
-            )
+            _validated_code(self.evidence_schema_version, field_name="evidence_schema_version")
         if self.scope_note is not None:
             _validated_code(self.scope_note, field_name="scope_note")
 
@@ -727,9 +707,7 @@ class Plan(PublicModel):
     relationship_assurance_target: RelationalAssuranceLevel
     output_data_state: OutputDataState
     numeric_identity_review: tuple[NumericIdentityReview, ...] = ()
-    execution_context: _PlanExecutionContext | None = field(
-        default=None, repr=False, compare=False
-    )
+    execution_context: _PlanExecutionContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _validated_code(self.plan_id, field_name="plan_id")
@@ -748,21 +726,14 @@ class Plan(PublicModel):
             raise TypeError("relationships must be RelationshipMetadata")
         if not isinstance(self.output_profile, TransferProfile):
             raise TypeError("output_profile must be a TransferProfile")
-        if not isinstance(
-            self.relationship_assurance_target, RelationalAssuranceLevel
-        ):
-            raise TypeError(
-                "relationship_assurance_target must be a RelationalAssuranceLevel"
-            )
+        if not isinstance(self.relationship_assurance_target, RelationalAssuranceLevel):
+            raise TypeError("relationship_assurance_target must be a RelationalAssuranceLevel")
         numeric_identity_review = _bounded_tuple(
             self.numeric_identity_review,
             field_name="numeric_identity_review",
             max_items=PUBLIC_JSON_MAX_NUMERIC_IDENTITY_REVIEWS,
         )
-        if not all(
-            isinstance(review, NumericIdentityReview)
-            for review in numeric_identity_review
-        ):
+        if not all(isinstance(review, NumericIdentityReview) for review in numeric_identity_review):
             raise TypeError(
                 "numeric_identity_review must contain only NumericIdentityReview values"
             )
@@ -776,9 +747,7 @@ class Plan(PublicModel):
             )
         )
         if observed_dbc_paths != self.dataset.dbc_bound_table_paths:
-            raise ValueError(
-                "dataset dbc_bound_table_paths must match source table facts"
-            )
+            raise ValueError("dataset dbc_bound_table_paths must match source table facts")
         if not isinstance(self.output_data_state, OutputDataState):
             raise TypeError("output_data_state must be an OutputDataState")
 
@@ -937,39 +906,25 @@ class StandaloneIdxEvidence(PublicModel):
         if self.artifact_id != expected_id:
             raise ValueError("artifact_id must match artifact_path")
         if self.status not in STANDALONE_IDX_EVIDENCE_STATUSES:
-            raise ValueError(
-                "status must be one of "
-                + ", ".join(STANDALONE_IDX_EVIDENCE_STATUSES)
-            )
+            raise ValueError("status must be one of " + ", ".join(STANDALONE_IDX_EVIDENCE_STATUSES))
         _sha256_hex(self.source_sha256, field_name="source_sha256")
         if self.backend_id is not None:
             _validated_code(self.backend_id, field_name="backend_id")
         if self.table_path is not None:
-            object.__setattr__(
-                self, "table_path", _normalized_relative_path(self.table_path)
-            )
+            object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         if self.output_sha256 is not None:
             _sha256_hex(self.output_sha256, field_name="output_sha256")
         if self.status == "OMITTED_DATA_ONLY":
             if any(
-                item is not None
-                for item in (self.backend_id, self.table_path, self.output_sha256)
+                item is not None for item in (self.backend_id, self.table_path, self.output_sha256)
             ):
                 raise ValueError("OMITTED_DATA_ONLY cannot claim backend or output")
         elif self.status == "OMITTED_UNVERIFIED":
             if self.backend_id is None or self.output_sha256 is not None:
-                raise ValueError(
-                    "OMITTED_UNVERIFIED requires backend_id and no output claim"
-                )
+                raise ValueError("OMITTED_UNVERIFIED requires backend_id and no output claim")
         else:
-            if (
-                self.backend_id is None
-                or self.table_path is None
-                or self.output_sha256 is None
-            ):
-                raise ValueError(
-                    "REBUILT_VERIFIED requires backend, table and output evidence"
-                )
+            if self.backend_id is None or self.table_path is None or self.output_sha256 is None:
+                raise ValueError("REBUILT_VERIFIED requires backend, table and output evidence")
 
     def to_dict(self) -> JsonDict:
         return _payload(
@@ -996,9 +951,7 @@ def _validate_idx_evidence(
         raise TypeError("index_artifacts must contain only StandaloneIdxEvidence")
     paths = tuple(item.artifact_path for item in bounded_evidence)
     if paths != dataset.standalone_idx_paths:
-        raise ValueError(
-            "index_artifacts must exactly match dataset standalone_idx_paths"
-        )
+        raise ValueError("index_artifacts must exactly match dataset standalone_idx_paths")
     if len({item.artifact_id for item in evidence}) != len(evidence):
         raise ValueError("index_artifacts must have distinct artifact identities")
 
@@ -1266,13 +1219,10 @@ class IndexBackendCapability(PublicModel):
 
     def __post_init__(self) -> None:
         _validated_code(self.backend_id, field_name="backend_id")
-        _validated_code(
-            self.backend_schema_version, field_name="backend_schema_version"
-        )
+        _validated_code(self.backend_schema_version, field_name="backend_schema_version")
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         for name in (
             "supports_structural_cdx_rebuild",
@@ -1312,33 +1262,24 @@ class IndexBackendResult(PublicModel):
         _validated_code(self.backend_id, field_name="backend_id")
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
+            raise ValueError("artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES))
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         if self.status not in INDEX_BACKEND_RESULT_STATUSES:
-            raise ValueError(
-                "status must be one of " + ", ".join(INDEX_BACKEND_RESULT_STATUSES)
-            )
+            raise ValueError("status must be one of " + ", ".join(INDEX_BACKEND_RESULT_STATUSES))
         expected_detail = {
             "REBUILT": "REBUILT_OK",
             "REFUSED": "REFUSED",
             "FAILED": "INTERNAL_ERROR",
         }[self.status]
         if self.detail_code != expected_detail:
-            raise ValueError(
-                f"detail_code must be {expected_detail} when status is {self.status}"
-            )
+            raise ValueError(f"detail_code must be {expected_detail} when status is {self.status}")
         if self.artifact_class == "STANDALONE_IDX":
             if self.artifact_path is None:
                 raise ValueError("STANDALONE_IDX result requires artifact_path")
-            object.__setattr__(
-                self, "artifact_path", _normalized_relative_path(self.artifact_path)
-            )
+            object.__setattr__(self, "artifact_path", _normalized_relative_path(self.artifact_path))
         elif self.artifact_path is not None:
             raise ValueError("artifact_path is only valid for STANDALONE_IDX")
 
@@ -1375,39 +1316,28 @@ class IndexVerificationResult(PublicModel):
         _validated_code(self.backend_id, field_name="backend_id")
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
         if self.artifact_class not in INDEX_ARTIFACT_CLASSES:
-            raise ValueError(
-                "artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES)
-            )
+            raise ValueError("artifact_class must be one of " + ", ".join(INDEX_ARTIFACT_CLASSES))
         object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         if self.status not in INDEX_VERIFICATION_STATUSES:
-            raise ValueError(
-                "status must be one of " + ", ".join(INDEX_VERIFICATION_STATUSES)
-            )
+            raise ValueError("status must be one of " + ", ".join(INDEX_VERIFICATION_STATUSES))
         if self.detail_code not in INDEX_VERIFICATION_DETAIL_CODES:
             raise ValueError(
                 "detail_code must be one of " + ", ".join(INDEX_VERIFICATION_DETAIL_CODES)
             )
         allowed_details = {
             "VERIFIED": frozenset(("VERIFIED_OK",)),
-            "MISMATCH": frozenset(
-                ("RECORD_COUNT_MISMATCH", "TAG_INVENTORY_MISMATCH")
-            ),
+            "MISMATCH": frozenset(("RECORD_COUNT_MISMATCH", "TAG_INVENTORY_MISMATCH")),
             "FAILED": frozenset(("OPEN_FAILED", "INTERNAL_ERROR")),
         }[self.status]
         if self.detail_code not in allowed_details:
-            raise ValueError(
-                f"detail_code {self.detail_code} is invalid for status {self.status}"
-            )
+            raise ValueError(f"detail_code {self.detail_code} is invalid for status {self.status}")
         if self.artifact_class == "STANDALONE_IDX":
             if self.artifact_path is None:
                 raise ValueError("STANDALONE_IDX result requires artifact_path")
-            object.__setattr__(
-                self, "artifact_path", _normalized_relative_path(self.artifact_path)
-            )
+            object.__setattr__(self, "artifact_path", _normalized_relative_path(self.artifact_path))
         elif self.artifact_path is not None:
             raise ValueError("artifact_path is only valid for STANDALONE_IDX")
 
@@ -1439,32 +1369,24 @@ class StandaloneIdxAssociationResult(PublicModel):
         _validated_code(self.backend_id, field_name="backend_id")
         if self.protocol_schema_version != INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION:
             raise ValueError(
-                "protocol_schema_version must be "
-                f"{INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
+                f"protocol_schema_version must be {INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION}"
             )
-        object.__setattr__(
-            self, "artifact_path", _normalized_relative_path(self.artifact_path)
-        )
+        object.__setattr__(self, "artifact_path", _normalized_relative_path(self.artifact_path))
         standalone_idx_artifact_id(self.artifact_path)
         if self.status not in STANDALONE_IDX_ASSOCIATION_STATUSES:
             raise ValueError(
-                "status must be one of "
-                + ", ".join(STANDALONE_IDX_ASSOCIATION_STATUSES)
+                "status must be one of " + ", ".join(STANDALONE_IDX_ASSOCIATION_STATUSES)
             )
         expected_detail = {
             "ASSOCIATED": "ASSOCIATED_OK",
             "UNAVAILABLE": "DEFINITION_UNAVAILABLE",
         }[self.status]
         if self.detail_code != expected_detail:
-            raise ValueError(
-                f"detail_code must be {expected_detail} when status is {self.status}"
-            )
+            raise ValueError(f"detail_code must be {expected_detail} when status is {self.status}")
         if self.status == "ASSOCIATED":
             if self.table_path is None:
                 raise ValueError("ASSOCIATED requires table_path")
-            object.__setattr__(
-                self, "table_path", _normalized_relative_path(self.table_path)
-            )
+            object.__setattr__(self, "table_path", _normalized_relative_path(self.table_path))
         elif self.table_path is not None:
             raise ValueError("UNAVAILABLE cannot claim table_path")
 

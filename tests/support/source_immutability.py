@@ -116,8 +116,7 @@ def canonical_fingerprint_digest(fingerprint: tuple[SourceArtifact, ...]) -> str
     artifact comparison in :func:`assert_fingerprints_equal`.
     """
     canonical = "\n".join(
-        f"{a.relative_path}|{a.artifact_class}|{a.size_bytes}|{a.sha256}"
-        for a in fingerprint
+        f"{a.relative_path}|{a.artifact_class}|{a.size_bytes}|{a.sha256}" for a in fingerprint
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -179,12 +178,9 @@ def resolve_outside_source(source_root: Path, write_target: Path) -> Path:
     """
     resolved_source = os.path.normcase(str(source_root.resolve()))
     resolved_target = os.path.normcase(str(write_target.resolve()))
-    if resolved_target == resolved_source or resolved_target.startswith(
-        resolved_source + os.sep
-    ):
+    if resolved_target == resolved_source or resolved_target.startswith(resolved_source + os.sep):
         raise WriteTargetInsideSourceError(
-            f"write target {write_target} resolves inside the source tree "
-            f"({resolved_source})"
+            f"write target {write_target} resolves inside the source tree ({resolved_source})"
         )
     return Path(write_target).resolve()
 
@@ -252,7 +248,9 @@ def representative_operation(
             destination,
             schema=schema,
             records=[
-                DirectRecord(physical_index=out_index, deleted=record.deleted, values=dict(record.values))
+                DirectRecord(
+                    physical_index=out_index, deleted=record.deleted, values=dict(record.values)
+                )
                 for out_index, record in enumerate(records)
             ],
             overwrite=True,

@@ -38,9 +38,7 @@ def attempt_acquire(payload: dict[str, str], results: Queue) -> None:
     except VaultError as error:
         results.put(
             {
-                "outcome": "CONFLICT"
-                if error.code is ErrorCode.VAULT_WRITER_CONFLICT
-                else "ERROR",
+                "outcome": "CONFLICT" if error.code is ErrorCode.VAULT_WRITER_CONFLICT else "ERROR",
                 "detail": error.code.value,
             }
         )
@@ -72,9 +70,7 @@ def attempt_create(payload: dict[str, str], results: Queue) -> None:
     except VaultError as error:
         results.put(
             {
-                "outcome": "CONFLICT"
-                if error.code is ErrorCode.VAULT_STATE_INVALID
-                else "ERROR",
+                "outcome": "CONFLICT" if error.code is ErrorCode.VAULT_STATE_INVALID else "ERROR",
                 "detail": error.code.value,
             }
         )

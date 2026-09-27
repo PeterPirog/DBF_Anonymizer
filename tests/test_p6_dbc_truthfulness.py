@@ -158,28 +158,19 @@ def test_dbc_bound_source_and_standalone_output_are_reported_truthfully(
     assert "DATA_ONLY_STANDALONE" in check.check_codes
 
     result = pseudonymize(plan, progress=events.append)
-    verification = verify_dataset(
-        result, source=source, vault=vault, progress=events.append
-    )
+    verification = verify_dataset(result, source=source, vault=vault, progress=events.append)
     assert verification.status is VerificationStatus.PASS
     assert result.dataset.dbc_bound_table_paths == ("dbc/dbc_bound_table.dbf",)
-    assert verification.dataset.dbc_bound_table_paths == (
-        "dbc/dbc_bound_table.dbf",
-    )
+    assert verification.dataset.dbc_bound_table_paths == ("dbc/dbc_bound_table.dbf",)
     assert result.output_data_state is OutputDataState.STANDALONE_REDUCED_SEMANTICS
-    assert (
-        verification.output_data_state
-        is OutputDataState.STANDALONE_REDUCED_SEMANTICS
-    )
+    assert verification.output_data_state is OutputDataState.STANDALONE_REDUCED_SEMANTICS
     assert result.assurance.level is not RelationalAssuranceLevel.VFP_METADATA_VERIFIED
 
     hidden_source_fact = replace(
         result,
         dataset=replace(result.dataset, dbc_bound_table_paths=()),
     )
-    hidden_verification = verify_dataset(
-        hidden_source_fact, source=source, vault=vault
-    )
+    hidden_verification = verify_dataset(hidden_source_fact, source=source, vault=vault)
     assert hidden_verification.status is VerificationStatus.FAIL
     assert "SOURCE_DBC_INVENTORY_MISMATCH" in hidden_verification.check_codes
 
@@ -192,29 +183,19 @@ def test_dbc_bound_source_and_standalone_output_are_reported_truthfully(
         list(dbfbridge.iter_records(output_table, include_deleted=True, memo="inline"))
     ) == len(original_rows)
     output_files = _files(output)
-    assert {path.suffix.lower() for path in output_files}.isdisjoint(
-        _FORBIDDEN_OUTPUT_SUFFIXES
-    )
+    assert {path.suffix.lower() for path in output_files}.isdisjoint(_FORBIDDEN_OUTPUT_SUFFIXES)
     assert any(path.suffix.lower() == ".fpt" for path in output_files)
 
-    bundle = create_transfer_bundle(
-        result, destination=bundle_root, progress=events.append
-    )
+    bundle = create_transfer_bundle(result, destination=bundle_root, progress=events.append)
     bundle_verification = verify_transfer_bundle(bundle_root, progress=events.append)
     assert bundle.verified is True
     assert bundle_verification.verified is True
     bundle_files = _files(bundle_root)
-    assert {path.suffix.lower() for path in bundle_files}.isdisjoint(
-        _FORBIDDEN_OUTPUT_SUFFIXES
-    )
+    assert {path.suffix.lower() for path in bundle_files}.isdisjoint(_FORBIDDEN_OUTPUT_SUFFIXES)
     assert all(
-        marker not in path.name.casefold()
-        for path in bundle_files
-        for marker in _RECOVERY_MARKERS
+        marker not in path.name.casefold() for path in bundle_files for marker in _RECOVERY_MARKERS
     )
-    manifest = json.loads(
-        (bundle_root / "transfer-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((bundle_root / "transfer-manifest.json").read_text(encoding="utf-8"))
     assert manifest["data_state"] == "STANDALONE_REDUCED_SEMANTICS"
 
     public_payloads = [

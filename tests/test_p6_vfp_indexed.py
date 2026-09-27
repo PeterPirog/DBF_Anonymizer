@@ -240,9 +240,7 @@ def test_public_success_uses_fresh_protected_staging_and_publishes_fresh_cdx(
 ) -> None:
     plan, source, output, _vault = _indexed_plan(tmp_path)
     source_before = _hash_tree(source)
-    source_rows = tuple(
-        dbfbridge.iter_records(source / _STRUCTURAL_RELATIVE, include_deleted=True)
-    )
+    source_rows = tuple(dbfbridge.iter_records(source / _STRUCTURAL_RELATIVE, include_deleted=True))
     backend = DeterministicIndexBackend(
         expected_tag_inventory=_SOURCE_TAGS,
         actual_tag_inventory=_SOURCE_TAGS,
@@ -319,9 +317,7 @@ def test_rebuild_exception_is_sanitized_and_never_published(tmp_path: Path) -> N
     (("REFUSED", "REFUSED"), ("FAILED", "INTERNAL_ERROR")),
     ids=("refused", "failed"),
 )
-def test_non_rebuilt_status_never_publishes(
-    tmp_path: Path, status: str, detail_code: str
-) -> None:
+def test_non_rebuilt_status_never_publishes(tmp_path: Path, status: str, detail_code: str) -> None:
     plan, source, output, _vault = _indexed_plan(tmp_path)
     source_before = _hash_tree(source)
     backend = DeterministicIndexBackend(status=status, detail_code=detail_code)
@@ -468,12 +464,8 @@ def test_declared_missing_capability_fails_before_transformation(
         supports_structural_cdx_rebuild=capability_override.get(
             "supports_structural_cdx_rebuild", True
         ),
-        supports_verification=capability_override.get(
-            "supports_verification", True
-        ),
-        vfp_runtime_available=capability_override.get(
-            "vfp_runtime_available", True
-        ),
+        supports_verification=capability_override.get("supports_verification", True),
+        vfp_runtime_available=capability_override.get("vfp_runtime_available", True),
     )
 
     with pytest.raises(PublicationError) as caught:
@@ -593,10 +585,7 @@ def test_deleted_null_varchar_memo_and_declared_relations_regressions(
         source,
         "nullable/varchar.dbf",
         (numeric_field("TXT", "V", 8, flags=NULLABLE_FLAG),),
-        [
-            ({"TXT": value}, False)
-            for value in (None, "", "A", "A ", "A  ")
-        ],
+        [({"TXT": value}, False) for value in (None, "", "A", "A ", "A  ")],
     )
     write_numeric_table(
         source,
@@ -608,10 +597,7 @@ def test_deleted_null_varchar_memo_and_declared_relations_regressions(
         source,
         "south/orders.dbf",
         (numeric_field("CUST_ID", "C", 14), numeric_field("ORD_N", "N", 9)),
-        [
-            {"CUST_ID": f"CUST{index % 6:09d}", "ORD_N": index + 1}
-            for index in range(12)
-        ],
+        [{"CUST_ID": f"CUST{index % 6:09d}", "ORD_N": index + 1} for index in range(12)],
     )
     # Rebuild the immutable plan after adding all synthetic source tables.
     plan = build_plan(
@@ -628,18 +614,12 @@ def test_deleted_null_varchar_memo_and_declared_relations_regressions(
 
     assert _hash_tree(source) == source_before
     source_archive = tuple(
-        dbfbridge.iter_records(
-            source / "archive/data.dbf", include_deleted=True, memo="inline"
-        )
+        dbfbridge.iter_records(source / "archive/data.dbf", include_deleted=True, memo="inline")
     )
     output_archive = tuple(
-        dbfbridge.iter_records(
-            output / "archive/data.dbf", include_deleted=True, memo="inline"
-        )
+        dbfbridge.iter_records(output / "archive/data.dbf", include_deleted=True, memo="inline")
     )
-    assert [row.deleted for row in output_archive] == [
-        row.deleted for row in source_archive
-    ]
+    assert [row.deleted for row in output_archive] == [row.deleted for row in source_archive]
     assert all(
         output_row.values["LEG_ID"] != source_row.values["LEG_ID"]
         for source_row, output_row in zip(source_archive, output_archive)
@@ -658,12 +638,10 @@ def test_deleted_null_varchar_memo_and_declared_relations_regressions(
     assert len(set(varchar_values[2:])) == 3
 
     customer_keys = {
-        row.values["CUST_ID"]
-        for row in dbfbridge.iter_records(output / "north/customers.dbf")
+        row.values["CUST_ID"] for row in dbfbridge.iter_records(output / "north/customers.dbf")
     }
     order_keys = [
-        row.values["CUST_ID"]
-        for row in dbfbridge.iter_records(output / "south/orders.dbf")
+        row.values["CUST_ID"] for row in dbfbridge.iter_records(output / "south/orders.dbf")
     ]
     assert set(order_keys) <= customer_keys
     assert result.assurance.incomplete_relations == 0
@@ -701,9 +679,7 @@ def _load_real_vfp_backend() -> IndexBackend:
     availability = os.environ.get("DBF_ANONYMIZER_REAL_VFP9_AVAILABLE")
     if availability is None or availability == "0":
         pytest.skip("trusted real VFP9 runtime is not declared available")
-    assert availability == "1", (
-        "DBF_ANONYMIZER_REAL_VFP9_AVAILABLE must be exactly 0 or 1"
-    )
+    assert availability == "1", "DBF_ANONYMIZER_REAL_VFP9_AVAILABLE must be exactly 0 or 1"
     factory_reference = os.environ.get("DBF_ANONYMIZER_REAL_VFP9_BACKEND_FACTORY")
     assert factory_reference, (
         "real VFP9 availability requires DBF_ANONYMIZER_REAL_VFP9_BACKEND_FACTORY"
@@ -743,9 +719,7 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
         str(vault),
         policy={"indexes": {"profile": "VFP_INDEXED"}},
     )
-    structural = next(
-        table for table in plan.tables if table.table_path == _STRUCTURAL_RELATIVE
-    )
+    structural = next(table for table in plan.tables if table.table_path == _STRUCTURAL_RELATIVE)
     assert structural.structural_cdx is True
     assert structural.structural_cdx_companion_present is True
     source_before = _hash_tree(source)
@@ -773,16 +747,15 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
     assert getattr(backend, "actual_tag_inventory") == _SOURCE_TAGS
     assert output_dbf.is_file()
     assert output_cdx.is_file()
-    assert getattr(backend, "source_cdx_hash_at_rebuild") == source_before[
-        "structural/indexed_table.cdx"
-    ]
+    assert (
+        getattr(backend, "source_cdx_hash_at_rebuild")
+        == source_before["structural/indexed_table.cdx"]
+    )
     output_cdx_hash = hashlib.sha256(output_cdx.read_bytes()).hexdigest()
     output_dbf_hash = hashlib.sha256(output_dbf.read_bytes()).hexdigest()
     assert getattr(backend, "rebuilt_cdx_hash") == output_cdx_hash
     assert output_cdx_hash != source_before["structural/indexed_table.cdx"]
-    published_record_count, published_tags = getattr(
-        backend, "inspect_published_table"
-    )(output_dbf)
+    published_record_count, published_tags = getattr(backend, "inspect_published_table")(output_dbf)
     assert getattr(backend, "published_table_opened") is True
     assert published_record_count == structural.record_count == 4
     assert published_tags == _SOURCE_TAGS
@@ -807,21 +780,14 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
         str(output.resolve()),
         str(vault.resolve()),
     )
-    assert all(
-        token not in surface for token in private_tokens for surface in public_surfaces
-    )
+    assert all(token not in surface for token in private_tokens for surface in public_surfaces)
 
     print(f"VFP_VERSION={getattr(backend, 'runtime_version')}")
     print(f"VFP_TABLE_OPENED={getattr(backend, 'table_opened')}")
     print(f"VFP_PUBLISHED_TABLE_OPENED={getattr(backend, 'published_table_opened')}")
     print(f"VFP_RECORD_COUNT={getattr(backend, 'actual_record_count')}")
-    print(
-        "VFP_EXPECTED_TAGS="
-        + ",".join(getattr(backend, "expected_tag_inventory"))
-    )
-    print(
-        "VFP_ACTUAL_TAGS=" + ",".join(getattr(backend, "actual_tag_inventory"))
-    )
+    print("VFP_EXPECTED_TAGS=" + ",".join(getattr(backend, "expected_tag_inventory")))
+    print("VFP_ACTUAL_TAGS=" + ",".join(getattr(backend, "actual_tag_inventory")))
     print(
         "VFP_STAGED_TABLE_EXISTED_BEFORE_REBUILD="
         f"{getattr(backend, 'staged_table_existed_before_rebuild')}"
@@ -839,8 +805,5 @@ def test_real_vfp9_rebuild_open_count_and_tag_inventory_when_declared(
     print(f"OUTPUT_DBF_SHA256={output_dbf_hash}")
     print(f"OUTPUT_CDX_SHA256={output_cdx_hash}")
     print(f"SOURCE_IMMUTABLE={source_after == source_before}")
-    fresh_cdx = (
-        not getattr(backend, "staged_cdx_existed_before_rebuild")
-        and output_cdx.is_file()
-    )
+    fresh_cdx = not getattr(backend, "staged_cdx_existed_before_rebuild") and output_cdx.is_file()
     print(f"FRESH_CDX={fresh_cdx}")

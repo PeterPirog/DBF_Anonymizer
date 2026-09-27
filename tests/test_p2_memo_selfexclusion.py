@@ -117,9 +117,7 @@ def test_every_binary_mask_differs_from_its_complete_source() -> None:
 # ---------------------------------------------------------------------------
 # real DBF/FPT collision round-trip through the PUBLIC dbfbridge boundary
 # ---------------------------------------------------------------------------
-def _write_source_table(
-    tmp_path: Path, stem: str
-) -> tuple[Path, list[DirectRecord]]:
+def _write_source_table(tmp_path: Path, stem: str) -> tuple[Path, list[DirectRecord]]:
     fields = (
         FieldInfo(
             ordinal=0,
@@ -248,9 +246,7 @@ def _write_source_table(
             for index, record in enumerate(records)
         ],
     )
-    originals = list(
-        dbfbridge.iter_records(dbf_path, memo="inline", include_deleted=True)
-    )
+    originals = list(dbfbridge.iter_records(dbf_path, memo="inline", include_deleted=True))
     assert len(originals) == 3
     return dbf_path, originals
 
@@ -345,9 +341,7 @@ def test_dbf_collision_source_equal_masks_never_survive_unchanged(
         schema=dbfbridge.read_schema(dbf_path),
         records=masked_records,
     )
-    masked_values = list(
-        dbfbridge.iter_records(masked_path, memo="inline", include_deleted=True)
-    )
+    masked_values = list(dbfbridge.iter_records(masked_path, memo="inline", include_deleted=True))
     for record, masked, record_masks in zip(originals, masked_values, masks):
         for name in memo_names:
             # The output logical payload is never identical to the source.

@@ -47,7 +47,9 @@ def test_requires_python_covers_declared_versions_and_no_more() -> None:
     requires_python = _metadata()["Requires-Python"]
     assert requires_python.replace(" ", "") in {">=3.10,<3.15", "<3.15,>=3.10"}
     classifiers = _metadata().get_all("Classifier") or []
-    python_classifiers = [c for c in classifiers if c.startswith("Programming Language :: Python :: 3.")]
+    python_classifiers = [
+        c for c in classifiers if c.startswith("Programming Language :: Python :: 3.")
+    ]
     assert {c.rsplit("::", 1)[1].strip() for c in python_classifiers} == set(
         DECLARED_PYTHON_VERSIONS
     )

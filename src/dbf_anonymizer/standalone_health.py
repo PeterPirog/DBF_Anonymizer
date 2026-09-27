@@ -179,9 +179,7 @@ def run_self_test() -> SelfTestResult:
             raise _failure("SELF_TEST_CANONICAL_MISMATCH")
 
         bundle_root = root / "bundle"
-        bundle = create_transfer_bundle(
-            result, destination=bundle_root, profile="DATA_ONLY"
-        )
+        bundle = create_transfer_bundle(result, destination=bundle_root, profile="DATA_ONLY")
         bundle_check = verify_transfer_bundle(bundle_root)
         if not bundle.verified or not bundle_check.verified:
             raise _failure("SELF_TEST_BUNDLE_FAILED")

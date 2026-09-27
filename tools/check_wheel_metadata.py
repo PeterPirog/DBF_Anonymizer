@@ -63,9 +63,7 @@ def check_wheel(wheel: Path) -> None:
     if vcs_requirements:
         _fail(f"Git/VCS URL dependency present: {vcs_requirements!r}")
 
-    direct_dbf = [
-        r for r in requirements if r.split(";")[0].split("[")[0].strip() == "dbf"
-    ]
+    direct_dbf = [r for r in requirements if r.split(";")[0].split("[")[0].strip() == "dbf"]
     if direct_dbf:
         _fail(f"direct dbf dependency present: {direct_dbf!r} (must stay transitive)")
 
@@ -97,8 +95,16 @@ def check_wheel(wheel: Path) -> None:
         ".opencode",
     )
     forbidden_suffixes = (
-        ".dbf", ".fpt", ".cdx", ".idx", ".dbc", ".dct", ".dcx",
-        ".sqlite3", "-wal", "-shm",
+        ".dbf",
+        ".fpt",
+        ".cdx",
+        ".idx",
+        ".dbc",
+        ".dct",
+        ".dcx",
+        ".sqlite3",
+        "-wal",
+        "-shm",
     )
     leaked = [
         name

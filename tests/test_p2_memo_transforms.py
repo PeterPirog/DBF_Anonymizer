@@ -41,9 +41,7 @@ def test_mask_policy_version_and_constants() -> None:
     assert memo_kernels.MEMO_TEXT_MASK_ALT.isascii()
     assert memo_kernels.MEMO_BINARY_MASK_ALT.isascii()
     assert len(memo_kernels.MEMO_TEXT_MASK) == len(memo_kernels.MEMO_BINARY_MASK)
-    assert (
-        len(memo_kernels.MEMO_TEXT_MASK_ALT) == len(memo_kernels.MEMO_BINARY_MASK_ALT)
-    )
+    assert len(memo_kernels.MEMO_TEXT_MASK_ALT) == len(memo_kernels.MEMO_BINARY_MASK_ALT)
     # The payload-kind vocabulary is exactly the vault schema vocabulary.
     assert memo_kernels.MEMO_PAYLOAD_KIND_TEXT == VAULT_PAYLOAD_KIND_TEXT
     assert memo_kernels.MEMO_PAYLOAD_KIND_BINARY == VAULT_PAYLOAD_KIND_BINARY
@@ -151,13 +149,7 @@ def test_unsupported_error_is_stable_and_value_free() -> None:
     canary_int = 987654321
     with pytest.raises(MappingError) as excinfo:
         memo_kernels.memo_safe_mask(canary_int)
-    boundary = (
-        str(excinfo.value)
-        + "|"
-        + repr(excinfo.value)
-        + "|"
-        + _safe_json(excinfo.value)
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + _safe_json(excinfo.value)
     assert str(canary_int) not in boundary
     assert "MEMO_UNSUPPORTED_REPRESENTATION" in boundary
     assert "MAPPING_CONSTRAINT_INFEASIBLE" in boundary

@@ -9,7 +9,6 @@ byte construction); reading uses the public ``iter_records`` stream.
 from __future__ import annotations
 
 import hashlib
-from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -18,7 +17,6 @@ from dbfbridge import (
     DirectRecord,
     FieldInfo,
     TableSchema,
-    WriteResult,
     write_table,
 )
 
@@ -97,19 +95,12 @@ def write_memo_table(
     return destination
 
 
-def read_memo_records(
-    dbf_path: Path, *, include_deleted: bool = True
-) -> tuple[DirectRecord, ...]:
+def read_memo_records(dbf_path: Path, *, include_deleted: bool = True) -> tuple[DirectRecord, ...]:
     """Stream the public logical values of one memo table (read-only)."""
-    return tuple(
-        dbfbridge.iter_records(
-            dbf_path, memo="inline", include_deleted=include_deleted
-        )
-    )
+    return tuple(dbfbridge.iter_records(dbf_path, memo="inline", include_deleted=include_deleted))
 
 
 def file_sha256(path: Path) -> str:
-    import hashlib
 
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -127,8 +118,7 @@ def field_triplet(
     names: Sequence[str], types: Sequence[str], widths: Sequence[int]
 ) -> tuple[FieldInfo, ...]:
     return tuple(
-        field(name, dbf_type, width)
-        for name, dbf_type, width in zip(names, types, widths)
+        field(name, dbf_type, width) for name, dbf_type, width in zip(names, types, widths)
     )
 
 

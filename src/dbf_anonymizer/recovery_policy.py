@@ -30,6 +30,4 @@ class RecoveryPolicy(str, Enum):
             return cls(value.lower())
         except ValueError:
             valid = ", ".join(item.value for item in cls)
-            raise ValueError(
-                f"recovery-policy must be one of: {valid}"
-            ) from None
+            raise ValueError(f"recovery-policy must be one of: {valid}") from None

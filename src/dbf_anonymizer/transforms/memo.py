@@ -110,9 +110,7 @@ def _unsupported() -> MappingError:
     """Stable typed failure for an unsafe memo representation (no values)."""
     return MappingError(
         ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE,
-        context=ErrorContext(
-            operation="transform", detail_code="MEMO_UNSUPPORTED_REPRESENTATION"
-        ),
+        context=ErrorContext(operation="transform", detail_code="MEMO_UNSUPPORTED_REPRESENTATION"),
     )
 
 
@@ -146,11 +144,7 @@ def memo_safe_mask(value: object) -> str | bytes | None:
     if isinstance(value, str):
         return MEMO_TEXT_MASK_ALT if value == MEMO_TEXT_MASK else MEMO_TEXT_MASK
     if isinstance(value, (bytes, bytearray)):
-        return (
-            MEMO_BINARY_MASK_ALT
-            if bytes(value) == MEMO_BINARY_MASK
-            else MEMO_BINARY_MASK
-        )
+        return MEMO_BINARY_MASK_ALT if bytes(value) == MEMO_BINARY_MASK else MEMO_BINARY_MASK
     raise _unsupported()
 
 

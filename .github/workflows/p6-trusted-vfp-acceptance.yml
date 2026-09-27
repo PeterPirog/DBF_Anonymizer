@@ -1,0 +1,121 @@
+name: P6 trusted real-VFP9 acceptance (isolated)
+
+# REQ-P7-006 TRUSTED LANE — security-critical, FAIL-CLOSED.
+#
+# UNTRUSTED PULL-REQUEST CODE MUST NEVER EXECUTE ON THE TRUSTED SELF-HOSTED
+# WINDOWS/VFP9 MACHINE.
+#
+# TWO REQUIRED LAYERS (both must exist before this lane may ever run):
+#
+# LAYER 1 — GitHub platform authorization (EXTERNAL POLICY, NOT repository
+# content):
+#   The trusted Windows/VFP9 runner must belong to an organization/enterprise
+#   RUNNER GROUP whose access policy:
+#   * allows access only to this repository (selected-repositories allowlist,
+#     public-repository access granted deliberately);
+#   * restricts workflow access to EXACTLY this workflow file, pinned to the
+#     protected refs/heads/main;
+#   * so no other (including future, PR-modified) workflow file can schedule
+#     jobs on the trusted machine.
+#   GitHub documents this boundary only for organization/enterprise runner
+#   groups.  This repository is currently PUBLIC and USER-OWNED, so the
+#   platform boundary CANNOT exist yet — the lane stays unschedulable until
+#   the owner/topology decision is made.  A repository-level self-hosted
+#   runner must NOT be registered as a workaround (official GitHub guidance:
+#   self-hosted runners should almost never be used with public repositories).
+#
+# LAYER 2 — workflow defense in depth (this file):
+#   workflow_dispatch ONLY (never pull_request, never pull_request_target,
+#   never workflow_run, never push from a PR context); contents: read;
+#   refuses every ref except the protected main branch BEFORE any checkout;
+#   checks out ONLY the dispatched trusted ref (never
+#   github.event.pull_request.head.sha, never a caller-provided SHA/branch);
+#   records and verifies the exact trusted revision identity; delegates ALL
+#   real-VFP9 semantics to the established REQ-P6-003 acceptance runner tool.
+#
+# FAIL-CLOSED runner targeting: the group and label are read from the
+# authoritative repository variables below.  `jobs.<job_id>.runs-on`
+# officially allows the `vars` context.  While EITHER variable is unset (the
+# current state), the job cannot be scheduled to any runner — the lane is
+# inert and produces no evidence.  NO group or label name is committed here;
+# the values are configured by the platform owner together with the runner
+# group.  A label is ROUTING information only; the platform runner-group
+# policy is the authorization boundary.
+#
+# ACCEPTANCE LIFECYCLE (two stages; see .github/trusted-vfp-runner-policy.json):
+#   STAGE A — this workflow is version-controlled on the branch; once the
+#     ENABLING MERGE places it on the default branch, it becomes legally
+#     dispatchable (workflow_dispatch only receives events for workflow files
+#     on the default branch).  The enabling merge does NOT mark REQ-P7-006
+#     PASS and does NOT authorize REQ-P7-007.
+#   STAGE B — only after the platform runner-group boundary is provisioned
+#     AND verified from live GitHub configuration may the variables be
+#     populated and this lane be dispatched on protected main to produce the
+#     real VFP9 acceptance evidence.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-vfp9-acceptance:
+    name: Trusted real VFP9 acceptance (isolated self-hosted Windows runner group)
+    runs-on:
+      group: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_GROUP }}
+      labels: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}
+    timeout-minutes: 60
+    steps:
+      - name: Trust guard — the trusted machine runs ONLY the protected main ref
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "trusted VFP lane refuses non-main ref: $env:GITHUB_REF"
+          }
+          if ($env:GITHUB_EVENT_NAME -ne "workflow_dispatch") {
+            throw "trusted VFP lane refuses event: $env:GITHUB_EVENT_NAME"
+          }
+          Write-Output "trusted ref accepted: $env:GITHUB_REF"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No explicit ref: checks out exactly the dispatched GITHUB_REF (main),
+        # never github.event.pull_request.head.sha or a caller-provided SHA.
+      - name: Exact trusted revision identity
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $originHead = git rev-parse origin/main
+          Write-Output "trusted_head=$head"
+          Write-Output "origin_main=$originHead"
+          if ($head -ne $originHead) {
+            throw "trusted checkout is not the pushed protected main commit"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "TRUSTED_HEAD=$head"
+      - name: Set up the acceptance Python (trusted machine, hosted-equivalent tooling only)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the tested acceptance environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Real VFP9 acceptance (established REQ-P6-003 trusted runner tool)
+        shell: pwsh
+        env:
+          DBF_EXPECTED_ARCHITECTURE_SHA256: 483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $evidence = Join-Path $env:RUNNER_TEMP "p6-real-vfp9-evidence.json"
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Force
+          }
+          python tools/run_real_vfp9_acceptance.py `
+            --output "$evidence" `
+            --expected-branch main `
+            --expected-head "$env:TRUSTED_HEAD" `
+            --expected-architecture-sha256 "$env:DBF_EXPECTED_ARCHITECTURE_SHA256"
+          Write-Output "--- sanitized evidence ---"
+          Get-Content -LiteralPath $evidence

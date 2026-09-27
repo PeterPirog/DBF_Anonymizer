@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from dbf_anonymizer.engine import direct_io
 from tests.support.numeric_tables import (
     NULLABLE_FLAG,
     numeric_field,
@@ -43,10 +42,7 @@ _FORBIDDEN_ENGINE_IMPORTS = (
 
 
 def _engine_sources() -> dict[Path, str]:
-    return {
-        path: path.read_text(encoding="utf-8")
-        for path in sorted(ENGINE_ROOT.rglob("*.py"))
-    }
+    return {path: path.read_text(encoding="utf-8") for path in sorted(ENGINE_ROOT.rglob("*.py"))}
 
 
 def test_engine_sources_never_import_forbidden_modules() -> None:
@@ -79,14 +75,10 @@ def test_engine_sources_never_import_forbidden_modules() -> None:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
-                    assert root not in forbidden_roots, (
-                        f"{path.name} imports {alias.name}"
-                    )
+                    assert root not in forbidden_roots, f"{path.name} imports {alias.name}"
             elif isinstance(node, ast.ImportFrom):
                 root = (node.module or "").split(".")[0]
-                assert root not in forbidden_roots, (
-                    f"{path.name} imports from {node.module}"
-                )
+                assert root not in forbidden_roots, f"{path.name} imports from {node.module}"
             elif isinstance(node, ast.Name):
                 assert node.id not in {"export_dbf", "reconstruct_dbf"}, (
                     f"{path.name} references a superseded pipeline operation"
@@ -112,8 +104,7 @@ def test_engine_never_touches_private_dbfbridge_namespaces() -> None:
             if attribute.startswith("__") and attribute.endswith("__"):
                 continue  # public dunder version access
             assert not attribute.startswith("_"), (
-                f"{path.name} references the private dbfbridge symbol "
-                f"dbfbridge.{attribute}"
+                f"{path.name} references the private dbfbridge symbol dbfbridge.{attribute}"
             )
 
 
@@ -254,9 +245,7 @@ def test_engine_errors_never_leak_canaries(tmp_path: Path) -> None:
     )
     with pytest.raises(PathError) as excinfo:
         run_two_pass(plan)
-    boundary = (
-        str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     assert canary_text not in boundary
     assert "C:\\" not in boundary
     _ = PathError

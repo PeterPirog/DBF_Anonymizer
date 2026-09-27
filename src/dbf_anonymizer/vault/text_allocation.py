@@ -116,9 +116,7 @@ def _global_text_domain_id() -> str:
     resolves to the SAME domain, and no source value, path or salt is
     involved. Distinct originals never influence the domain identity.
     """
-    digest = hashlib.sha256(
-        b"dbf_anonymizer/REQ-P2-005/GLOBAL_TEXT_DOMAIN/v1"
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(b"dbf_anonymizer/REQ-P2-005/GLOBAL_TEXT_DOMAIN/v1").hexdigest()[:16]
     return "dom-" + digest
 
 
@@ -139,9 +137,7 @@ def _mapping_failure(code: ErrorCode, detail_code: str) -> MappingError:
 _PlanEntry: TypeAlias = tuple[Literal["generic"], int] | tuple[Literal["named"], str]
 
 
-def _jth_free_in_class(
-    class_low: int, class_size: int, blocked: Iterable[int], j: int
-) -> int:
+def _jth_free_in_class(class_low: int, class_size: int, blocked: Iterable[int], j: int) -> int:
     """The absolute index of the ``j``-th free token of one length class.
 
     ``blocked`` holds unique absolute indices inside the class block
@@ -221,7 +217,6 @@ class _ResidualFlow:
 
     def _blocking_push(self, source: int, sink: int, limit: int) -> int:
         graph = self._graph
-        levels = self._levels
         iterator = self._iter
         total = 0
         path: list[list[int]] = []  # forward edge objects along the path
@@ -456,9 +451,7 @@ class GlobalTextDomainMapping:
         must be held by the vault instance).
         """
         if not self._finalized:
-            raise ValueError(
-                "pseudonym allocation requires the finalized constraint set"
-            )
+            raise ValueError("pseudonym allocation requires the finalized constraint set")
         if not isinstance(original, str):
             raise TypeError("original must be a decoded str value")
         if original == "":
@@ -493,9 +486,7 @@ class GlobalTextDomainMapping:
             self._ensure_plan()
             fresh = get_text_pseudonym(self._database, self._domain_id, original)
             if fresh is not None:
-                self._validate_pseudonym(
-                    original, fresh, width, _DETAIL_REUSED_PREFIX
-                )
+                self._validate_pseudonym(original, fresh, width, _DETAIL_REUSED_PREFIX)
                 return fresh
             entry = self._plan.get(original) if self._plan is not None else None
             if entry is None:
@@ -506,9 +497,7 @@ class GlobalTextDomainMapping:
                 # The complete residual problem (this original plus every
                 # other finalized unpersisted original, against all fixed
                 # persisted mappings) has no feasible bijective completion.
-                raise _mapping_failure(
-                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-                )
+                raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
             candidate = self._select_candidate(original, entry)
             length = max_encoded_byte_length(candidate, self._encodings)
             if length is None:  # pragma: no cover - safe tokens are provable
@@ -563,9 +552,7 @@ class GlobalTextDomainMapping:
         external prefix keeps the plan instead of rebuilding it on every later
         allocation.
         """
-        return len(text_mapping_rows(self._database, self._domain_id)) - len(
-            self._own_persisted
-        )
+        return len(text_mapping_rows(self._database, self._domain_id)) - len(self._own_persisted)
 
     def _ensure_plan(self) -> None:
         """Keep the global assignment plan current (rebuild when state moved).
@@ -606,9 +593,7 @@ class GlobalTextDomainMapping:
         """
         assert self._alphabet is not None
         unpersisted = [
-            original
-            for original in self._strictest
-            if original not in self._persisted_originals
+            original for original in self._strictest if original not in self._persisted_originals
         ]
         if not unpersisted:
             self._plan = {}
@@ -624,9 +609,7 @@ class GlobalTextDomainMapping:
 
         network = _ResidualFlow(2 + len(unpersisted) + max_width + len(reserved))
         source, sink = 0, 1
-        original_node = {
-            original: 2 + index for index, original in enumerate(unpersisted)
-        }
+        original_node = {original: 2 + index for index, original in enumerate(unpersisted)}
         class_node_of_length: dict[int, int] = {}
         token_node_of: dict[str, int] = {}
         offset = 2 + len(unpersisted)
@@ -643,9 +626,7 @@ class GlobalTextDomainMapping:
                 network.add_edge(original_node[original], class_node_of_length[length], 1)
             for token in sorted(reserved):
                 if len(token) <= width and token != original:
-                    network.add_edge(
-                        original_node[original], token_node_of[token], 1
-                    )
+                    network.add_edge(original_node[original], token_node_of[token], 1)
         for length in range(1, max_width + 1):
             generic = free_of_length[length] - reserved_by_length.get(length, 0)
             if generic > 0:
@@ -661,20 +642,14 @@ class GlobalTextDomainMapping:
             self._plan = {}
             self._plan_reserved = {}
             self._plan_signature = self._current_plan_signature()
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-            )
-        class_length_of_node = {
-            node: length for length, node in class_node_of_length.items()
-        }
+            raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
+        class_length_of_node = {node: length for length, node in class_node_of_length.items()}
         token_of_node = {node: token for token, node in token_node_of.items()}
         plan: dict[str, _PlanEntry] = {}
         for original in unpersisted:
             target = network.routed_target(original_node[original])
             if target is None:  # pragma: no cover - flow == demand guarantees
-                raise _mapping_failure(
-                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-                )
+                raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
             assigned_class = class_length_of_node.get(target)
             if assigned_class is not None:
                 plan[original] = ("generic", assigned_class)
@@ -682,9 +657,7 @@ class GlobalTextDomainMapping:
                 plan[original] = ("named", token_of_node[target])
         self._plan = plan
         self._plan_reserved = dict(reserved)
-        self._plan_promised = {
-            str(entry[1]) for entry in plan.values() if entry[0] == "named"
-        }
+        self._plan_promised = {str(entry[1]) for entry in plan.values() if entry[0] == "named"}
         self._plan_signature = self._current_plan_signature()
 
     def _free_count_by_length(self) -> dict[int, int]:
@@ -738,9 +711,7 @@ class GlobalTextDomainMapping:
         if entry[0] == "named":
             token = entry[1]
             if token in self._used:  # pragma: no cover - plan reserved it free
-                raise _mapping_failure(
-                    ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-                )
+                raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
             return token
         length = entry[1]
         class_low = token_space(length - 1, self._base)
@@ -749,32 +720,18 @@ class GlobalTextDomainMapping:
         for pseudonym, pseudonym_length in self._used.items():
             if pseudonym_length == length:
                 blocked.add(pseudonym)
-        blocked.update(
-            token
-            for token in self._plan_reserved
-            if len(token) == length
-        )
-        blocked.update(
-            token
-            for token in self._plan_promised
-            if len(token) == length
-        )
+        blocked.update(token for token in self._plan_reserved if len(token) == length)
+        blocked.update(token for token in self._plan_promised if len(token) == length)
         free_non_reserved = class_size - len(blocked)
         if free_non_reserved <= 0:  # pragma: no cover - plan guarantees supply
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-            )
+            raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
         for _ in range(GLOBAL_TEXT_PROBE_BUDGET):
-            candidate = token_at(
-                class_low + self._random_below(class_size), length, self._alphabet
-            )
+            candidate = token_at(class_low + self._random_below(class_size), length, self._alphabet)
             if candidate == original or candidate in blocked:
                 continue  # random collision or forbidden candidate
             return candidate
         # Exact completion: the j-th free non-reserved token of the class.
-        blocked_indices = sorted(
-            token_index(token, self._alphabet) for token in blocked
-        )
+        blocked_indices = sorted(token_index(token, self._alphabet) for token in blocked)
         chosen = _jth_free_in_class(
             class_low, class_size, blocked_indices, self._random_below(free_non_reserved)
         )
@@ -793,21 +750,15 @@ class GlobalTextDomainMapping:
         if not is_safe_token(pseudonym, self._alphabet):
             raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, prefix + "_UNSAFE")
         if pseudonym == original:
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CONFLICT, prefix + "_SELF_MAPPING"
-            )
+            raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, prefix + "_SELF_MAPPING")
         length = max_encoded_byte_length(pseudonym, self._encodings)
         if length is None or length != len(pseudonym):
             raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, prefix + "_UNSAFE")
         if width is not None and length > width:
             # A later stricter constraint may never silently invalidate an
             # existing mapping: fail closed, keep the persisted mapping.
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CONFLICT, prefix + "_INCOMPATIBLE"
-            )
+            raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, prefix + "_INCOMPATIBLE")
 
 
 def _has_domain(database: VaultDatabase, domain_id: str) -> bool:
-    return any(
-        row["domain_id"] == domain_id for row in mapping_domains(database)
-    )
+    return any(row["domain_id"] == domain_id for row in mapping_domains(database))

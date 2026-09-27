@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
-from typing import Callable
 
 import pytest
 from dbfbridge import iter_records, read_schema
@@ -40,7 +39,6 @@ from dbf_anonymizer.vault import (
     VAULT_DATABASE_FILENAME,
     VaultDatabase,
     mappings,
-    new_writer_token,
 )
 from dbf_anonymizer.vault.text_allocation import (
     GLOBAL_TEXT_PROBE_BUDGET,
@@ -113,9 +111,7 @@ def _allocator(
     )
 
 
-def _seed_global_domain_rows(
-    vault: VaultDatabase, rows: list[tuple[str, str, int]]
-) -> None:
+def _seed_global_domain_rows(vault: VaultDatabase, rows: list[tuple[str, str, int]]) -> None:
     """Persist seed rows of the global text domain BEFORE finalization."""
     with writer_session(vault), vault.transaction():
         mappings.create_domain(
@@ -227,8 +223,7 @@ def test_production_fresh_vaults_are_independently_randomized(tmp_path: Path) ->
                     second = allocated
     assert len(set(first)) == 6 and len(set(second)) == 6
     assert all(
-        text_kernels.is_safe_token(p, text_kernels.SAFE_TEXT_ALPHABET)
-        for p in first + second
+        text_kernels.is_safe_token(p, text_kernels.SAFE_TEXT_ALPHABET) for p in first + second
     )
     assert first != second
 
@@ -308,8 +303,7 @@ def test_bounded_probe_budget_never_raises_exhaustion(tmp_path: Path) -> None:
 def test_exact_full_exhaustion_is_typed_and_creates_no_row(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         rows = [
-            (f"SEED-{index:02d}", ch, 1)
-            for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
+            (f"SEED-{index:02d}", ch, 1) for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
         ]
         _seed_global_domain_rows(vault, rows)
         with writer_session(vault):
@@ -566,8 +560,7 @@ def test_stricter_later_constraint_fails_closed_without_remap(tmp_path: Path) ->
         # route the width-10 original into a longer class, producing a
         # deliberately LONG persisted pseudonym (a full width-2 token).
         rows = [
-            (f"SEED-{index:02d}", ch, 1)
-            for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
+            (f"SEED-{index:02d}", ch, 1) for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
         ]
         _seed_global_domain_rows(vault, rows)
         with writer_session(vault):
@@ -700,8 +693,9 @@ def test_mazovia_public_schema_representation_allocation(tmp_path: Path) -> None
         assert len({pseudonym for _o, pseudonym, _l in rows}) == len(rows)
     # The committed Mazovia table also decodes identically through the
     # dependency's public "piast" codec alias (representation evidence).
-    assert list(iter_records(schema.path, encoding="piast"))[0].values["TEXT"] == (
-        list(iter_records(schema.path))[0].values["TEXT"]
+    assert (
+        list(iter_records(schema.path, encoding="piast"))[0].values["TEXT"]
+        == (list(iter_records(schema.path))[0].values["TEXT"])
     )
 
 
@@ -884,8 +878,7 @@ def test_public_errors_never_leak_originals_or_pseudonyms(tmp_path: Path) -> Non
     captured: list[BaseException] = []
     with _create(tmp_path) as vault:
         rows = [
-            (f"SEED-{index:02d}", ch, 1)
-            for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
+            (f"SEED-{index:02d}", ch, 1) for index, ch in enumerate(text_kernels.SAFE_TEXT_ALPHABET)
         ]
         _seed_global_domain_rows(vault, rows)
         with writer_session(vault):

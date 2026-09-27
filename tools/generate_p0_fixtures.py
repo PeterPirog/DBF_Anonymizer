@@ -87,7 +87,9 @@ COVERAGE_BY_CAPABILITY_ONLY = {
 # ---------------------------------------------------------------------------
 
 
-def _field(name: str, dbf_type: str, length: int, *, decimals: int = 0, flags: int = 0) -> FieldInfo:
+def _field(
+    name: str, dbf_type: str, length: int, *, decimals: int = 0, flags: int = 0
+) -> FieldInfo:
     return FieldInfo(
         ordinal=0,
         name=name,
@@ -181,24 +183,72 @@ _PLAIN_FIELDS = (
 )
 
 _PLAIN_RECORDS = [
-    {"CODE": "SYNTH-01", "CNT": -42, "AMOUNT": 123.45, "RATIO": 2.5,
-     "PRICE": Decimal("1234.5678"), "MEASURE": 3.14159, "FLAG": True,
-     "WHEN": date(2028, 2, 29), "MOMENT": datetime(2028, 2, 29, 23, 59, 58)},
-    {"CODE": "SYNTH-02", "CNT": 0, "AMOUNT": 0.0, "RATIO": 0.5,
-     "PRICE": Decimal("0.0001"), "MEASURE": -2.5, "FLAG": False,
-     "WHEN": date(2024, 2, 29), "MOMENT": datetime(2024, 2, 29, 0, 0, 1)},
-    {"CODE": "SYNTH-03", "CNT": 77, "AMOUNT": 999.99, "RATIO": -1.25,
-     "PRICE": Decimal("0.05"), "MEASURE": 12345.6789, "FLAG": False,
-     "WHEN": date(2026, 1, 1), "MOMENT": datetime(2026, 1, 1, 12, 0, 0)},
-    {"CODE": "SYNTH-04", "CNT": -1, "AMOUNT": 1.01, "RATIO": 100.0,
-     "PRICE": Decimal("999999.9999"), "MEASURE": 0.0, "FLAG": True,
-     "WHEN": date(2020, 12, 31), "MOMENT": datetime(2020, 12, 31, 0, 0, 0)},
-    {"CODE": "SYNTH-05", "CNT": 123, "AMOUNT": 12.34, "RATIO": 0.0001,
-     "PRICE": Decimal("1.99"), "MEASURE": 2.5, "FLAG": False,
-     "WHEN": date(1999, 12, 31), "MOMENT": datetime(1999, 12, 31, 6, 30, 0)},
-    {"CODE": "SYNTH-06", "CNT": 5, "AMOUNT": 5.55, "RATIO": 5.0,
-     "PRICE": Decimal("5.55"), "MEASURE": 5.5, "FLAG": None,
-     "WHEN": date(2001, 1, 1), "MOMENT": datetime(2001, 1, 1, 1, 1, 1)},
+    {
+        "CODE": "SYNTH-01",
+        "CNT": -42,
+        "AMOUNT": 123.45,
+        "RATIO": 2.5,
+        "PRICE": Decimal("1234.5678"),
+        "MEASURE": 3.14159,
+        "FLAG": True,
+        "WHEN": date(2028, 2, 29),
+        "MOMENT": datetime(2028, 2, 29, 23, 59, 58),
+    },
+    {
+        "CODE": "SYNTH-02",
+        "CNT": 0,
+        "AMOUNT": 0.0,
+        "RATIO": 0.5,
+        "PRICE": Decimal("0.0001"),
+        "MEASURE": -2.5,
+        "FLAG": False,
+        "WHEN": date(2024, 2, 29),
+        "MOMENT": datetime(2024, 2, 29, 0, 0, 1),
+    },
+    {
+        "CODE": "SYNTH-03",
+        "CNT": 77,
+        "AMOUNT": 999.99,
+        "RATIO": -1.25,
+        "PRICE": Decimal("0.05"),
+        "MEASURE": 12345.6789,
+        "FLAG": False,
+        "WHEN": date(2026, 1, 1),
+        "MOMENT": datetime(2026, 1, 1, 12, 0, 0),
+    },
+    {
+        "CODE": "SYNTH-04",
+        "CNT": -1,
+        "AMOUNT": 1.01,
+        "RATIO": 100.0,
+        "PRICE": Decimal("999999.9999"),
+        "MEASURE": 0.0,
+        "FLAG": True,
+        "WHEN": date(2020, 12, 31),
+        "MOMENT": datetime(2020, 12, 31, 0, 0, 0),
+    },
+    {
+        "CODE": "SYNTH-05",
+        "CNT": 123,
+        "AMOUNT": 12.34,
+        "RATIO": 0.0001,
+        "PRICE": Decimal("1.99"),
+        "MEASURE": 2.5,
+        "FLAG": False,
+        "WHEN": date(1999, 12, 31),
+        "MOMENT": datetime(1999, 12, 31, 6, 30, 0),
+    },
+    {
+        "CODE": "SYNTH-06",
+        "CNT": 5,
+        "AMOUNT": 5.55,
+        "RATIO": 5.0,
+        "PRICE": Decimal("5.55"),
+        "MEASURE": 5.5,
+        "FLAG": None,
+        "WHEN": date(2001, 1, 1),
+        "MOMENT": datetime(2001, 1, 1, 1, 1, 1),
+    },
 ]
 _PLAIN_DELETED = (3, 5)
 
@@ -251,11 +301,21 @@ _MEMO_FIELDS = (
     _field("PIC", "P", 4),
 )
 _MEMO_RECORDS = [
-    {"CODE": "SYNTH-A", "TXT": "Zażółć gęślą jaźń SYNTH-MEMO",
-     "BIN": MEMO_BINARY, "GEN": GENERAL_PAYLOAD, "PIC": PICTURE_PAYLOAD},
+    {
+        "CODE": "SYNTH-A",
+        "TXT": "Zażółć gęślą jaźń SYNTH-MEMO",
+        "BIN": MEMO_BINARY,
+        "GEN": GENERAL_PAYLOAD,
+        "PIC": PICTURE_PAYLOAD,
+    },
     {"CODE": "SYNTH-B", "TXT": None, "BIN": None, "GEN": None, "PIC": None},
-    {"CODE": "SYNTH-C", "TXT": "DELETED-MEMO-SYNTH", "BIN": b"\x01\x02\x03",
-     "GEN": None, "PIC": None},
+    {
+        "CODE": "SYNTH-C",
+        "TXT": "DELETED-MEMO-SYNTH",
+        "BIN": b"\x01\x02\x03",
+        "GEN": None,
+        "PIC": None,
+    },
 ]
 _MEMO_DELETED = (2,)
 
@@ -333,15 +393,16 @@ def _build_table(
         destination,
         schema=_schema(fields, dbversion=dbversion, driver=driver, encoding=encoding),
         records=[
-            _rec(index, values, deleted=index in deleted)
-            for index, values in enumerate(records)
+            _rec(index, values, deleted=index in deleted) for index, values in enumerate(records)
         ],
         overwrite=True,
     )
     return read_schema(destination)
 
 
-def _dbf_facts(schema: TableSchema, path: Path, *, include_deleted: bool = True) -> dict[str, object]:
+def _dbf_facts(
+    schema: TableSchema, path: Path, *, include_deleted: bool = True
+) -> dict[str, object]:
     records = list(iter_records(schema.path, include_deleted=include_deleted))
     deleted = sum(1 for record in records if record.deleted)
     info = inspect_table(schema.path)
@@ -456,9 +517,7 @@ def _integrate_vfp_fixtures(out_root: Path, fixtures: list[dict[str, object]]) -
     the public dbfbridge API where the DBF boundary applies, and manifested.
     """
     if not VFP_SOURCE_DIR.is_dir():
-        raise RuntimeError(
-            f"committed VFP evidence subtree is missing: {VFP_SOURCE_DIR}"
-        )
+        raise RuntimeError(f"committed VFP evidence subtree is missing: {VFP_SOURCE_DIR}")
     evidence = json.loads(
         (VFP_SOURCE_DIR / "vfp_fixture_evidence.json").read_text(encoding="utf-8")
     )
@@ -475,8 +534,7 @@ def _integrate_vfp_fixtures(out_root: Path, fixtures: list[dict[str, object]]) -
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if digest != candidate["sha256"]:
             raise RuntimeError(
-                f"VFP artifact hash mismatch against the committed evidence "
-                f"record: {relative}"
+                f"VFP artifact hash mismatch against the committed evidence record: {relative}"
             )
     # Companion facts are computed only AFTER every artifact (including
     # companions such as the structural CDX) has been published, so the
@@ -488,8 +546,7 @@ def _integrate_vfp_fixtures(out_root: Path, fixtures: list[dict[str, object]]) -
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if digest != candidate["sha256"]:
             raise RuntimeError(
-                f"VFP artifact hash mismatch against the committed evidence "
-                f"record: {relative}"
+                f"VFP artifact hash mismatch against the committed evidence record: {relative}"
             )
         entry: dict[str, object] = {
             "id": role["id"],
@@ -591,7 +648,10 @@ def generate(out_root: Path) -> None:
 
     # A. plain scalar table with deleted records
     plain_schema = _build_table(
-        out_root, "plain/plain_customers.dbf", _PLAIN_FIELDS, _PLAIN_RECORDS,
+        out_root,
+        "plain/plain_customers.dbf",
+        _PLAIN_FIELDS,
+        _PLAIN_RECORDS,
         deleted=_PLAIN_DELETED,
     )
     declare(
@@ -600,15 +660,31 @@ def generate(out_root: Path) -> None:
         artifact_class="dbf",
         dbf_facts=_dbf_facts(plain_schema, plain_schema.path),
         coverage=[
-            "plain_dbf", "deleted_records", "character", "integer", "numeric",
-            "float", "currency", "double", "logical", "date", "datetime", "cp1250",
+            "plain_dbf",
+            "deleted_records",
+            "character",
+            "integer",
+            "numeric",
+            "float",
+            "currency",
+            "double",
+            "logical",
+            "date",
+            "datetime",
+            "cp1250",
         ],
         expectations={
             "values": {
                 "row0": {
-                    "CODE": "SYNTH-01", "CNT": -42, "AMOUNT": 123.45, "RATIO": 2.5,
-                    "PRICE": "1234.5678", "MEASURE": 3.14159, "FLAG": True,
-                    "WHEN": "2028-02-29", "MOMENT": "2028-02-29T23:59:58",
+                    "CODE": "SYNTH-01",
+                    "CNT": -42,
+                    "AMOUNT": 123.45,
+                    "RATIO": 2.5,
+                    "PRICE": "1234.5678",
+                    "MEASURE": 3.14159,
+                    "FLAG": True,
+                    "WHEN": "2028-02-29",
+                    "MOMENT": "2028-02-29T23:59:58",
                 }
             },
             "deleted_physical_indexes": [3, 5],
@@ -624,8 +700,13 @@ def generate(out_root: Path) -> None:
             {"CODE": "SYN2", "TEXT": "ASCII-ONLY-SYNTH-ROW"},
         ]
         text_schemas[encoding] = _build_table(
-            out_root, f"text/text_{encoding}.dbf", text_fields, text_records,
-            deleted=(), driver=driver, encoding=encoding,
+            out_root,
+            f"text/text_{encoding}.dbf",
+            text_fields,
+            text_records,
+            deleted=(),
+            driver=driver,
+            encoding=encoding,
         )
         declare(
             f"text.{encoding}",
@@ -633,17 +714,22 @@ def generate(out_root: Path) -> None:
             artifact_class="dbf",
             dbf_facts=_dbf_facts(text_schemas[encoding], text_schemas[encoding].path),
             coverage=[
-                "character", "cp1250" if encoding == "cp1250" else (
-                    "cp852" if encoding == "cp852" else "mazovia_piast_text"
-                ),
+                "character",
+                "cp1250"
+                if encoding == "cp1250"
+                else ("cp852" if encoding == "cp852" else "mazovia_piast_text"),
             ],
             expectations={"row0_text": _TEXT_TEXTS[encoding]},
         )
 
     # C. NULL values + _NullFlags + significant Varchar trailing spaces
     nullable_schema = _build_table(
-        out_root, "nullable/nullable_varchar.dbf", _NULLABLE_FIELDS,
-        _NULLABLE_RECORDS, deleted=(), dbversion=0x32,
+        out_root,
+        "nullable/nullable_varchar.dbf",
+        _NULLABLE_FIELDS,
+        _NULLABLE_RECORDS,
+        deleted=(),
+        dbversion=0x32,
     )
     declare(
         "nullable.nullable_varchar",
@@ -651,8 +737,13 @@ def generate(out_root: Path) -> None:
         artifact_class="dbf",
         dbf_facts=_dbf_facts(nullable_schema, nullable_schema.path),
         coverage=[
-            "null_values_and_nullflags", "varchar_significant_trailing_spaces",
-            "character", "integer", "numeric", "logical", "date",
+            "null_values_and_nullflags",
+            "varchar_significant_trailing_spaces",
+            "character",
+            "integer",
+            "numeric",
+            "logical",
+            "date",
         ],
         expectations={
             "row0_varchar": "padded   ",
@@ -664,7 +755,10 @@ def generate(out_root: Path) -> None:
 
     # D. cross-table topology: duplicate basenames + shared keys
     north_schema = _build_table(
-        out_root, "topology/north/registry.dbf", _NORTH_FIELDS, _NORTH_RECORDS,
+        out_root,
+        "topology/north/registry.dbf",
+        _NORTH_FIELDS,
+        _NORTH_RECORDS,
         deleted=_NORTH_DELETED,
     )
     declare(
@@ -672,8 +766,13 @@ def generate(out_root: Path) -> None:
         north_schema.path,
         artifact_class="dbf",
         dbf_facts=_dbf_facts(north_schema, north_schema.path),
-        coverage=["duplicate_basenames", "shared_cross_table_keys", "character",
-                  "integer", "deleted_records"],
+        coverage=[
+            "duplicate_basenames",
+            "shared_cross_table_keys",
+            "character",
+            "integer",
+            "deleted_records",
+        ],
         relationships={
             "role": "primary-key-side",
             "shared_key_field": "KEY",
@@ -683,7 +782,10 @@ def generate(out_root: Path) -> None:
         },
     )
     south_schema = _build_table(
-        out_root, "topology/south/registry.dbf", _SOUTH_FIELDS, _SOUTH_RECORDS,
+        out_root,
+        "topology/south/registry.dbf",
+        _SOUTH_FIELDS,
+        _SOUTH_RECORDS,
         deleted=_SOUTH_DELETED,
     )
     declare(
@@ -703,7 +805,10 @@ def generate(out_root: Path) -> None:
 
     # F. DBF + FPT memo payloads (text memo, binary memo, General, Picture)
     memo_schema = _build_table(
-        out_root, "memos/memo_payloads.dbf", _MEMO_FIELDS, _MEMO_RECORDS,
+        out_root,
+        "memos/memo_payloads.dbf",
+        _MEMO_FIELDS,
+        _MEMO_RECORDS,
         deleted=_MEMO_DELETED,
     )
     declare(
@@ -738,10 +843,12 @@ def generate(out_root: Path) -> None:
         staging_dir = Path(staging)
         malformed_dir = out_root / "malformed"
         malformed_dir.mkdir(parents=True, exist_ok=True)
-        negative_base = staging_dir / "negative_base.dbf"
         negative_schema = _build_table(
-            staging_dir, "negative_base.dbf", _NEGATIVE_BASE_FIELDS,
-            _NEGATIVE_BASE_RECORDS, deleted=(),
+            staging_dir,
+            "negative_base.dbf",
+            _NEGATIVE_BASE_FIELDS,
+            _NEGATIVE_BASE_RECORDS,
+            deleted=(),
         )
         negative_facts = _dbf_facts(negative_schema, negative_schema.path)
 
@@ -757,7 +864,7 @@ def generate(out_root: Path) -> None:
             coverage=["malformed_inputs"],
             malformed={
                 "mutation": "remove exactly one trailing record image "
-                            "(len(data) - record_length bytes kept)",
+                "(len(data) - record_length bytes kept)",
                 "mutation_bytes": negative_schema.record_length,
                 "expected": {"operation": "iter_records", "error_code": "DBF_TRUNCATED"},
             },
@@ -767,7 +874,7 @@ def generate(out_root: Path) -> None:
         _corrupt_version_byte(negative_schema.path, unknown_version)
         declare(
             "malformed.unknown_version",
-            unknown_version_path := unknown_version,
+            unknown_version,
             artifact_class="dbf-malformed",
             dbf_facts=negative_facts,
             coverage=["malformed_inputs"],
@@ -788,15 +895,15 @@ def generate(out_root: Path) -> None:
             coverage=["malformed_inputs"],
             malformed={
                 "mutation": "little-endian header bytes 8-9 set to 65000 "
-                            "(declared header length far beyond EOF)",
+                "(declared header length far beyond EOF)",
                 "mutation_bytes": 2,
                 "expected": {"operation": "read_schema", "error_code": "DBF_TRUNCATED"},
             },
         )
 
-        orphan = staging_dir / "orphan_memo.dbf"
-        orphan_schema = _build_table(staging_dir, "orphan_memo.dbf", _ORPHAN_FIELDS,
-                                     _ORPHAN_RECORDS, deleted=())
+        orphan_schema = _build_table(
+            staging_dir, "orphan_memo.dbf", _ORPHAN_FIELDS, _ORPHAN_RECORDS, deleted=()
+        )
         missing = out_root / "malformed" / "missing_memo_companion.dbf"
         shutil.copyfile(orphan_schema.path, missing)
         assert not missing.with_suffix(".fpt").exists()
@@ -824,15 +931,18 @@ def generate(out_root: Path) -> None:
             coverage=["malformed_inputs", "dbf_fpt", "memo"],
             malformed={
                 "mutation": "companion produced by construction: the synthetic "
-                            "DBF was built through public write_table() in a "
-                            "staging directory and only the DBF was published; "
-                            "the FPT companion was intentionally not shipped",
+                "DBF was built through public write_table() in a "
+                "staging directory and only the DBF was published; "
+                "the FPT companion was intentionally not shipped",
                 "mutation_bytes": 0,
                 "expected": {
                     "operations": [
                         {"operation": "inspect_table", "result": "companion-warning"},
-                        {"operation": "iter_records", "memo": "inline",
-                         "error_code": "FPT_REQUIRED_MISSING"},
+                        {
+                            "operation": "iter_records",
+                            "memo": "inline",
+                            "error_code": "FPT_REQUIRED_MISSING",
+                        },
                         {"operation": "iter_records", "result": "lazy-memo-values"},
                     ]
                 },
@@ -857,8 +967,13 @@ def generate(out_root: Path) -> None:
             "dbfbridge_extra": "write",
             "dbfbridge_import_namespace": "dbfbridge",
             "public_apis_used": [
-                "write_table", "read_schema", "iter_records", "inspect_table",
-                "DirectRecord", "FieldInfo", "TableSchema",
+                "write_table",
+                "read_schema",
+                "iter_records",
+                "inspect_table",
+                "DirectRecord",
+                "FieldInfo",
+                "TableSchema",
             ],
             "deterministic": True,
             "pinned_last_update": PINNED_LAST_UPDATE,

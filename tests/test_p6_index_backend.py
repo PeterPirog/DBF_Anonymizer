@@ -27,7 +27,6 @@ from dbf_anonymizer import (  # noqa: E402
     INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
     INDEX_ARTIFACT_CLASSES,
     INDEX_BACKEND_RESULT_STATUSES,
-    INDEX_VERIFICATION_STATUSES,
     IndexBackend,
     IndexBackendCapability,
     IndexBackendError,
@@ -42,7 +41,6 @@ from dbf_anonymizer import (  # noqa: E402
 from dbf_anonymizer.index_backend import (  # noqa: E402
     IndexRebuildOutcome,
     IndexRebuildRequest,
-    IndexVerificationOutcome,
     IndexVerificationRequest,
     index_backend_failure,
     require_backend_runtime,
@@ -74,16 +72,12 @@ def _tiny_plan(tmp_path: Path):
 
 
 def write_numeric_tables(source: Path) -> None:
-    from tests.support.numeric_tables import write_numeric_table
 
     write_numeric_table(
         source,
         "north/customers.dbf",
         (numeric_field("CUST_ID", "C", 14), numeric_field("AMT", "N", 9)),
-        [
-            {"CUST_ID": f"CUST{index:09d}", "AMT": index}
-            for index in range(30)
-        ],
+        [{"CUST_ID": f"CUST{index:09d}", "AMT": index} for index in range(30)],
     )
 
 
@@ -123,9 +117,7 @@ def test_deterministic_test_double_is_a_valid_public_backend(tmp_path: Path) -> 
     assert outcome.result.status == "REBUILT"
     assert outcome.expected_tag_inventory == ("SYNTHCODE", "SYNTHNOTE")
     assert backend.rebuild_requests == (request,)
-    assert outcome.result.to_dict() == json.loads(
-        json.dumps(outcome.result.to_dict())
-    )
+    assert outcome.result.to_dict() == json.loads(json.dumps(outcome.result.to_dict()))
 
 
 def test_injected_backend_is_consumed_by_the_public_service(
@@ -138,8 +130,9 @@ def test_injected_backend_is_consumed_by_the_public_service(
     result = pseudonymize(plan, index_backend=backend)
     assert result.record_count == 30
     assert backend.capabilities_calls == 1
-    verification = verify_dataset(result, source=tmp_path / "source",
-                                  vault=tmp_path / "vault" / "dictionary.sqlite3")
+    verification = verify_dataset(
+        result, source=tmp_path / "source", vault=tmp_path / "vault" / "dictionary.sqlite3"
+    )
     assert verification.status is VerificationStatus.PASS
 
 
@@ -157,7 +150,12 @@ class _ForeignCapabilityBackend(DeterministicIndexBackend):
         return {"backend_id": "foreign", "protocol_schema_version": "9.9"}
 
     def verify_index(self, request) -> object:
-        return {"status": "MAGIC", "table_opened": True, "actual_record_count": 0, "actual_tag_inventory": ()}
+        return {
+            "status": "MAGIC",
+            "table_opened": True,
+            "actual_record_count": 0,
+            "actual_tag_inventory": (),
+        }
 
 
 class _UnknownProtocolBackend(DeterministicIndexBackend):
@@ -186,7 +184,12 @@ class _ForeignResultBackend(DeterministicIndexBackend):
         return {"status": "MAGIC"}
 
     def verify_index(self, request) -> object:
-        return {"status": "MAGIC", "table_opened": True, "actual_record_count": 0, "actual_tag_inventory": ()}
+        return {
+            "status": "MAGIC",
+            "table_opened": True,
+            "actual_record_count": 0,
+            "actual_tag_inventory": (),
+        }
 
 
 class _HostileTypedCapabilityBackend(DeterministicIndexBackend):
@@ -315,9 +318,7 @@ def test_require_backend_support_fails_closed() -> None:
         require_backend_verification,
     )
 
-    capability = DeterministicIndexBackend(
-        supports_standalone_idx_rebuild=False
-    ).capabilities()
+    capability = DeterministicIndexBackend(supports_standalone_idx_rebuild=False).capabilities()
     with pytest.raises(IndexBackendError) as caught:
         require_backend_support(capability, "STANDALONE_IDX")
     assert caught.value.context.detail_code == "INDEX_BACKEND_SUPPORT_MISSING"
@@ -447,8 +448,9 @@ def test_backend_none_keeps_data_only_fully_standalone(tmp_path: Path) -> None:
     result = pseudonymize(plan)  # index_backend defaults to None
     assert result.record_count == 30
     assert plan.output_profile is dbf_anonymizer.TransferProfile.DATA_ONLY
-    verification = verify_dataset(result, source=tmp_path / "source",
-                                  vault=tmp_path / "vault" / "dictionary.sqlite3")
+    verification = verify_dataset(
+        result, source=tmp_path / "source", vault=tmp_path / "vault" / "dictionary.sqlite3"
+    )
     assert verification.status is VerificationStatus.PASS
 
 

@@ -118,9 +118,9 @@ def test_identity_boundary_values_survive_the_public_write_read_cycle(
     tmp_path: Path,
 ) -> None:
     fields = (
-        numeric_field("NP", "N", 5),   # positive width boundary
-        numeric_field("NN", "N", 5),   # negative width boundary
-        numeric_field("IW", "I", 4),   # writable Integer boundaries
+        numeric_field("NP", "N", 5),  # positive width boundary
+        numeric_field("NN", "N", 5),  # negative width boundary
+        numeric_field("IW", "I", 4),  # writable Integer boundaries
     )
     dbf_path = write_numeric_table(
         tmp_path,
@@ -220,16 +220,10 @@ def test_identity_relation_join_metrics_equal_before_and_after(tmp_path: Path) -
     declared numeric relation path with the IDENTITY strategy.
     """
     source = _write_identity_relation_tables(tmp_path / "src")
-    pk_rows = [
-        record.values for record in read_numeric_records(source / "north/customers.dbf")
-    ]
-    fk_rows = [
-        record.values for record in read_numeric_records(source / "south/orders.dbf")
-    ]
+    pk_rows = [record.values for record in read_numeric_records(source / "north/customers.dbf")]
+    fk_rows = [record.values for record in read_numeric_records(source / "south/orders.dbf")]
     pk_keys = [(row["CUST_ID"],) for row in pk_rows]
-    fk_keys = [
-        (row["CUST_ID"],) if row["CUST_ID"] is not None else () for row in fk_rows
-    ]
+    fk_keys = [(row["CUST_ID"],) if row["CUST_ID"] is not None else () for row in fk_rows]
     fk_mask = [row["CUST_ID"] is None for row in fk_rows]
 
     before = relation_metrics(pk_keys, fk_keys, foreign_null_mask=fk_mask)
@@ -251,19 +245,25 @@ def test_composite_numeric_identity_tuple_semantics(tmp_path: Path) -> None:
         numeric_field("DEVICE", "N", 5),
     )
     pk_path = write_numeric_table(
-        tmp_path, "p/devices.dbf", fields, [
+        tmp_path,
+        "p/devices.dbf",
+        fields,
+        [
             {"SITE": 1, "DEVICE": 101},
             {"SITE": 1, "DEVICE": 102},
             {"SITE": 2, "DEVICE": 101},
-        ]
+        ],
     )
     fk_path = write_numeric_table(
-        tmp_path, "c/jobs.dbf", fields, [
+        tmp_path,
+        "c/jobs.dbf",
+        fields,
+        [
             {"SITE": 1, "DEVICE": 101},
             {"SITE": 1, "DEVICE": 101},
             {"SITE": 2, "DEVICE": 101},
             {"SITE": 9, "DEVICE": 999},
-        ]
+        ],
     )
     pk_rows = [record.values for record in read_numeric_records(pk_path)]
     fk_rows = [record.values for record in read_numeric_records(fk_path)]
@@ -294,9 +294,7 @@ def test_identity_numeric_members_marked_for_privacy_review(tmp_path: Path) -> N
     ]
     assert all(e.status == IDENTITY_PRIVACY_REVIEW_REQUIRED for e in entries)
     # Deterministic ordering (sorted by (table_path, field_name, dbf_type)).
-    assert entries == tuple(
-        sorted(entries, key=lambda e: (e.table_path, e.field_name, e.dbf_type))
-    )
+    assert entries == tuple(sorted(entries, key=lambda e: (e.table_path, e.field_name, e.dbf_type)))
     payload = json.dumps(plan.to_dict())
     assert "IDENTITY_PRIVACY_REVIEW_REQUIRED" in payload
 
@@ -322,7 +320,12 @@ def test_identity_review_metadata_is_deterministic_and_value_free(
     # structural identities and the status token.
     for entry in plan_one.numeric_identity_review:
         assert set(entry.to_dict()) == {
-            "schema_version", "model_type", "table_path", "field_name", "dbf_type", "status"
+            "schema_version",
+            "model_type",
+            "table_path",
+            "field_name",
+            "dbf_type",
+            "status",
         }
 
 
@@ -341,9 +344,7 @@ def test_autoincrement_identifiers_marked_for_privacy_review(tmp_path: Path) -> 
         tmp_path / "out",
         tmp_path / "vault" / VAULT_DATABASE_FILENAME,
     )
-    entries = [
-        entry for entry in plan.numeric_identity_review if entry.table_path == "ledger.dbf"
-    ]
+    entries = [entry for entry in plan.numeric_identity_review if entry.table_path == "ledger.dbf"]
     assert [(e.field_name, e.dbf_type, e.status) for e in entries] == [
         ("ID", "I", IDENTITY_PRIVACY_REVIEW_REQUIRED)
     ]

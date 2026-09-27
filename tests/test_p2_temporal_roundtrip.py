@@ -14,10 +14,8 @@ source verification.
 from __future__ import annotations
 
 import hashlib
-import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 import dbfbridge
 from dbfbridge import DirectRecord, write_table
@@ -40,7 +38,11 @@ TEMPORAL_FIELDS = (field("CODE", "C", 8), field("WHEN", "D", 8), field("MOMENT",
 TEMPORAL_RECORDS: tuple[dict[str, object], ...] = (
     {"CODE": "T-NULL", "WHEN": None, "MOMENT": None},
     {"CODE": "T-LEAP", "WHEN": date(2020, 2, 29), "MOMENT": datetime(2020, 2, 29, 0, 0, 0)},
-    {"CODE": "T-YEAR", "WHEN": date(2019, 12, 31), "MOMENT": datetime(2019, 12, 31, 23, 59, 58, 999000)},
+    {
+        "CODE": "T-YEAR",
+        "WHEN": date(2019, 12, 31),
+        "MOMENT": datetime(2019, 12, 31, 23, 59, 58, 999000),
+    },
     {"CODE": "T-MID", "WHEN": date(2024, 2, 29), "MOMENT": datetime(2024, 2, 29, 12, 34, 56)},
     {"CODE": "T-EOM", "WHEN": date(2020, 4, 30), "MOMENT": datetime(2020, 4, 30, 6, 30, 0)},
 )
@@ -65,7 +67,6 @@ def _vault(tmp_path: Path, *, create: bool) -> VaultDatabase:
 
 
 def _hashes(dbf_path: Path) -> dict[str, str]:
-    import hashlib
 
     hashes = {"dbf": hashlib.sha256(dbf_path.read_bytes()).hexdigest()}
     companion = dbf_path.with_suffix(".fpt")
@@ -174,7 +175,6 @@ def test_full_temporal_roundtrip_through_public_dbf_boundary(tmp_path: Path) -> 
 
 def test_temporal_boundary_domains_through_real_artifacts(tmp_path: Path) -> None:
     """date.min-only and date.max-only domains keep single-sided offsets."""
-    from dbf_anonymizer import ErrorCode, MappingError
 
     extremes = (date(1, 1, 1), date(2, 1, 1))
     maximum = (date(9999, 12, 30), date(9999, 12, 31))
@@ -220,9 +220,7 @@ def test_all_null_temporal_dbf_completes_the_real_flow(tmp_path: Path) -> None:
         source,
         schema=schema_of(TEMPORAL_FIELDS),
         records=[
-            DirectRecord(
-                physical_index=index, deleted=False, values=dict(record)
-            )
+            DirectRecord(physical_index=index, deleted=False, values=dict(record))
             for index, record in enumerate(
                 (
                     {"CODE": "N-1", "WHEN": None, "MOMENT": None},
@@ -235,8 +233,7 @@ def test_all_null_temporal_dbf_completes_the_real_flow(tmp_path: Path) -> None:
     hashes_before = _hashes(source)
     originals = _records(source)
     assert all(
-        record.values["WHEN"] is None and record.values["MOMENT"] is None
-        for record in originals
+        record.values["WHEN"] is None and record.values["MOMENT"] is None for record in originals
     )
 
     with _vault(tmp_path, create=True) as vault:
@@ -259,9 +256,7 @@ def test_all_null_temporal_dbf_completes_the_real_flow(tmp_path: Path) -> None:
                 for record in originals
             ]
 
-    shifted_path = _write_destination(
-        tmp_path / "shifted", "allnull.dbf", source, shifted_records
-    )
+    shifted_path = _write_destination(tmp_path / "shifted", "allnull.dbf", source, shifted_records)
     shifted_read = _records(shifted_path)
     for shifted in shifted_read:
         # Every output D/T remains NULL through the public contract.

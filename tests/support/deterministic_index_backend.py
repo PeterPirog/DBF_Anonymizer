@@ -109,9 +109,7 @@ class DeterministicIndexBackend:
                 artifact_path=request.artifact_path,
                 status="ASSOCIATED" if table_path is not None else "UNAVAILABLE",
                 detail_code=(
-                    "ASSOCIATED_OK"
-                    if table_path is not None
-                    else "DEFINITION_UNAVAILABLE"
+                    "ASSOCIATED_OK" if table_path is not None else "DEFINITION_UNAVAILABLE"
                 ),
                 table_path=table_path,
             )
@@ -155,8 +153,7 @@ class DeterministicIndexBackend:
             ),
             expected_tag_inventory=(
                 self.expected_tag_inventory
-                if self.status == "REBUILT"
-                and request.artifact_class == "STRUCTURAL_CDX"
+                if self.status == "REBUILT" and request.artifact_class == "STRUCTURAL_CDX"
                 else ()
             ),
         )
@@ -167,9 +164,7 @@ class DeterministicIndexBackend:
         self.verification_requests = self.verification_requests + (request,)
         actual_record_count = self.actual_record_count
         if actual_record_count is None and self.table_opened:
-            actual_record_count = int(
-                dbfbridge.read_schema(request.staged_table_path).record_count
-            )
+            actual_record_count = int(dbfbridge.read_schema(request.staged_table_path).record_count)
         # For STANDALONE_IDX, verify the rebuilt IDX artifact exists
         if request.artifact_class == "STANDALONE_IDX":
             if request.staged_idx_path is None:
@@ -202,9 +197,13 @@ class DeterministicIndexBackend:
             ),
             table_opened=self.table_opened,
             actual_record_count=actual_record_count or 0,
-            actual_tag_inventory=(() if request.artifact_class == "STANDALONE_IDX" else (
-                self.actual_tag_inventory
-                if self.actual_tag_inventory is not None
-                else self.expected_tag_inventory
-            )),
+            actual_tag_inventory=(
+                ()
+                if request.artifact_class == "STANDALONE_IDX"
+                else (
+                    self.actual_tag_inventory
+                    if self.actual_tag_inventory is not None
+                    else self.expected_tag_inventory
+                )
+            ),
         )

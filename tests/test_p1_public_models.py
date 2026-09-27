@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import FrozenInstanceError, fields
-from typing import Any
 
 import pytest
 
@@ -317,9 +316,7 @@ def test_p6_public_models_use_current_model_and_protocol_contracts() -> None:
         StandaloneIdxAssociationResult,
         StandaloneIdxEvidence,
     }
-    p6_samples = tuple(
-        sample for sample in _samples() if type(sample) in p6_types
-    )
+    p6_samples = tuple(sample for sample in _samples() if type(sample) in p6_types)
     assert {type(sample) for sample in p6_samples} == p6_types
     for sample in p6_samples:
         payload = sample.to_dict()  # type: ignore[union-attr]
@@ -374,7 +371,8 @@ def test_public_schema_has_no_fields_for_original_values_or_privileged_payloads(
     }
     for model_type in PUBLIC_MODEL_TYPES:
         assert forbidden_field_names.isdisjoint(
-            field.name for field in fields(model_type)  # type: ignore[arg-type]
+            field.name
+            for field in fields(model_type)  # type: ignore[arg-type]
         )
     for model in _samples():
         assert forbidden_field_names.isdisjoint(_walk_keys(model.to_dict()))  # type: ignore[union-attr]
@@ -413,9 +411,7 @@ def test_relationship_metadata_authoritative_is_a_genuine_bool(hostile: object) 
         )
 
 
-@pytest.mark.parametrize(
-    "malformed", ["", " 1.0", "1.0 ", "1 .0", "schema version", "\t1.0"]
-)
+@pytest.mark.parametrize("malformed", ["", " 1.0", "1.0 ", "1 .0", "schema version", "\t1.0"])
 def test_relationship_metadata_schema_version_is_a_validated_code(
     malformed: str,
 ) -> None:
@@ -564,89 +560,221 @@ def test_schema_key_snapshot_is_stable_for_req_p1_002() -> None:
 
     assert snapshots == {
         "Capabilities": (
-            "schema_version", "model_type", "direct_read", "direct_write", "recovery",
-            "transfer_bundle", "vfp_index_backend", "dbfbridge_version",
+            "schema_version",
+            "model_type",
+            "direct_read",
+            "direct_write",
+            "recovery",
+            "transfer_bundle",
+            "vfp_index_backend",
+            "dbfbridge_version",
         ),
         "DatasetIdentity": (
-            "schema_version", "model_type", "dataset_id", "source_fingerprint", "table_paths",
-            "standalone_idx_paths", "dbc_bound_table_paths",
+            "schema_version",
+            "model_type",
+            "dataset_id",
+            "source_fingerprint",
+            "table_paths",
+            "standalone_idx_paths",
+            "dbc_bound_table_paths",
         ),
         "TablePlan": (
-            "schema_version", "model_type", "table_path", "memo_path", "record_count",
-            "field_count", "transform_field_count", "structural_cdx", "dbc_bound", "index_strategy",
-            "memo_required", "memo_companion_present", "structural_cdx_companion_present",
-            "unsupported_field_count", "unsafe_field_count", "system_field_count",
+            "schema_version",
+            "model_type",
+            "table_path",
+            "memo_path",
+            "record_count",
+            "field_count",
+            "transform_field_count",
+            "structural_cdx",
+            "dbc_bound",
+            "index_strategy",
+            "memo_required",
+            "memo_companion_present",
+            "structural_cdx_companion_present",
+            "unsupported_field_count",
+            "unsafe_field_count",
+            "system_field_count",
         ),
         "PolicySummary": (
-            "schema_version", "model_type", "policy_schema_version", "policy_fingerprint",
-            "transformed_field_count", "relationship_count", "recovery_enabled", "transformation_classes", "vault_strategy",
+            "schema_version",
+            "model_type",
+            "policy_schema_version",
+            "policy_fingerprint",
+            "transformed_field_count",
+            "relationship_count",
+            "recovery_enabled",
+            "transformation_classes",
+            "vault_strategy",
         ),
         "RelationshipMetadata": (
-            "schema_version", "model_type", "metadata_schema_version", "provenance",
-            "relationship_fingerprint", "relation_count", "authoritative", "metadata_path",
+            "schema_version",
+            "model_type",
+            "metadata_schema_version",
+            "provenance",
+            "relationship_fingerprint",
+            "relation_count",
+            "authoritative",
+            "metadata_path",
         ),
         "RelationalAssurance": (
             # REQ-P3-007 extended the ONE canonical assurance model with the
             # truthful evidence binding (incomplete count, relationship
             # fingerprint, evidence schema version, machine scope note).
-            "schema_version", "model_type", "level", "declared_relations", "verified_relations",
-            "failed_relations", "incomplete_relations", "evidence_fingerprint",
-            "relationship_fingerprint", "evidence_schema_version", "scope_note",
+            "schema_version",
+            "model_type",
+            "level",
+            "declared_relations",
+            "verified_relations",
+            "failed_relations",
+            "incomplete_relations",
+            "evidence_fingerprint",
+            "relationship_fingerprint",
+            "evidence_schema_version",
+            "scope_note",
         ),
         "Plan": (
-            "schema_version", "model_type", "plan_id", "dataset", "tables", "policy",
-            "relationships", "output_profile", "relationship_assurance_target",
-            "output_data_state", "numeric_identity_review",
+            "schema_version",
+            "model_type",
+            "plan_id",
+            "dataset",
+            "tables",
+            "policy",
+            "relationships",
+            "output_profile",
+            "relationship_assurance_target",
+            "output_data_state",
+            "numeric_identity_review",
         ),
         "ProgressEvent": (
-            "schema_version", "model_type", "operation_id", "phase_code", "event_code",
-            "completed_units", "total_units", "table_path",
+            "schema_version",
+            "model_type",
+            "operation_id",
+            "phase_code",
+            "event_code",
+            "completed_units",
+            "total_units",
+            "table_path",
         ),
         "PreflightResult": (
-            "schema_version", "model_type", "ready", "plan_id", "capabilities", "check_codes",
-            "warning_codes", "error_codes",
+            "schema_version",
+            "model_type",
+            "ready",
+            "plan_id",
+            "capabilities",
+            "check_codes",
+            "warning_codes",
+            "error_codes",
         ),
         "PseudonymizationResult": (
-            "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
-            "record_count", "vault_created", "output_fingerprint", "assurance", "output_data_state",
+            "schema_version",
+            "model_type",
+            "operation_id",
+            "dataset",
+            "output_path",
+            "table_count",
+            "record_count",
+            "vault_created",
+            "output_fingerprint",
+            "assurance",
+            "output_data_state",
             "index_artifacts",
         ),
         "VerificationResult": (
-            "schema_version", "model_type", "status", "dataset", "operation_id", "table_count",
-            "record_count", "check_codes", "assurance", "output_data_state", "index_artifacts",
+            "schema_version",
+            "model_type",
+            "status",
+            "dataset",
+            "operation_id",
+            "table_count",
+            "record_count",
+            "check_codes",
+            "assurance",
+            "output_data_state",
+            "index_artifacts",
         ),
         "RecoveryResult": (
-            "schema_version", "model_type", "operation_id", "dataset", "output_path", "table_count",
-            "record_count", "canonical_verified", "raw_byte_equivalence",
+            "schema_version",
+            "model_type",
+            "operation_id",
+            "dataset",
+            "output_path",
+            "table_count",
+            "record_count",
+            "canonical_verified",
+            "raw_byte_equivalence",
         ),
         "TransferBundleResult": (
-            "schema_version", "model_type", "bundle_path", "profile", "file_count",
-            "manifest_fingerprint", "verified", "assurance",
+            "schema_version",
+            "model_type",
+            "bundle_path",
+            "profile",
+            "file_count",
+            "manifest_fingerprint",
+            "verified",
+            "assurance",
         ),
         "NumericIdentityReview": (
-            "schema_version", "model_type", "table_path", "field_name", "dbf_type", "status",
+            "schema_version",
+            "model_type",
+            "table_path",
+            "field_name",
+            "dbf_type",
+            "status",
         ),
         "IndexBackendCapability": (
-            "schema_version", "model_type", "backend_id", "backend_schema_version",
-            "protocol_schema_version", "supports_structural_cdx_rebuild",
-            "supports_standalone_idx_rebuild", "supports_verification",
+            "schema_version",
+            "model_type",
+            "backend_id",
+            "backend_schema_version",
+            "protocol_schema_version",
+            "supports_structural_cdx_rebuild",
+            "supports_standalone_idx_rebuild",
+            "supports_verification",
             "vfp_runtime_available",
         ),
         "IndexBackendResult": (
-            "schema_version", "model_type", "backend_id", "protocol_schema_version",
-            "artifact_class", "table_path", "status", "detail_code", "artifact_path",
+            "schema_version",
+            "model_type",
+            "backend_id",
+            "protocol_schema_version",
+            "artifact_class",
+            "table_path",
+            "status",
+            "detail_code",
+            "artifact_path",
         ),
         "IndexVerificationResult": (
-            "schema_version", "model_type", "backend_id", "protocol_schema_version",
-            "artifact_class", "table_path", "status", "detail_code", "artifact_path",
+            "schema_version",
+            "model_type",
+            "backend_id",
+            "protocol_schema_version",
+            "artifact_class",
+            "table_path",
+            "status",
+            "detail_code",
+            "artifact_path",
         ),
         "StandaloneIdxEvidence": (
-            "schema_version", "model_type", "artifact_id", "artifact_path", "status",
-            "source_sha256", "backend_id", "table_path", "output_sha256",
+            "schema_version",
+            "model_type",
+            "artifact_id",
+            "artifact_path",
+            "status",
+            "source_sha256",
+            "backend_id",
+            "table_path",
+            "output_sha256",
         ),
         "StandaloneIdxAssociationResult": (
-            "schema_version", "model_type", "backend_id", "protocol_schema_version",
-            "artifact_path", "status", "detail_code", "table_path",
+            "schema_version",
+            "model_type",
+            "backend_id",
+            "protocol_schema_version",
+            "artifact_path",
+            "status",
+            "detail_code",
+            "table_path",
         ),
     }
 

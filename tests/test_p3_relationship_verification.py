@@ -104,9 +104,7 @@ def _counts(
     foreign_nulls: Sequence[bool] | None = None,
 ) -> RelationEvidenceCounts:
     """One side-pair evidence build through the SHARED count kernel."""
-    accumulator = RelationshipEvidenceAccumulator(
-        composite_arity=len(primary[0]) if primary else 1
-    )
+    accumulator = RelationshipEvidenceAccumulator(composite_arity=len(primary[0]) if primary else 1)
     for key in primary:
         if key == ():
             accumulator.observe_parent((), null=True)
@@ -282,15 +280,12 @@ def _numeric_report(
             for value in sorted({v for v in list(pk_values) + list(fk_values) if v is not None}):
                 allocator.observe_original(value, member=integer_member())
             allocator.finalize()
-            primary_before = [(value,) for value in pk_values]
             foreign_before = [(value,) for value in fk_values]
             primary_after = [
-                () if value is None else (allocator.pseudonym_for(value),)
-                for value in pk_values
+                () if value is None else (allocator.pseudonym_for(value),) for value in pk_values
             ]
             foreign_after = [
-                () if value is None else (allocator.pseudonym_for(value),)
-                for value in fk_values
+                () if value is None else (allocator.pseudonym_for(value),) for value in fk_values
             ]
             nulls = [value is None for value in fk_values]
             before = _counts(
@@ -329,21 +324,17 @@ def test_single_c_relation_all_invariants_preserved(tmp_path: Path) -> None:
             primary_after = _shift_text(allocator, primary_before)
             foreign_after = _shift_text(allocator, foreign_before)
             before = _counts([(v,) for v in primary_before], [(v,) for v in foreign_before])
-            after = _counts(
-                [(v,) for v in primary_after], [(v,) for v in foreign_after]
-            )
+            after = _counts([(v,) for v in primary_after], [(v,) for v in foreign_after])
             report = verify_relationships(
                 document,
                 before={"rel-customer-key": before},
                 after={"rel-customer-key": after},
             )
             assert report.complete is True
-            assert [entry.status for entry in report.relations] == [
-                VerificationStatus.VERIFIED
-            ]
-            assert [
-                result.invariant for result in report.relations[0].invariants
-            ] == list(RELATIONSHIP_INVARIANTS)
+            assert [entry.status for entry in report.relations] == [VerificationStatus.VERIFIED]
+            assert [result.invariant for result in report.relations[0].invariants] == list(
+                RELATIONSHIP_INVARIANTS
+            )
             assert all(result.preserved for result in report.relations[0].invariants)
             assert report.relationship_fingerprint == fingerprint
             assert report.evidence_schema_version == EVIDENCE_SCHEMA_VERSION
@@ -355,9 +346,7 @@ def test_single_c_relation_all_invariants_preserved(tmp_path: Path) -> None:
             assert before.parent.duplicate_row_count == after.parent.duplicate_row_count == 0
             assert before.parent.multiplicity_profile == (1, 1, 1)
             # The assurance derives from this complete verified evidence.
-            summary = derive_relational_assurance(
-                _metadata(fingerprint), report
-            )
+            summary = derive_relational_assurance(_metadata(fingerprint), report)
             assert summary.level.value == "DECLARED_RELATIONS_VERIFIED"
 
 
@@ -374,10 +363,46 @@ def test_composite_c_relation_ordered_tuple_evidence(tmp_path: Path) -> None:
                     "provenance": PROVENANCE_POLICY_FILE,
                     "comparison": "EXACT_VALUE",
                     "members": [
-                        {"table": "site/devices.dbf", "field": "site_code", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "site/devices.dbf", "field": "device_code", "role": "PRIMARY", "ordinal": 2, "dbf_type": "C", "byte_width": 6, "encoding": "cp1250", "nullable": False},
-                        {"table": "logs/jobs.dbf", "field": "parent_site_code", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "logs/jobs.dbf", "field": "parent_device_code", "role": "FOREIGN", "ordinal": 2, "dbf_type": "C", "byte_width": 6, "encoding": "cp1250", "nullable": False},
+                        {
+                            "table": "site/devices.dbf",
+                            "field": "site_code",
+                            "role": "PRIMARY",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "site/devices.dbf",
+                            "field": "device_code",
+                            "role": "PRIMARY",
+                            "ordinal": 2,
+                            "dbf_type": "C",
+                            "byte_width": 6,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "logs/jobs.dbf",
+                            "field": "parent_site_code",
+                            "role": "FOREIGN",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "logs/jobs.dbf",
+                            "field": "parent_device_code",
+                            "role": "FOREIGN",
+                            "ordinal": 2,
+                            "dbf_type": "C",
+                            "byte_width": 6,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
                     ],
                 }
             ],
@@ -401,9 +426,7 @@ def test_composite_c_relation_ordered_tuple_evidence(tmp_path: Path) -> None:
                 vault.register_table("site/devices.dbf")
                 vault.register_table("logs/jobs.dbf")
             allocator = GlobalTextDomainMapping(vault)
-            for original in sorted(
-                {value for pair in pk_tuples + fk_tuples for value in pair}
-            ):
+            for original in sorted({value for pair in pk_tuples + fk_tuples for value in pair}):
                 allocator.observe(original, encoding="cp1250", byte_width=6)
             allocator.finalize()
             pk_after = [tuple(allocator.pseudonym_for(v) for v in pair) for pair in pk_tuples]
@@ -430,8 +453,26 @@ def test_v_relation_trailing_space_distinct_values_preserved(tmp_path: Path) -> 
                     "provenance": PROVENANCE_POLICY_FILE,
                     "comparison": "EXACT_VALUE",
                     "members": [
-                        {"table": "a/parents.dbf", "field": "K", "role": "PRIMARY", "ordinal": 1, "dbf_type": "V", "byte_width": 6, "encoding": "cp1250", "nullable": False},
-                        {"table": "b/children.dbf", "field": "K", "role": "FOREIGN", "ordinal": 1, "dbf_type": "V", "byte_width": 6, "encoding": "cp1250", "nullable": False},
+                        {
+                            "table": "a/parents.dbf",
+                            "field": "K",
+                            "role": "PRIMARY",
+                            "ordinal": 1,
+                            "dbf_type": "V",
+                            "byte_width": 6,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "b/children.dbf",
+                            "field": "K",
+                            "role": "FOREIGN",
+                            "ordinal": 1,
+                            "dbf_type": "V",
+                            "byte_width": 6,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
                     ],
                 }
             ],
@@ -477,9 +518,7 @@ def test_v_relation_trailing_space_distinct_values_preserved(tmp_path: Path) -> 
             assert allocator.pseudonym_for("KEY") != allocator.pseudonym_for("KEY ")
             primary_after = _shift_text(allocator, primary_before)
             foreign_after = _shift_text(allocator, foreign_before)
-            after = _counts(
-                [(v,) for v in primary_after], [(v,) for v in foreign_after]
-            )
+            after = _counts([(v,) for v in primary_after], [(v,) for v in foreign_after])
             report = verify_relationships(
                 document, before={"rel-v-key": before}, after={"rel-v-key": after}
             )
@@ -611,10 +650,46 @@ def test_mixed_composite_i_n_relation_evidence(tmp_path: Path) -> None:
                 "comparison": "EXACT_VALUE",
                 "numeric_strategy": NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
                 "members": [
-                    {"table": "p/devices.dbf", "field": "SITE", "role": "PRIMARY", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "p/devices.dbf", "field": "DEVICE", "role": "PRIMARY", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": False},
-                    {"table": "c/jobs.dbf", "field": "SITE", "role": "FOREIGN", "ordinal": 1, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": False},
-                    {"table": "c/jobs.dbf", "field": "DEVICE", "role": "FOREIGN", "ordinal": 2, "dbf_type": "N", "byte_width": 5, "encoding": "none", "nullable": False},
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "SITE",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "p/devices.dbf",
+                        "field": "DEVICE",
+                        "role": "PRIMARY",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "SITE",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "I",
+                        "byte_width": 4,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
+                    {
+                        "table": "c/jobs.dbf",
+                        "field": "DEVICE",
+                        "role": "FOREIGN",
+                        "ordinal": 2,
+                        "dbf_type": "N",
+                        "byte_width": 5,
+                        "encoding": "none",
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -653,9 +728,7 @@ def test_mixed_composite_i_n_relation_evidence(tmp_path: Path) -> None:
                     domain_kind=VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY,
                     domain_id=numeric_key_domain_id(fingerprint, "rel-mixed"),
                 )
-            domain = numeric_key_domain_for(
-                [integer_member(), integral_numeric_member(5)]
-            )
+            domain = numeric_key_domain_for([integer_member(), integral_numeric_member(5)])
             allocator = NumericKeyDomainMapping(
                 vault,
                 domain_id=numeric_key_domain_id(fingerprint, "rel-mixed"),
@@ -688,9 +761,7 @@ def test_mixed_composite_i_n_relation_evidence(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_orphan_matched_and_null_counts_preserved(tmp_path: Path) -> None:
     document, _fingerprint = _document(_numeric_document())
-    report = _numeric_report(
-        tmp_path, document, [-5, 0, 7], [7, 7, -5, 123456, None]
-    )
+    report = _numeric_report(tmp_path, document, [-5, 0, 7], [7, 7, -5, 123456, None])
     entry = report.relations[0]
     before = entry.before
     after = entry.after
@@ -699,9 +770,7 @@ def test_orphan_matched_and_null_counts_preserved(tmp_path: Path) -> None:
     assert before.matched_row_count == after.matched_row_count == 3
     assert before.foreign.null_tuple_count == after.foreign.null_tuple_count == 1
     assert before.parent.null_tuple_count == after.parent.null_tuple_count == 0
-    invariants = {
-        result.invariant: result.preserved for result in entry.invariants
-    }
+    invariants = {result.invariant: result.preserved for result in entry.invariants}
     assert invariants == {
         INVARIANT_PARENT_UNIQUENESS: True,
         INVARIANT_ORPHAN_COUNT: True,
@@ -743,10 +812,7 @@ def test_changed_orphan_count_fails_verification(tmp_path: Path) -> None:
         document, before={"rel-numeric-key": before}, after={"rel-numeric-key": broken}
     )
     assert corrupt.relations[0].status is VerificationStatus.FAILED
-    results = {
-        result.invariant: result.preserved
-        for result in corrupt.relations[0].invariants
-    }
+    results = {result.invariant: result.preserved for result in corrupt.relations[0].invariants}
     assert results[INVARIANT_ORPHAN_COUNT] is False
     assert results[INVARIANT_MATCHED_ROWS] is False
     assert results[INVARIANT_PARENT_UNIQUENESS] is True
@@ -764,10 +830,7 @@ def test_changed_foreign_multiplicity_fails_verification() -> None:
     corrupt = verify_relationships(
         document, before={"rel-numeric-key": before}, after={"rel-numeric-key": after}
     )
-    results = {
-        result.invariant: result.preserved
-        for result in corrupt.relations[0].invariants
-    }
+    results = {result.invariant: result.preserved for result in corrupt.relations[0].invariants}
     assert results[INVARIANT_FOREIGN_MULTIPLICITY] is False
     assert corrupt.relations[0].status is VerificationStatus.FAILED
 
@@ -783,10 +846,46 @@ def test_changed_composite_ordinal_semantics_fail() -> None:
                     "provenance": PROVENANCE_POLICY_FILE,
                     "comparison": "EXACT_VALUE",
                     "members": [
-                        {"table": "p/x.dbf", "field": "A", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "p/x.dbf", "field": "B", "role": "PRIMARY", "ordinal": 2, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "c/y.dbf", "field": "A", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "c/y.dbf", "field": "B", "role": "FOREIGN", "ordinal": 2, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                        {
+                            "table": "p/x.dbf",
+                            "field": "A",
+                            "role": "PRIMARY",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "p/x.dbf",
+                            "field": "B",
+                            "role": "PRIMARY",
+                            "ordinal": 2,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "c/y.dbf",
+                            "field": "A",
+                            "role": "FOREIGN",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "c/y.dbf",
+                            "field": "B",
+                            "role": "FOREIGN",
+                            "ordinal": 2,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
                     ],
                 }
             ],
@@ -804,10 +903,7 @@ def test_changed_composite_ordinal_semantics_fail() -> None:
     corrupt = verify_relationships(
         document, before={"rel-composite": before}, after={"rel-composite": after}
     )
-    results = {
-        result.invariant: result.preserved
-        for result in corrupt.relations[0].invariants
-    }
+    results = {result.invariant: result.preserved for result in corrupt.relations[0].invariants}
     assert results[INVARIANT_MATCHED_ROWS] is False
     assert results[INVARIANT_ORPHAN_COUNT] is False
     assert corrupt.relations[0].status is VerificationStatus.FAILED
@@ -819,9 +915,7 @@ def test_changed_composite_ordinal_semantics_fail() -> None:
 def test_missing_after_evidence_is_incomplete() -> None:
     document, fingerprint = _document(_numeric_document())
     before = _counts([(-5,), (7,)], [(7,), (-5,)])
-    report = verify_relationships(
-        document, before={"rel-numeric-key": before}, after={}
-    )
+    report = verify_relationships(document, before={"rel-numeric-key": before}, after={})
     entry = report.relations[0]
     assert entry.status is VerificationStatus.INCOMPLETE
     assert entry.before is not None and entry.after is None
@@ -839,9 +933,7 @@ def test_missing_relation_is_not_a_zero_count_relation() -> None:
     """A MISSING side can never accidentally compare equal to zero counts."""
     document, _fingerprint = _document(_numeric_document())
     empty = _counts([], [])
-    incomplete = verify_relationships(
-        document, before={"rel-numeric-key": empty}, after={}
-    )
+    incomplete = verify_relationships(document, before={"rel-numeric-key": empty}, after={})
     assert incomplete.relations[0].status is VerificationStatus.INCOMPLETE
     # A fully-evaluated EMPTY relation (both sides supplied, zero rows) is a
     # legitimate VERIFIED zero-count relation — the two states differ.
@@ -893,17 +985,13 @@ def test_before_only_is_incomplete_and_after_only_is_incomplete() -> None:
     """Cases 2 and 3: exactly one complete side -> INCOMPLETE."""
     document, fingerprint = _document(_numeric_document())
     evidence = _counts([("A",), ("B",)], [("A",), ("B",), ("B",)])
-    only_before = verify_relationships(
-        document, before={"rel-numeric-key": evidence}, after={}
-    )
+    only_before = verify_relationships(document, before={"rel-numeric-key": evidence}, after={})
     assert only_before.relations[0].status is VerificationStatus.INCOMPLETE
     assert only_before.relations[0].before is not None
     assert only_before.relations[0].after is None
     assert only_before.relations[0].invariants == ()
     assert only_before.complete is False
-    only_after = verify_relationships(
-        document, before={}, after={"rel-numeric-key": evidence}
-    )
+    only_after = verify_relationships(document, before={}, after={"rel-numeric-key": evidence})
     assert only_after.relations[0].status is VerificationStatus.INCOMPLETE
     assert only_after.relations[0].before is None
     assert only_after.relations[0].after is not None
@@ -957,7 +1045,7 @@ def test_both_sides_missing_assurance_is_incomplete() -> None:
 # ---------------------------------------------------------------------------
 # 16. evidence deterministic across runs and hash seeds
 # ---------------------------------------------------------------------------
-_DETERMINISM_PROBE = '''
+_DETERMINISM_PROBE = """
 import json, sys
 sys.path.insert(0, "{src}")
 from dbf_anonymizer.relationships import (
@@ -977,7 +1065,7 @@ side = RelationEvidenceCounts(
 )
 report = verify_relationships(document, before={{"rel-customer-key": side}}, after={{"rel-customer-key": side}})
 print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
-'''
+"""
 
 
 def test_report_serialization_is_deterministic(tmp_path: Path) -> None:
@@ -1024,8 +1112,26 @@ def test_canonical_relation_ordering_is_declaration_order_independent() -> None:
                     "provenance": PROVENANCE_POLICY_FILE,
                     "comparison": "EXACT_VALUE",
                     "members": [
-                        {"table": "p/x.dbf", "field": "A", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "c/y.dbf", "field": "A", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                        {
+                            "table": "p/x.dbf",
+                            "field": "A",
+                            "role": "PRIMARY",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "c/y.dbf",
+                            "field": "A",
+                            "role": "FOREIGN",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
                     ],
                 },
                 {
@@ -1033,8 +1139,26 @@ def test_canonical_relation_ordering_is_declaration_order_independent() -> None:
                     "provenance": PROVENANCE_POLICY_FILE,
                     "comparison": "EXACT_VALUE",
                     "members": [
-                        {"table": "p/x.dbf", "field": "B", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                        {"table": "c/y.dbf", "field": "B", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                        {
+                            "table": "p/x.dbf",
+                            "field": "B",
+                            "role": "PRIMARY",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
+                        {
+                            "table": "c/y.dbf",
+                            "field": "B",
+                            "role": "FOREIGN",
+                            "ordinal": 1,
+                            "dbf_type": "C",
+                            "byte_width": 4,
+                            "encoding": "cp1250",
+                            "nullable": False,
+                        },
                     ],
                 },
             ],
@@ -1055,16 +1179,8 @@ def test_canonical_relation_ordering_is_declaration_order_independent() -> None:
 # ---------------------------------------------------------------------------
 def test_report_boundary_never_leaks_key_values(tmp_path: Path) -> None:
     document, _fingerprint = _document(_numeric_document())
-    report = _numeric_report(
-        tmp_path, document, [-5, 7], [7, -5, 2147483646]
-    )
-    boundary = (
-        str(report)
-        + "|"
-        + repr(report)
-        + "|"
-        + json.dumps(report.to_dict(), sort_keys=True)
-    )
+    report = _numeric_report(tmp_path, document, [-5, 7], [7, -5, 2147483646])
+    boundary = str(report) + "|" + repr(report) + "|" + json.dumps(report.to_dict(), sort_keys=True)
     assert str(CANARY_NUMERIC) not in boundary
     assert CANARY_TEXT not in boundary
     assert "-5" not in boundary and "987654321" not in boundary
@@ -1083,9 +1199,7 @@ def test_unknown_relation_evidence_fails_closed() -> None:
             before={"rel-undeclared": evidence},
             after={"rel-undeclared": evidence},
         )
-    assert "RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION" in str(
-        excinfo.value.to_dict()
-    )
+    assert "RELATIONSHIP_VERIFICATION_UNKNOWN_RELATION" in str(excinfo.value.to_dict())
 
 
 def test_arity_mismatch_between_sides_and_declaration_fails_closed() -> None:
@@ -1203,7 +1317,8 @@ def test_relation_metrics_and_accumulator_agree() -> None:
     assert legacy.max_duplicate_multiplicity == counts.parent.multiplicity_profile[0]
     # compare_relation_metrics is the ONE invariant rule (no second definition).
     same = _counts(
-        [("X",), ("Y",), ("Y",)], [("Y",), ("Y",), ("X",), ("W",), ()],
+        [("X",), ("Y",), ("Y",)],
+        [("Y",), ("Y",), ("X",), ("W",), ()],
         foreign_nulls=[False, False, False, False, True],
     )
     invariants = compare_relation_metrics(counts, same)

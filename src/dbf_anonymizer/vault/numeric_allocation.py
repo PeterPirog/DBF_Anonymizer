@@ -214,8 +214,7 @@ class NumericKeyDomainMapping:
         verdict = classify_member_original(member, original)
         if verdict == MEMBER_ORIGINAL_OUT_OF_MEMBER_RANGE:
             raise ValueError(
-                "the original does not fit its originating member's "
-                "representable range"
+                "the original does not fit its originating member's representable range"
             )
         if verdict == MEMBER_ORIGINAL_RECOVERY_UNWRITABLE:
             # Readable by the originating member's field type, but the pinned
@@ -248,12 +247,8 @@ class NumericKeyDomainMapping:
         unpersisted = [
             value for value in sorted(self._originals) if value not in self._persisted_originals
         ]
-        if not plan_numeric_bijection(
-            self._domain, unpersisted, sorted(self._used)
-        ):
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-            )
+        if not plan_numeric_bijection(self._domain, unpersisted, sorted(self._used)):
+            raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
         self._finalized = True
 
     def _ensure_domain(self) -> None:
@@ -274,9 +269,7 @@ class NumericKeyDomainMapping:
         for row in mapping_domains(self._database):
             if row["domain_id"] == self._domain_id:
                 if row["domain_kind"] != VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY:
-                    raise _mapping_failure(
-                        ErrorCode.MAPPING_CONFLICT, _DETAIL_DOMAIN_KIND_CONFLICT
-                    )
+                    raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, _DETAIL_DOMAIN_KIND_CONFLICT)
                 return
         raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, _DETAIL_DOMAIN_KIND_CONFLICT)
 
@@ -289,9 +282,7 @@ class NumericKeyDomainMapping:
         Persisted mappings are FIXED: every later allocation happens around
         them; they are never silently remapped.
         """
-        for original_text, pseudonym_text in numeric_mapping_rows(
-            self._database, self._domain_id
-        ):
+        for original_text, pseudonym_text in numeric_mapping_rows(self._database, self._domain_id):
             original = self._parse_original(original_text)
             pseudonym = self._parse_pseudonym(pseudonym_text)
             if pseudonym == original:
@@ -307,9 +298,7 @@ class NumericKeyDomainMapping:
             value = parse_canonical_integer_text(text)
         except (TypeError, ValueError) as exc:
             raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, _DETAIL_CORRUPT) from exc
-        if not any(
-            low <= value <= high for low, high in self._domain.member_original_ranges
-        ):
+        if not any(low <= value <= high for low, high in self._domain.member_original_ranges):
             # An out-of-range persisted original (e.g. beyond the verified
             # readable Integer range) is corrupt state, never coerced.
             raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, _DETAIL_CORRUPT)
@@ -338,9 +327,7 @@ class NumericKeyDomainMapping:
             raise _mapping_failure(ErrorCode.MAPPING_CONFLICT, _DETAIL_NOT_FINALIZED)
         if isinstance(original, bool) or not isinstance(original, int):
             raise TypeError("an original numeric key value must be an exact int")
-        if not any(
-            low <= original <= high for low, high in self._domain.member_original_ranges
-        ):
+        if not any(low <= original <= high for low, high in self._domain.member_original_ranges):
             raise _mapping_failure(
                 ErrorCode.MAPPING_CONSTRAINT_INFEASIBLE, _DETAIL_RANGE_INFEASIBLE
             )
@@ -431,9 +418,7 @@ class NumericKeyDomainMapping:
 
     def _sync_used(self) -> None:
         """Reconcile occupancy bookkeeping with the persisted vault rows."""
-        for original_text, pseudonym_text in numeric_mapping_rows(
-            self._database, self._domain_id
-        ):
+        for original_text, pseudonym_text in numeric_mapping_rows(self._database, self._domain_id):
             original = self._parse_original(original_text)
             pseudonym = self._parse_pseudonym(pseudonym_text)
             if pseudonym == original:
@@ -455,9 +440,7 @@ class NumericKeyDomainMapping:
         """Whether committing ``original -> candidate`` keeps the residual
         assignment problem feasible (the authoritative numeric kernel)."""
         remaining = self._unallocated_originals(original)
-        return plan_numeric_bijection(
-            self._domain, remaining, [*occupied, candidate]
-        )
+        return plan_numeric_bijection(self._domain, remaining, [*occupied, candidate])
 
     def _select_candidate(self, original: int) -> int:
         """One feasible free pseudonym token for *original*.
@@ -493,14 +476,11 @@ class NumericKeyDomainMapping:
         """
         occupied = sorted(self._used)
         blocked_selection = sorted(
-            set(occupied)
-            | ({original} if self._domain.contains_pseudonym(original) else set())
+            set(occupied) | ({original} if self._domain.contains_pseudonym(original) else set())
         )
         free_selection = free_token_count(self._domain, blocked_selection)
         if free_selection < 1:
-            raise _mapping_failure(
-                ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_DOMAIN_EXHAUSTED
-            )
+            raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_DOMAIN_EXHAUSTED)
         for _ in range(NUMERIC_KEY_PROBE_BUDGET):
             candidate = jth_free_token(
                 self._domain, blocked_selection, self._random_below(free_selection)
@@ -518,9 +498,7 @@ class NumericKeyDomainMapping:
         # The finalized residual problem became genuinely unsolvable only
         # through persisted fixed state committed outside this instance's
         # plan — fail closed (never a random-corner artifact).
-        raise _mapping_failure(
-            ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION
-        )
+        raise _mapping_failure(ErrorCode.MAPPING_CAPACITY_EXHAUSTED, _DETAIL_NO_COMPLETION)
 
 
 def _has_domain(database: VaultDatabase, domain_id: str) -> bool:

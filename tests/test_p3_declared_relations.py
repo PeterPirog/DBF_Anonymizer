@@ -29,13 +29,7 @@ CanaryKey = "KUND-CANARY-SECRET"
 
 
 def _detail(excinfo: pytest.ExceptionInfo[PolicyError]) -> str:
-    return (
-        str(excinfo.value)
-        + "|"
-        + repr(excinfo.value)
-        + "|"
-        + str(excinfo.value.to_dict())
-    )
+    return str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
 
 
 def _single_document(
@@ -91,10 +85,46 @@ def _composite_document(*, encoding: str = "cp1250") -> dict[str, object]:
                 "provenance": PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
                 "comparison": "EXACT_VALUE",
                 "members": [
-                    {"table": "site/devices.dbf", "field": "site_code", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": encoding, "nullable": False},
-                    {"table": "site/devices.dbf", "field": "device_code", "role": "PRIMARY", "ordinal": 2, "dbf_type": "V", "byte_width": 6, "encoding": encoding, "nullable": False},
-                    {"table": "logs/jobs.dbf", "field": "parent_site_code", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": encoding, "nullable": False},
-                    {"table": "logs/jobs.dbf", "field": "parent_device_code", "role": "FOREIGN", "ordinal": 2, "dbf_type": "V", "byte_width": 6, "encoding": encoding, "nullable": False},
+                    {
+                        "table": "site/devices.dbf",
+                        "field": "site_code",
+                        "role": "PRIMARY",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": encoding,
+                        "nullable": False,
+                    },
+                    {
+                        "table": "site/devices.dbf",
+                        "field": "device_code",
+                        "role": "PRIMARY",
+                        "ordinal": 2,
+                        "dbf_type": "V",
+                        "byte_width": 6,
+                        "encoding": encoding,
+                        "nullable": False,
+                    },
+                    {
+                        "table": "logs/jobs.dbf",
+                        "field": "parent_site_code",
+                        "role": "FOREIGN",
+                        "ordinal": 1,
+                        "dbf_type": "C",
+                        "byte_width": 4,
+                        "encoding": encoding,
+                        "nullable": False,
+                    },
+                    {
+                        "table": "logs/jobs.dbf",
+                        "field": "parent_device_code",
+                        "role": "FOREIGN",
+                        "ordinal": 2,
+                        "dbf_type": "V",
+                        "byte_width": 6,
+                        "encoding": encoding,
+                        "nullable": False,
+                    },
                 ],
             }
         ],
@@ -102,13 +132,7 @@ def _composite_document(*, encoding: str = "cp1250") -> dict[str, object]:
 
 
 def _assert_no_key_leakage(excinfo: pytest.ExceptionInfo[PolicyError]) -> None:
-    boundary = (
-        str(excinfo.value)
-        + "|"
-        + repr(excinfo.value)
-        + "|"
-        + str(excinfo.value.to_dict())
-    )
+    boundary = str(excinfo.value) + "|" + repr(excinfo.value) + "|" + str(excinfo.value.to_dict())
     assert CanaryKey not in boundary
     assert "C:\\" not in boundary and "C:/" not in boundary
 
@@ -146,9 +170,7 @@ def test_real_vv_relation_preserves_trailing_space_distinction(
     trailing-space semantics): the exact-value bijection must never collapse
     them after pseudonymization.
     """
-    document = parse_relationship_document(
-        _single_document(dbf_type="V", pk_width=4, fk_width=4)
-    )
+    document = parse_relationship_document(_single_document(dbf_type="V", pk_width=4, fk_width=4))
     validate_document_compatibility(document)
     assert resolved_relation_domain(document.groups[0]).startswith("dom-")
     from dbf_anonymizer.vault import (
@@ -196,9 +218,7 @@ def test_real_vv_relation_preserves_trailing_space_distinction(
             primary_after = [key_no_space, key_with_space]
             foreign_after = [key_with_space, key_no_space, key_no_space]
             before = relation_metrics([(v,) for v in primary], [(v,) for v in foreign])
-            after = relation_metrics(
-                [(v,) for v in primary_after], [(v,) for v in foreign_after]
-            )
+            after = relation_metrics([(v,) for v in primary_after], [(v,) for v in foreign_after])
             assert before.to_dict() == after.to_dict()
 
 
@@ -401,8 +421,26 @@ def test_ambiguous_overlapping_relation_definitions_rejected() -> None:
             "provenance": "POLICY_FILE",
             "comparison": "EXACT_VALUE",
             "members": [
-                {"table": "site/devices.dbf", "field": "site_code", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 8, "encoding": "cp1250", "nullable": False},
-                {"table": "other/x.dbf", "field": "site_code", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                {
+                    "table": "site/devices.dbf",
+                    "field": "site_code",
+                    "role": "PRIMARY",
+                    "ordinal": 1,
+                    "dbf_type": "C",
+                    "byte_width": 8,
+                    "encoding": "cp1250",
+                    "nullable": False,
+                },
+                {
+                    "table": "other/x.dbf",
+                    "field": "site_code",
+                    "role": "FOREIGN",
+                    "ordinal": 1,
+                    "dbf_type": "C",
+                    "byte_width": 4,
+                    "encoding": "cp1250",
+                    "nullable": False,
+                },
             ],
         }
     )
@@ -422,8 +460,26 @@ def test_compatible_overlapping_groups_share_the_global_domain() -> None:
             "provenance": "MCP_VFP9SP2_TOOLCHAIN",
             "comparison": "EXACT_VALUE",
             "members": [
-                {"table": "site/devices.dbf", "field": "site_code", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
-                {"table": "audit/site_keys.dbf", "field": "site_code", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 4, "encoding": "cp1250", "nullable": False},
+                {
+                    "table": "site/devices.dbf",
+                    "field": "site_code",
+                    "role": "FOREIGN",
+                    "ordinal": 1,
+                    "dbf_type": "C",
+                    "byte_width": 4,
+                    "encoding": "cp1250",
+                    "nullable": False,
+                },
+                {
+                    "table": "audit/site_keys.dbf",
+                    "field": "site_code",
+                    "role": "PRIMARY",
+                    "ordinal": 1,
+                    "dbf_type": "C",
+                    "byte_width": 4,
+                    "encoding": "cp1250",
+                    "nullable": False,
+                },
             ],
         }
     )

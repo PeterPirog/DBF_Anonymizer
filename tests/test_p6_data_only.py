@@ -66,9 +66,7 @@ def _copy_fixture(source_root: Path, fixture_relative: str, relative: str) -> No
 def _hash_source_tree(source_root: Path) -> dict[str, str]:
     """Hash every source artifact, including hostile unknown sidecars."""
     return {
-        path.relative_to(source_root).as_posix(): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+        path.relative_to(source_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(source_root.rglob("*"))
         if path.is_file()
     }
@@ -99,8 +97,10 @@ def _pipeline(tmp_path: Path, copies: tuple[tuple[str, str], ...]):
 def test_structural_cdx_source_produces_standalone_output(tmp_path: Path) -> None:
     plan, result, source, output, vault = _pipeline(
         tmp_path,
-        (("structural/indexed_table.dbf", "structural/indexed_table.dbf"),
-         ("structural/indexed_table.cdx", "structural/indexed_table.cdx")),
+        (
+            ("structural/indexed_table.dbf", "structural/indexed_table.dbf"),
+            ("structural/indexed_table.cdx", "structural/indexed_table.cdx"),
+        ),
     )
     table_plan = plan.tables[0]
     # The SOURCE truthfully reports its structural coupling.
@@ -122,19 +122,19 @@ def test_structural_cdx_source_produces_standalone_output(tmp_path: Path) -> Non
     # fidelity and NUMERIC value identity; pseudonymizable text/memo fields
     # are transformed by the pipeline's global text/memo domain).
     source_records = list(
-        dbfbridge.iter_records(source / "structural" / "indexed_table.dbf",
-                               include_deleted=True, memo="inline")
+        dbfbridge.iter_records(
+            source / "structural" / "indexed_table.dbf", include_deleted=True, memo="inline"
+        )
     )
     output_records = list(
-        dbfbridge.iter_records(output / "structural" / "indexed_table.dbf",
-                               include_deleted=True, memo="inline")
+        dbfbridge.iter_records(
+            output / "structural" / "indexed_table.dbf", include_deleted=True, memo="inline"
+        )
     )
     assert len(output_records) == len(source_records) == 4
-    assert ([row.deleted for row in output_records]
-            == [row.deleted for row in source_records])
+    assert [row.deleted for row in output_records] == [row.deleted for row in source_records]
     assert all(
-        a.values["AMOUNT"] == b.values["AMOUNT"]
-        for a, b in zip(output_records, source_records)
+        a.values["AMOUNT"] == b.values["AMOUNT"] for a, b in zip(output_records, source_records)
     )
 
     # Source immutability: source DBF and CDX bytes unchanged.
@@ -162,19 +162,19 @@ def test_dbc_bound_source_produces_output_without_dbc_artifacts(
 ) -> None:
     plan, result, source, output, vault = _pipeline(
         tmp_path,
-        (("dbc/dbc_bound_table.dbf", "dbc/dbc_bound_table.dbf"),
-         ("fixture.dbc", "fixture.dbc"),
-         ("fixture.dct", "fixture.dct"),
-         ("fixture.dcx", "fixture.dcx")),
+        (
+            ("dbc/dbc_bound_table.dbf", "dbc/dbc_bound_table.dbf"),
+            ("fixture.dbc", "fixture.dbc"),
+            ("fixture.dct", "fixture.dct"),
+            ("fixture.dcx", "fixture.dcx"),
+        ),
     )
     table_plan = plan.tables[0]
     # The SOURCE truthfully reports its DBC-bound state.
     assert table_plan.dbc_bound is True
 
     output_names = sorted(
-        path.relative_to(output).as_posix()
-        for path in output.rglob("*")
-        if path.is_file()
+        path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()
     )
     assert output_names == ["dbc/dbc_bound_table.dbf"]
     assert not list(output.rglob("*.dbc"))
@@ -187,9 +187,7 @@ def test_dbc_bound_source_produces_output_without_dbc_artifacts(
     assert output_schema.dbc_backlink_path is None
     assert output_schema.table_flags == 0
     # The standalone output remains fully readable.
-    rows = list(
-        dbfbridge.iter_records(output_table_path, include_deleted=True, memo="inline")
-    )
+    rows = list(dbfbridge.iter_records(output_table_path, include_deleted=True, memo="inline"))
     assert len(rows) == table_plan.record_count
 
 
@@ -201,8 +199,10 @@ def test_standalone_idx_is_not_copied_and_no_rebuild_is_claimed(
 ) -> None:
     plan, result, source, output, vault = _pipeline(
         tmp_path,
-        (("idx/standalone_idx_table.dbf", "idx/standalone_idx_table.dbf"),
-         ("idx/code_idx.idx", "idx/code_idx.idx")),
+        (
+            ("idx/standalone_idx_table.dbf", "idx/standalone_idx_table.dbf"),
+            ("idx/code_idx.idx", "idx/code_idx.idx"),
+        ),
     )
     assert plan.tables[0].index_strategy == "DATA_ONLY"
     assert not list(output.rglob("*.idx"))
@@ -211,8 +211,9 @@ def test_standalone_idx_is_not_copied_and_no_rebuild_is_claimed(
     assert result.index_artifacts[0].status == "OMITTED_DATA_ONLY"
     assert plan.output_profile is not None
     rows = list(
-        dbfbridge.iter_records(output / "idx" / "standalone_idx_table.dbf",
-                               include_deleted=True, memo="inline")
+        dbfbridge.iter_records(
+            output / "idx" / "standalone_idx_table.dbf", include_deleted=True, memo="inline"
+        )
     )
     assert len(rows) == plan.tables[0].record_count
 
@@ -242,10 +243,7 @@ def test_hostile_combined_source_exports_only_approved_standalone_payload(
         source,
         "combined/memo_table.dbf",
         (numeric_field("KEY", "C", 12), numeric_field("NOTE", "M", 4)),
-        [
-            {"KEY": f"MEMO{index:08d}", "NOTE": f"PRIVATE-MEMO-{index}"}
-            for index in range(4)
-        ],
+        [{"KEY": f"MEMO{index:08d}", "NOTE": f"PRIVATE-MEMO-{index}"} for index in range(4)],
     )
 
     # Every hostile artifact exists BEFORE planning and execution.
@@ -254,8 +252,16 @@ def test_hostile_combined_source_exports_only_approved_standalone_payload(
     (source / "combined" / "leftover.tmp").write_bytes(b"temp")
     source_before = _hash_source_tree(source)
     assert {
-        ".dbf", ".fpt", ".cdx", ".idx", ".dbc", ".dct", ".dcx",
-        ".txt", ".sqlite3", ".tmp",
+        ".dbf",
+        ".fpt",
+        ".cdx",
+        ".idx",
+        ".dbc",
+        ".dct",
+        ".dcx",
+        ".txt",
+        ".sqlite3",
+        ".tmp",
     } <= {Path(relative).suffix.lower() for relative in source_before}
 
     plan = build_plan(str(source), str(output), str(vault))
@@ -312,11 +318,13 @@ def test_data_only_bundle_verifies_and_refuses_injected_stale_artifacts(
 ) -> None:
     plan, result, source, output, vault = _pipeline(
         tmp_path,
-        (("structural/indexed_table.dbf", "structural/indexed_table.dbf"),
-         ("structural/indexed_table.cdx", "structural/indexed_table.cdx"),
-         ("idx/code_idx.idx", "idx/code_idx.idx"),
-         ("dbc/dbc_bound_table.dbf", "dbc/dbc_bound_table.dbf"),
-         ("fixture.dbc", "fixture.dbc")),
+        (
+            ("structural/indexed_table.dbf", "structural/indexed_table.dbf"),
+            ("structural/indexed_table.cdx", "structural/indexed_table.cdx"),
+            ("idx/code_idx.idx", "idx/code_idx.idx"),
+            ("dbc/dbc_bound_table.dbf", "dbc/dbc_bound_table.dbf"),
+            ("fixture.dbc", "fixture.dbc"),
+        ),
     )
     bundle = create_transfer_bundle(result, destination=str(tmp_path / "bundle"))
     assert bundle.verified is True
@@ -355,8 +363,10 @@ def test_standalone_fresh_write_preserves_data_facts(tmp_path: Path) -> None:
             numeric_field("AMT", "N", 9),
         ),
         [
-            ({"LEG_ID": f"LEG{index:08d}", "NOTE": f"MEMO-{index}", "AMT": index + 1},
-             index % 3 == 2)
+            (
+                {"LEG_ID": f"LEG{index:08d}", "NOTE": f"MEMO-{index}", "AMT": index + 1},
+                index % 3 == 2,
+            )
             for index in range(30)
         ],
     )
@@ -369,8 +379,11 @@ def test_standalone_fresh_write_preserves_data_facts(tmp_path: Path) -> None:
             numeric_field("NOTE", "M", 4),
         ),
         [
-            {"CUST_ID": f"CUST{index:09d}", "NAME": None if index % 4 == 0 else f"N-{index}",
-             "NOTE": f"MEMO-{index}"}
+            {
+                "CUST_ID": f"CUST{index:09d}",
+                "NAME": None if index % 4 == 0 else f"N-{index}",
+                "NOTE": f"MEMO-{index}",
+            }
             for index in range(30)
         ],
     )
@@ -378,10 +391,7 @@ def test_standalone_fresh_write_preserves_data_facts(tmp_path: Path) -> None:
         source,
         "south/orders.dbf",
         (numeric_field("CUST_ID", "C", 14), numeric_field("ORD_N", "N", 9)),
-        [
-            {"CUST_ID": f"CUST{index % 30:09d}", "ORD_N": index + 1}
-            for index in range(45)
-        ],
+        [{"CUST_ID": f"CUST{index % 30:09d}", "ORD_N": index + 1} for index in range(45)],
     )
     document = {
         "metadata_schema_version": "1.0",
@@ -415,8 +425,7 @@ def test_standalone_fresh_write_preserves_data_facts(tmp_path: Path) -> None:
             }
         ],
     }
-    plan = build_plan(str(source), str(output), str(vault),
-                      relationship_document=document)
+    plan = build_plan(str(source), str(output), str(vault), relationship_document=document)
     result = pseudonymize(plan)
     verification = verify_dataset(result, source=source, vault=vault)
     assert verification.status is VerificationStatus.PASS
@@ -425,13 +434,15 @@ def test_standalone_fresh_write_preserves_data_facts(tmp_path: Path) -> None:
     assurance = result.assurance
     assert assurance.incomplete_relations == 0
     rows = list(
-        dbfbridge.iter_records(output / "archive" / "data.dbf",
-                               include_deleted=True, memo="skip")
+        dbfbridge.iter_records(output / "archive" / "data.dbf", include_deleted=True, memo="skip")
     )
     deleted_flags = [row.deleted for row in rows]
-    assert deleted_flags == [row.deleted for row in
-                             dbfbridge.iter_records(source / "archive" / "data.dbf",
-                                                    include_deleted=True, memo="skip")]
+    assert deleted_flags == [
+        row.deleted
+        for row in dbfbridge.iter_records(
+            source / "archive" / "data.dbf", include_deleted=True, memo="skip"
+        )
+    ]
     assert sum(deleted_flags) == 10  # every third record was deleted
 
 

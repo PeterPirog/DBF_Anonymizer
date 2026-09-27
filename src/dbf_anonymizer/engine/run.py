@@ -46,7 +46,6 @@ from dbf_anonymizer.engine.directives import (
     EnginePlan,
     FieldDirective,
     RelationDirective,
-    RelationPassSummary,
     TableDirective,
     TwoPassResult,
 )
@@ -68,7 +67,6 @@ from dbf_anonymizer.engine.publication import (
     result_receipt,
 )
 from dbf_anonymizer.engine.state import (
-    MAX_RECORD_BATCH,
     PassOneSpool,
     cleanup_evidence_root,
     create_evidence_root,
@@ -182,9 +180,7 @@ def _existing_completed_result(
 ) -> TwoPassResult | None:
     """Recognize an exact completed retry or refuse every conflicting state."""
     operation = vault.operation_record(identity.operation_id)
-    destination_operation = vault.operation_for_destination(
-        identity.destination_identity
-    )
+    destination_operation = vault.operation_for_destination(identity.destination_identity)
     if operation is None:
         if destination_operation is not None:
             raise _destination_conflict("DESTINATION_BOUND_TO_OTHER_OPERATION")
@@ -345,9 +341,7 @@ def build_engine_plan(
                 continue
             if is_unsafe:
                 raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
-            numeric_binding = _numeric_member_of(
-                numeric_groups, relative_path, field_name=name
-            )
+            numeric_binding = _numeric_member_of(numeric_groups, relative_path, field_name=name)
             if numeric_binding is not None:
                 group, domain_id = numeric_binding
                 transformed.append(
@@ -439,9 +433,9 @@ def build_engine_plan(
                     else:  # pragma: no cover - the planner refuses others
                         raise _path_failure("ENGINE_FIELD_UNSUPPORTED")
                 domain = numeric_key_domain_for(ranges)
-            parent_members = group.members_for_role(
-                "PRIMARY"
-            ) or group.members_for_role("CANDIDATE")
+            parent_members = group.members_for_role("PRIMARY") or group.members_for_role(
+                "CANDIDATE"
+            )
             foreign_members = group.members_for_role("FOREIGN")
             parent_table = str(parent_members[0].table_path)
             foreign_table = str(foreign_members[0].table_path)
@@ -457,12 +451,8 @@ def build_engine_plan(
                     composite_arity=len(parent_members),
                     parent_table=parent_table,
                     foreign_table=foreign_table,
-                    parent_fields=tuple(
-                        str(member.field_name) for member in parent_members
-                    ),
-                    foreign_fields=tuple(
-                        str(member.field_name) for member in foreign_members
-                    ),
+                    parent_fields=tuple(str(member.field_name) for member in parent_members),
+                    foreign_fields=tuple(str(member.field_name) for member in foreign_members),
                     numeric_domain_id=group_domain,
                     numeric_domain=domain,
                 )
@@ -476,9 +466,7 @@ def build_engine_plan(
                     memo_fields=directive.memo_fields,
                     temporal_fields=directive.temporal_fields,
                     relation_fields=tuple(
-                        sorted(
-                            relation_fields_by_table.get(directive.relative_path, set())
-                        )
+                        sorted(relation_fields_by_table.get(directive.relative_path, set()))
                     ),
                     structural_cdx=directive.structural_cdx,
                     record_count=directive.record_count,
@@ -547,9 +535,7 @@ def _revalidate_execution_identity(
         raise _identity_failure("ENGINE_POLICY_IDENTITY_MISMATCH")
     declared = plan.relationships
     if relationship_document is not None:
-        if relationship_fingerprint(relationship_document) != (
-            declared.relationship_fingerprint
-        ):
+        if relationship_fingerprint(relationship_document) != (declared.relationship_fingerprint):
             raise _identity_failure("ENGINE_RELATIONSHIP_IDENTITY_MISMATCH")
         if len(relationship_document.groups) != declared.relation_count:
             raise _identity_failure("ENGINE_RELATIONSHIP_COUNT_MISMATCH")
@@ -678,12 +664,8 @@ def _register_transform_fields(
             str(row["relative_path"]): str(row["table_id"]) for row in vault.tables()
         }
         for table in engine_plan.tables:
-            source_table = direct_io.read_source_table(
-                source_root, table.relative_path
-            )
-            transformed_by_name = {
-                field.field_name: field for field in table.transformed
-            }
+            source_table = direct_io.read_source_table(source_root, table.relative_path)
+            transformed_by_name = {field.field_name: field for field in table.transformed}
             table_id = existing_tables.get(table.relative_path)
             if table_id is None:
                 table_id = vault.register_table(table.relative_path)
@@ -699,10 +681,7 @@ def _register_transform_fields(
                         domain_id = directive.numeric_domain_id
                     elif directive.action == ACTION_TEXT and text_domain_id is not None:
                         domain_id = text_domain_id
-                    elif (
-                        directive.action == ACTION_TEMPORAL
-                        and temporal_domain is not None
-                    ):
+                    elif directive.action == ACTION_TEMPORAL and temporal_domain is not None:
                         domain_id = (
                             temporal_domain.domain_id
                             if vault._internal_connection()
@@ -748,9 +727,10 @@ def _register_transform_fields(
                         transform_action=expected[3],
                         mapping_domain_id=expected[4],
                     )
-                elif tuple(
-                    None if value is None else str(value) for value in existing[1:]
-                ) != expected:
+                elif (
+                    tuple(None if value is None else str(value) for value in existing[1:])
+                    != expected
+                ):
                     raise _identity_failure("ENGINE_FIELD_STRUCTURE_MISMATCH")
 
 
@@ -829,9 +809,7 @@ def _staged_idx_inventory(dataset_root: Path) -> set[str]:
                 path = current_path / name
                 metadata = os.lstat(path)
                 if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
-                    raise index_backend_failure(
-                        "INDEX_BACKEND_REBUILT_ARTIFACT_INVALID"
-                    )
+                    raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID")
                 inventory.add(path.relative_to(dataset_root).as_posix())
     except IndexBackendError:
         raise
@@ -935,15 +913,11 @@ def _run_vfp_indexed_rebuild_and_verify(
                 source_table_path=source_table_path,
                 staged_table_path=staged_table_path,
             )
-            rebuild_outcome = run_backend_rebuild(
-                backend_contract.backend, rebuild_request
-            )
+            rebuild_outcome = run_backend_rebuild(backend_contract.backend, rebuild_request)
             rebuild_result = rebuild_outcome.result
 
             if rebuild_result.backend_id != backend_contract.backend_id:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_ID_MISMATCH", table_path=table_path)
             if rebuild_result.status != "REBUILT":
                 detail_code = (
                     "INDEX_BACKEND_REBUILD_REFUSED"
@@ -978,9 +952,7 @@ def _run_vfp_indexed_rebuild_and_verify(
             verification_result = verification_outcome.result
 
             if verification_result.backend_id != backend_contract.backend_id:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_ID_MISMATCH", table_path=table_path)
             if verification_result.status != "VERIFIED":
                 detail_code = {
                     "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
@@ -989,17 +961,12 @@ def _run_vfp_indexed_rebuild_and_verify(
                 }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
                 raise index_backend_failure(detail_code, table_path=table_path)
             if not verification_outcome.table_opened:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path)
             if verification_outcome.actual_record_count != directive.record_count:
                 raise index_backend_failure(
                     "INDEX_BACKEND_RECORD_COUNT_MISMATCH", table_path=table_path
                 )
-            if (
-                verification_outcome.actual_tag_inventory
-                != rebuild_outcome.expected_tag_inventory
-            ):
+            if verification_outcome.actual_tag_inventory != rebuild_outcome.expected_tag_inventory:
                 raise index_backend_failure(
                     "INDEX_BACKEND_TAG_INVENTORY_MISMATCH", table_path=table_path
                 )
@@ -1072,9 +1039,7 @@ def _run_vfp_indexed_rebuild_and_verify(
                 raise index_backend_failure("INDEX_BACKEND_ASSOCIATION_MISMATCH")
             table_path = associated_table_path
             try:
-                source_table_path = (resolved_source_root / table_path).resolve(
-                    strict=True
-                )
+                source_table_path = (resolved_source_root / table_path).resolve(strict=True)
                 staged_table_path = (dataset_root / table_path).resolve(strict=True)
             except OSError:
                 raise _path_failure("ENGINE_VFP_INDEXED_TABLE_UNAVAILABLE") from None
@@ -1121,15 +1086,11 @@ def _run_vfp_indexed_rebuild_and_verify(
                 source_dataset_root=resolved_source_root,
                 staged_dataset_root=dataset_root,
             )
-            rebuild_outcome = run_backend_rebuild(
-                backend_contract.backend, rebuild_request
-            )
+            rebuild_outcome = run_backend_rebuild(backend_contract.backend, rebuild_request)
             rebuild_result = rebuild_outcome.result
 
             if rebuild_result.backend_id != backend_contract.backend_id:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_ID_MISMATCH", table_path=table_path)
             if rebuild_result.status != "REBUILT":
                 if rebuild_result.status == "REFUSED":
                     try:
@@ -1162,9 +1123,7 @@ def _run_vfp_indexed_rebuild_and_verify(
                         )
                     )
                     continue
-                raise index_backend_failure(
-                    "INDEX_BACKEND_REBUILD_FAILED", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_REBUILD_FAILED", table_path=table_path)
 
             rebuilt_idx_path = _regular_idx_path(
                 staged_idx_path,
@@ -1198,9 +1157,7 @@ def _run_vfp_indexed_rebuild_and_verify(
             )
             verification_result = verification_outcome.result
             if verification_result.backend_id != backend_contract.backend_id:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_ID_MISMATCH", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_ID_MISMATCH", table_path=table_path)
             if verification_result.status != "VERIFIED":
                 detail_code = {
                     "OPEN_FAILED": "INDEX_BACKEND_TABLE_NOT_OPENED",
@@ -1208,9 +1165,7 @@ def _run_vfp_indexed_rebuild_and_verify(
                 }.get(verification_result.detail_code, "INDEX_BACKEND_VERIFY_FAILED")
                 raise index_backend_failure(detail_code, table_path=table_path)
             if not verification_outcome.table_opened:
-                raise index_backend_failure(
-                    "INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path
-                )
+                raise index_backend_failure("INDEX_BACKEND_TABLE_NOT_OPENED", table_path=table_path)
             if verification_outcome.actual_record_count != directive.record_count:
                 raise index_backend_failure(
                     "INDEX_BACKEND_RECORD_COUNT_MISMATCH", table_path=table_path
@@ -1248,9 +1203,7 @@ def _run_vfp_indexed_rebuild_and_verify(
                 fault_inject(f"STANDALONE_IDX_REBUILD_VERIFY_COMPLETE:{idx_path}")
 
         verified_paths = {
-            item.artifact_path
-            for item in idx_evidence
-            if item.status == "REBUILT_VERIFIED"
+            item.artifact_path for item in idx_evidence if item.status == "REBUILT_VERIFIED"
         }
         if _staged_idx_inventory(dataset_root) != verified_paths:
             raise index_backend_failure("INDEX_BACKEND_REBUILT_ARTIFACT_INVALID")
@@ -1331,13 +1284,9 @@ def run_two_pass(
         if not isinstance(control, ProgressController):
             raise TypeError("control must be a ProgressController")
         if progress is not None or cancel_check is not None:
-            raise ValueError(
-                "an injected controller excludes separate progress/cancel callbacks"
-            )
+            raise ValueError("an injected controller excludes separate progress/cancel callbacks")
         if operation_id is not None and control.operation_id != operation_id:
-            raise ValueError(
-                "an injected controller and the operation id must match"
-            )
+            raise ValueError("an injected controller and the operation id must match")
     context = plan.execution_context
     if context is None:
         raise _path_failure("ENGINE_PLAN_CONTEXT_MISSING")
@@ -1428,9 +1377,7 @@ def run_two_pass(
                             identity.operation_id,
                             source_fingerprint=plan.dataset.source_fingerprint,
                             policy_fingerprint=plan.policy.policy_fingerprint,
-                            relationship_fingerprint=(
-                                plan.relationships.relationship_fingerprint
-                            ),
+                            relationship_fingerprint=(plan.relationships.relationship_fingerprint),
                             vault_fingerprint=identity.vault_fingerprint,
                             destination_identity=identity.destination_identity,
                             binding_fingerprint=identity.binding_fingerprint,
@@ -1447,9 +1394,7 @@ def run_two_pass(
                         else None
                     )
                     memo_bindings = _register_memo_structure(engine_plan, writer_vault)
-                    control.start_phase(
-                        ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables)
-                    )
+                    control.start_phase(ProgressPhase.PASS1_SCAN, total=len(engine_plan.tables))
                     run_pass_one(
                         engine_plan,
                         source_root=source,
@@ -1477,9 +1422,7 @@ def run_two_pass(
                         temporal_domain,
                         source_root=source,
                     )
-                    evidence_root = create_evidence_root(
-                        vault_path.parent, identity.operation_id
-                    )
+                    evidence_root = create_evidence_root(vault_path.parent, identity.operation_id)
                     result = run_pass_two(
                         engine_plan,
                         source_root=source,
@@ -1503,12 +1446,8 @@ def run_two_pass(
                         )
                     # VFP_INDEXED work runs only when the source inventory
                     # actually requires structural-CDX or standalone-IDX work.
-                    if (
-                        plan.output_profile is TransferProfile.VFP_INDEXED
-                        and (
-                            engine_plan.structural_cdx_tables
-                            or engine_plan.standalone_idx_paths
-                        )
+                    if plan.output_profile is TransferProfile.VFP_INDEXED and (
+                        engine_plan.structural_cdx_tables or engine_plan.standalone_idx_paths
                     ):
                         if backend_contract is None:
                             raise index_backend_failure("INDEX_BACKEND_MISSING")
@@ -1554,9 +1493,7 @@ def run_two_pass(
                     # REQ-P5-008 step 8: durable READY_TO_PROMOTE state.
                     if fault_inject is not None:
                         fault_inject("BEFORE_READY_TO_PROMOTE")
-                    staging.mark_ready_to_promote(
-                        payload_fingerprint=output_fingerprint
-                    )
+                    staging.mark_ready_to_promote(payload_fingerprint=output_fingerprint)
                     if fault_inject is not None:
                         fault_inject("AFTER_READY_TO_PROMOTE")
                     control.check_cancelled()
@@ -1627,9 +1564,7 @@ def run_two_pass(
             # Cancellation is no longer observed after atomic promotion; this
             # terminal event cannot turn a committed dataset into cancellation.
             if not external_control:
-                control.complete(
-                    completed=len(result.tables_written), check_cancel=False
-                )
+                control.complete(completed=len(result.tables_written), check_cancel=False)
             return result
     finally:
         operation_error = sys.exc_info()[1]

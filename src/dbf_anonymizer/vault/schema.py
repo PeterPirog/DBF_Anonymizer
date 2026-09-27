@@ -249,8 +249,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
 #: Writer-authority lease seed row and the single meta/dataset rows.
 CREATE_META_SEED: tuple[tuple[str, tuple[object, ...]], ...] = (
     (
-        "INSERT INTO writer_authority (singleton, owner_token, acquire_tick) "
-        "VALUES (1, NULL, 0)",
+        "INSERT INTO writer_authority (singleton, owner_token, acquire_tick) VALUES (1, NULL, 0)",
         (),
     ),
 )

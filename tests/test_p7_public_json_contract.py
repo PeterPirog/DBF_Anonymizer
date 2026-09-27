@@ -215,18 +215,10 @@ def _schema_snapshot() -> dict[str, Any]:
             "progress_event": list(PROGRESS_EVENT_CODES),
             "progress_phase": list(PROGRESS_PHASE_CODES),
             "raw_byte_equivalence": [item.value for item in public.RawByteEquivalence],
-            "relational_assurance": [
-                item.value for item in public.RelationalAssuranceLevel
-            ],
-            "standalone_idx_association_detail": list(
-                STANDALONE_IDX_ASSOCIATION_DETAIL_CODES
-            ),
-            "standalone_idx_association_status": list(
-                STANDALONE_IDX_ASSOCIATION_STATUSES
-            ),
-            "standalone_idx_evidence_status": list(
-                STANDALONE_IDX_EVIDENCE_STATUSES
-            ),
+            "relational_assurance": [item.value for item in public.RelationalAssuranceLevel],
+            "standalone_idx_association_detail": list(STANDALONE_IDX_ASSOCIATION_DETAIL_CODES),
+            "standalone_idx_association_status": list(STANDALONE_IDX_ASSOCIATION_STATUSES),
+            "standalone_idx_evidence_status": list(STANDALONE_IDX_EVIDENCE_STATUSES),
             "transfer_profile": [item.value for item in public.TransferProfile],
             "vault_strategy": [item.value for item in public.VaultStrategy],
             "verification_status": [item.value for item in public.VerificationStatus],
@@ -243,9 +235,9 @@ def test_committed_schema_snapshot_is_exact_and_deterministic() -> None:
     assert expected["model_schema_version"] == "1.8"
     committed_text = SNAPSHOT_PATH.read_text(encoding="ascii")
     assert json.loads(committed_text) == expected
-    assert committed_text == json.dumps(
-        expected, ensure_ascii=True, indent=2, sort_keys=True
-    ) + "\n"
+    assert (
+        committed_text == json.dumps(expected, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def test_result_capability_progress_and_error_json_are_versioned_deterministic() -> None:
@@ -322,8 +314,7 @@ def test_result_capability_progress_and_error_json_are_versioned_deterministic()
 
 def test_objective_payload_bounds_are_exercised_at_collection_limits() -> None:
     table_paths = tuple(
-        _max_path(f"t{i:03d}/", ".dbf")
-        for i in range(PUBLIC_JSON_MAX_DATASET_TABLES)
+        _max_path(f"t{i:03d}/", ".dbf") for i in range(PUBLIC_JSON_MAX_DATASET_TABLES)
     )
     tables = tuple(
         public.TablePlan(
@@ -364,8 +355,7 @@ def test_objective_payload_bounds_are_exercised_at_collection_limits() -> None:
             PUBLIC_JSON_MAX_COUNT,
             True,
             tuple(
-                _token("CLASS", index)
-                for index in range(PUBLIC_JSON_MAX_TRANSFORMATION_CLASSES)
+                _token("CLASS", index) for index in range(PUBLIC_JSON_MAX_TRANSFORMATION_CLASSES)
             ),
             public.VaultStrategy.SINGLE_DATASET_SQLITE,
         ),
@@ -381,9 +371,7 @@ def test_objective_payload_bounds_are_exercised_at_collection_limits() -> None:
         output_data_state=public.OutputDataState.STANDALONE_REDUCED_SEMANTICS,
         numeric_identity_review=reviews,
     )
-    finding_codes = tuple(
-        _token("CHECK", index) for index in range(PUBLIC_JSON_MAX_FINDING_CODES)
-    )
+    finding_codes = tuple(_token("CHECK", index) for index in range(PUBLIC_JSON_MAX_FINDING_CODES))
     preflight = public.PreflightResult(
         False,
         "p" * PUBLIC_JSON_MAX_TOKEN_LENGTH,
@@ -394,8 +382,7 @@ def test_objective_payload_bounds_are_exercised_at_collection_limits() -> None:
     )
 
     idx_paths = tuple(
-        _max_path(f"i{i:03d}/", ".idx")
-        for i in range(PUBLIC_JSON_MAX_INDEX_ARTIFACTS)
+        _max_path(f"i{i:03d}/", ".idx") for i in range(PUBLIC_JSON_MAX_INDEX_ARTIFACTS)
     )
     indexed_dataset = _dataset(table_paths=table_paths, idx_paths=idx_paths)
     evidence = tuple(
@@ -475,8 +462,7 @@ def test_limits_reject_one_past_the_public_boundaries() -> None:
     with pytest.raises(ValueError, match="table_paths"):
         _dataset(
             table_paths=tuple(
-                f"t/{index}.dbf"
-                for index in range(PUBLIC_JSON_MAX_DATASET_TABLES + 1)
+                f"t/{index}.dbf" for index in range(PUBLIC_JSON_MAX_DATASET_TABLES + 1)
             )
         )
     with pytest.raises(ValueError, match="check_codes"):
@@ -512,19 +498,13 @@ def test_build_plan_table_limit_refusal_is_early_deterministic_and_private(
         )
         for index in range(PUBLIC_JSON_MAX_DATASET_TABLES + 1)
     )
-    monkeypatch.setattr(
-        planning, "enumerate_in_scope_paths", lambda *args, **kwargs: {}
-    )
-    monkeypatch.setattr(
-        planning, "discover_tables", lambda *args, **kwargs: discovered
-    )
+    monkeypatch.setattr(planning, "enumerate_in_scope_paths", lambda *args, **kwargs: {})
+    monkeypatch.setattr(planning, "discover_tables", lambda *args, **kwargs: discovered)
 
     def fingerprint_must_not_run(*args: object, **kwargs: object) -> object:
         pytest.fail("fingerprinting ran after the public table limit was exceeded")
 
-    monkeypatch.setattr(
-        planning, "collect_fingerprint_entries", fingerprint_must_not_run
-    )
+    monkeypatch.setattr(planning, "collect_fingerprint_entries", fingerprint_must_not_run)
 
     payloads = []
     for _ in range(2):
@@ -534,10 +514,7 @@ def test_build_plan_table_limit_refusal_is_early_deterministic_and_private(
 
     assert payloads[0] == payloads[1]
     assert payloads[0]["code"] == "PATH_INVALID"
-    assert (
-        payloads[0]["context"]["detail_code"]
-        == "PUBLIC_DATASET_TABLE_LIMIT_EXCEEDED"
-    )
+    assert payloads[0]["context"]["detail_code"] == "PUBLIC_DATASET_TABLE_LIMIT_EXCEEDED"
     serialized = json.dumps(payloads[0], sort_keys=True)
     assert all(canary not in serialized for canary in CANARIES)
     assert not output.exists()
@@ -550,9 +527,7 @@ def test_build_plan_table_limit_refusal_is_early_deterministic_and_private(
 )
 def test_path_representation_is_portable_bounded_and_private(path: str) -> None:
     with pytest.raises(ValueError):
-        public.ProgressEvent(
-            "op-" + ("a" * 32), "SCAN", "PROGRESS", 0, table_path=path
-        )
+        public.ProgressEvent("op-" + ("a" * 32), "SCAN", "PROGRESS", 0, table_path=path)
 
 
 def test_status_assurance_and_progress_vocabularies_are_closed() -> None:
@@ -596,7 +571,9 @@ def test_incompatible_index_protocol_version_is_rejected() -> None:
 
 
 def test_success_payload_redacts_all_private_sentinels_and_dictionary_rows() -> None:
-    private_rows = [{"original": item, "pseudonym": f"masked-{index}"} for index, item in enumerate(CANARIES)]
+    private_rows = [
+        {"original": item, "pseudonym": f"masked-{index}"} for index, item in enumerate(CANARIES)
+    ]
     table = public.TablePlan(
         "tables/people.dbf",
         None,
@@ -618,9 +595,7 @@ def test_success_payload_redacts_all_private_sentinels_and_dictionary_rows() -> 
         "plan-redaction",
         dataset,
         (table,),
-        public.PolicySummary(
-            "1.0", "policy", 0, 0, False, (), public.VaultStrategy.NONE
-        ),
+        public.PolicySummary("1.0", "policy", 0, 0, False, (), public.VaultStrategy.NONE),
         public.RelationshipMetadata("1.0", "none", "relationships", 0, False),
         public.TransferProfile.DATA_ONLY,
         public.RelationalAssuranceLevel.INCOMPLETE,
@@ -674,9 +649,7 @@ def test_failure_payloads_redact_backend_and_callback_sentinels() -> None:
     class HostileBackendFailure(RuntimeError):
         code = "X" * (PUBLIC_JSON_MAX_TOKEN_LENGTH + 1)
 
-    backend_error = public.DBFBridgeError.from_exception(
-        HostileBackendFailure("|".join(CANARIES))
-    )
+    backend_error = public.DBFBridgeError.from_exception(HostileBackendFailure("|".join(CANARIES)))
     assert backend_error.dependency_code is None
 
     def fail_progress(_event: public.ProgressEvent) -> None:

@@ -12,7 +12,6 @@ Synthetic data only; the vault and the source live in separate directories.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -115,11 +114,18 @@ def test_multi_directory_multi_table_dataset_uses_one_dictionary(
                     mapping_domain_id=domain,
                 )
                 mappings.add_text_mapping(
-                    vault, domain, f"CANARY_VALUE_{table_id}", f"PSEUDO_{table_id}",
+                    vault,
+                    domain,
+                    f"CANARY_VALUE_{table_id}",
+                    f"PSEUDO_{table_id}",
                     logical_byte_length=16,
                 )
                 mappings.add_memo_recovery(
-                    vault, table_id, 0, field_id, "CANARY_MEMO_PAYLOAD",
+                    vault,
+                    table_id,
+                    0,
+                    field_id,
+                    "CANARY_MEMO_PAYLOAD",
                     payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
                 )
             vault.complete_operation(operation_id, output_fingerprint="out-" + "f" * 32)
@@ -141,8 +147,7 @@ def test_multi_directory_multi_table_dataset_uses_one_dictionary(
         assert stored[0]["operation_id"] == operation_id
         # Every registered table/field/mapping belongs to the SAME vault.
         assert all(
-            entry["table_id"] in {t["table_id"] for t in registered}
-            for entry in reopened.tables()
+            entry["table_id"] in {t["table_id"] for t in registered} for entry in reopened.tables()
         )
 
     files = _sqlite_files(tmp_path)
@@ -209,9 +214,11 @@ def test_publication_rows_bind_to_persisted_operations(tmp_path: Path) -> None:
             with writer_session(vault), vault.transaction():
                 vault.record_publication("vop-absent", "PUBLISH")
     with _reopen(tmp_path) as reopened:
-        publication = reopened._internal_connection().execute(
-            "SELECT operation_id, phase, output_fingerprint FROM publication"
-        ).fetchone()
+        publication = (
+            reopened._internal_connection()
+            .execute("SELECT operation_id, phase, output_fingerprint FROM publication")
+            .fetchone()
+        )
         assert tuple(publication) == (operation_id, "PUBLISH", "out-" + "0" * 16)
 
 
@@ -248,16 +255,26 @@ def test_lease_holder_can_perform_every_mutation_class(tmp_path: Path) -> None:
                 vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_NUMERIC_KEY
             )
             field_id = vault.register_field(
-                table_id, "NAME", dbf_type="C", width=10,
+                table_id,
+                "NAME",
+                dbf_type="C",
+                width=10,
                 mapping_domain_id=domain_text,
             )
             mappings.add_text_mapping(
-                vault, domain_text, "CANARY_ORIGINAL", "PSEUDO_1",
+                vault,
+                domain_text,
+                "CANARY_ORIGINAL",
+                "PSEUDO_1",
                 logical_byte_length=14,
             )
             mappings.add_numeric_key_mapping(vault, domain_numeric, "42", "90042")
             mappings.add_memo_recovery(
-                vault, table_id, 0, field_id, "CANARY_MEMO",
+                vault,
+                table_id,
+                0,
+                field_id,
+                "CANARY_MEMO",
                 payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
             )
             mappings.set_temporal_parameter(vault, domain_text, offset_days=-5)
@@ -271,9 +288,9 @@ def test_lease_holder_can_perform_every_mutation_class(tmp_path: Path) -> None:
         assert len(mappings.mapping_domains(reopened)) == 2
         assert len(mappings.memo_recovery_rows(reopened, table_id)) == 1
         assert mappings.temporal_parameter(reopened, domain_text) == -5
-        publication = reopened._internal_connection().execute(
-            "SELECT phase FROM publication"
-        ).fetchone()
+        publication = (
+            reopened._internal_connection().execute("SELECT phase FROM publication").fetchone()
+        )
         assert tuple(publication) == ("PUBLISH",)
 
 
@@ -451,7 +468,9 @@ def test_vault_creation_touches_only_its_own_zone(tmp_path: Path) -> None:
     assert added == {f"vault/{VAULT_DATABASE_FILENAME}"}
     assert not output.exists()
     source_after = {key: value for key, value in after.items() if key.startswith("source/")}
-    assert source_after == {key: value for key, value in before.items() if key.startswith("source/")}
+    assert source_after == {
+        key: value for key, value in before.items() if key.startswith("source/")
+    }
 
 
 def test_real_writer_conflict_stays_privacy_safe(tmp_path: Path) -> None:

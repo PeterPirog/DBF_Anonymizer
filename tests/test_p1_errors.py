@@ -22,7 +22,6 @@ from dbf_anonymizer import (
     ErrorCategory,
     ErrorCode,
     ErrorContext,
-    IndexBackendError,
     MappingError,
     PathError,
     PolicyError,
@@ -80,14 +79,11 @@ def test_error_registry_is_versioned_complete_and_unique() -> None:
     assert ERROR_REGISTRY_VERSION == "1.5"
     registered_codes = [definition.code for definition in ERROR_REGISTRY]
     assert tuple(code.value for code in ErrorCode) == _ERROR_CODES_FOR_REGISTRY_1_5
-    assert (
-        tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_5
-    )
+    assert tuple(code.value for code in registered_codes) == _ERROR_CODES_FOR_REGISTRY_1_5
     assert len(registered_codes) == len(set(registered_codes))
     assert set(registered_codes) == set(ErrorCode)
     assert all(
-        definition.message and definition.message.endswith(".")
-        for definition in ERROR_REGISTRY
+        definition.message and definition.message.endswith(".") for definition in ERROR_REGISTRY
     )
 
 

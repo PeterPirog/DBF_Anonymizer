@@ -21,11 +21,10 @@ Only disposable synthetic tmp_path fixtures created through the public
 from __future__ import annotations
 
 import shutil
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import dbfbridge
-import pytest
 
 import dbf_anonymizer as public
 from tests.support.numeric_tables import NULLABLE_FLAG, numeric_field
@@ -255,9 +254,7 @@ def test_complete_public_consumer_workflow(tmp_path: Path) -> None:
     vault = tmp_path / "vault" / "dictionary.sqlite3"
 
     # 1. build_plan (declared PK/FK relation).
-    plan = public.build_plan(
-        source, output, vault, relationship_document=_relationship_document()
-    )
+    plan = public.build_plan(source, output, vault, relationship_document=_relationship_document())
 
     # 2. preflight.
     assert public.preflight(plan).ready is True
@@ -296,9 +293,7 @@ def test_complete_public_consumer_workflow(tmp_path: Path) -> None:
     # with ONLY the pseudonymized working dataset path + the vault path
     # (the original source is already deleted above; the private
     # PseudonymizationResult result object is never passed).
-    recovery = public.recover(
-        pseudonymized=output, vault=vault, output=tmp_path / "recovered"
-    )
+    recovery = public.recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert recovery.canonical_verified is True
     assert recovery.raw_byte_equivalence is public.RawByteEquivalence.NOT_EVALUATED
     assert recovery.operation_id != result.operation_id
@@ -318,9 +313,7 @@ def test_complete_public_consumer_workflow(tmp_path: Path) -> None:
     for relative in original_topology:
         if not relative.endswith(".dbf"):
             continue
-        assert _table_records(oracle, relative) == _table_records(
-            tmp_path / "recovered", relative
-        )
+        assert _table_records(oracle, relative) == _table_records(tmp_path / "recovered", relative)
 
 
 def test_complete_public_consumer_workflow_no_relationship_document(
@@ -339,21 +332,15 @@ def test_complete_public_consumer_workflow_no_relationship_document(
     assert result.assurance.declared_relations == 0
     verification = public.verify_dataset(result, source=source, vault=vault)
     assert verification.status is public.VerificationStatus.PASS
-    bundle = public.create_transfer_bundle(
-        result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-    )
+    public.create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
     standalone = public.verify_transfer_bundle(tmp_path / "bundle")
     assert standalone.verified is True
-    recovery = public.recover(
-        pseudonymized=output, vault=vault, output=tmp_path / "recovered"
-    )
+    recovery = public.recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert recovery.canonical_verified is True
     # The bundle's transferred assurance carries the same truthful facts.
     assert standalone.assurance == result.assurance
     assert standalone.assurance.evidence_schema_version == "1.0"
-    assert standalone.assurance.scope_note == (
-        "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"
-    )
+    assert standalone.assurance.scope_note == ("DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY")
 
 
 def test_public_relationship_metadata_bundle_round_trip(tmp_path: Path) -> None:
@@ -378,17 +365,11 @@ def test_public_relationship_metadata_bundle_round_trip(tmp_path: Path) -> None:
     assert public.preflight(plan).ready is True
     result = public.pseudonymize(plan)
     # The producer carries the EXACT public token through the workflow.
-    assert result.assurance.relationship_fingerprint == (
-        metadata.relationship_fingerprint
-    )
-    bundle = public.create_transfer_bundle(
-        result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-    )
+    assert result.assurance.relationship_fingerprint == (metadata.relationship_fingerprint)
+    public.create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
     standalone = public.verify_transfer_bundle(tmp_path / "bundle")
     assert standalone.verified is True
-    assert standalone.assurance.relationship_fingerprint == (
-        metadata.relationship_fingerprint
-    )
+    assert standalone.assurance.relationship_fingerprint == (metadata.relationship_fingerprint)
     assert standalone.assurance.relationship_fingerprint == (
         result.assurance.relationship_fingerprint
     )
@@ -397,6 +378,8 @@ def test_public_relationship_metadata_bundle_round_trip(tmp_path: Path) -> None:
     assert (standalone.assurance.relationship_fingerprint or "").strip() == (
         standalone.assurance.relationship_fingerprint or ""
     )
+
+
 def test_standalone_verification_needs_no_vault_or_source(tmp_path: Path) -> None:
     """Standalone verification NEVER searches for or requests a vault, and
     never needs the source: prove it succeeds with both completely absent
@@ -407,9 +390,7 @@ def test_standalone_verification_needs_no_vault_or_source(tmp_path: Path) -> Non
     vault = tmp_path / "vault" / "dictionary.sqlite3"
     plan = public.build_plan(source, output, vault, relationship_document=None)
     result = public.pseudonymize(plan)
-    bundle = public.create_transfer_bundle(
-        result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-    )
+    public.create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
     # Everything except the copied bundle is gone.
     shutil.rmtree(source)
     shutil.rmtree(output)

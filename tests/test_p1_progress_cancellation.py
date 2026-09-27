@@ -82,33 +82,55 @@ CANARY_ABSOLUTE = "C:\\private\\canary\\source.dbf"
 # ---------------------------------------------------------------------------
 # Synthetic helpers (public dbfbridge only)
 # ---------------------------------------------------------------------------
-def _field(
-    name: str, dbf_type: str, length: int, *, flags: int = 0
-) -> dbfbridge.FieldInfo:
+def _field(name: str, dbf_type: str, length: int, *, flags: int = 0) -> dbfbridge.FieldInfo:
     return dbfbridge.FieldInfo(
-        ordinal=0, name=name, dbf_type=dbf_type, length=length,
-        decimal_count=0, address=0, flags=flags, index_field_flag=0,
-        autoincrement_next_value=0, autoincrement_step=1,
-        is_memo=dbf_type in {"M", "G", "P"}, is_binary=False, supported=True,
+        ordinal=0,
+        name=name,
+        dbf_type=dbf_type,
+        length=length,
+        decimal_count=0,
+        address=0,
+        flags=flags,
+        index_field_flag=0,
+        autoincrement_next_value=0,
+        autoincrement_step=1,
+        is_memo=dbf_type in {"M", "G", "P"},
+        is_binary=False,
+        supported=True,
         dbversion_byte=0x30,
     )
 
 
 def _schema(fields: tuple[dbfbridge.FieldInfo, ...]) -> dbfbridge.TableSchema:
     return dbfbridge.TableSchema(
-        path=Path("memory:test"), record_count=0,
+        path=Path("memory:test"),
+        record_count=0,
         header_length=32 + 32 * len(fields) + 1,
         record_length=sum(f.length for f in fields) + 1,
-        language_driver=0xC8, encoding="cp1250",
-        has_memo=False, has_memo_flag=False, has_structural_cdx=False,
-        is_database_container=False, dbc_bound=False, dbc_backlink_path=None,
-        table_flags=0, fields=fields, warnings=(),
-        dbversion_byte=0x30, dbversion_name="Visual FoxPro",
-        last_update=None, incomplete_transaction=False, encryption_flag=False,
-        memo_companion_format=None, memo_companion_present=False,
-        memo_companion_path=None, memo_companion_size_bytes=None,
-        memo_block_size=None, memo_next_free_block=None,
-        companion_cdx_present=False, companion_cdx_path=None,
+        language_driver=0xC8,
+        encoding="cp1250",
+        has_memo=False,
+        has_memo_flag=False,
+        has_structural_cdx=False,
+        is_database_container=False,
+        dbc_bound=False,
+        dbc_backlink_path=None,
+        table_flags=0,
+        fields=fields,
+        warnings=(),
+        dbversion_byte=0x30,
+        dbversion_name="Visual FoxPro",
+        last_update=None,
+        incomplete_transaction=False,
+        encryption_flag=False,
+        memo_companion_format=None,
+        memo_companion_present=False,
+        memo_companion_path=None,
+        memo_companion_size_bytes=None,
+        memo_block_size=None,
+        memo_next_free_block=None,
+        companion_cdx_present=False,
+        companion_cdx_path=None,
     )
 
 
@@ -116,7 +138,7 @@ def _write_table(
     path: Path, fields: list[tuple[str, str, int]], records: list[dict[str, Any]]
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fdefs = tuple(_field(n, t, l) for n, t, l in fields)
+    fdefs = tuple(_field(n, t, length) for n, t, length in fields)
     dbfbridge.write_table(path, schema=_schema(fdefs), records=records)
 
 
@@ -126,8 +148,7 @@ def _make_source(tmp: Path) -> Path:
     _write_table(
         src / "customers" / "customers.dbf",
         [("CODE", "C", 20), ("QTY", "N", 10)],
-        [{"CODE": "ALPHA", "QTY": 1}, {"CODE": "BETA", "QTY": 2},
-         {"CODE": "GAMMA", "QTY": 3}],
+        [{"CODE": "ALPHA", "QTY": 1}, {"CODE": "BETA", "QTY": 2}, {"CODE": "GAMMA", "QTY": 3}],
     )
     return src
 
@@ -155,9 +176,7 @@ def _make_big_idx_source(tmp: Path, chunk_count: int) -> Path:
     src = tmp / "src"
     big_idx = src / "a_big.idx"
     big_idx.parent.mkdir(parents=True, exist_ok=True)
-    big_idx.write_bytes(
-        b"\x00" * (progress_layer.FINGERPRINT_HASH_CHUNK_SIZE * chunk_count)
-    )
+    big_idx.write_bytes(b"\x00" * (progress_layer.FINGERPRINT_HASH_CHUNK_SIZE * chunk_count))
     _write_table(
         src / "z_customers" / "z_customers.dbf",
         [("CODE", "C", 5)],
@@ -205,14 +224,14 @@ class _FakeWalkOS:
             yield entry
 
 
-def _synthetic_walk_entries(real_table_dir: Path, filler_count: int) -> list[tuple[str, list[str], list[str]]]:
+def _synthetic_walk_entries(
+    real_table_dir: Path, filler_count: int
+) -> list[tuple[str, list[str], list[str]]]:
     """A synthetic walk: the REAL table directory first (so a complete
     traversal would succeed), then many filler directories.  Exhaustion would
     consume ``1 + filler_count`` directories."""
 
-    entries: list[tuple[str, list[str], list[str]]] = [
-        (str(real_table_dir), [], ["customers.dbf"])
-    ]
+    entries: list[tuple[str, list[str], list[str]]] = [(str(real_table_dir), [], ["customers.dbf"])]
     entries += [
         (str(real_table_dir.parent / f"filler{i:03d}"), [], ["noise.txt"])
         for i in range(filler_count)
@@ -290,8 +309,7 @@ def _assert_no_side_effects(tmp: Path) -> None:
     sidecars = [
         name
         for name in _tree_snapshot(tmp)
-        if "sqlite" in name.lower()
-        or name.lower().endswith(("-wal", "-shm", ".lock", ".log"))
+        if "sqlite" in name.lower() or name.lower().endswith(("-wal", "-shm", ".lock", ".log"))
     ]
     assert not sidecars, f"vault/staging/log sidecars created: {sidecars}"
 
@@ -303,7 +321,8 @@ def _assert_source_unchanged(before: dict[str, str], tmp: Path) -> None:
 @pytest.fixture(autouse=True)
 def _ample_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        _PF_MODULE, "_disk_usage",
+        _PF_MODULE,
+        "_disk_usage",
         lambda _p: (10**15, 10**12, 10**15 - 10**12),
     )
 
@@ -318,10 +337,7 @@ class _Recorder:
         self.events.append(event)
 
     def phase(self, phase: str, event: str) -> list[ProgressEvent]:
-        return [
-            e for e in self.events
-            if e.phase_code == phase and e.event_code == event
-        ]
+        return [e for e in self.events if e.phase_code == phase and e.event_code == event]
 
 
 def _assert_bounded_operation_id(value: str) -> None:
@@ -342,9 +358,7 @@ def _assert_event_privacy(event: ProgressEvent) -> None:
 
 
 def _assert_no_completion(events: list[ProgressEvent]) -> None:
-    completed = [
-        event for event in events if event.event_code == "COMPLETED"
-    ]
+    completed = [event for event in events if event.event_code == "COMPLETED"]
     assert not completed, "a COMPLETED event was emitted despite failure/cancel"
 
 
@@ -476,8 +490,11 @@ def test_plan_serialization_is_unchanged_and_excludes_operation_id(
     src = _make_source(tmp_path)
     plain = build_plan(source=src, output=tmp_path / "out", vault=tmp_path / "v")
     plain_again = build_plan(
-        source=src, output=tmp_path / "out", vault=tmp_path / "v",
-        progress=None, cancel_check=None,
+        source=src,
+        output=tmp_path / "out",
+        vault=tmp_path / "v",
+        progress=None,
+        cancel_check=None,
     )
     assert plain.to_dict() == plain_again.to_dict()
     assert "operation_id" not in plain.to_dict()
@@ -516,7 +533,9 @@ def test_progress_callback_failure_is_contained_and_classified_build_plan(
 
     with pytest.raises(CallbackError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=_boom,
         )
     error = excinfo.value
@@ -567,7 +586,9 @@ def test_cancel_check_failure_is_contained_and_classified(
 
     with pytest.raises(CallbackError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             cancel_check=_boom,
         )
     error = excinfo.value
@@ -595,7 +616,9 @@ def test_callback_error_chain_does_not_leak_through_public_boundary(
 
     with pytest.raises(CallbackError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=_boom,
         )
     error = excinfo.value
@@ -620,14 +643,14 @@ def test_progress_callback_raising_cancellation_error_is_reclassified(
         seen.append(event)
         raise CancellationError(
             ErrorCode.OPERATION_CANCELLED,
-            context=ErrorContext(
-                operation="build_plan", detail_code="CANARY_CALLBACK_CANCEL"
-            ),
+            context=ErrorContext(operation="build_plan", detail_code="CANARY_CALLBACK_CANCEL"),
         )
 
     with pytest.raises(CallbackError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=_boom,
         )
     error = excinfo.value
@@ -659,14 +682,14 @@ def test_progress_callback_raising_callback_error_is_reclassified(
         seen.append(event)
         raise CallbackError(
             ErrorCode.PROGRESS_CALLBACK_FAILED,
-            context=ErrorContext(
-                operation="build_plan", detail_code="CANARY_RAW_DETAIL"
-            ),
+            context=ErrorContext(operation="build_plan", detail_code="CANARY_RAW_DETAIL"),
         )
 
     with pytest.raises(CallbackError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=_boom,
         )
     error = excinfo.value
@@ -697,9 +720,7 @@ def test_cancel_check_raising_cancellation_error_is_reclassified(
         if calls["n"] >= 2:  # first poll passes so STARTED is emitted
             raise CancellationError(
                 ErrorCode.OPERATION_CANCELLED,
-                context=ErrorContext(
-                    operation="preflight", detail_code="CANARY_CANCEL_DETAIL"
-                ),
+                context=ErrorContext(operation="preflight", detail_code="CANARY_CANCEL_DETAIL"),
             )
         return False
 
@@ -735,9 +756,7 @@ def test_cancel_check_raising_callback_error_is_reclassified(
         if calls["n"] >= 2:
             raise CallbackError(
                 ErrorCode.CANCEL_CALLBACK_FAILED,
-                context=ErrorContext(
-                    operation="preflight", detail_code="CANARY_CANCEL_RAW"
-                ),
+                context=ErrorContext(operation="preflight", detail_code="CANARY_CANCEL_RAW"),
             )
         return False
 
@@ -767,7 +786,9 @@ def test_build_plan_cancellation_produces_no_result_and_no_output(
 
     with pytest.raises(CancellationError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=recorder,
             cancel_check=lambda: True,
         )
@@ -865,7 +886,9 @@ def test_fingerprint_cancellation_latency_is_bounded_by_chunk_quantum(
 
     with pytest.raises(CancellationError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             cancel_check=_cancel_at_third_intra_file_probe,
         )
     assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
@@ -919,9 +942,7 @@ def test_build_plan_cancellation_during_discovery_traversal_is_bounded(
     # stop after ONE consumed directory instead of running to exhaustion.
     src = tmp_path / "src"
     src.mkdir()
-    entries = [
-        (str(src / f"filler{i:03d}"), [], ["noise.txt"]) for i in range(51)
-    ]
+    entries = [(str(src / f"filler{i:03d}"), [], ["noise.txt"]) for i in range(51)]
     fake = _FakeWalkOS(entries)
     monkeypatch.setattr(_discovery, "os", fake)
 
@@ -930,7 +951,9 @@ def test_build_plan_cancellation_during_discovery_traversal_is_bounded(
 
     with pytest.raises(CancellationError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             cancel_check=_cancel_at_first_visited_directory,
         )
     assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
@@ -962,7 +985,9 @@ def test_build_plan_cancellation_during_fingerprint_enumeration_is_bounded(
 
     with pytest.raises(CancellationError) as excinfo:
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             cancel_check=_cancel_on_second_enumeration_directory,
         )
     assert excinfo.value.code is ErrorCode.OPERATION_CANCELLED
@@ -1054,7 +1079,9 @@ def test_progress_events_never_expose_canaries_or_absolute_paths(
 
     recorder = _Recorder()
     plan = build_plan(
-        source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+        source=src,
+        output=tmp_path / "out",
+        vault=tmp_path / "vault",
         progress=recorder,
     )
     result = preflight(plan, progress=recorder)
@@ -1078,7 +1105,9 @@ def test_cancellation_and_failure_events_stay_within_bounded_payloads(
 
     with pytest.raises(CancellationError):
         build_plan(
-            source=src, output=tmp_path / "out", vault=tmp_path / "vault",
+            source=src,
+            output=tmp_path / "out",
+            vault=tmp_path / "vault",
             progress=recorder,
             cancel_check=lambda: True,
         )

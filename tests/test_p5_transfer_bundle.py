@@ -18,9 +18,9 @@ import json
 import shutil
 import sys
 import threading
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Callable
 
 import dbfbridge
 import pytest
@@ -34,7 +34,6 @@ from dbf_anonymizer import (
     PathError,
     ProgressEvent,
     PseudonymizationResult,
-    RawByteEquivalence,
     TransferBundleResult,
     TransferError,
     TransferProfile,
@@ -43,12 +42,10 @@ from dbf_anonymizer import (
     create_transfer_bundle,
     preflight,
     pseudonymize,
-    recover,
     verify_dataset,
     verify_transfer_bundle,
 )
 from dbf_anonymizer.transfer_bundle import (
-    TRANSFER_MANIFEST_FILENAME,
     TRANSFER_MANIFEST_SCHEMA_VERSION,
     _forbidden_artifact_class,
 )
@@ -127,11 +124,12 @@ def _main_fields() -> tuple[object, ...]:
     )
 
 
-
 def _write_dataset(source: Path) -> None:
     from support.numeric_tables import schema as _schema
 
-    def write(relative: str, fields: tuple[object, ...], entries: list[tuple[dict[str, object], bool]]) -> None:
+    def write(
+        relative: str, fields: tuple[object, ...], entries: list[tuple[dict[str, object], bool]]
+    ) -> None:
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         dbfbridge.write_table(  # type: ignore[attr-defined]
@@ -236,7 +234,6 @@ def _write_dataset(source: Path) -> None:
 
 
 def _schema(fields: tuple[object, ...]) -> dbfbridge.TableSchema:  # type: ignore[attr-defined]
-    from support.numeric_tables import schema as _schema_kernel
 
     return _schema(fields)  # type: ignore[return-value]
 
@@ -253,9 +250,7 @@ def _prepare(tmp_path: Path) -> tuple[PseudonymizationResult, Path, Path, Path]:
     _write_dataset(source)
     output = tmp_path / "output"
     vault = tmp_path / "vault" / "dictionary.sqlite3"
-    plan = build_plan(
-        source, output, vault, relationship_document=_relationship_document()
-    )
+    plan = build_plan(source, output, vault, relationship_document=_relationship_document())
     assert preflight(plan).ready is True
     result = pseudonymize(plan)
     assert isinstance(result, dbf_anonymizer.PseudonymizationResult)
@@ -272,18 +267,13 @@ def _hash_tree(root: Path) -> dict[str, str]:
     }
 
 
-def _create(
-    result: PseudonymizationResult, tmp_path: Path
-) -> TransferBundleResult:
-    return create_transfer_bundle(
-        result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-    )
+def _create(result: PseudonymizationResult, tmp_path: Path) -> TransferBundleResult:
+    return create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
 
 
 def _read_manifest(bundle_root: Path) -> dict[str, object]:
-    return json.loads(
-        (bundle_root / "transfer-manifest.json").read_text(encoding="ascii")
-    )
+    return json.loads((bundle_root / "transfer-manifest.json").read_text(encoding="ascii"))
+
 
 # ---------------------------------------------------------------------------
 # Positive creation + standalone verification (copied bundle, no source/vault)
@@ -292,9 +282,7 @@ def test_clean_data_only_bundle_creation_and_standalone_pass(
     tmp_path: Path,
 ) -> None:
     result, source, output, vault = _prepare(tmp_path)
-    assert verify_dataset(result, source=source, vault=vault).status is (
-        VerificationStatus.PASS
-    )
+    assert verify_dataset(result, source=source, vault=vault).status is (VerificationStatus.PASS)
     before_bundle = _hash_tree(tmp_path)
     bundle = _create(result, tmp_path)
 
@@ -325,9 +313,7 @@ def test_clean_data_only_bundle_creation_and_standalone_pass(
     # leaves NO residue at all (REQ-P5-008 step 13: the staging root with
     # its crash-state record is removed after the genuine promotion).
     created = set(_hash_tree(tmp_path)) - set(before_bundle)
-    bundle_files = {
-        relative for relative in created if relative.startswith("bundle/")
-    }
+    bundle_files = {relative for relative in created if relative.startswith("bundle/")}
     lock_files = {name for name in created if name.endswith(".lock")}
     assert created == bundle_files | lock_files
     assert not any(".staging" in name for name in created)
@@ -368,9 +354,7 @@ def test_manifest_never_carries_private_or_protected_data(
 ) -> None:
     result, source, output, vault = _prepare(tmp_path)
     _create(result, tmp_path)
-    manifest_text = (tmp_path / "bundle" / "transfer-manifest.json").read_text(
-        encoding="ascii"
-    )
+    manifest_text = (tmp_path / "bundle" / "transfer-manifest.json").read_text(encoding="ascii")
     for canary in (
         "PARENT-1",
         "MEMO-N-1",
@@ -643,9 +627,7 @@ def test_listed_missing_file_fails_standalone(tmp_path: Path) -> None:
         "data.dbf.tmp",
     ],
 )
-def test_smuggled_artifacts_fail_standalone(
-    tmp_path: Path, smuggled_relative: str
-) -> None:
+def test_smuggled_artifacts_fail_standalone(tmp_path: Path, smuggled_relative: str) -> None:
     """Hostile casing/nesting/name smuggling (allowlist + denylist)."""
     result, source, output, vault = _prepare(tmp_path)
     _create(result, tmp_path)
@@ -673,9 +655,7 @@ def test_duplicate_manifest_path_fails_standalone(tmp_path: Path) -> None:
     "unsafe_path",
     ["../escape.dbf", "north/../../escape.dbf", "C:/evil.dbf", "\\\\host\\evil.dbf"],
 )
-def test_unsafe_manifest_path_fails_standalone(
-    tmp_path: Path, unsafe_path: str
-) -> None:
+def test_unsafe_manifest_path_fails_standalone(tmp_path: Path, unsafe_path: str) -> None:
     result, source, output, vault = _prepare(tmp_path)
     _create(result, tmp_path)
     manifest_path = tmp_path / "bundle" / "transfer-manifest.json"
@@ -896,9 +876,7 @@ def test_verification_progress_is_one_operation_with_bounded_phases(
     result, source, output, vault = _prepare(tmp_path)
     _create(result, tmp_path)
     recorder = _Recorder()
-    verification = verify_transfer_bundle(
-        tmp_path / "bundle", progress=recorder
-    )
+    verification = verify_transfer_bundle(tmp_path / "bundle", progress=recorder)
     assert verification.verified is True
     events = recorder.events
     ids = {event.operation_id for event in events}
@@ -913,9 +891,7 @@ def test_verification_progress_is_one_operation_with_bounded_phases(
     assert set(recorder.threads) == {threading.get_ident()}
 
 
-@pytest.mark.parametrize(
-    "phase_code", ["SOURCE_VERIFICATION", "TRANSFER_SCAN", "PUBLICATION"]
-)
+@pytest.mark.parametrize("phase_code", ["SOURCE_VERIFICATION", "TRANSFER_SCAN", "PUBLICATION"])
 def test_cancellation_during_bundle_creation_is_typed_and_side_effect_free(
     tmp_path: Path, phase_code: str
 ) -> None:
@@ -949,14 +925,10 @@ def test_cancellation_during_bundle_creation_is_typed_and_side_effect_free(
     assert not any(name.endswith(".staging") for name in created)
     assert not any(".staging" in name for name in created)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
 
 
@@ -989,17 +961,14 @@ def test_cancellation_during_standalone_verification_is_typed(
 
 
 @pytest.mark.parametrize("operation", ["create", "verify"])
-def test_transfer_callback_failures_are_contained_and_typed(
-    tmp_path: Path, operation: str
-) -> None:
+def test_transfer_callback_failures_are_contained_and_typed(tmp_path: Path, operation: str) -> None:
     canary = "PRIVATE-TRANSFER-CALLBACK-CANARY-" + _PATH_CANARY
     received: list[ProgressEvent] = []
 
     def progress(event: ProgressEvent) -> None:
         received.append(event)
         if (
-            event.phase_code
-            in ("TRANSFER_SCAN", "VERIFICATION", "SOURCE_VERIFICATION")
+            event.phase_code in ("TRANSFER_SCAN", "VERIFICATION", "SOURCE_VERIFICATION")
             and event.event_code == "STARTED"
         ):
             raise RuntimeError(canary)
@@ -1007,9 +976,7 @@ def test_transfer_callback_failures_are_contained_and_typed(
     if operation == "create":
         result, source, output, vault = _prepare(tmp_path)
         with pytest.raises(CallbackError) as caught:
-            create_transfer_bundle(
-                result, destination=tmp_path / "bundle", progress=progress
-            )
+            create_transfer_bundle(result, destination=tmp_path / "bundle", progress=progress)
         assert not (tmp_path / "bundle").exists()
     else:
         result, source, output, vault = _prepare(tmp_path)
@@ -1262,9 +1229,7 @@ def test_fpt_extension_type_mismatch_fails_standalone(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda manifest: manifest["assurance"].update(
-            {"level": "TOTALLY_UNKNOWN_LEVEL"}
-        ),
+        lambda manifest: manifest["assurance"].update({"level": "TOTALLY_UNKNOWN_LEVEL"}),
         lambda manifest: manifest["assurance"].update({"declared_relations": -3}),
         lambda manifest: manifest["assurance"].update({"verified_relations": True}),
         lambda manifest: manifest["assurance"].update({"verified_relations": 99}),
@@ -1335,9 +1300,7 @@ def test_creation_refuses_after_vault_mapping_corruption(tmp_path: Path) -> None
     result, source, output, vault = _prepare(tmp_path)
     connection = sqlite3.connect(vault)
     try:
-        connection.execute(
-            "DELETE FROM text_mappings WHERE original_value = 'PARENT-1'"
-        )
+        connection.execute("DELETE FROM text_mappings WHERE original_value = 'PARENT-1'")
         connection.commit()
     finally:
         connection.close()
@@ -1395,9 +1358,7 @@ def test_cancellation_during_internal_verification_is_create_owned(
 # ---------------------------------------------------------------------------
 # Staged bundle self-verification (verified=True is bundle-evidenced)
 # ---------------------------------------------------------------------------
-def _inject_staged_fault(
-    kind: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _inject_staged_fault(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Deterministic fault injection AFTER payload copy but BEFORE promotion:
     corrupt the staged tree, then run the REAL standalone validation core so
     creation must detect the fault through bundle evidence."""
@@ -1429,14 +1390,10 @@ def _inject_staged_fault(
             raise AssertionError(kind)
         return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(
-        transfer_module, "_verify_bundle_core", corrupting_then_verifying
-    )
+    monkeypatch.setattr(transfer_module, "_verify_bundle_core", corrupting_then_verifying)
 
 
-@pytest.mark.parametrize(
-    "kind", ["dbf-byte", "fpt-byte", "manifest", "extra", "missing-fpt"]
-)
+@pytest.mark.parametrize("kind", ["dbf-byte", "fpt-byte", "manifest", "extra", "missing-fpt"])
 def test_staged_fault_refuses_promotion_and_publishes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
@@ -1444,23 +1401,17 @@ def test_staged_fault_refuses_promotion_and_publishes_nothing(
     before = _hash_tree(tmp_path)
     _inject_staged_fault(kind, monkeypatch)
     with pytest.raises(TransferError):
-        create_transfer_bundle(
-            result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-        )
+        create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
     # The staged verification detected the corruption: nothing was promoted.
     assert not (tmp_path / "bundle").exists()
     after = _hash_tree(tmp_path)
     created = set(after) - set(before)
     assert not any(name.startswith("bundle/") for name in created)
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
     assert _hash_tree(vault.parent) == {
-        key[len("vault/"):]: value
-        for key, value in before.items()
-        if key.startswith("vault/")
+        key[len("vault/") :]: value for key, value in before.items() if key.startswith("vault/")
     }
 
 
@@ -1473,9 +1424,7 @@ def test_casefold_inventory_helper_detects_collisions() -> None:
     collapsed."""
     from dbf_anonymizer.transfer_bundle import _casefold_inventory
 
-    assert _casefold_inventory(
-        ["north/data.dbf", "south/data.fpt"], failure=_standalone_probe
-    ) == {
+    assert _casefold_inventory(["north/data.dbf", "south/data.fpt"], failure=_standalone_probe) == {
         "north/data.dbf": "north/data.dbf",
         "south/data.fpt": "south/data.fpt",
     }
@@ -1493,9 +1442,7 @@ def test_casefold_inventory_helper_detects_collisions() -> None:
 def _standalone_probe(detail_code: str) -> TransferError:
     return TransferError(
         ErrorCode.TRANSFER_FAILED,
-        context=_ErrorContext(
-            operation="verify_transfer_bundle", detail_code=detail_code
-        ),
+        context=_ErrorContext(operation="verify_transfer_bundle", detail_code=detail_code),
     )
 
 
@@ -1517,13 +1464,9 @@ def test_normalized_artifact_path_rejects_cross_platform_forms() -> None:
     ):
         with pytest.raises(TransferError) as caught:
             _normalized_artifact_path(hostile, failure=_standalone_probe)
-        assert (
-            caught.value.context.detail_code == "TRANSFER_MANIFEST_PATH_INVALID"
-        ), hostile
+        assert caught.value.context.detail_code == "TRANSFER_MANIFEST_PATH_INVALID", hostile
     for valid in ("north/data.dbf", "archive/data.fpt", "transfer-manifest.json"):
-        assert (
-            _normalized_artifact_path(valid, failure=_standalone_probe) == valid
-        )
+        assert _normalized_artifact_path(valid, failure=_standalone_probe) == valid
 
 
 def test_posix_drive_qualified_actual_path_fails_standalone(
@@ -1552,9 +1495,7 @@ def test_fpt_case_collision_synthetic_fails(tmp_path: Path) -> None:
     from dbf_anonymizer.transfer_bundle import _casefold_inventory
 
     with pytest.raises(TransferError) as caught:
-        _casefold_inventory(
-            ["north/data.fpt", "NORTH/DATA.FPT"], failure=_standalone_probe
-        )
+        _casefold_inventory(["north/data.fpt", "NORTH/DATA.FPT"], failure=_standalone_probe)
     assert caught.value.context.detail_code == "TRANSFER_INVENTORY_CASE_COLLISION"
 
 
@@ -1647,20 +1588,14 @@ def test_staged_fpt_corruption_with_consistent_manifest_refuses_promotion(
         )
         return original_verify(bundle_root, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(
-        transfer_module, "_verify_bundle_core", corrupting_then_verifying
-    )
+    monkeypatch.setattr(transfer_module, "_verify_bundle_core", corrupting_then_verifying)
     with pytest.raises((TransferError, dbf_anonymizer.DBFBridgeError)):
-        create_transfer_bundle(
-            result, destination=tmp_path / "bundle", profile="DATA_ONLY"
-        )
+        create_transfer_bundle(result, destination=tmp_path / "bundle", profile="DATA_ONLY")
     assert not (tmp_path / "bundle").exists()
     after = _hash_tree(tmp_path)
     assert not any(name.startswith("bundle/") for name in set(after) - set(before))
     assert _hash_tree(output) == {
-        key[len("output/"):]: value
-        for key, value in before.items()
-        if key.startswith("output/")
+        key[len("output/") :]: value for key, value in before.items() if key.startswith("output/")
     }
 
 
@@ -1677,9 +1612,7 @@ def test_staged_fpt_corruption_with_consistent_manifest_refuses_promotion(
             "C:\\private\\canary\\vault",
         ),
         (
-            lambda manifest: manifest["assurance"].update(
-                {"evidence_fingerprint": "z" * 64}
-            ),
+            lambda manifest: manifest["assurance"].update({"evidence_fingerprint": "z" * 64}),
             "z" * 64,
         ),
         # NOTE: the relationship_fingerprint is deliberately NOT held to the
@@ -1749,9 +1682,7 @@ def test_duplicate_json_keys_fail_standalone(tmp_path: Path) -> None:
         ' "relationship_fingerprint": null, "evidence_schema_version":'
         ' "1.0", "scope_note": "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY"}}'
     )
-    (tmp_path / "bundle" / "transfer-manifest.json").write_text(
-        duplicated, encoding="ascii"
-    )
+    (tmp_path / "bundle" / "transfer-manifest.json").write_text(duplicated, encoding="ascii")
     with pytest.raises(TransferError) as caught:
         verify_transfer_bundle(tmp_path / "bundle")
     assert caught.value.context.detail_code == "TRANSFER_MANIFEST_DUPLICATE_KEY"
@@ -1789,13 +1720,9 @@ def test_public_error_attribution_create_vs_verify(tmp_path: Path) -> None:
 
     monkeypatch = pytest.MonkeyPatch()
     try:
-        monkeypatch.setattr(
-            transfer_module, "_verify_bundle_core", corrupting_then_verifying
-        )
+        monkeypatch.setattr(transfer_module, "_verify_bundle_core", corrupting_then_verifying)
         with pytest.raises(TransferError) as create_failure:
-            create_transfer_bundle(
-                result, destination=tmp_path / "bundle2", profile="DATA_ONLY"
-            )
+            create_transfer_bundle(result, destination=tmp_path / "bundle2", profile="DATA_ONLY")
     finally:
         monkeypatch.undo()
     # The staged self-verification failure is attributed to the OWNING
@@ -1815,9 +1742,7 @@ def test_complete_public_workflow_without_private_imports(tmp_path: Path) -> Non
     _write_dataset(source)
     output = tmp_path / "output"
     vault = tmp_path / "vault" / "dictionary.sqlite3"
-    plan = public.build_plan(
-        source, output, vault, relationship_document=_relationship_document()
-    )
+    plan = public.build_plan(source, output, vault, relationship_document=_relationship_document())
     assert public.preflight(plan).ready is True
     result = public.pseudonymize(plan)
     verification = public.verify_dataset(result, source=source, vault=vault)
@@ -1828,9 +1753,7 @@ def test_complete_public_workflow_without_private_imports(tmp_path: Path) -> Non
     assert bundle.verified is True
     standalone = public.verify_transfer_bundle(tmp_path / "bundle")
     assert standalone.verified is True
-    recovery = public.recover(
-        pseudonymized=output, vault=vault, output=tmp_path / "recovered"
-    )
+    recovery = public.recover(pseudonymized=output, vault=vault, output=tmp_path / "recovered")
     assert recovery.canonical_verified is True
     # Truthful capability facts for the complete surface.
     caps = public.capabilities()
@@ -1928,9 +1851,7 @@ def test_posix_drive_qualified_manifest_entry_fails_by_path_normalization(
             "scope-note-null",
         ),
         (
-            lambda manifest: manifest["assurance"].update(
-                {"evidence_schema_version": None}
-            ),
+            lambda manifest: manifest["assurance"].update({"evidence_schema_version": None}),
             "evidence-version-null",
         ),
         (
@@ -1982,9 +1903,7 @@ def test_posix_drive_qualified_manifest_entry_fails_by_path_normalization(
             "incomplete-carrying-complete-pattern",
         ),
         (
-            lambda manifest: manifest["assurance"].update(
-                {"evidence_fingerprint": "g" * 64}
-            ),
+            lambda manifest: manifest["assurance"].update({"evidence_fingerprint": "g" * 64}),
             "nonhex-fingerprint",
         ),
         (
@@ -2034,9 +1953,7 @@ def test_concurrent_create_and_verify_error_attribution_is_isolated(
     import dbf_anonymizer.transfer_bundle as transfer_module
 
     # No shared mutable operation-routing symbol may exist in the module.
-    module_source = Path(transfer_module.__file__ or ".").read_text(
-        encoding="utf-8"
-    )
+    module_source = Path(transfer_module.__file__ or ".").read_text(encoding="utf-8")
     assert "_OWNING_OPERATION" not in module_source
     assert "_owning_failure" not in module_source
 
@@ -2072,9 +1989,7 @@ def test_concurrent_create_and_verify_error_attribution_is_isolated(
 
     monkeypatch = pytest.MonkeyPatch()
     try:
-        monkeypatch.setattr(
-            transfer_module, "_verify_bundle_core", hostile_dispatcher
-        )
+        monkeypatch.setattr(transfer_module, "_verify_bundle_core", hostile_dispatcher)
         outcomes: dict[str, str] = {}
         errors: dict[str, BaseException] = {}
         barrier = threading.Barrier(2)
@@ -2163,6 +2078,7 @@ def test_concurrent_create_and_verify_error_attribution_is_isolated(
     finally:
         monkeypatch.undo()
 
+
 # ---------------------------------------------------------------------------
 # Separate relationship/evidence fingerprint contracts (round-5 blocker A)
 # ---------------------------------------------------------------------------
@@ -2188,12 +2104,8 @@ def test_relationship_fingerprint_accepts_nonhex_public_token(tmp_path: Path) ->
     )
     assert preflight(plan).ready is True
     producer_result = pseudonymize(plan)
-    assert producer_result.assurance.relationship_fingerprint == (
-        "relationship-token-v1"
-    )
-    bundle = create_transfer_bundle(
-        producer_result, destination=tmp_path / "bundle-nh", profile="DATA_ONLY"
-    )
+    assert producer_result.assurance.relationship_fingerprint == ("relationship-token-v1")
+    create_transfer_bundle(producer_result, destination=tmp_path / "bundle-nh", profile="DATA_ONLY")
     standalone = verify_transfer_bundle(tmp_path / "bundle-nh")
     assert standalone.verified is True
     assert standalone.assurance.relationship_fingerprint == "relationship-token-v1"
@@ -2205,7 +2117,7 @@ def test_document_derived_cryptographic_fingerprint_still_passes(
     """The canonical document-digest kernel's 64-lowercase-hex cryptographic
     relationship fingerprint continues to pass unchanged."""
     result, source, output, vault = _prepare(tmp_path)
-    bundle = _create(result, tmp_path)
+    _create(result, tmp_path)
     standalone = verify_transfer_bundle(tmp_path / "bundle")
     assert standalone.verified is True
     fingerprint = standalone.assurance.relationship_fingerprint or ""
@@ -2436,9 +2348,7 @@ def test_bundle_sync_failure_after_rename_is_never_pre_promotion(
         )
     assert isinstance(caught.value, PostRenameDurabilityError)
     assert caught.value.renamed is True
-    assert caught.value.context.detail_code == (
-        "DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME"
-    )
+    assert caught.value.context.detail_code == ("DURABILITY_DIRECTORY_SYNC_FAILED_AFTER_RENAME")
     # The rename HAS occurred: the final bundle destination exists.
     assert destination_root.is_dir()
     # The renamed bundle contains EXACTLY the allowlisted payload plus the
@@ -2453,9 +2363,7 @@ def test_bundle_sync_failure_after_rename_is_never_pre_promotion(
     # private staging root with its READY_TO_PROMOTE record was NOT removed.
     staging_roots = tuple(tmp_path.glob("*.staging"))
     assert len(staging_roots) == 1
-    crash_state = json.loads(
-        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
-    )
+    crash_state = json.loads((staging_roots[0] / "transaction.json").read_text(encoding="ascii"))
     assert crash_state["phase"] == "READY_TO_PROMOTE"
     assert crash_state["schema_version"] == "1.1"
     # No false COMPLETED event was emitted; source-side state is untouched.
@@ -2493,9 +2401,7 @@ def test_bundle_crash_after_rename_before_promoted_state_is_deterministic(
     def interrupted_mark(self: object) -> None:
         raise RuntimeError("simulated crash before the PROMOTED state")
 
-    monkeypatch.setattr(
-        publication_module.DatasetStaging, "mark_promoted", interrupted_mark
-    )
+    monkeypatch.setattr(publication_module.DatasetStaging, "mark_promoted", interrupted_mark)
     with pytest.raises(RuntimeError, match="simulated crash"):
         create_transfer_bundle(
             result,
@@ -2505,9 +2411,7 @@ def test_bundle_crash_after_rename_before_promoted_state_is_deterministic(
     assert destination_root.is_dir()
     staging_roots = tuple(tmp_path.glob("*.staging"))
     assert len(staging_roots) == 1
-    crash_state = json.loads(
-        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
-    )
+    crash_state = json.loads((staging_roots[0] / "transaction.json").read_text(encoding="ascii"))
     assert crash_state["phase"] == "READY_TO_PROMOTE"
     assert not any(event.event_code == "COMPLETED" for event in events)
     assert _hash_tree(output) == output_before

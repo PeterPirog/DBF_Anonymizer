@@ -209,8 +209,16 @@ def discover_tables(
                 ),
             ) from None
 
-        memo_rel = _safe_relative(schema.memo_companion_path, source_root) if schema.memo_companion_present else None
-        cdx_rel = _safe_relative(schema.companion_cdx_path, source_root) if schema.companion_cdx_present else None
+        memo_rel = (
+            _safe_relative(schema.memo_companion_path, source_root)
+            if schema.memo_companion_present
+            else None
+        )
+        cdx_rel = (
+            _safe_relative(schema.companion_cdx_path, source_root)
+            if schema.companion_cdx_present
+            else None
+        )
 
         tables.append(
             DiscoveredTable(
@@ -315,13 +323,12 @@ def collect_fingerprint_entries(
     both hooks ``None`` the results are exactly the pre-existing
     deterministic fingerprint entries.
     """
+
     def _on_error(error: OSError) -> None:
         if strict:
             raise error
 
-    paths = enumerate_in_scope_paths(
-        source_root, strict=strict, cancel_probe=cancel_probe
-    )
+    paths = enumerate_in_scope_paths(source_root, strict=strict, cancel_probe=cancel_probe)
     ordered = sorted(paths)
     total = len(ordered)
 

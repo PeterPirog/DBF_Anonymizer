@@ -140,9 +140,7 @@ def test_completed_operation_retry_refuses_sensitive_residue(tmp_path: Path) -> 
     with pytest.raises(VaultError) as excinfo:
         run_two_pass(plan, workers=2)
 
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "ENGINE_SPOOL_LEFTOVER_REFUSED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("ENGINE_SPOOL_LEFTOVER_REFUSED")
     assert residue.read_bytes() == b"SYNTHETIC-SENSITIVE-RESIDUE"
     assert _hash_tree(output) == output_before
 
@@ -216,8 +214,7 @@ def test_output_staging_contains_only_pseudonymized_dataset_material(
         files = tuple(path for path in root.rglob("*") if path.is_file())
         assert files
         assert not any(
-            path.suffix.lower() in {".sqlite3", ".db", ".wal", ".shm", ".journal"}
-            for path in files
+            path.suffix.lower() in {".sqlite3", ".db", ".wal", ".shm", ".journal"} for path in files
         )
         for path in files:
             assert MEMO_CANARY.encode("ascii") not in path.read_bytes()
@@ -362,9 +359,7 @@ def test_destination_lock_refuses_nonregular_path(tmp_path: Path) -> None:
         with DestinationLock(lock_path):
             pass
 
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "DESTINATION_LOCK_INVALID"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("DESTINATION_LOCK_INVALID")
 
 
 def test_destination_lock_refuses_symlink_target(
@@ -384,9 +379,7 @@ def test_destination_lock_refuses_symlink_target(
         with DestinationLock(lock_path):
             pass
 
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "DESTINATION_LOCK_INVALID"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("DESTINATION_LOCK_INVALID")
 
 
 def test_lock_stream_close_failure_is_typed(tmp_path: Path) -> None:
@@ -414,9 +407,7 @@ def test_lock_stream_close_failure_is_typed(tmp_path: Path) -> None:
     with pytest.raises(PublicationError) as excinfo:
         lock.close()
 
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "DESTINATION_LOCK_RELEASE_FAILED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("DESTINATION_LOCK_RELEASE_FAILED")
     assert lock._stream is None
 
 
@@ -434,9 +425,7 @@ def test_lock_release_failure_preserves_operation_failure(
             raise original
 
     assert excinfo.value.__cause__ is original
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "DESTINATION_LOCK_RELEASE_FAILED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("DESTINATION_LOCK_RELEASE_FAILED")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows file-lock evidence")
@@ -495,9 +484,7 @@ def test_concurrent_same_target_runs_refuse_the_second_writer(tmp_path: Path) ->
             assert release.wait(timeout=30)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        first = executor.submit(
-            run_two_pass, plan, workers=2, fault_inject=hold_destination_lock
-        )
+        first = executor.submit(run_two_pass, plan, workers=2, fault_inject=hold_destination_lock)
         assert acquired.wait(timeout=30)
         try:
             with pytest.raises(PublicationError) as conflict:
@@ -506,9 +493,7 @@ def test_concurrent_same_target_runs_refuse_the_second_writer(tmp_path: Path) ->
             release.set()
         result = first.result(timeout=30)
 
-    assert conflict.value.to_dict()["context"]["detail_code"] == (
-        "DESTINATION_LOCK_HELD"
-    )
+    assert conflict.value.to_dict()["context"]["detail_code"] == ("DESTINATION_LOCK_HELD")
     assert result.output_fingerprint is not None
     assert output.is_dir()
 
@@ -527,9 +512,7 @@ def test_concurrent_different_targets_refuse_the_second_vault_writer(
             assert release.wait(timeout=30)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        first = executor.submit(
-            run_two_pass, plan, workers=2, fault_inject=hold_writer_lease
-        )
+        first = executor.submit(run_two_pass, plan, workers=2, fault_inject=hold_writer_lease)
         assert writer_started.wait(timeout=30)
         try:
             with pytest.raises(VaultError) as conflict:
@@ -604,17 +587,13 @@ def test_worker_cleanup_failure_preserves_original_cause_and_privacy(
         raise OSError("PRIVATE-CLEANUP-FAILURE")
 
     monkeypatch.setattr(pass2_module, "write_fresh_table", fail_write)
-    monkeypatch.setattr(
-        pass2_module.RelationEvidenceShard, "cleanup", cleanup_then_fail
-    )
+    monkeypatch.setattr(pass2_module.RelationEvidenceShard, "cleanup", cleanup_then_fail)
 
     with pytest.raises(PublicationError) as excinfo:
         run_two_pass(plan, workers=1)
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)
-    assert excinfo.value.to_dict()["context"]["detail_code"] == (
-        "ENGINE_WORKER_CLEANUP_FAILED"
-    )
+    assert excinfo.value.to_dict()["context"]["detail_code"] == ("ENGINE_WORKER_CLEANUP_FAILED")
     serialized = json.dumps(excinfo.value.to_dict(), sort_keys=True)
     assert "PRIVATE-WORKER-FAILURE" not in serialized
     assert "PRIVATE-CLEANUP-FAILURE" not in serialized
@@ -690,9 +669,7 @@ def _rewrite_crash_state(staging_root: Path, state: dict[str, object]) -> None:
 def test_completed_retry_reconciles_only_proven_coherent_staging(
     tmp_path: Path,
 ) -> None:
-    plan, source, output, vault, staging_root = _completed_operation_with_residual(
-        tmp_path
-    )
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(tmp_path)
     # An interrupted crash-state update leaves the deterministic private
     # temporary file behind; the PREVIOUS valid PROMOTED state stays intact.
     (staging_root / ".transaction.json.tmp").write_bytes(b"partial-update")
@@ -706,6 +683,7 @@ def test_completed_retry_reconciles_only_proven_coherent_staging(
 
 def _ambiguous_cases(state: dict[str, object]) -> dict[str, tuple[object, str]]:
     """Each ambiguous crash-state mutation with its stable typed code."""
+
     def mutated(key: str, value: object) -> dict[str, object]:
         altered = dict(state)
         altered[key] = value
@@ -767,15 +745,10 @@ def _ambiguous_cases(state: dict[str, object]) -> dict[str, tuple[object, str]]:
         "missing-state-file",
     ],
 )
-def test_completed_retry_fails_closed_on_ambiguous_crash_state(
-    tmp_path: Path, case: str
-) -> None:
-    plan, source, output, vault, staging_root = _completed_operation_with_residual(
-        tmp_path
-    )
+def test_completed_retry_fails_closed_on_ambiguous_crash_state(tmp_path: Path, case: str) -> None:
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(tmp_path)
     state_path = staging_root / "transaction.json"
     original_state = json.loads(state_path.read_text(encoding="ascii"))
-    original_bytes = state_path.read_bytes()
     output_before = _hash_tree(output)
     mutation, expected_code = _ambiguous_cases(original_state)[case]
 
@@ -802,9 +775,7 @@ def test_completed_retry_fails_closed_on_ambiguous_crash_state(
 def test_reconciliation_refuses_unrecognized_residual_payload(
     tmp_path: Path,
 ) -> None:
-    plan, source, output, vault, staging_root = _completed_operation_with_residual(
-        tmp_path
-    )
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(tmp_path)
     state_path = staging_root / "transaction.json"
     original_state = json.loads(state_path.read_text(encoding="ascii"))
     output_before = _hash_tree(output)
@@ -839,9 +810,7 @@ def test_completed_retry_validates_destination_before_reconciling(
     """Evidence order: the residual private staging is reconciled ONLY after
     the final destination matched the authoritative completed fingerprint —
     a corrupted output fails closed WITHOUT deleting the crash state."""
-    plan, source, output, vault, staging_root = _completed_operation_with_residual(
-        tmp_path
-    )
+    plan, source, output, vault, staging_root = _completed_operation_with_residual(tmp_path)
     state_path = staging_root / "transaction.json"
     original_state = json.loads(state_path.read_text(encoding="ascii"))
     target = output / "north" / "data.dbf"
@@ -897,18 +866,14 @@ def test_cancellation_inside_payload_fsync_is_typed_and_leaves_nothing(
     def cancelled_fsync(directory: object, **kwargs: object) -> int:
         raise CancellationError(
             ErrorCode.OPERATION_CANCELLED,
-            context=ErrorContext(
-                operation="two_pass", detail_code="CANCELLED_BY_CHECK"
-            ),
+            context=ErrorContext(operation="two_pass", detail_code="CANCELLED_BY_CHECK"),
         )
 
     monkeypatch.setattr(publication_module, "fsync_tree", cancelled_fsync)
     with pytest.raises(CancellationError) as cancelled:
         run_two_pass(plan, workers=1, progress=progress)
     assert cancelled.value.code is ErrorCode.OPERATION_CANCELLED
-    assert not any(
-        getattr(event, "event_code", None) == "COMPLETED" for event in events
-    )
+    assert not any(getattr(event, "event_code", None) == "COMPLETED" for event in events)
     assert not output.exists()
     assert not tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
     assert _vault_counts(plan, vault)[0] == 0
@@ -975,24 +940,18 @@ def test_promotion_sync_failure_after_rename_is_never_pre_promotion(
     # (READY_TO_PROMOTE + operation binding) remains in place.
     staging_roots = tuple(tmp_path.glob(".dbf-anonymizer-*.staging"))
     assert len(staging_roots) == 1
-    crash_state = json.loads(
-        (staging_roots[0] / "transaction.json").read_text(encoding="ascii")
-    )
+    crash_state = json.loads((staging_roots[0] / "transaction.json").read_text(encoding="ascii"))
     assert crash_state["phase"] == "READY_TO_PROMOTE"
     assert crash_state["schema_version"] == "1.1"
     with VaultDatabase.open(
         vault,
         expected_source_fingerprint=plan.dataset.source_fingerprint,
         expected_policy_fingerprint=plan.policy.policy_fingerprint,
-        expected_relationship_fingerprint=(
-            plan.relationships.relationship_fingerprint
-        ),
+        expected_relationship_fingerprint=(plan.relationships.relationship_fingerprint),
     ) as reopened:
         assert [row["state"] for row in reopened.operations()] == ["STARTED"]
     # No false COMPLETED result/event/receipt was emitted.
-    assert not any(
-        getattr(event, "event_code", None) == "COMPLETED" for event in events
-    )
+    assert not any(getattr(event, "event_code", None) == "COMPLETED" for event in events)
     assert _hash_tree(source) == source_before
     # The public failure stays typed and privacy-safe.
     serialized = json.dumps(promoted_failure.value.to_dict(), sort_keys=True)
@@ -1029,6 +988,4 @@ def test_retry_after_post_rename_sync_failure_is_deterministic_fail_closed(
     # The destination, the source and the preserved evidence are unchanged.
     assert _hash_tree(output) == destination_state
     assert _hash_tree(source) == source_before
-    assert (
-        staging_roots[0] / "transaction.json"
-    ).read_bytes() == crash_state_before
+    assert (staging_roots[0] / "transaction.json").read_bytes() == crash_state_before

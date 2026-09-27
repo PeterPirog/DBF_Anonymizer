@@ -69,13 +69,9 @@ class TestSyncDirectory:
         from dbf_anonymizer.errors import ErrorCode, PublicationError
 
         with pytest.raises(PublicationError) as excinfo:
-            sync_directory(
-                Path(__file__).parent / "missing-dir-does-not-exist"
-            )
+            sync_directory(Path(__file__).parent / "missing-dir-does-not-exist")
         assert excinfo.value.code is ErrorCode.PUBLICATION_INCOMPLETE
-        assert excinfo.value.context.detail_code == (
-            "DURABILITY_DIRECTORY_SYNC_FAILED"
-        )
+        assert excinfo.value.context.detail_code == ("DURABILITY_DIRECTORY_SYNC_FAILED")
 
 
 class TestAtomicReplace:
@@ -143,6 +139,7 @@ class TestWriteDurableBytes:
         previous valid content untouched (fail-closed crash-state update)."""
         path = tmp_path / "transaction.json"
         write_durable_bytes(path, b"previous-valid-state")
+
         def failing_fsync(fd: object) -> None:
             raise OSError(errno.EIO, "simulated fsync failure")
 
@@ -158,7 +155,6 @@ class TestWriteDurableBytes:
     ) -> None:
         path = tmp_path / "PRIVATE-canary-name.json"
         write_durable_bytes(path, b"PREVIOUS-PRIVATE-STATE")
-        real_replace = os.replace
 
         def failing_replace(source: object, destination: object) -> None:
             raise OSError("simulated replace failure")
@@ -182,9 +178,7 @@ class TestGenuineDurabilityFailuresAreTyped:
         with pytest.raises(PublicationError) as excinfo:
             sync_directory(Path(__file__).parent / "missing-dir-does-not-exist")
         assert excinfo.value.code is ErrorCode.PUBLICATION_INCOMPLETE
-        assert excinfo.value.context.detail_code == (
-            "DURABILITY_DIRECTORY_SYNC_FAILED"
-        )
+        assert excinfo.value.context.detail_code == ("DURABILITY_DIRECTORY_SYNC_FAILED")
 
     def test_fsync_open_failure_is_typed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -195,24 +189,21 @@ class TestGenuineDurabilityFailuresAreTyped:
         monkeypatch.setattr(os, "open", failing_open)
         with pytest.raises(PublicationError) as excinfo:
             sync_directory(tmp_path)
-        assert excinfo.value.context.detail_code == (
-            "DURABILITY_DIRECTORY_SYNC_FAILED"
-        )
+        assert excinfo.value.context.detail_code == ("DURABILITY_DIRECTORY_SYNC_FAILED")
 
     def test_fsync_directory_genuine_failure_is_typed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         if sys.platform == "win32":
             pytest.skip("Windows cannot open directories for fsync at all")
+
         def failing_fsync(fd: object) -> None:
             raise OSError(errno.EIO, "simulated directory fsync failure")
 
         monkeypatch.setattr(os, "fsync", failing_fsync)
         with pytest.raises(PublicationError) as excinfo:
             sync_directory(tmp_path)
-        assert excinfo.value.context.detail_code == (
-            "DURABILITY_DIRECTORY_SYNC_FAILED"
-        )
+        assert excinfo.value.context.detail_code == ("DURABILITY_DIRECTORY_SYNC_FAILED")
 
     def test_fsync_einval_is_reported_as_unsupported_not_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -255,6 +246,7 @@ class TestGenuineDurabilityFailuresAreTyped:
     ) -> None:
         """The post-rename wrapper chains the underlying typed directory-sync
         failure (typed boundary, no raw exception escape)."""
+
         def failing_sync(path: object) -> bool:
             raise PublicationError(
                 ErrorCode.PUBLICATION_INCOMPLETE,
@@ -283,6 +275,7 @@ class TestGenuineDurabilityFailuresAreTyped:
         """Boundary B: a failure OF os.replace itself means the rename did
         NOT happen (the primitive is atomic) — no rename fact may be
         manufactured."""
+
         def failing_replace(source: object, destination: object) -> None:
             raise OSError("simulated rename failure")
 
@@ -300,23 +293,20 @@ class TestGenuineDurabilityFailuresAreTyped:
     ) -> None:
         (tmp_path / "a.txt").write_bytes(b"a")
         (tmp_path / "b.txt").write_bytes(b"b")
+
         def failing_fsync(fd: object) -> None:
             raise OSError(errno.EIO, "simulated file fsync failure")
 
         monkeypatch.setattr(os, "fsync", failing_fsync)
         with pytest.raises(PublicationError) as excinfo:
             fsync_tree(tmp_path)
-        assert excinfo.value.context.detail_code == (
-            "DURABILITY_FILE_SYNC_FAILED"
-        )
+        assert excinfo.value.context.detail_code == ("DURABILITY_FILE_SYNC_FAILED")
 
 
 class TestFsyncTreeCooperativeCheckpoints:
     """REQ-P1-008: durability scanning is never an uncancellable region."""
 
-    def test_checkpoint_polled_between_files_and_directories(
-        self, tmp_path: Path
-    ) -> None:
+    def test_checkpoint_polled_between_files_and_directories(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         (tmp_path / "sub" / "deeper").mkdir()
         (tmp_path / "a.txt").write_bytes(b"a")
@@ -333,9 +323,7 @@ class TestFsyncTreeCooperativeCheckpoints:
         # tmp_path) + the final root entry: 4 polls.
         assert len(polls) == 7
 
-    def test_checkpoint_cancellation_propagates_typed(
-        self, tmp_path: Path
-    ) -> None:
+    def test_checkpoint_cancellation_propagates_typed(self, tmp_path: Path) -> None:
         from dbf_anonymizer import CancellationError
         from dbf_anonymizer.errors import ErrorCode, ErrorContext
 
@@ -345,9 +333,7 @@ class TestFsyncTreeCooperativeCheckpoints:
         def cancel_on_first_file() -> None:
             raise CancellationError(
                 ErrorCode.OPERATION_CANCELLED,
-                context=ErrorContext(
-                    operation="probe", detail_code="CANCELLED_BY_CHECK"
-                ),
+                context=ErrorContext(operation="probe", detail_code="CANCELLED_BY_CHECK"),
             )
 
         with pytest.raises(CancellationError):

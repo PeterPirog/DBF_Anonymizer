@@ -32,8 +32,8 @@ key values, source values or vault material.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PolicyError
 
@@ -175,22 +175,26 @@ class RelationMember:
     nullable: bool
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "table_path", normalize_relative_table_path(self.table_path)
-        )
+        object.__setattr__(self, "table_path", normalize_relative_table_path(self.table_path))
         _validate_bounded_token(self.field_name, "RELATIONSHIP_FIELD_INVALID")
         if self.key_role not in KEY_ROLES:
             raise _invalid("RELATIONSHIP_KEY_ROLE_INVALID")
-        if isinstance(self.composite_ordinal, bool) or not isinstance(
-            self.composite_ordinal, int
-        ) or self.composite_ordinal < 1:
+        if (
+            isinstance(self.composite_ordinal, bool)
+            or not isinstance(self.composite_ordinal, int)
+            or self.composite_ordinal < 1
+        ):
             raise _invalid("RELATIONSHIP_ORDINAL_INVALID")
         if self.dbf_type not in SUPPORTED_RELATIONSHIP_DBF_TYPES:
             # Declared numeric key members are exactly the bounded I/N
             # vocabulary; floating/currency/logical numeric runtime types
             # (F/Y/B/L) can never be reinterpreted as integer key domains.
             raise _invalid("RELATIONSHIP_DBF_TYPE_UNSUPPORTED")
-        if isinstance(self.byte_width, bool) or not isinstance(self.byte_width, int) or self.byte_width < 1:
+        if (
+            isinstance(self.byte_width, bool)
+            or not isinstance(self.byte_width, int)
+            or self.byte_width < 1
+        ):
             raise _invalid("RELATIONSHIP_BYTE_WIDTH_INVALID")
         if self.dbf_type in SUPPORTED_NUMERIC_RELATIONSHIP_DBF_TYPES:
             object.__setattr__(self, "encoding", _validate_numeric_member_encoding(self.encoding))
@@ -253,10 +257,7 @@ class RelationGroup:
         # inferred from the member types — it must be DECLARED, and a
         # declaration without any numeric member is meaningless (fail closed).
         numeric_members = [m for m in self.members if m.is_numeric_member]
-        if (
-            self.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
-            and not numeric_members
-        ):
+        if self.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE and not numeric_members:
             raise _invalid("RELATIONSHIP_NUMERIC_STRATEGY_MEMBER_REQUIRED")
         roles = {member.key_role for member in self.members}
         # STRUCTURAL CONTRACT (1.0): a usable declared relation group carries
@@ -273,9 +274,7 @@ class RelationGroup:
         # Composite ordering: per key role, ordinals must be exactly 1..N
         # without duplicates or gaps (consistent arity per side).
         for role in sorted(roles):
-            ordinals = sorted(
-                m.composite_ordinal for m in self.members if m.key_role == role
-            )
+            ordinals = sorted(m.composite_ordinal for m in self.members if m.key_role == role)
             if ordinals != list(range(1, len(ordinals) + 1)):
                 raise _invalid("RELATIONSHIP_ORDINAL_SEQUENCE_INVALID")
         # The parent side (PRIMARY or CANDIDATE) and the FOREIGN side must

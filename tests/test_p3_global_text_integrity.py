@@ -76,9 +76,7 @@ def test_multi_table_c_pk_fk_join_integrity_preserved(tmp_path: Path) -> None:
             # The same original "KUND-02" is observed through structurally
             # INDEPENDENT field contexts with different byte widths (8 on the
             # customers/orders fields, 6 on the invoices foreign field).
-            allocator = GlobalTextDomainMapping(
-                vault, _random_below=lambda bound: bound - 1
-            )
+            allocator = GlobalTextDomainMapping(vault, _random_below=lambda bound: bound - 1)
             for context, original, width in (
                 ("customers/customers.dbf.customer_id", "KUND-01", 8),
                 ("customers/customers.dbf.customer_id", "KUND-02", 8),
@@ -93,6 +91,7 @@ def test_multi_table_c_pk_fk_join_integrity_preserved(tmp_path: Path) -> None:
                 del context
                 allocator.observe(original, encoding="cp1250", byte_width=width)
             allocator.finalize()
+
             # Before/after relational evidence over the REAL allocation path.
             # NULL stays NULL by the P2 contract (never mapped).
             def shift(value: str | None) -> str | None:
@@ -121,12 +120,8 @@ def test_multi_table_c_pk_fk_join_integrity_preserved(tmp_path: Path) -> None:
             assert allocator.pseudonym_for("KUND-02") == pk_occurrence
             # Distinct originals remain distinct: no two originals share a
             # pseudonym.
-            distinct_originals = sorted(
-                set(primary_before + foreign_before) - {None}
-            )
-            distinct_pseudonyms = {
-                allocator.pseudonym_for(value) for value in distinct_originals
-            }
+            distinct_originals = sorted(set(primary_before + foreign_before) - {None})
+            distinct_pseudonyms = {allocator.pseudonym_for(value) for value in distinct_originals}
             assert len(distinct_pseudonyms) == len(distinct_originals)
 
 
@@ -143,14 +138,10 @@ def test_repeated_fks_nulls_and_orphans_preserved(tmp_path: Path) -> None:
                 vault.register_table("customers.dbf")
                 vault.register_table("orders.dbf")
             allocator = GlobalTextDomainMapping(vault)
-            for original in set(
-                v for v in ORDERS_FOREIGN if v is not None
-            ) | set(CUSTOMER_IDS):
+            for original in set(v for v in ORDERS_FOREIGN if v is not None) | set(CUSTOMER_IDS):
                 allocator.observe(original, encoding="cp1250", byte_width=8)
             allocator.finalize()
-            primary_after = [
-                allocator.pseudonym_for(value) for value in CUSTOMER_IDS
-            ]
+            primary_after = [allocator.pseudonym_for(value) for value in CUSTOMER_IDS]
             foreign_after = [
                 None if value is None else allocator.pseudonym_for(value)
                 for value in ORDERS_FOREIGN
@@ -162,10 +153,7 @@ def test_repeated_fks_nulls_and_orphans_preserved(tmp_path: Path) -> None:
             # shift (orphan-count equality is the P3-002 core claim).
             assert before.orphan_count == after.orphan_count == 1
             # Duplicate FK multiplicity is preserved exactly.
-            assert (
-                before.max_duplicate_multiplicity
-                == after.max_duplicate_multiplicity
-            )
+            assert before.max_duplicate_multiplicity == after.max_duplicate_multiplicity
             # NULL stays NULL: NULL FK values keep their NULL, and every
             # non-NULL original receives a NON-NULL pseudonym.
             assert all(value is not None for value in primary_after)
@@ -182,9 +170,7 @@ def test_repeated_fks_nulls_and_orphans_preserved(tmp_path: Path) -> None:
         ) as reused:
             with writer_session(reused):
                 allocator = GlobalTextDomainMapping(reused)
-                for original in set(
-                    CUSTOMER_IDS + [v for v in ORDERS_FOREIGN if v]
-                ):
+                for original in set(CUSTOMER_IDS + [v for v in ORDERS_FOREIGN if v]):
                     allocator.observe(original, encoding="cp1250", byte_width=8)
                 allocator.finalize()
                 assert allocator.pseudonym_for("KUND-01") == primary_after[0]

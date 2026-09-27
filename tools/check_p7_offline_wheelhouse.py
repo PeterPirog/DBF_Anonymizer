@@ -41,15 +41,11 @@ def _manifest_pins(path: Path) -> dict[str, str]:
 def _wheel_identity(path: Path) -> tuple[str, str]:
     with zipfile.ZipFile(path) as archive:
         metadata_files = [
-            name
-            for name in archive.namelist()
-            if name.endswith(".dist-info/METADATA")
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
         ]
         if len(metadata_files) != 1:
             raise AssertionError(f"{path.name}: expected one METADATA file")
-        metadata = email.parser.BytesParser().parsebytes(
-            archive.read(metadata_files[0])
-        )
+        metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_files[0]))
     name = metadata.get("Name")
     version = metadata.get("Version")
     if not name or not version:

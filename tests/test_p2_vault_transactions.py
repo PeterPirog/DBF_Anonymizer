@@ -13,7 +13,6 @@ protected vault and never appear in public errors.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -68,29 +67,47 @@ def _reopen(tmp_path: Path) -> VaultDatabase:
 def test_duplicate_original_with_conflicting_pseudonym_is_rejected(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
-            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.add_text_mapping(
+                vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+            )
             # Same original -> conflicting pseudonym: UNIQUE(domain, original).
             with pytest.raises(MappingError) as excinfo:
-                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10
+                )
             assert excinfo.value.code is ErrorCode.MAPPING_CONFLICT
             assert excinfo.value.context.detail_code == "MAPPING_BIJECTION_REJECTED"
             # Duplicate pseudonym -> conflicting original: UNIQUE(domain, pseudonym).
             with pytest.raises(MappingError):
-                mappings.add_text_mapping(vault, domain, ORIGINAL_B, PSEUDONYM_A, logical_byte_length=17)
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_B, PSEUDONYM_A, logical_byte_length=17
+                )
             # The identical duplicate pair is likewise a database conflict.
             with pytest.raises(MappingError):
-                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=19)
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=19
+                )
 
 
 def test_identical_pairs_in_different_domains_are_independent(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
-            domain_one = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            domain_two = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            mappings.add_text_mapping(vault, domain_one, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            domain_one = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            domain_two = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.add_text_mapping(
+                vault, domain_one, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+            )
             # The same original in a DIFFERENT domain is a separate mapping.
-            mappings.add_text_mapping(vault, domain_two, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=22)
+            mappings.add_text_mapping(
+                vault, domain_two, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=22
+            )
         vault.verify()
         assert mappings.get_text_pseudonym(vault, domain_one, ORIGINAL_A) == PSEUDONYM_A
         assert mappings.get_text_pseudonym(vault, domain_two, ORIGINAL_A) == PSEUDONYM_B
@@ -120,8 +137,12 @@ def test_numeric_key_bijection_is_bidirectionally_unique(tmp_path: Path) -> None
 def test_reverse_lookup_roundtrip_is_exact(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
-            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.add_text_mapping(
+                vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+            )
         assert mappings.get_text_pseudonym(vault, domain, ORIGINAL_A) == PSEUDONYM_A
         assert mappings.get_text_original(vault, domain, PSEUDONYM_A) == ORIGINAL_A
         assert mappings.get_text_pseudonym(vault, domain, "absent") is None
@@ -132,12 +153,18 @@ def test_memo_and_temporal_rows_are_stored_in_the_protected_zone(tmp_path: Path)
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
             table_id = vault.register_table("memo/table.dbf", schema_fingerprint="fp-memo")
-            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
             field_id = vault.register_field(
                 table_id, "NOTES", dbf_type="M", width=10, mapping_domain_id=domain
             )
             mappings.add_memo_recovery(
-                vault, table_id, 3, field_id, "CANARY_MEMO_PAYLOAD",
+                vault,
+                table_id,
+                3,
+                field_id,
+                "CANARY_MEMO_PAYLOAD",
                 payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
             )
             temporal = mappings.create_domain(
@@ -154,7 +181,11 @@ def test_memo_and_temporal_rows_are_stored_in_the_protected_zone(tmp_path: Path)
         with pytest.raises(VaultError):
             with writer_session(vault), vault.transaction():
                 mappings.add_memo_recovery(
-                    vault, table_id, 3, field_id, "again",
+                    vault,
+                    table_id,
+                    3,
+                    field_id,
+                    "again",
                     payload_kind=mappings.VAULT_PAYLOAD_KIND_TEXT,
                 )
 
@@ -168,16 +199,25 @@ def test_transaction_rollback_leaves_no_partial_rows(tmp_path: Path) -> None:
         assert mappings.mapping_domains(vault) == ()
         with pytest.raises(ValueError):
             with writer_session(vault), vault.transaction():
-                domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+                domain = mappings.create_domain(
+                    vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+                )
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+                )
                 # Dependent second insert fails mid-transaction (duplicate
                 # original in the same domain) -> the WHOLE unit must roll back.
                 with pytest.raises(MappingError):
-                    mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+                    mappings.add_text_mapping(
+                        vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10
+                    )
                 raise ValueError("injected failure before commit")
         # AFTER the rollback: no domain, no mapping row (proven, not implied).
         assert mappings.mapping_domains(vault) == ()
-        assert vault._internal_connection().execute("SELECT COUNT(*) FROM text_mappings").fetchone()[0] == 0
+        assert (
+            vault._internal_connection().execute("SELECT COUNT(*) FROM text_mappings").fetchone()[0]
+            == 0
+        )
         vault.verify()
 
     with _reopen(tmp_path) as reopened:
@@ -191,17 +231,23 @@ def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -
         with pytest.raises(RuntimeError):
             with writer_session(vault), vault.transaction():
                 table_id = vault.register_table("orders/data.dbf", schema_fingerprint="fp-x")
-                domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-                field_id = vault.register_field(
+                domain = mappings.create_domain(
+                    vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+                )
+                vault.register_field(
                     table_id, "NAME", dbf_type="C", width=10, mapping_domain_id=domain
                 )
-                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+                )
                 assert mappings.get_text_pseudonym(vault, domain, ORIGINAL_A) == PSEUDONYM_A
                 raise RuntimeError("crash injection between inserts and commit")
         # Uncommitted dependent inserts are all gone.
         assert vault.tables() == ()
         assert mappings.mapping_domains(vault) == ()
-        assert vault._internal_connection().execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 0
+        assert (
+            vault._internal_connection().execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 0
+        )
 
     # Reopening after the simulated interruption passes integrity and shows
     # only committed state.
@@ -214,8 +260,12 @@ def test_failure_after_dependent_inserts_rolls_back_everything(tmp_path: Path) -
 def test_committed_transaction_survives_reopen(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
-            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.add_text_mapping(
+                vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+            )
     with _reopen(tmp_path) as reopened:
         reopened.verify(full=True)
         assert mappings.text_mapping_rows(reopened, domain) == ((ORIGINAL_A, PSEUDONYM_A, 22),)
@@ -258,10 +308,16 @@ def test_nested_transaction_use_is_refused(tmp_path: Path) -> None:
 def test_failed_mutation_never_exposes_mapping_values(tmp_path: Path) -> None:
     with _create(tmp_path) as vault:
         with writer_session(vault), vault.transaction():
-            domain = mappings.create_domain(vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT)
-            mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22)
+            domain = mappings.create_domain(
+                vault, domain_kind=mappings.VAULT_TABLE_DOMAIN_KIND_TEXT
+            )
+            mappings.add_text_mapping(
+                vault, domain, ORIGINAL_A, PSEUDONYM_A, logical_byte_length=22
+            )
             with pytest.raises(MappingError) as excinfo:
-                mappings.add_text_mapping(vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10)
+                mappings.add_text_mapping(
+                    vault, domain, ORIGINAL_A, PSEUDONYM_B, logical_byte_length=10
+                )
             error = excinfo.value
             blob = error_boundary_payload(error)
             assert ORIGINAL_A not in blob
@@ -280,9 +336,7 @@ def test_begin_failure_is_typed_and_leaves_no_transaction(
     with _create(tmp_path) as vault:
         token = new_writer_token()
         vault.acquire_writer_lease(token)
-        install_failing_execute(
-            vault, lambda sql: "BEGIN IMMEDIATE" in sql, monkeypatch
-        )
+        install_failing_execute(vault, lambda sql: "BEGIN IMMEDIATE" in sql, monkeypatch)
         with pytest.raises(VaultError) as excinfo:
             with vault.transaction():
                 vault.begin_operation()
@@ -430,10 +484,7 @@ def test_rollback_failure_with_operation_exception_is_fail_closed(
             finally:
                 assert vault.poisoned is not None
                 assert vault.poisoned.code is ErrorCode.VAULT_STATE_INVALID
-                assert (
-                    vault.poisoned.context.detail_code
-                    == "TRANSACTION_ROLLBACK_FAILED"
-                )
+                assert vault.poisoned.context.detail_code == "TRANSACTION_ROLLBACK_FAILED"
         # Subsequent ordinary operations are refused on the poisoned instance.
         with pytest.raises(VaultError) as excinfo:
             vault.operations()
