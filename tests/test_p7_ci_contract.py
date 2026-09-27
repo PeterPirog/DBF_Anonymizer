@@ -1,13 +1,23 @@
-"""REQ-P7-006 CI contract: structural workflow evidence.
+"""REQ-P7-006 CI contract: structural workflow evidence + platform-policy spec.
 
 Parses every version-controlled workflow YAML with PyYAML and proves the
 comprehensive gate matrix structurally:
 
 * bounded permissions and untrusted-trigger isolation (no
-  ``pull_request_target``/``workflow_run``, hosted runners only, so untrusted
-  pull-request code can never execute on a trusted self-hosted VFP runner);
-* the trusted real-VFP acceptance tool never runs inside CI (manual/trusted
-  execution only);
+  ``pull_request_target``/``workflow_run`` anywhere; ordinary checked-in
+  workflows target only hosted Linux/Windows runners);
+* the TWO-TRUST-ZONE model: an ordinary (untrusted) zone and a DEDICATED
+  trusted real-VFP lane that is workflow_dispatch-only, refuses every ref
+  except protected main, never checks out caller-provided refs, requires the
+  platform-authorized runner-group boundary (``runs-on`` ``group``+``labels``
+  bound to authoritative repository variables — fail-closed, no invented
+  names), and invokes the established REQ-P6-003 acceptance tool with exact
+  revision/architecture identity;
+* a machine-readable PLATFORM POLICY SPECIFICATION exists that states the
+  required external runner-group configuration.  That file is explicitly a
+  SPECIFICATION, not proof: platform isolation and real-VFP execution remain
+  EXTERNAL evidence until the runner group is provisioned, verified from live
+  GitHub configuration, and dispatched on protected main;
 * format / lint / strict typecheck / compile gates exist;
 * package build + twine + wheel-metadata + dependency/security audit gates
   exist;
@@ -18,10 +28,19 @@ comprehensive gate matrix structurally:
   explicit CI steps;
 * cross-platform (Linux and Windows) no-VFP hosted smoke exists;
 * the accepted P0 package-boundary jobs are preserved.
+
+Evidence classes (deliberately distinguished):
+A. repository structural evidence — what this module asserts from YAML/JSON
+   committed to the repository;
+B. external platform policy evidence — runner-group configuration and real
+   trusted-runner execution, verifiable ONLY from live GitHub configuration
+   and a dispatched run; this module can require the SPECIFICATION and its
+   fail-closed wiring, but can never fabricate the external proof.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -36,7 +55,10 @@ BOUNDARY_WORKFLOW = "p0-package-boundary.yml"
 GATES_WORKFLOW = "p7-comprehensive-gates.yml"
 TRUSTED_WORKFLOW = "p6-trusted-vfp-acceptance.yml"
 TRUSTED_JOB = "real-vfp9-acceptance"
-TRUSTED_RUNNER_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS"
+TRUSTED_GROUP_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_GROUP"
+TRUSTED_LABELS_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS"
+TRUSTED_POLICY_SPEC = ".github/trusted-vfp-runner-policy.json"
+TRUSTED_WORKFLOW_PATH = ".github/workflows/p6-trusted-vfp-acceptance.yml"
 ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
 
 ACCEPTED_BOUNDARY_JOBS = (
@@ -146,13 +168,17 @@ def test_no_untrusted_trigger_reaches_any_runner() -> None:
 
 
 def _resolved_runs_on(job: dict[str, Any]) -> set[str]:
-    """The concrete runner labels of one job (matrix expressions resolved).
+    """The concrete runner targeting of one job (matrix expressions resolved).
 
-    A ``vars.*`` reference is reported as the authoritative repository
-    configuration point itself (``vars.<NAME>``) — the trusted runner label
-    is deliberately NOT committed as a literal in this repository.
+    A ``vars.*`` reference is reported as ``vars:<NAME>`` — the authoritative
+    repository configuration point itself (runner group/label values are
+    deliberately NOT committed as literals in this repository).
     """
     runs_on = job.get("runs-on")
+    if isinstance(runs_on, dict):
+        serialized = json.dumps(runs_on)
+        matches = re.findall(r"vars\.\w+", serialized)
+        return {f"vars:{match}" for match in matches}
     if isinstance(runs_on, str) and "${{" in runs_on:
         strategy = job.get("strategy") or {}
         matrix = strategy.get("matrix") or {}
@@ -174,10 +200,18 @@ def _resolved_runs_on(job: dict[str, Any]) -> set[str]:
 
 
 def test_ordinary_workflows_cannot_target_the_trusted_vfp_runner() -> None:
-    """UNTRUSTED ZONE: every ordinary workflow (push/pull_request/dispatch on
-    hosted runners) runs ONLY on disposable hosted Linux/Windows runners and
-    never on the trusted self-hosted VFP9 machine — untrusted pull-request
-    code can therefore never reach the trusted machine."""
+    """UNTRUSTED ZONE — REPOSITORY STRUCTURAL EVIDENCE (class A): every
+    ordinary checked-in workflow (push/pull_request/dispatch) targets ONLY
+    disposable hosted Linux/Windows runners; none of them targets a
+    trusted-runner configuration (``vars``-bound group/labels).
+
+    This structural evidence does NOT by itself prove that no future
+    PR-modified workflow could target a repository-level self-hosted runner:
+    that platform-level authorization is required from the external
+    runner-group policy (see
+    ``test_trusted_vfp_platform_policy_specification_exists``) and remains
+    EXTERNAL evidence (class B) until verified from live GitHub
+    configuration."""
     for name, document in _load_workflows().items():
         if name == TRUSTED_WORKFLOW:
             continue
@@ -197,9 +231,12 @@ def test_dedicated_trusted_vfp_workflow_exists() -> None:
 
 def test_trusted_vfp_workflow_is_dispatch_only() -> None:
     """The trusted lane may only be dispatched manually: no pull_request, no
-    pull_request_target, no workflow_run and no push trigger may start it,
-    so untrusted pull-request code can never schedule work on the trusted
-    machine."""
+    pull_request_target, no workflow_run and no push trigger may start it.
+    This is workflow defense in depth (LAYER 2, repository structural
+    evidence): it removes every automated scheduling path from this file, but
+    by itself it does NOT establish the platform authorization boundary that
+    protects the runner from other workflow files — that boundary is the
+    external runner-group policy (LAYER 1)."""
     document = _load_workflows()[TRUSTED_WORKFLOW]
     triggers = _triggers(document)
     assert set(triggers) == {"workflow_dispatch"}
@@ -207,14 +244,23 @@ def test_trusted_vfp_workflow_is_dispatch_only() -> None:
     assert "trusted" in str(document.get("name", "")).lower()
 
 
-def test_trusted_vfp_workflow_targets_the_authoritative_runner_configuration() -> None:
-    """The trusted job's runner label comes from the authoritative repository
-    variable (configured together with the trusted runner provisioning), and
-    NO invented literal runner label is committed to the repository."""
+def test_trusted_vfp_job_requires_platform_authorized_runner_group() -> None:
+    """The trusted job targets a PLATFORM-AUTHORIZED runner group (GitHub
+    runs-on ``group`` + ``labels`` mapping, per the official workflow syntax),
+    with both values bound to the authoritative repository variables so the
+    lane is FAIL-CLOSED while they are unset.  NO group or label name is
+    committed to the repository — a label is routing, not authorization; the
+    authorization boundary is the external runner-group policy (see the
+    platform-policy specification test)."""
     document = _load_workflows()[TRUSTED_WORKFLOW]
     job = _jobs(document)[TRUSTED_JOB]
-    runs_on = str(job.get("runs-on"))
-    assert TRUSTED_RUNNER_VARIABLE in runs_on, runs_on
+    runs_on = job.get("runs-on")
+    assert isinstance(runs_on, dict), f"trusted runs-on must be a mapping: {runs_on!r}"
+    assert "group" in runs_on and "labels" in runs_on, runs_on
+    group_value = str(runs_on["group"])
+    labels_value = str(runs_on["labels"])
+    assert TRUSTED_GROUP_VARIABLE in group_value, group_value
+    assert TRUSTED_LABELS_VARIABLE in labels_value, labels_value
     for name, document in _load_workflows().items():
         for job_name, job in _jobs(document).items():
             if name == TRUSTED_WORKFLOW:
@@ -225,6 +271,36 @@ def test_trusted_vfp_workflow_targets_the_authoritative_runner_configuration() -
                     f"{name}:{job_name}: untrusted workflow targets a "
                     f"trusted-runner configuration: {label}"
                 )
+
+
+def test_trusted_vfp_platform_policy_specification_exists() -> None:
+    """The machine-readable REQUIRED-CONFIGURATION specification for the
+    platform runner-group boundary exists and is explicitly marked as a
+    SPECIFICATION (never evidence).  This is repository structural evidence
+    (class A); the live GitHub runner-group configuration and the real
+    trusted-runner execution remain EXTERNAL evidence (class B)."""
+    spec_path = REPO_ROOT / TRUSTED_POLICY_SPEC
+    policy = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert policy["evidence_status"] == "SPECIFICATION_NOT_PROOF"
+    assert policy["requirement"] == "REQ-P7-006"
+    layer1 = policy["layer_1_platform_authorization"]
+    assert layer1["required"] is True
+    assert layer1["mechanism"] == "organization_or_enterprise_runner_group"
+    assert layer1["repository_access"]["policy"] == "selected_repositories"
+    assert layer1["repository_access"]["public_repository_access"] == (
+        "deliberate_override_required"
+    )
+    assert layer1["workflow_access"]["policy"] == "restricted_to_workflows"
+    assert layer1["workflow_access"]["selected_workflows_exactly"] == [TRUSTED_WORKFLOW_PATH]
+    assert layer1["workflow_access"]["pinned_ref"] == "refs/heads/main"
+    layer2 = policy["layer_2_workflow_defense_in_depth"]
+    assert layer2["workflow"] == TRUSTED_WORKFLOW_PATH
+    assert layer2["triggers"]["allowed_exactly"] == ["workflow_dispatch"]
+    assert layer2["runner_targeting"]["group_source"] == TRUSTED_GROUP_VARIABLE
+    assert layer2["runner_targeting"]["labels_source"] == TRUSTED_LABELS_VARIABLE
+    assert layer2["runner_targeting"]["committed_literal_group_or_label"] == ("forbidden")
+    assert policy["current_topology_facts"]["runner_group_policy_verified"] is False
+    assert policy["current_topology_facts"]["trusted_vfp_execution_evidence"] is False
 
 
 def test_trusted_vfp_workflow_never_executes_untrusted_pr_code() -> None:

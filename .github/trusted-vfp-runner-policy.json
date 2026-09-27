@@ -1,0 +1,76 @@
+{
+  "specification_id": "DBF-TRUSTED-VFP9-RUNNER-POLICY",
+  "specification_version": "1.0",
+  "requirement": "REQ-P7-006",
+  "purpose": "Platform-enforced trusted runner isolation for the real-VFP9 acceptance lane. This file is a REQUIRED-CONFIGURATION SPECIFICATION, NOT evidence: it does not prove that GitHub is configured this way. Objective proof can only come from verifying the live GitHub runner-group configuration (GitHub REST API / organization settings) plus a real dispatched workflow run on protected main.",
+  "evidence_status": "SPECIFICATION_NOT_PROOF",
+  "current_topology_facts": {
+    "repository": "PeterPirog/DBF_Anonymizer",
+    "repository_visibility": "public",
+    "owner_type": "user",
+    "organization_runner_groups_available": false,
+    "self_hosted_runners_registered": 0,
+    "runner_group_policy_verified": false,
+    "trusted_vfp_execution_evidence": false
+  },
+  "external_blocker": "The repository is public and user-owned. GitHub runner groups (the platform mechanism that can restrict runner access to selected repositories AND selected workflows) exist only at organization/enterprise level. Until the ownership/topology decision provides such a group, a platform-enforced trusted runner boundary cannot be configured, and no repository-level runner may be registered as a workaround (official GitHub guidance: self-hosted runners should almost never be used with public repositories, because any fork can open a pull request that executes code on the runner).",
+  "layer_1_platform_authorization": {
+    "required": true,
+    "mechanism": "organization_or_enterprise_runner_group",
+    "group_membership": "self-hosted Windows runner dedicated to Visual FoxPro 9 acceptance",
+    "repository_access": {
+      "policy": "selected_repositories",
+      "allowlist_exactly": ["<FINAL_OWNER>/DBF_Anonymizer"],
+      "owner_placeholder_note": "FINAL_OWNER is deliberately unset until the repository ownership/topology decision is made; it must not be guessed.",
+      "public_repository_access": "deliberate_override_required",
+      "default_scope_note": "By default private repositories only can access a runner group; public access must be granted explicitly and deliberately."
+    },
+    "workflow_access": {
+      "policy": "restricted_to_workflows",
+      "selected_workflows_exactly": [
+        ".github/workflows/p6-trusted-vfp-acceptance.yml"
+      ],
+      "pinned_ref": "refs/heads/main",
+      "equivalent_platform_isolation": "acceptable only if it provably prevents every other workflow file - including future PR-modified files - from scheduling jobs on the trusted runner"
+    },
+    "verification_procedure": "After provisioning, verify through GitHub configuration APIs/settings (runner group exists; repository allowlist == the single DBF_Anonymizer repository; workflow allowlist exactly the trusted workflow pinned to refs/heads/main) and only then dispatch the trusted workflow on protected main to produce execution evidence."
+  },
+  "layer_2_workflow_defense_in_depth": {
+    "required": true,
+    "workflow": ".github/workflows/p6-trusted-vfp-acceptance.yml",
+    "triggers": {
+      "allowed_exactly": ["workflow_dispatch"],
+      "forbidden": ["pull_request", "pull_request_target", "workflow_run", "push", "repository_dispatch"]
+    },
+    "permissions": {"contents": "read"},
+    "ref_guard": "refs/heads/main only, verified before any checkout",
+    "checkout": "no explicit ref and no caller-provided SHA/branch; never github.event.pull_request.head.sha",
+    "revision_identity": "git rev-parse HEAD must equal origin/main and be recorded with the sanitized evidence",
+    "architecture_hash_required": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615",
+    "acceptance_tool": "tools/run_real_vfp9_acceptance.py (the established REQ-P6-003 boundary; no second acceptance protocol)",
+    "runner_targeting": {
+      "syntax": "runs-on mapping with group and labels",
+      "group_source": "vars.DBF_TRUSTED_VFP9_RUNNER_GROUP",
+      "labels_source": "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS",
+      "committed_literal_group_or_label": "forbidden",
+      "fail_closed": "while either variable is unset the job cannot be scheduled and the lane produces no evidence"
+    },
+    "environment_approvals": "NOT a substitute for the runner-group boundary (an attacker-controlled workflow could omit the environment)"
+  },
+  "acceptance_requires_all_of": [
+    "safe trusted self-hosted Windows/VFP9 runner",
+    "platform-level runner access isolation (runner group allowlisting only this repository)",
+    "workflow access restricted to the dedicated trusted VFP workflow",
+    "trusted workflow pinned to protected main",
+    "runner-group policy verified from live GitHub configuration",
+    "a real workflow_dispatch run on protected main",
+    "real Visual FoxPro 9 executed (no skip)",
+    "source immutability proved",
+    "staging + published dataset reopen proved",
+    "record count / tag inventory proved per accepted P6-003 evidence",
+    "sanitized machine-readable evidence",
+    "exact commit identity recorded",
+    "no untrusted PR code executed on the trusted machine"
+  ],
+  "until_then": "REQ-P7-006 remains PARTIAL/BLOCKED; the hosted/public gates remain the only green evidence; do NOT register a repository-level self-hosted runner; do NOT merge while the trusted-VFP execution evidence is missing."
+}

@@ -1,28 +1,46 @@
 name: P6 trusted real-VFP9 acceptance (isolated)
 
-# REQ-P7-006 TRUSTED LANE — security-critical.
+# REQ-P7-006 TRUSTED LANE — security-critical, FAIL-CLOSED.
 #
 # UNTRUSTED PULL-REQUEST CODE MUST NEVER EXECUTE ON THE TRUSTED SELF-HOSTED
-# WINDOWS/VFP9 MACHINE.  This workflow therefore:
+# WINDOWS/VFP9 MACHINE.
 #
-# * is triggered by workflow_dispatch ONLY (never pull_request, never
-#   pull_request_target, never workflow_run, never push from a PR context);
-# * requires write access on the repository to dispatch (collaborator-only);
-# * refuses every ref except the protected main branch before any checkout;
-# * checks out ONLY the dispatched trusted ref (never
-#   github.event.pull_request.head.sha, never an arbitrary user-provided
-#   SHA/branch input);
-# * records and verifies the exact trusted revision identity;
-# * delegates ALL real-VFP9 semantics (trusted-machine checks, source
-#   immutability, no-skip enforcement, sanitized evidence) to the established
-#   REQ-P6-003 acceptance runner tool — no second acceptance protocol.
+# TWO REQUIRED LAYERS (both must exist before this lane may ever run):
 #
-# The trusted runner label is NOT committed to this repository.  It is read
-# from the authoritative repository variable DBF_TRUSTED_VFP9_RUNNER_LABELS,
-# which MUST be configured together with the trusted self-hosted Windows VFP9
-# runner provisioning (infrastructure step, separate from this repository
-# work).  Until the variable and the runner exist, dispatching is refused by
-# GitHub and this lane produces no evidence — it is never a silent pass.
+# LAYER 1 — GitHub platform authorization (EXTERNAL POLICY, NOT repository
+# content):
+#   The trusted Windows/VFP9 runner must belong to an organization/enterprise
+#   RUNNER GROUP whose access policy:
+#   * allows access only to this repository (selected-repositories allowlist,
+#     public-repository access granted deliberately);
+#   * restricts workflow access to EXACTLY this workflow file, pinned to the
+#     protected refs/heads/main;
+#   * so no other (including future, PR-modified) workflow file can schedule
+#     jobs on the trusted machine.
+#   GitHub documents this boundary only for organization/enterprise runner
+#   groups.  This repository is currently PUBLIC and USER-OWNED, so the
+#   platform boundary CANNOT exist yet — the lane stays unschedulable until
+#   the owner/topology decision is made.  A repository-level self-hosted
+#   runner must NOT be registered as a workaround (official GitHub guidance:
+#   self-hosted runners should almost never be used with public repositories).
+#
+# LAYER 2 — workflow defense in depth (this file):
+#   workflow_dispatch ONLY (never pull_request, never pull_request_target,
+#   never workflow_run, never push from a PR context); contents: read;
+#   refuses every ref except the protected main branch BEFORE any checkout;
+#   checks out ONLY the dispatched trusted ref (never
+#   github.event.pull_request.head.sha, never a caller-provided SHA/branch);
+#   records and verifies the exact trusted revision identity; delegates ALL
+#   real-VFP9 semantics to the established REQ-P6-003 acceptance runner tool.
+#
+# FAIL-CLOSED runner targeting: the group and label are read from the
+# authoritative repository variables below.  `jobs.<job_id>.runs-on`
+# officially allows the `vars` context.  While EITHER variable is unset (the
+# current state), the job cannot be scheduled to any runner — the lane is
+# inert and produces no evidence.  NO group or label name is committed here;
+# the values are configured by the platform owner together with the runner
+# group.  A label is ROUTING information only; the platform runner-group
+# policy is the authorization boundary.
 
 on:
   workflow_dispatch:
@@ -32,8 +50,10 @@ permissions:
 
 jobs:
   real-vfp9-acceptance:
-    name: Trusted real VFP9 acceptance (isolated self-hosted Windows runner)
-    runs-on: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}
+    name: Trusted real VFP9 acceptance (isolated self-hosted Windows runner group)
+    runs-on:
+      group: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_GROUP }}
+      labels: ${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}
     timeout-minutes: 60
     steps:
       - name: Trust guard — the trusted machine runs ONLY the protected main ref
