@@ -1,0 +1,291 @@
+name: P7 comprehensive gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-quality:
+    name: Format, lint, strict typecheck, compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Align the environment with the tested dbfbridge acceptance artifact
+        run: python -m pip install -r requirements/p0-dbfbridge-tested.txt
+      - name: Format gate (deterministic, whole repository)
+        run: python -m ruff format --check .
+      - name: Lint gate (pyflakes + critical pycodestyle)
+        run: python -m ruff check .
+      - name: Strict typecheck
+        run: python -m mypy --strict src/dbf_anonymizer
+      - name: Compile gate
+        run: python -m compileall -q src tests tools
+
+  windows-packaging:
+    name: Windows packaging / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+      - name: Verify wheel metadata and content
+        shell: pwsh
+        run: python tools/check_wheel_metadata.py (Get-ChildItem dist\*.whl).FullName
+      - name: Clean install (pinned public dbfbridge + built wheel, no deps)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv clean-env
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir --upgrade pip
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir --no-deps (Get-ChildItem dist\*.whl).FullName
+          & "clean-env\Scripts\python.exe" -m pip check
+      - name: Fresh-wheel smoke outside the workspace (site-packages execution)
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p7-win-${{ matrix.python-version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (Test-Path -LiteralPath $env:SMOKE_ROOT) {
+            Remove-Item -LiteralPath $env:SMOKE_ROOT -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\wheelhouse" | Out-Null
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\work" | Out-Null
+          Copy-Item -Path "dist\*.whl" -Destination "$env:SMOKE_ROOT\wheelhouse"
+          python -m venv "$env:SMOKE_ROOT\venv"
+          $venvPython = "$env:SMOKE_ROOT\venv\Scripts\python.exe"
+          & $venvPython -m pip install --no-cache-dir --upgrade pip
+          & $venvPython -m pip install --no-cache-dir -r "$env:GITHUB_WORKSPACE\requirements\p0-dbfbridge-tested.txt"
+          & $venvPython -m pip install --no-cache-dir --no-deps "$env:SMOKE_ROOT\wheelhouse\*.whl"
+          & $venvPython -m pip check
+          Set-Location -LiteralPath "$env:SMOKE_ROOT\work"
+          if ($PWD.Path.StartsWith($env:GITHUB_WORKSPACE)) {
+            throw "smoke cwd is inside GITHUB_WORKSPACE"
+          }
+          & $venvPython -c "import dbf_anonymizer, sys; f = dbf_anonymizer.__file__; assert 'site-packages' in f.lower(), f; assert not f.lower().startswith('$env:GITHUB_WORKSPACE'.lower()), f; print('import origin:', f)"
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --help
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --version
+          & $venvPython "$env:GITHUB_WORKSPACE\tools\check_p7_installed_wheel.py"
+      - name: Focused contract tests against the installed wheel
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p7-win-${{ matrix.python-version }}
+          PYTHONUTF8: "1"
+        run: |
+          & "$env:SMOKE_ROOT\venv\Scripts\python.exe" -m pip install --no-cache-dir pytest
+          Set-Location -LiteralPath $env:GITHUB_WORKSPACE
+          & "$env:SMOKE_ROOT\venv\Scripts\python.exe" -m pytest `
+            tests/test_p1_packaging.py `
+            tests/test_p1_public_models.py `
+            tests/test_p1_errors.py `
+            tests/test_p7_public_json_contract.py `
+            -ra
+
+  package-integrity:
+    name: Package build, twine check, wheel metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+      - name: Twine check (distribution metadata sanity)
+        run: python -m twine check dist/*
+      - name: Wheel metadata and content gate
+        run: python tools/check_wheel_metadata.py dist/*.whl
+
+  dependency-security-audit:
+    name: Dependency and security audit (locked runtime closure; CI network only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the audit tooling (CI-only, never a runtime dependency)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit==2.10.1 build
+      - name: Audit the locked standalone runtime closure against the advisory database
+        run: python -m pip_audit --no-deps -r requirements/p7-offline-wheelhouse.txt
+      - name: Fresh-wheel installability and pip check (objective dependency consistency)
+        run: |
+          python -m build
+          python -m venv audit-env
+          audit-env/bin/python -m pip install --no-cache-dir --upgrade pip
+          audit-env/bin/python -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+          audit-env/bin/python -m pip install --no-cache-dir --no-deps dist/*.whl
+          audit-env/bin/python -m pip check
+      - name: Document the P7-004 boundary
+        run: |
+          echo "This audit's network use is CI-only tooling. The P7-004"
+          echo "runtime-network prohibition is unchanged and remains proven by"
+          echo "the offline wheelhouse job (empty pip cache, --no-index runtime)."
+
+  category-gates:
+    name: "Category gates: unit / integration / privacy / relationship / recovery / transfer / malformed"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Align the environment with the tested dbfbridge acceptance artifact
+        run: python -m pip install -r requirements/p0-dbfbridge-tested.txt
+      - name: Unit contracts
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p1_errors.py \
+            tests/test_p1_public_models.py \
+            tests/test_p1_progress_cancellation.py \
+            tests/test_p1_capability_purity.py \
+            tests/test_root_public_api.py \
+            -ra
+      - name: Integration workflows
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_public_workflow_acceptance.py \
+            tests/test_p3_planning_integration.py \
+            tests/test_p4_two_pass.py \
+            tests/test_p4_public_pseudonymize.py \
+            tests/test_p4_transactional_publication.py \
+            -ra
+      - name: Property / adversarial / malformed inputs
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p2_global_adversarial.py \
+            tests/test_dbfbridge_capability_contract.py \
+            -ra
+      - name: Privacy diagnostics
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p7_privacy_diagnostics.py \
+            tests/test_p7_transport_boundary.py \
+            tests/test_p7_recovery_policy.py \
+            tests/test_p7_public_json_contract.py \
+            tests/test_p7_offline_runtime.py \
+            -ra
+      - name: Relationships
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p3_relationship_documents.py \
+            tests/test_p3_relationship_verification.py \
+            tests/test_p3_declared_relations.py \
+            tests/test_p3_relational_assurance.py \
+            tests/test_p3_global_text_integrity.py \
+            -ra
+      - name: Recovery
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p5_recovery.py \
+            tests/test_p5_verify_dataset.py \
+            tests/test_p7_recovery_policy.py \
+            -ra
+      - name: Transfer bundle
+        env:
+          PYTHONUTF8: "1"
+        run: python -m pytest tests/test_p5_transfer_bundle.py -ra
+
+  transfer-contamination:
+    name: DATA_ONLY contamination gate (vault, WAL/SHM/journal, mappings, secrets, originals excluded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Align the environment with the tested dbfbridge acceptance artifact
+        run: python -m pip install -r requirements/p0-dbfbridge-tested.txt
+      - name: Prove DATA_ONLY excludes vault, SQLite sidecars, mappings, secrets and originals
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest \
+            tests/test_p5_transfer_bundle.py \
+            tests/test_p6_data_only.py \
+            tests/test_p6_idx.py \
+            -ra
+
+  no-vfp-smoke:
+    name: No-VFP hosted smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+      - name: Install the built wheel into a clean venv
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv clean-env
+          $venvPython = "clean-env\Scripts\python.exe"
+          & $venvPython -m pip install --no-cache-dir --upgrade pip
+          & $venvPython -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+          & $venvPython -m pip install --no-cache-dir --no-deps (Get-ChildItem dist\*.whl).FullName
+          & $venvPython -m pip check
+      - name: No-VFP smoke (import purity + capabilities + standalone workflow)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tools/check_p7_no_vfp_smoke.py --python "clean-env\Scripts\python.exe"
