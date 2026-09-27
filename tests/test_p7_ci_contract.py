@@ -59,6 +59,9 @@ TRUSTED_GROUP_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_GROUP"
 TRUSTED_LABELS_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS"
 TRUSTED_POLICY_SPEC = ".github/trusted-vfp-runner-policy.json"
 TRUSTED_WORKFLOW_PATH = ".github/workflows/p6-trusted-vfp-acceptance.yml"
+CANONICAL_SELECTED_WORKFLOW_TEMPLATE = (
+    "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main"
+)
 ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
 
 ACCEPTED_BOUNDARY_JOBS = (
@@ -131,6 +134,14 @@ def _declared_python_minors() -> set[str]:
         if minor > 20:  # pragma: no cover - defensive bound
             break
     return minors
+
+
+def _trusted_policy() -> dict[str, Any]:
+    """Parse the machine-readable trusted runner policy SPECIFICATION."""
+    spec_path = REPO_ROOT / TRUSTED_POLICY_SPEC
+    policy = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert isinstance(policy, dict)
+    return policy
 
 
 def _all_workflows() -> dict[str, dict[str, Any]]:
@@ -279,8 +290,7 @@ def test_trusted_vfp_platform_policy_specification_exists() -> None:
     SPECIFICATION (never evidence).  This is repository structural evidence
     (class A); the live GitHub runner-group configuration and the real
     trusted-runner execution remain EXTERNAL evidence (class B)."""
-    spec_path = REPO_ROOT / TRUSTED_POLICY_SPEC
-    policy = json.loads(spec_path.read_text(encoding="utf-8"))
+    policy = _trusted_policy()
     assert policy["evidence_status"] == "SPECIFICATION_NOT_PROOF"
     assert policy["requirement"] == "REQ-P7-006"
     layer1 = policy["layer_1_platform_authorization"]
@@ -291,7 +301,6 @@ def test_trusted_vfp_platform_policy_specification_exists() -> None:
         "deliberate_override_required"
     )
     assert layer1["workflow_access"]["policy"] == "restricted_to_workflows"
-    assert layer1["workflow_access"]["selected_workflows_exactly"] == [TRUSTED_WORKFLOW_PATH]
     assert layer1["workflow_access"]["pinned_ref"] == "refs/heads/main"
     layer2 = policy["layer_2_workflow_defense_in_depth"]
     assert layer2["workflow"] == TRUSTED_WORKFLOW_PATH
@@ -299,8 +308,100 @@ def test_trusted_vfp_platform_policy_specification_exists() -> None:
     assert layer2["runner_targeting"]["group_source"] == TRUSTED_GROUP_VARIABLE
     assert layer2["runner_targeting"]["labels_source"] == TRUSTED_LABELS_VARIABLE
     assert layer2["runner_targeting"]["committed_literal_group_or_label"] == ("forbidden")
-    assert policy["current_topology_facts"]["runner_group_policy_verified"] is False
-    assert policy["current_topology_facts"]["trusted_vfp_execution_evidence"] is False
+    assert policy["stable_topology_constraints"]["live_runner_group_policy_verified"] is False
+    assert policy["stable_topology_constraints"]["trusted_vfp_execution_evidence"] is False
+
+
+def test_canonical_selected_workflow_is_fully_qualified_template() -> None:
+    """GitHub runner-group workflow restrictions require a fully qualified
+    workflow identity (owner/repository/path@ref).  The specification holds
+    ONE canonical fully-qualified template with the explicit ``<FINAL_OWNER>``
+    placeholder (never guessed), plus the explanatory note that live
+    configuration must replace the placeholder before verification."""
+    policy = _trusted_policy()
+    canonical = policy["canonical_selected_workflow"]
+    assert canonical["fully_qualified_template"] == CANONICAL_SELECTED_WORKFLOW_TEMPLATE
+    assert canonical["placeholder"] == "<FINAL_OWNER>"
+    assert "actual owner" in canonical["placeholder_note"]
+    assert canonical["selected_workflows_exactly"] == [CANONICAL_SELECTED_WORKFLOW_TEMPLATE]
+    assert canonical["pinned_ref"] == "refs/heads/main"
+    assert canonical["workflow_file"] == TRUSTED_WORKFLOW_PATH
+    assert (
+        "<FINAL_OWNER>"
+        in policy["layer_1_platform_authorization"]["repository_access"]["allowlist_exactly"][0]
+    )
+    assert (
+        CANONICAL_SELECTED_WORKFLOW_TEMPLATE
+        in policy["layer_1_platform_authorization"]["workflow_access"][
+            "selected_workflows_exactly"
+        ][0]
+    )
+
+
+def test_policy_defines_two_stage_enabling_merge_lifecycle() -> None:
+    """The acceptance-sequencing deadlock is resolved by an explicit
+    TWO-STAGE lifecycle: the enabling merge is ALLOWED once the repository
+    Stage-A conditions hold (GitHub legally accepts dispatch events only for
+    workflow files on the default branch), but it does NOT mark REQ-P7-006
+    PASS and does NOT authorize REQ-P7-007.  The previous unconditional
+    'do not merge while trusted-VFP execution evidence is missing'
+    instruction is RETIRED."""
+    policy = _trusted_policy()
+    stage_a = policy["lifecycle"]["stage_a_pre_merge_repository_evidence"]
+    assert stage_a["does_not_mark_pass"] is True
+    assert stage_a["does_not_authorize_next_requirement"] is True
+    assert stage_a["requirement_remains_partial_after_enabling_merge"] == (
+        "REQ-P7-006 remains PARTIAL/BLOCKED after the enabling merge"
+    )
+    assert stage_a["next_requirement_blocked_until_full_pass"] == "REQ-P7-007"
+    enabling_conditions = stage_a["enabling_merge_allowed_when"]
+    assert isinstance(enabling_conditions, list) and len(enabling_conditions) >= 5
+    assert any(
+        "all hosted/public mandatory gates are green" in item for item in enabling_conditions
+    )
+    assert any(
+        "no unsafe repository-level self-hosted runner" in item for item in enabling_conditions
+    )
+    assert stage_a["purpose"].startswith("Repository-side enabling evidence")
+    assert "default branch" in stage_a["purpose"]
+    assert "RETIRED" in policy["lifecycle"]["removed_instruction"]
+    assert "impossible closure" in policy["lifecycle"]["removed_instruction"]
+
+
+def test_stage_b_requires_live_verification_and_real_vfp_execution() -> None:
+    """Stage B (external, class B evidence) requires the LIVE runner-group
+    policy verification from GitHub configuration and the real trusted VFP9
+    execution — and the specification records both as currently FALSE."""
+    policy = _trusted_policy()
+    stage_b = policy["lifecycle"]["stage_b_post_merge_external_acceptance"]
+    assert stage_b["live_runner_group_policy_verified"] is False
+    assert stage_b["trusted_vfp_execution_verified"] is False
+    required = stage_b["required_after_enabling_merge"]
+    assert any("live runner-group configuration is verified" in item for item in required)
+    assert any("workflow access is restricted_to_workflows" in item for item in required)
+    assert any(
+        "only then may workflow_dispatch be used on protected main" in item for item in required
+    )
+    assert any("real Visual FoxPro 9 executes with no acceptance skip" in item for item in required)
+    assert any("no untrusted PR code on the trusted runner" in item for item in required)
+
+
+def test_volatile_external_facts_are_marked_not_live_evidence() -> None:
+    """Point-in-time external observations (runner counts) carry provenance
+    and are explicitly marked NOT_LIVE_EVIDENCE, so a static repository JSON
+    file never masquerades as continuously live GitHub state."""
+    policy = _trusted_policy()
+    observation = policy["external_observation"]
+    assert observation["evidence_status"] == "NOT_LIVE_EVIDENCE"
+    assert observation["observed_at"] is not None
+    assert "GitHub REST API" in observation["observation_method"]
+    assert observation["observed"]["self_hosted_runners_registered"] == 0
+    stable = policy["stable_topology_constraints"]
+    assert stable["repository_visibility"] == "public"
+    assert stable["owner_type"] == "user"
+    assert stable["organization_runner_groups_available"] is False
+    assert stable["live_runner_group_policy_verified"] is False
+    assert stable["trusted_vfp_execution_evidence"] is False
 
 
 def test_trusted_vfp_workflow_never_executes_untrusted_pr_code() -> None:
