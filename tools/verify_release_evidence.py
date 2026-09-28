@@ -48,7 +48,13 @@ SBOM_FILENAME = "release-sbom.cdx.json"
 SBOM_FORMAT = "CycloneDX"
 SBOM_SPEC_VERSION = "1.5"
 ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
-EXPECTED_TAMPER_CASES = ("artifact", "sbom", "manifest_hash", "private_path")
+EXPECTED_TAMPER_CASES = (
+    "artifact",
+    "sbom",
+    "manifest_hash",
+    "private_path",
+    "coherent_substitution",
+)
 REQUIRED_TOP_LEVEL_KEYS = (
     "schema_version",
     "kind",
