@@ -18,6 +18,11 @@ comprehensive gate matrix structurally:
   SPECIFICATION, not proof: platform isolation and real-VFP execution remain
   EXTERNAL, live-verified evidence for the requirements that explicitly
   demand them;
+* the acceptance contract describes green mandatory jobs for the reviewed
+  change WITHOUT claiming execution on an exact HEAD SHA: hosted
+  ``pull_request`` workflows execute the prospective merge ref
+  (``refs/pull/<N>/merge``), so an exact-HEAD claim would be admissible only
+  if a hosted workflow objectively enforced such a checkout;
 * format / lint / strict typecheck / compile gates exist;
 * package build + twine + wheel-metadata + dependency/security audit gates
   exist;
@@ -71,6 +76,9 @@ CANONICAL_SELECTED_WORKFLOW_TEMPLATE = (
     "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main"
 )
 ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+IMMUTABLE_ACCEPTANCE_EVIDENCE = "version-controlled workflows and green mandatory jobs"
+FORBIDDEN_EXACT_HEAD_WORDING = "exact reviewed HEAD"
+EXACT_REVISION_CLAIM = re.compile(r"\bexact\b[^.]*\b(?:HEAD|SHA)\b", re.IGNORECASE)
 
 ACCEPTED_BOUNDARY_JOBS = (
     "dbfbridge-floor-compatibility",
@@ -156,6 +164,34 @@ def _all_workflows() -> dict[str, dict[str, Any]]:
     workflows = _load_workflows()
     assert workflows, "no workflow YAML files found"
     return workflows
+
+
+def _hosted_pull_request_workflows() -> dict[str, dict[str, Any]]:
+    """The ordinary hosted workflows triggered by ``pull_request`` (never the
+    dispatch-only trusted lane)."""
+    return {
+        name: document
+        for name, document in _load_workflows().items()
+        if name != TRUSTED_WORKFLOW and "pull_request" in _triggers(document)
+    }
+
+
+def _hosted_workflows_pin_head_sha_checkout() -> bool:
+    """Whether any hosted pull_request workflow OBJECTIVELY enforces a checkout
+    of the PR head SHA via an explicit ``ref:``.  With the default checkout
+    GitHub executes the prospective merge ref ``refs/pull/<N>/merge`` instead
+    of the branch HEAD."""
+    for document in _hosted_pull_request_workflows().values():
+        for job in _jobs(document).values():
+            for step in job.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                if not str(step.get("uses", "")).startswith("actions/checkout"):
+                    continue
+                ref = (step.get("with") or {}).get("ref")
+                if ref is not None and "head.sha" in str(ref):
+                    return True
+    return False
 
 
 def test_workflows_are_version_controlled_and_parse() -> None:
@@ -438,9 +474,7 @@ def test_policy_separates_p7_006_acceptance_from_conditional_vfp_evidence() -> N
     separation = policy["acceptance_separation"]
     repository_acceptance = separation["req_p7_006_repository_ci_isolation_acceptance"]
     assert repository_acceptance["requirement"] == "REQ-P7-006"
-    assert repository_acceptance["immutable_acceptance_evidence"] == (
-        "version-controlled workflows and green mandatory jobs"
-    )
+    assert repository_acceptance["immutable_acceptance_evidence"] == IMMUTABLE_ACCEPTANCE_EVIDENCE
     assert repository_acceptance["live_vfp_execution_dependency"] == "none"
     assert any("isolate" in criterion for criterion in repository_acceptance["criteria"])
     conditional = separation["conditional_real_vfp_execution_evidence"]
@@ -450,6 +484,28 @@ def test_policy_separates_p7_006_acceptance_from_conditional_vfp_evidence() -> N
     assert conditional["platform_boundary_required_before_any_execution"] == (
         "layer_1_platform_authorization"
     )
+
+
+def test_policy_does_not_overstate_the_tested_hosted_revision() -> None:
+    """Evidence-semantics regression: the hosted ``pull_request`` workflows
+    execute the prospective merge ref (``refs/pull/<N>/merge``), not the PR
+    branch HEAD itself, so the REQ-P7-006 acceptance contract must describe
+    green mandatory jobs for the reviewed change WITHOUT claiming execution on
+    an exact HEAD SHA.  Such a claim would be admissible only if a hosted
+    workflow objectively enforced a head-SHA checkout (see
+    ``_hosted_workflows_pin_head_sha_checkout``); none does, so no acceptance
+    criterion may assert an exact-HEAD/SHA execution identity for hosted PR
+    CI."""
+    policy = _trusted_policy()
+    repository_acceptance = policy["acceptance_separation"][
+        "req_p7_006_repository_ci_isolation_acceptance"
+    ]
+    assert repository_acceptance["immutable_acceptance_evidence"] == IMMUTABLE_ACCEPTANCE_EVIDENCE
+    assert FORBIDDEN_EXACT_HEAD_WORDING not in json.dumps(policy)
+    assert _hosted_pull_request_workflows(), "no hosted pull_request workflow found"
+    if not _hosted_workflows_pin_head_sha_checkout():
+        for criterion in repository_acceptance["criteria"]:
+            assert not EXACT_REVISION_CLAIM.search(criterion), criterion
 
 
 def test_absence_of_live_vfp_execution_does_not_invalidate_p7_006() -> None:

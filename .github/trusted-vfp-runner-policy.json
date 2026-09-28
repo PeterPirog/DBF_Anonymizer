@@ -14,7 +14,7 @@
         "every declared Python version is covered on Windows hosted runners",
         "a no-VFP cross-platform hosted smoke path exists",
         "the trusted self-hosted VFP9 check path is isolated from untrusted pull-request code",
-        "all mandatory hosted jobs are green on the exact reviewed HEAD"
+        "all mandatory jobs required by REQ-P7-006 are green for the reviewed change"
       ],
       "live_vfp_execution_dependency": "none",
       "note": "The absence of a currently provisioned trusted self-hosted VFP runner does NOT make REQ-P7-006 PARTIAL when this isolation contract is objectively present and no unsafe execution occurs. External runner provisioning is NOT a mandatory REQ-P7-006 closure stage, and the absence of live VFP execution does not invalidate this repository-side acceptance."
