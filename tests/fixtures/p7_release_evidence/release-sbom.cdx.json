@@ -1,0 +1,138 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "pkg:pypi/aenum@3.1.17",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8b883a37a04e74cc838ac442bdd28c266eae5bbf13e1342c7ef123ed25230139"
+        }
+      ],
+      "name": "aenum",
+      "properties": [
+        {
+          "name": "dbf_anonymizer:wheelhouse_artifact",
+          "value": "aenum-3.1.17-py3-none-any.whl"
+        }
+      ],
+      "purl": "pkg:pypi/aenum@3.1.17",
+      "scope": "required",
+      "type": "library",
+      "version": "3.1.17"
+    },
+    {
+      "bom-ref": "pkg:pypi/dbf@0.99.11",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0caeaeee80c486b7422a6e25cdc7da61dd0007fe652a005b2bdf1b1dd0b18e00"
+        }
+      ],
+      "name": "dbf",
+      "properties": [
+        {
+          "name": "dbf_anonymizer:wheelhouse_artifact",
+          "value": "dbf-0.99.11-py3-none-any.whl"
+        }
+      ],
+      "purl": "pkg:pypi/dbf@0.99.11",
+      "scope": "required",
+      "type": "library",
+      "version": "0.99.11"
+    },
+    {
+      "bom-ref": "pkg:pypi/dbfbridge@1.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ed18a3a24940a37c2eb79d540ced90f71a94d3eac29375b90d934695d939e99f"
+        }
+      ],
+      "name": "dbfbridge",
+      "properties": [
+        {
+          "name": "dbf_anonymizer:wheelhouse_artifact",
+          "value": "dbfbridge-1.1.1-py3-none-any.whl"
+        }
+      ],
+      "purl": "pkg:pypi/dbfbridge@1.1.1",
+      "scope": "required",
+      "type": "library",
+      "version": "1.1.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/dbfread@2.0.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f604def58c59694fa0160d7be5d0b8d594467278d2bb6a47d46daf7162c84cec"
+        }
+      ],
+      "name": "dbfread",
+      "properties": [
+        {
+          "name": "dbf_anonymizer:wheelhouse_artifact",
+          "value": "dbfread-2.0.7-py2.py3-none-any.whl"
+        }
+      ],
+      "purl": "pkg:pypi/dbfread@2.0.7",
+      "scope": "required",
+      "type": "library",
+      "version": "2.0.7"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "pkg:pypi/aenum@3.1.17",
+        "pkg:pypi/dbf@0.99.11",
+        "pkg:pypi/dbfbridge@1.1.1",
+        "pkg:pypi/dbfread@2.0.7"
+      ],
+      "ref": "pkg:pypi/dbf-anonymizer@1.0.0.dev0"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "pkg:pypi/dbf-anonymizer@1.0.0.dev0",
+      "name": "dbf-anonymizer",
+      "purl": "pkg:pypi/dbf-anonymizer@1.0.0.dev0",
+      "scope": "required",
+      "type": "application",
+      "version": "1.0.0.dev0"
+    },
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "properties": [
+      {
+        "name": "dbf_anonymizer:git_commit_sha",
+        "value": "6f55249849776deb7803c8ebcbe95044c7c5375d"
+      },
+      {
+        "name": "dbf_anonymizer:source_date_epoch",
+        "value": "1790607426"
+      },
+      {
+        "name": "dbf_anonymizer:architecture_sha256",
+        "value": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+      }
+    ],
+    "timestamp": "2026-09-28T14:57:06Z",
+    "tools": {
+      "components": [
+        {
+          "name": "dbf-anonymizer-release-evidence",
+          "type": "application",
+          "version": "1.0.0.dev0"
+        }
+      ]
+    }
+  },
+  "serialNumber": "urn:uuid:0f50b503-0796-5086-bff3-1de86dc01d38",
+  "specVersion": "1.5",
+  "version": 1
+}

@@ -1,0 +1,138 @@
+{
+  "artifacts": {
+    "sdist": {
+      "filename": "dist/dbf_anonymizer-1.0.0.dev0.tar.gz",
+      "sha256": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a"
+    },
+    "wheel": {
+      "filename": "dist/dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
+      "sha256": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c"
+    }
+  },
+  "build_environment": {
+    "build_backend": "setuptools.build_meta",
+    "platform_system": "Windows",
+    "python_implementation": "CPython",
+    "python_version": "3.12.10",
+    "source_date_epoch": 1790607426,
+    "tool_versions": {
+      "build": "1.6.0",
+      "pip": "26.2.1",
+      "setuptools": "84.0.0",
+      "twine": "7.0.0",
+      "wheel": "0.48.0"
+    }
+  },
+  "dependency_provenance": {
+    "acceptance_artifact": {
+      "name": "dbfbridge[write]",
+      "version": "1.1.1"
+    },
+    "acceptance_pin_file": "requirements/p0-dbfbridge-tested.txt",
+    "provenance_source": "public PyPI simple index resolved with the exact pinned versions; artifact filenames and SHA-256 recorded below",
+    "resolved_runtime_closure": [
+      {
+        "name": "aenum",
+        "version": "3.1.17"
+      },
+      {
+        "name": "dbf",
+        "version": "0.99.11"
+      },
+      {
+        "name": "dbfbridge",
+        "version": "1.1.1"
+      },
+      {
+        "name": "dbfread",
+        "version": "2.0.7"
+      }
+    ],
+    "runtime_requirement": "dbfbridge[write]>=1.1.0,<2",
+    "runtime_requirement_source": "pyproject.toml",
+    "wheelhouse_artifacts": [
+      {
+        "filename": "wheelhouse/aenum-3.1.17-py3-none-any.whl",
+        "name": "aenum",
+        "sha256": "8b883a37a04e74cc838ac442bdd28c266eae5bbf13e1342c7ef123ed25230139",
+        "version": "3.1.17"
+      },
+      {
+        "filename": "wheelhouse/dbf-0.99.11-py3-none-any.whl",
+        "name": "dbf",
+        "sha256": "0caeaeee80c486b7422a6e25cdc7da61dd0007fe652a005b2bdf1b1dd0b18e00",
+        "version": "0.99.11"
+      },
+      {
+        "filename": "wheelhouse/dbfbridge-1.1.1-py3-none-any.whl",
+        "name": "dbfbridge",
+        "sha256": "ed18a3a24940a37c2eb79d540ced90f71a94d3eac29375b90d934695d939e99f",
+        "version": "1.1.1"
+      },
+      {
+        "filename": "wheelhouse/dbfread-2.0.7-py2.py3-none-any.whl",
+        "name": "dbfread",
+        "sha256": "f604def58c59694fa0160d7be5d0b8d594467278d2bb6a47d46daf7162c84cec",
+        "version": "2.0.7"
+      }
+    ],
+    "wheelhouse_manifest": "requirements/p7-offline-wheelhouse.txt"
+  },
+  "fresh_wheel_smoke": {
+    "cli_complete_workflow": "PASS",
+    "dependency_install_mode": "--no-index from the evidence wheelhouse",
+    "import_origin": "site-packages",
+    "installed_dbfbridge_version": "1.1.1",
+    "network_attempts": 0,
+    "package_version": "1.0.0.dev0",
+    "pip_check": "PASS",
+    "process_attempts": 0,
+    "result": "PASS",
+    "source_tree_import": "BLOCKED",
+    "wheel_install_mode": "--no-deps exact release wheel"
+  },
+  "kind": "dbf-anonymizer-release-evidence-manifest",
+  "metadata_validation": {
+    "sdist_pkg_info_check": "PASS",
+    "twine_check": "PASS",
+    "wheel_metadata_check": "PASS"
+  },
+  "package": {
+    "name": "dbf-anonymizer",
+    "version": "1.0.0.dev0"
+  },
+  "reproducibility": {
+    "independent_builds": 2,
+    "result": "PASS",
+    "sdist_canonicalization": "metadata-only deterministic normalization of the standard setuptools sdist: GNU tar format, every member mtime set to SOURCE_DATE_EPOCH, uid/gid set to 0, uname/gname cleared, directory modes 0755 and file modes 0644, members sorted by name, gzip header mtime set to SOURCE_DATE_EPOCH at compresslevel 9; file contents are byte-identical to the standard build output",
+    "sdist_sha256_build_1": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a",
+    "sdist_sha256_build_2": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a",
+    "wheel_sha256_build_1": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c",
+    "wheel_sha256_build_2": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c"
+  },
+  "sbom": {
+    "filename": "release-sbom.cdx.json",
+    "format": "CycloneDX",
+    "sha256": "927093eb0b7e86d0fcbec85e43b3d18be462f64a43a21f1cac0517b4b081fa42",
+    "spec_version": "1.5"
+  },
+  "schema_version": "1.0",
+  "source": {
+    "architecture_sha256": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615",
+    "git_commit_sha": "6f55249849776deb7803c8ebcbe95044c7c5375d"
+  },
+  "tamper_detection_selftest": {
+    "cases": [
+      "artifact",
+      "sbom",
+      "manifest_hash",
+      "private_path"
+    ],
+    "result": "PASS"
+  },
+  "workflow_identity": {
+    "event": "local",
+    "name": "local-deterministic-build",
+    "run_id": "fixture"
+  }
+}
