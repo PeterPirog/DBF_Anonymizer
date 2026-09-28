@@ -333,7 +333,13 @@ def test_sbom_and_verifier_tooling_are_stdlib_only() -> None:
                 assert root in STDLIB_ALLOWED_ROOTS | {"tools"}, f"{name}: {module}"
 
 
-def test_release_tooling_preserves_the_runtime_dependency_contract() -> None:
+def test_committed_evidence_bundle_is_pinned_against_eol_conversion() -> None:
+    """The release evidence JSON files are text but their SHA-256 values are
+    recorded in the manifest, so Windows autocrlf checkout conversion must be
+    disabled for the whole evidence subtree via .gitattributes."""
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "tests/fixtures/p7_release_evidence/**" in attributes
+    assert "-text" in attributes
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"]["dependencies"] == ["dbfbridge[write]>=1.1.0,<2"]
     dev = data["project"]["optional-dependencies"]["dev"]
