@@ -49,8 +49,24 @@
   },
   "integrity": {
     "evidence_manifest": "release-evidence.manifest.json",
+    "manifest_digest_sidecar": "release-evidence.manifest.sha256",
     "verifier_tool": "tools/verify_release_evidence.py",
-    "note": "Every artifact and the SBOM carry SHA-256 values recorded in the deterministic evidence manifest; the verifier recomputes them and fails closed on any tampering."
+    "verifier_digest_option": "--expected-manifest-sha256",
+    "manifest_digest_binding": "The SHA-256 of the FINAL exact manifest bytes is written to the sidecar after the manifest reaches its final form (no recursive self-hash inside the JSON). The verifier checks the trusted digest BEFORE trusting any artifact hash recorded inside the manifest. A coherent rewrite of the manifest and its sidecar is still rejected whenever the expected digest comes from an external trusted source.",
+    "attestation_subjects": [
+      "evidence/dist/*.tar.gz",
+      "evidence/dist/*.whl",
+      "evidence/release-evidence.manifest.json",
+      "evidence/release-evidence.manifest.sha256",
+      "evidence/release-sbom.cdx.json"
+    ],
+    "pr_validation_provides": "structural verification only: the non-privileged pull_request workflow holds no id-token, no attestations and no publication authority, so it can never produce a signed attestation",
+    "note": "Artifact hashes feed the release manifest; the manifest bytes are bound by their SHA-256 sidecar; the privileged CI attestation covers the manifest, its digest and the SBOM so the evidence chain is artifact hashes -> manifest -> manifest SHA-256 -> CI-issued attestation."
+  },
+  "source_binding": {
+    "cleanliness_check": "git status --porcelain=v1 --untracked-files=all must be empty before any release evidence build; no --allow-dirty escape hatch exists",
+    "source_export": "the recorded commit is exported via git archive into a task-owned temp tree and BOTH independent builds run from that exported committed snapshot, never from the mutable working tree",
+    "note": "The manifest records the exact commit SHA, the cleanliness result and the source-export protocol."
   },
   "invariants": [
     "no publication credential, token, or id-token authority may ever be exposed to pull_request execution",
@@ -58,6 +74,7 @@
     "any job holding id-token: write or attestations: write must live exclusively in the privileged release workflow and must remain SHA-pinned and minimally permissioned",
     "the publication job is fail-closed: it runs only from an authorized release context (release published or a main/tag dispatch) AND only when the authoritative gate repository variable equals 'true'",
     "the repository never claims PyPI Trusted Publishing is configured; that platform fact stays external and must be verified live before publication",
-    "no private signing key exists; cryptographic authenticity comes from CI-issued GitHub artifact attestations, and integrity comes from the SHA-256 hashed evidence manifest"
+    "no private signing key exists; cryptographic authenticity comes from CI-issued GitHub artifact attestations over the artifacts, the manifest, its digest sidecar and the SBOM, and integrity comes from the SHA-256 hashed evidence manifest plus its digest sidecar",
+    "release evidence must be built from an exactly exported clean commit object, never from a mutable working tree"
   ]
 }

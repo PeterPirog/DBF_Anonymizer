@@ -1,42 +1,61 @@
 """REQ-P7-008 release evidence builder.
 
-Produces the objective release evidence bundle for one exact source revision:
+Produces the objective release evidence bundle for one exact source revision,
+bound to the exact Git commit object:
 
-1. TWO independent, clean, task-owned build directories each run the standard
-   ``python -m build --sdist`` (isolated backend environments constrained by
-   ``requirements/p7-release-build-constraints.txt`` and a fixed
-   SOURCE_DATE_EPOCH derived from the git commit).
-2. Each sdist is canonically rewritten for determinism (metadata-only
+0. FAIL-CLOSED SOURCE CLEANLINESS: the repository working tree must be
+   objectively clean (``git status --porcelain=v1 --untracked-files=all``
+   output must be empty: no modified/staged/deleted/renamed/conflicted tracked
+   files and no non-ignored untracked files).  There is no --allow-dirty
+   escape hatch.
+1. EXACT COMMIT EXPORT: the recorded commit (``git rev-parse HEAD``) is
+   exported via ``git archive --format=tar`` into a uniquely owned task TEMP
+   tree.  BOTH independent builds run from that exported committed snapshot —
+   never from the mutable working directory — so no working-tree or untracked
+   content can enter the release artifact while the manifest still records
+   clean HEAD as the source.
+2. TWO independent, clean, task-owned build directories each run the standard
+   ``python -m build --sdist`` against the exported source (isolated backend
+   environments constrained by requirements/p7-release-build-constraints.txt
+   and a fixed SOURCE_DATE_EPOCH derived from the same exact commit).
+3. Each sdist is canonically rewritten for determinism (metadata-only
    normalization: GNU tar format, every member mtime = SOURCE_DATE_EPOCH,
    uid/gid = 0, empty uname/gname, normalized modes, members sorted by name,
    gzip mtime = SOURCE_DATE_EPOCH). File contents are never altered.
-3. The wheel is built FROM the canonicalized sdist (``python -m build --wheel
+4. The wheel is built FROM the canonicalized sdist (``python -m build --wheel
    <sdist>``) with SOURCE_DATE_EPOCH, so the wheel provably derives from the
    exact release sdist.
-4. The final sdist and wheel SHA-256 values of both independent builds MUST be
+5. The final sdist and wheel SHA-256 values of both independent builds MUST be
    equal; any difference aborts the run (fail-closed).
-5. The exact runtime wheelhouse (requirements/p7-offline-wheelhouse.txt) is
-   downloaded from public PyPI; every artifact filename + SHA-256 is recorded.
-6. Distribution metadata is validated: twine check, wheel metadata/content
+6. The exact runtime wheelhouse (requirements/p7-offline-wheelhouse.txt from
+   the exported commit) is downloaded from public PyPI; every artifact
+   filename + SHA-256 is recorded.
+7. Distribution metadata is validated: twine check, wheel metadata/content
    gate (tools/check_wheel_metadata.py) and the sdist PKG-INFO identity.
-7. Fresh-wheel smoke: a fresh venv OUTSIDE the repository working tree
+8. Fresh-wheel smoke: a fresh venv OUTSIDE the repository working tree
    installs the pinned dbfbridge acceptance closure from the evidence
    wheelhouse (--no-index) plus the EXACT release wheel (--no-deps), then runs
    pip check, the pinned-acceptance check (tools/check_acceptance_pin.py),
    the installed-wheel contract (tools/check_p7_installed_wheel.py) and the
    full nine-command standalone runtime contract
    (tools/check_p7_offline_runtime.py) with network/process sentinels.
-8. A deterministic CycloneDX 1.5 SBOM (tools/generate_release_sbom.py) covers
+9. A deterministic CycloneDX 1.5 SBOM (tools/generate_release_sbom.py) covers
    the release closure and is hashed into the manifest.
-9. A deterministic machine-readable release evidence manifest (schema 1.0) is
-   written, the fail-closed verifier (tools/verify_release_evidence.py) must
-   accept it, and a tamper self-test proves the verifier rejects tampered
-   copies (artifact, SBOM, manifest hash, private-path injection).
+10. A deterministic machine-readable release evidence manifest (schema 1.0)
+   is written, recording the exact commit SHA, the cleanliness result and the
+   source-export protocol.  AFTER the manifest reaches its final form, its
+   SHA-256 is written to release-evidence.manifest.sha256 (no recursive
+   self-hash inside the JSON).  The fail-closed verifier
+   (tools/verify_release_evidence.py) must then accept the bundle WITH the
+   trusted expected digest, and a tamper self-test proves the verifier rejects
+   tampered copies (artifact, SBOM, manifest hash, private-path injection,
+   coherent artifact+manifest substitution against the trusted digest).
 
 The tool prints the release identity (commit SHA, version, Python/build-tool
-versions, architecture SHA-256, artifact filenames and hashes) and exits
-non-zero on any failure. It is release/dev tooling only: no runtime behavior
-of dbf-anonymizer is altered and no SBOM tooling becomes a runtime dependency.
+versions, architecture SHA-256, artifact filenames and hashes, manifest
+digest) and exits non-zero on any failure. It is release/dev tooling only: no
+runtime behavior of dbf-anonymizer is altered and no SBOM tooling becomes a
+runtime dependency.
 """
 
 from __future__ import annotations
@@ -75,6 +94,12 @@ BUILD_CONSTRAINTS = "requirements/p7-release-build-constraints.txt"
 EXPECTED_RUNTIME_REQUIREMENT = "dbfbridge[write]>=1.1.0,<2"
 MANIFEST_SCHEMA_VERSION = "1.0"
 MANIFEST_KIND = "dbf-anonymizer-release-evidence-manifest"
+MANIFEST_FILENAME = "release-evidence.manifest.json"
+MANIFEST_DIGEST_SIDECAR = "release-evidence.manifest.sha256"
+SOURCE_EXPORT_MODE = (
+    "git archive --format=tar <recorded-commit> extracted into a task-owned temp "
+    "tree; the working directory is not the build source and no .git data is copied"
+)
 SDIST_CANONICALIZATION = (
     "metadata-only deterministic normalization of the standard setuptools sdist: "
     "GNU tar format, every member mtime set to SOURCE_DATE_EPOCH, uid/gid set to 0, "
@@ -82,7 +107,7 @@ SDIST_CANONICALIZATION = (
     "by name, gzip header mtime set to SOURCE_DATE_EPOCH at compresslevel 9; file "
     "contents are byte-identical to the standard build output"
 )
-TAMPER_CASES = ("artifact", "sbom", "manifest_hash", "private_path")
+TAMPER_CASES = ("artifact", "sbom", "manifest_hash", "private_path", "coherent_substitution")
 
 
 class ReleaseEvidenceError(Exception):
@@ -128,6 +153,77 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _git_stdout(repo_root: Path, *arguments: str) -> str:
+    completed = subprocess.run(  # noqa: S603 - fixed argument list, no shell
+        ["git", *arguments],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        _fail(
+            f"git {' '.join(arguments)} failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    return completed.stdout
+
+
+def _assert_clean_source_tree(repo_root: Path) -> str:
+    """Fail closed unless the working tree is objectively clean.
+
+    Any ``git status --porcelain=v1 --untracked-files=all`` output — modified,
+    staged, deleted, renamed or conflicted tracked files, or ANY non-ignored
+    untracked file — aborts release evidence generation.  There is no
+    --allow-dirty escape hatch and package-relevant untracked files are never
+    silently ignored.
+    """
+    stdout = _git_stdout(repo_root, "status", "--porcelain=v1", "--untracked-files=all")
+    entries = [line for line in stdout.splitlines() if line.strip()]
+    if entries:
+        _fail(
+            "repository working tree is not clean; release evidence must be built "
+            "from an exact clean commit:\n" + "\n".join(entries)
+        )
+    return "PASS"
+
+
+def _export_commit_source(repo_root: Path, commit: str, destination: Path) -> Path:
+    """Export the exact recorded commit object into a task-owned temp tree.
+
+    The exported snapshot is the build source: only committed content (never
+    working-tree modifications, never untracked files, never ``.git`` data)
+    can enter the release artifact.
+    """
+    if destination.exists():
+        _fail(f"export destination already exists: {destination}")
+    completed = subprocess.run(  # noqa: S603 - fixed argument list, no shell
+        ["git", "archive", "--format=tar", commit],
+        cwd=str(repo_root),
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        _fail(
+            f"git archive {commit} failed ({completed.returncode}): "
+            f"{completed.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    destination.mkdir(parents=True)
+    resolved_destination = destination.resolve()
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
+        for member in archive.getmembers():
+            target = (destination / member.name).resolve()
+            if not target.is_relative_to(resolved_destination) or member.name.startswith("/"):
+                _fail(f"unsafe member in commit export: {member.name!r}")
+        archive.extractall(destination, filter="data")
+    if (destination / ".git").exists():
+        _fail("commit export must not contain .git data")
+    return destination
 
 
 def _unique_file(directory: Path, pattern: str) -> Path:
@@ -207,19 +303,23 @@ def _build_environment_env(repo_root: Path, epoch: int, task_root: Path) -> dict
 
 
 def build_once(
-    repo_root: Path,
+    source_root: Path,
     task_root: Path,
     epoch: int,
     index: int,
 ) -> tuple[Path, Path]:
-    """Run one independent sdist+wheel build; return canonical sdist and wheel paths."""
+    """Run one independent sdist+wheel build from the exported committed source.
+
+    ``source_root`` must be the exact-commit export produced by
+    ``_export_commit_source`` — never the mutable working tree.
+    """
     build_dir = task_root / f"build-{index}"
     sdist_out = build_dir / "sdist-out"
     wheel_out = build_dir / "wheel-out"
     canonical_dir = build_dir / "canonical"
     for directory in (sdist_out, wheel_out, canonical_dir):
         directory.mkdir(parents=True)
-    build_env = _build_environment_env(repo_root, task_root=task_root, epoch=epoch)
+    build_env = _build_environment_env(source_root, task_root=task_root, epoch=epoch)
 
     _run(
         [
@@ -229,7 +329,7 @@ def build_once(
             "--sdist",
             "--outdir",
             sdist_out,
-            str(repo_root),
+            str(source_root),
         ],
         env=build_env,
     )
@@ -331,7 +431,7 @@ def _download_wheelhouse(
 
 
 def _validate_metadata(
-    repo_root: Path,
+    source_root: Path,
     sdist_path: Path,
     wheel_path: Path,
 ) -> dict[str, str]:
@@ -345,12 +445,12 @@ def _validate_metadata(
             str(wheel_path),
         ]
     )
-    _run([sys.executable, str(repo_root / "tools" / "check_wheel_metadata.py"), str(wheel_path)])
+    _run([sys.executable, str(REPO_ROOT / "tools" / "check_wheel_metadata.py"), str(wheel_path)])
     sdist_name, sdist_version = _sdist_identity(sdist_path)
     wheel_name, wheel_version = _wheel_identity(wheel_path)
     if (sdist_name, sdist_version) != (
         "dbf-anonymizer",
-        _read_version(repo_root / "pyproject.toml"),
+        _read_version(source_root / "pyproject.toml"),
     ):
         _fail(f"sdist identity mismatch: {sdist_name} {sdist_version}")
     if (wheel_name, wheel_version) != (sdist_name, sdist_version):
@@ -471,7 +571,11 @@ def _fresh_wheel_smoke(
     }
 
 
-def _run_verifier(evidence_root: Path, manifest_path: Path) -> dict[str, object]:
+def _run_verifier(
+    evidence_root: Path,
+    manifest_path: Path,
+    expected_manifest_sha256: str,
+) -> dict[str, object]:
     stdout = _run(
         [
             sys.executable,
@@ -480,6 +584,8 @@ def _run_verifier(evidence_root: Path, manifest_path: Path) -> dict[str, object]
             str(manifest_path),
             "--evidence-root",
             str(evidence_root),
+            "--expected-manifest-sha256",
+            expected_manifest_sha256,
         ]
     )
     return dict(json.loads(stdout.strip().splitlines()[-1]))
@@ -489,7 +595,19 @@ def _tamper_selftest(
     task_root: Path,
     evidence_root: Path,
     manifest_path: Path,
+    trusted_manifest_digest: str,
 ) -> dict[str, object]:
+    """Prove the verifier fails closed on every tampering scenario.
+
+    Cases ``artifact``/``sbom``/``manifest_hash``/``private_path`` make the
+    tampered copy internally self-consistent (the copy's own manifest digest is
+    supplied as the expected value) so each rejection is attributable to the
+    intended tamper.  The ``coherent_substitution`` case rewrites the wheel AND
+    every manifest reference to it AND the copy's own digest — internally
+    self-consistent, yet still rejected against the TRUSTED digest of the real
+    manifest.  That is exactly why the external manifest digest/attestation
+    layer exists.
+    """
     cases_root = task_root / "tamper-cases"
     cases_root.mkdir(parents=True)
     for case in TAMPER_CASES:
@@ -515,11 +633,23 @@ def _tamper_selftest(
             document["artifacts"]["sdist"]["sha256"] = "0" * 64
         elif case == "private_path":
             document["workflow_identity"]["run_id"] = "C:\\Users\\attacker\\private\\run-12345"
+        elif case == "coherent_substitution":
+            wheel_name = document["artifacts"]["wheel"]["filename"]
+            wheel_copy = case_dir / wheel_name
+            payload = bytearray(wheel_copy.read_bytes())
+            payload[-1] ^= 0x01
+            wheel_copy.write_bytes(bytes(payload))
+            substituted = _sha256(wheel_copy)
+            document["artifacts"]["wheel"]["sha256"] = substituted
+            document["reproducibility"]["wheel_sha256_build_1"] = substituted
+            document["reproducibility"]["wheel_sha256_build_2"] = substituted
         else:  # pragma: no cover - exhaustive over TAMPER_CASES
             _fail(f"unknown tamper case: {case}")
         case_manifest.write_text(
             json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        case_digest = _sha256_bytes(case_manifest.read_bytes())
+        expected = trusted_manifest_digest if case == "coherent_substitution" else case_digest
         completed = subprocess.run(
             [
                 sys.executable,
@@ -528,6 +658,8 @@ def _tamper_selftest(
                 str(case_manifest),
                 "--evidence-root",
                 str(case_dir),
+                "--expected-manifest-sha256",
+                expected,
             ],
             capture_output=True,
             check=False,
@@ -540,7 +672,7 @@ def _tamper_selftest(
 def build_release_evidence(
     output_dir: Path,
     *,
-    source_date_epoch: int,
+    source_date_epoch: int | None,
     workflow_name: str,
     run_id: str,
     run_event: str,
@@ -550,31 +682,35 @@ def build_release_evidence(
         _fail(f"output directory already exists: {evidence_root}")
     evidence_root.mkdir(parents=True)
 
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout.strip()
+    commit = _git_stdout(REPO_ROOT, "rev-parse", "HEAD").strip()
     if len(commit) != 40 or not all(char in "0123456789abcdef" for char in commit):
         _fail(f"git rev-parse HEAD returned an unexpected value: {commit!r}")
 
-    pyproject = REPO_ROOT / "pyproject.toml"
-    version = _read_version(pyproject)
-    runtime_requirement = _read_runtime_requirement(pyproject)
-    acceptance_version = _read_acceptance_version(REPO_ROOT / ACCEPTANCE_PIN)
+    cleanliness = _assert_clean_source_tree(REPO_ROOT)
 
     task_root = Path(tempfile.gettempdir()) / (
         f"dbf-anonymizer-p7-008-release-{os.getpid()}-{uuid.uuid4().hex}"
     )
     task_root.mkdir(parents=True)
     try:
+        source_root = _export_commit_source(REPO_ROOT, commit, task_root / "source-export")
+
+        # Every build-relevant input is read from the exact-commit export,
+        # never from the mutable working tree.
+        pyproject = source_root / "pyproject.toml"
+        version = _read_version(pyproject)
+        runtime_requirement = _read_runtime_requirement(pyproject)
+        acceptance_version = _read_acceptance_version(source_root / ACCEPTANCE_PIN)
+        if source_date_epoch is None:
+            source_date_epoch = int(
+                _git_stdout(REPO_ROOT, "show", "-s", "--format=%ct", commit).strip()
+            )
+
         sdist_path, wheel_path, hashes, names = _build_reproducible_artifacts(
-            REPO_ROOT, task_root, evidence_root, epoch=source_date_epoch
+            source_root, task_root, evidence_root, epoch=source_date_epoch
         )
-        wheelhouse_entries = _download_wheelhouse(REPO_ROOT, task_root, evidence_root, wheel_path)
-        metadata_validation = _validate_metadata(REPO_ROOT, sdist_path, wheel_path)
+        wheelhouse_entries = _download_wheelhouse(source_root, task_root, evidence_root, wheel_path)
+        metadata_validation = _validate_metadata(source_root, sdist_path, wheel_path)
         smoke = _fresh_wheel_smoke(
             REPO_ROOT, task_root, evidence_root, wheel_path, acceptance_version
         )
@@ -584,7 +720,7 @@ def build_release_evidence(
             application_version=version,
             git_commit_sha=commit,
             source_date_epoch=source_date_epoch,
-            wheelhouse_manifest=REPO_ROOT / WHEELHOUSE_MANIFEST,
+            wheelhouse_manifest=source_root / WHEELHOUSE_MANIFEST,
             wheelhouse_dir=evidence_root / "wheelhouse",
             architecture_sha256=ARCHITECTURE_SHA256,
             exclude_filenames=frozenset({wheel_path.name}),
@@ -592,7 +728,7 @@ def build_release_evidence(
         sbom_path = evidence_root / "release-sbom.cdx.json"
         sbom_path.write_bytes(render_sbom(sbom_document))
 
-        manifest_path = evidence_root / "release-evidence.manifest.json"
+        manifest_path = evidence_root / MANIFEST_FILENAME
         manifest: dict[str, object] = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "kind": MANIFEST_KIND,
@@ -600,6 +736,8 @@ def build_release_evidence(
             "source": {
                 "git_commit_sha": commit,
                 "architecture_sha256": ARCHITECTURE_SHA256,
+                "cleanliness_check": cleanliness,
+                "source_export_mode": SOURCE_EXPORT_MODE,
             },
             "build_environment": {
                 "python_version": platform.python_version(),
@@ -666,13 +804,21 @@ def build_release_evidence(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-        selftest = _tamper_selftest(task_root, evidence_root, manifest_path)
+        # The trusted digest is bound to the manifest AFTER it reaches its
+        # final form; there is no recursive self-hash inside the JSON.
+        selftest = _tamper_selftest(
+            task_root, evidence_root, manifest_path, _sha256_bytes(manifest_path.read_bytes())
+        )
         manifest["tamper_detection_selftest"] = selftest
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        manifest_digest = _sha256_bytes(manifest_path.read_bytes())
+        (evidence_root / MANIFEST_DIGEST_SIDECAR).write_text(
+            f"{manifest_digest}  {MANIFEST_FILENAME}\n", encoding="utf-8"
+        )
 
-        verification = _run_verifier(evidence_root, manifest_path)
+        verification = _run_verifier(evidence_root, manifest_path, manifest_digest)
         if verification.get("result") != "PASS":
             _fail(f"final evidence verification failed: {verification}")
 
@@ -685,6 +831,8 @@ def build_release_evidence(
             "architecture_sha256": ARCHITECTURE_SHA256,
             "python": platform.python_version(),
             "build_tools": build_environment["tool_versions"],
+            "source_cleanliness": cleanliness,
+            "source_export_mode": SOURCE_EXPORT_MODE,
             "sdist_filename": f"dist/{names['sdist']}",
             "sdist_sha256": _sha256(sdist_path),
             "wheel_filename": f"dist/{names['wheel']}",
@@ -692,6 +840,8 @@ def build_release_evidence(
             "sbom_filename": sbom_path.name,
             "sbom_sha256": _sha256(sbom_path),
             "manifest_filename": manifest_path.name,
+            "manifest_sha256": manifest_digest,
+            "manifest_digest_sidecar": MANIFEST_DIGEST_SIDECAR,
             "verifier": verification,
         }
         return summary
@@ -717,19 +867,9 @@ def main() -> int:
     parser.add_argument("--run-id", default="local")
     parser.add_argument("--run-event", default="local")
     args = parser.parse_args()
-    epoch = args.source_date_epoch
-    if epoch is None:
-        completed = subprocess.run(
-            ["git", "show", "-s", "--format=%ct", "HEAD"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-        epoch = int(completed.stdout.strip())
     evidence = build_release_evidence(
         args.output_dir,
-        source_date_epoch=epoch,
+        source_date_epoch=args.source_date_epoch,
         workflow_name=args.workflow_name,
         run_id=args.run_id,
         run_event=args.run_event,

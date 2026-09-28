@@ -2,14 +2,28 @@
 
 Usage:
     python tools/verify_release_evidence.py --manifest <release-evidence.manifest.json> \
-        --evidence-root <dir containing the files named by the manifest>
+        --evidence-root <dir containing the files named by the manifest> \
+        [--expected-manifest-sha256 <64hex trusted manifest digest>]
 
-Recomputes every recorded SHA-256 (sdist, wheel, SBOM, wheelhouse wheels),
-validates the manifest schema and cross-consistency (SBOM inventory vs recorded
-dependency closure, reproducibility record, smoke/provenance fields), and scans
-the whole evidence bundle for private paths and credential-shaped material.
-Any mismatch, missing file or unexpected value fails the process (exit 1):
-verification never best-efforts a tampered bundle.
+Integrity model (two layers):
+
+1. MANIFEST DIGEST BINDING (verified FIRST, before any manifest content is
+   trusted): the verifier recomputes the SHA-256 of the exact manifest bytes
+   and compares it against (a) the trusted ``--expected-manifest-sha256`` value
+   when supplied, and (b) the sidecar file ``release-evidence.manifest.sha256``
+   when present.  At least one binding must exist: verification without any
+   expected digest and without the sidecar fails closed.  A malformed expected
+   digest or a mismatching sidecar also fails.
+2. INTERNAL SELF-CONSISTENCY: every recorded SHA-256 (sdist, wheel, SBOM,
+   wheelhouse wheels) is recomputed, the manifest schema and cross-consistency
+   are validated, and the whole evidence bundle is scanned for private paths
+   and credential-shaped material.
+
+Layer 1 alone cannot authenticate anything mutable: an attacker can rewrite
+both the manifest and the sidecar coherently.  The trusted binding is the
+externally recorded digest (the value attested by the privileged CI
+attestation job).  Any mismatch, missing file or unexpected value fails the
+process (exit 1): verification never best-efforts a tampered bundle.
 
 Exit codes: 0 = verified; 1 = verification failure; 2 = usage error.
 """
@@ -28,6 +42,8 @@ from typing import NoReturn, cast
 
 SCHEMA_VERSION = "1.0"
 MANIFEST_KIND = "dbf-anonymizer-release-evidence-manifest"
+MANIFEST_FILENAME = "release-evidence.manifest.json"
+MANIFEST_DIGEST_SIDECAR = "release-evidence.manifest.sha256"
 SBOM_FILENAME = "release-sbom.cdx.json"
 SBOM_FORMAT = "CycloneDX"
 SBOM_SPEC_VERSION = "1.5"
@@ -86,17 +102,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_manifest(path: Path) -> dict[str, object]:
-    if not path.is_file():
-        _fail(f"manifest file missing: {path}")
+def _load_manifest_bytes(manifest_bytes: bytes, manifest_path: Path) -> dict[str, object]:
     document: object
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        _fail(f"manifest is not valid JSON: {error}")
+        document = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _fail(f"{manifest_path.name} is not valid JSON: {error}")
     if not isinstance(document, dict):
         _fail("manifest root must be a JSON object")
-    return document
+    return cast(dict[str, object], document)
 
 
 def _section(document: dict[str, object], key: str) -> dict[str, object]:
@@ -143,8 +157,56 @@ def _verify_hashed_file(evidence_root: Path, filename: str, digest: str, label: 
     return path
 
 
-def verify_evidence(manifest_path: Path, evidence_root: Path) -> dict[str, object]:
-    document = _load_manifest(manifest_path)
+def _parse_manifest_digest_sidecar(sidecar: Path, manifest_name: str) -> str:
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        _fail(f"manifest digest sidecar is unreadable: {error}")
+    parts = text.strip().split()
+    if len(parts) != 2 or not SHA256_PATTERN.fullmatch(parts[0]) or parts[1] != manifest_name:
+        _fail(
+            "manifest digest sidecar is malformed (expected '<64hex>  "
+            f"{manifest_name}'): {text.strip()!r}"
+        )
+    return parts[0]
+
+
+def verify_evidence(
+    manifest_path: Path,
+    evidence_root: Path,
+    expected_manifest_sha256: str | None = None,
+) -> dict[str, object]:
+    """Layer 1 (manifest digest binding) is enforced before any manifest
+    content is trusted; layer 2 is the internal self-consistency proof."""
+    if not manifest_path.is_file():
+        _fail(f"manifest file missing: {manifest_path}")
+    manifest_bytes = manifest_path.read_bytes()
+    actual_manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if expected_manifest_sha256 is not None:
+        if not SHA256_PATTERN.fullmatch(expected_manifest_sha256):
+            _fail(
+                "malformed --expected-manifest-sha256: must be a lowercase 64-hex value, "
+                f"got {expected_manifest_sha256!r}"
+            )
+        if expected_manifest_sha256 != actual_manifest_digest:
+            _fail(
+                "manifest digest mismatch against the trusted expected value: "
+                f"expected {expected_manifest_sha256} != actual {actual_manifest_digest}"
+            )
+    sidecar = evidence_root / MANIFEST_DIGEST_SIDECAR
+    if sidecar.is_file():
+        recorded = _parse_manifest_digest_sidecar(sidecar, manifest_path.name)
+        if recorded != actual_manifest_digest:
+            _fail(
+                f"manifest digest mismatch against the sidecar {MANIFEST_DIGEST_SIDECAR}: "
+                f"sidecar {recorded} != actual {actual_manifest_digest}"
+            )
+    elif expected_manifest_sha256 is None:
+        _fail(
+            "missing manifest integrity binding: no "
+            f"{MANIFEST_DIGEST_SIDECAR} sidecar and no --expected-manifest-sha256"
+        )
+    document = _load_manifest_bytes(manifest_bytes, manifest_path)
     if document.get("schema_version") != SCHEMA_VERSION:
         _fail(f"unsupported manifest schema_version: {document.get('schema_version')!r}")
     if document.get("kind") != MANIFEST_KIND:
@@ -165,6 +227,17 @@ def verify_evidence(manifest_path: Path, evidence_root: Path) -> dict[str, objec
         _fail("manifest source.git_commit_sha must be a 40-hex commit SHA")
     if source.get("architecture_sha256") != ARCHITECTURE_SHA256:
         _fail("manifest source.architecture_sha256 is not the immutable architecture hash")
+    if source.get("cleanliness_check") != "PASS":
+        _fail(
+            "manifest source.cleanliness_check must be PASS: the build source must come "
+            "from an objectively clean committed tree"
+        )
+    export_mode = source.get("source_export_mode")
+    if not isinstance(export_mode, str) or "git archive" not in export_mode:
+        _fail(
+            "manifest source.source_export_mode must describe the exact commit-object "
+            f"export protocol: {export_mode!r}"
+        )
 
     build_environment = _section(document, "build_environment")
     for key in ("python_version", "build_backend", "source_date_epoch", "tool_versions"):
@@ -339,6 +412,12 @@ def verify_evidence(manifest_path: Path, evidence_root: Path) -> dict[str, objec
     return {
         "result": "PASS",
         "manifest": manifest_path.name,
+        "manifest_digest": actual_manifest_digest,
+        "manifest_digest_source": (
+            "expected-manifest-sha256 argument"
+            if expected_manifest_sha256 is not None
+            else MANIFEST_DIGEST_SIDECAR
+        ),
         "sdist_verified": True,
         "wheel_verified": True,
         "wheelhouse_artifacts_verified": sorted(closure),
@@ -371,9 +450,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--evidence-root", required=True, type=Path)
+    parser.add_argument(
+        "--expected-manifest-sha256",
+        default=None,
+        help=(
+            "trusted SHA-256 of the exact release-evidence.manifest.json bytes; "
+            "verified before any manifest content is trusted"
+        ),
+    )
     args = parser.parse_args()
     try:
-        evidence = verify_evidence(args.manifest, args.evidence_root)
+        evidence = verify_evidence(args.manifest, args.evidence_root, args.expected_manifest_sha256)
     except VerificationFailure as failure:
         print(f"release evidence verification FAILED: {failure}", file=sys.stderr)
         return 1

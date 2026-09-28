@@ -382,3 +382,79 @@ def test_evidence_builder_uses_the_deterministic_two_build_protocol() -> None:
     verifier_source = (REPO_ROOT / VERIFIER_TOOL).read_text(encoding="utf-8")
     assert "VerificationFailure" in verifier_source
     assert ARCHITECTURE_SHA256 in verifier_source
+
+
+def test_release_build_source_is_bound_to_the_exact_commit_object() -> None:
+    """REQ-P7-008 exact-source provenance: the tool must fail closed on a dirty
+    tree and build BOTH independent builds from an exact git-archive export of
+    the recorded commit — never from the mutable working tree."""
+    source = (REPO_ROOT / EVIDENCE_TOOL).read_text(encoding="utf-8")
+    assert "--porcelain=v1" in source
+    assert "--untracked-files=all" in source
+    assert "git archive" in source
+    assert "_assert_clean_source_tree" in source
+    assert "_export_commit_source" in source
+    # No escape hatch: the dirty-tree refusal is unconditional (no CLI flag,
+    # no snake_case bypass option anywhere in the tool source).
+    assert 'add_argument("--allow-dirty"' not in source
+    assert "allow_dirty" not in source
+    assert "must not contain .git data" in source  # the export rejects .git data
+
+
+def test_verifier_supports_the_trusted_manifest_digest_binding() -> None:
+    verifier_source = (REPO_ROOT / VERIFIER_TOOL).read_text(encoding="utf-8")
+    assert "--expected-manifest-sha256" in verifier_source
+    assert "release-evidence.manifest.sha256" in verifier_source
+    assert "missing manifest integrity binding" in verifier_source
+    tool_source = (REPO_ROOT / EVIDENCE_TOOL).read_text(encoding="utf-8")
+    assert "release-evidence.manifest.sha256" in tool_source
+    assert "--expected-manifest-sha256" in tool_source
+    assert "coherent_substitution" in tool_source
+
+
+def test_attestation_subjects_include_manifest_digest_and_sbom() -> None:
+    document = _load(PRIVILEGED_WORKFLOW)
+    attest = _jobs(document)["attest-release-artifacts"]
+    subject_steps = [step for step in _steps(attest) if ATTEST_ACTION in str(step.get("uses", ""))]
+    assert subject_steps, "attestation step missing"
+    subjects = str(subject_steps[0].get("with", {}).get("subject-path", ""))
+    for required in (
+        "evidence/dist/*.tar.gz",
+        "evidence/dist/*.whl",
+        "evidence/release-evidence.manifest.json",
+        "evidence/release-evidence.manifest.sha256",
+        "evidence/release-sbom.cdx.json",
+    ):
+        assert required in subjects, required
+
+
+def test_pr_validation_has_no_attestation_or_publication_authority() -> None:
+    document = _load(EVIDENCE_WORKFLOW)
+    serialized = json.dumps(document)
+    assert "id-token" not in serialized
+    assert "attestations" not in serialized
+    assert PYPI_PUBLISH_ACTION not in serialized
+    assert ATTEST_ACTION not in serialized
+    assert document.get("permissions") == {"contents": "read"}
+
+
+def test_release_policy_records_manifest_digest_and_source_binding() -> None:
+    policy = _policy()
+    integrity = policy["integrity"]
+    assert integrity["manifest_digest_sidecar"] == "release-evidence.manifest.sha256"
+    assert integrity["verifier_digest_option"] == "--expected-manifest-sha256"
+    for subject in (
+        "evidence/release-evidence.manifest.json",
+        "evidence/release-evidence.manifest.sha256",
+        "evidence/release-sbom.cdx.json",
+    ):
+        assert subject in integrity["attestation_subjects"], subject
+    assert "no recursive self-hash" in integrity["manifest_digest_binding"]
+    assert "does NOT provide a signed attestation" in integrity["pr_validation_provides"] or (
+        "no id-token" in integrity["pr_validation_provides"]
+    )
+    source_binding = policy["source_binding"]
+    assert "--porcelain=v1" in source_binding["cleanliness_check"]
+    assert "no --allow-dirty" in source_binding["cleanliness_check"]
+    assert "git archive" in source_binding["source_export"]
+    assert "never from the mutable working tree" in source_binding["source_export"]

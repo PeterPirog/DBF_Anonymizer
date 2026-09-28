@@ -85,7 +85,10 @@ jobs:
       - name: Show the release evidence identity
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/dbf-anonymizer-release-evidence
-        run: cat "$EVIDENCE_DIR/release-evidence.manifest.json"
+        run: |
+          cat "$EVIDENCE_DIR/release-evidence.manifest.json"
+          cat "$EVIDENCE_DIR/release-evidence.manifest.sha256"
+          cat "$EVIDENCE_DIR/release-sbom.cdx.json"
       - name: Upload the release evidence bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -117,12 +120,20 @@ jobs:
         with:
           name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence
-      - name: Attest the exact release artifacts (sdist + wheel)
+      - name: Attest the exact release artifacts and the manifest integrity binding
+        # Subjects: the sdist, the wheel, the release evidence manifest, its
+        # SHA-256 digest sidecar (release-evidence.manifest.sha256) and the
+        # CycloneDX SBOM.  Attesting the manifest and its digest binds the
+        # whole evidence bundle cryptographically to this authorized release
+        # context (GitHub OIDC/Sigstore); PR validation never runs this job.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             evidence/dist/*.tar.gz
             evidence/dist/*.whl
+            evidence/release-evidence.manifest.json
+            evidence/release-evidence.manifest.sha256
+            evidence/release-sbom.cdx.json
 
   publish-pypi:
     name: PyPI publication via OIDC Trusted Publishing (fail-closed gate)

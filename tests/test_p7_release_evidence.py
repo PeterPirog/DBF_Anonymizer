@@ -35,7 +35,10 @@ import pytest
 
 from tools.build_release_evidence import (
     REPO_ROOT,
+    MANIFEST_DIGEST_SIDECAR,
+    _assert_clean_source_tree,
     _download_wheelhouse,
+    _export_commit_source,
     _fresh_wheel_smoke,
     _read_acceptance_version,
     build_once,
@@ -67,10 +70,23 @@ def fixture_manifest() -> dict[str, object]:
 
 @pytest.fixture(scope="module")
 def live_pipeline(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
-    """Two independent builds + the pinned wheelhouse + the fresh-wheel smoke."""
+    """Two independent builds + the pinned wheelhouse + the fresh-wheel smoke.
+
+    The builds run from the EXACT commit export (clean tree guard + git
+    archive), never from the mutable working tree.
+    """
     task_root = tmp_path_factory.mktemp("p7-008-live-release")
-    sdist_1, wheel_1 = build_once(REPO_ROOT, task_root, LIVE_EPOCH, 1)
-    sdist_2, wheel_2 = build_once(REPO_ROOT, task_root, LIVE_EPOCH, 2)
+    assert _assert_clean_source_tree(REPO_ROOT) == "PASS"
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    source_root = _export_commit_source(REPO_ROOT, commit, task_root / "source-export")
+    sdist_1, wheel_1 = build_once(source_root, task_root, LIVE_EPOCH, 1)
+    sdist_2, wheel_2 = build_once(source_root, task_root, LIVE_EPOCH, 2)
     evidence_root = task_root / "evidence"
     (evidence_root / "dist").mkdir(parents=True)
     shutil.copyfile(sdist_1, evidence_root / "dist" / sdist_1.name)
@@ -145,6 +161,10 @@ def test_manifest_schema_and_identity_are_complete(
     assert source["architecture_sha256"] == ARCHITECTURE_SHA256
     commit = source["git_commit_sha"]
     assert isinstance(commit, str) and len(commit) == 40
+    # Exact-source provenance: cleanliness + commit-object export protocol.
+    assert source["cleanliness_check"] == "PASS"
+    export_mode = source["source_export_mode"]
+    assert isinstance(export_mode, str) and "git archive" in export_mode
     build_environment = fixture_manifest["build_environment"]
     assert isinstance(build_environment, dict)
     assert isinstance(build_environment["source_date_epoch"], int)
@@ -297,6 +317,14 @@ def _tampered_copy(
     manifest_patch: dict[str, object] | None,
     tamper_file: str | None,
 ) -> tuple[Path, Path]:
+    """Copy the fixture and apply the given tampering.
+
+    The copy's sidecar is re-signed to the copy's own (tampered) manifest
+    digest: a mutable sidecar is exactly what a real attacker can rewrite, so
+    internal-consistency tampering must be detected by the verifier's internal
+    checks, while ONLY the trusted external digest detects coherent
+    substitution (see the coherent-substitution test).
+    """
     case_dir = tmp_path / "evidence-copy"
     shutil.copytree(FIXTURE_ROOT, case_dir)
     manifest_path = case_dir / MANIFEST_NAME
@@ -316,15 +344,30 @@ def _tampered_copy(
                 target = target[part]
             assert isinstance(target, dict), pointer
             target[parts[-1]] = value
-    manifest_path.write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    manifest_path.write_bytes(
+        (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
     )
     if tamper_file is not None:
         path = case_dir / tamper_file
         payload = bytearray(path.read_bytes())
         payload[-1] ^= 0x01
         path.write_bytes(bytes(payload))
+    # Re-sign the mutable sidecar to the copy's own (tampered) manifest digest:
+    # a sidecar is not trusted by itself, so internal tampering must still be
+    # caught by the verifier's internal checks (the trusted external digest is
+    # what catches coherent substitution).
+    copy_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    (case_dir / MANIFEST_DIGEST_SIDECAR).write_text(
+        f"{copy_digest}  {MANIFEST_NAME}\n", encoding="utf-8"
+    )
     return manifest_path, case_dir
+
+
+def _fixture_trusted_digest() -> str:
+    sidecar = (FIXTURE_ROOT / MANIFEST_DIGEST_SIDECAR).read_text(encoding="utf-8")
+    digest = sidecar.strip().split()[0]
+    assert len(digest) == 64
+    return digest
 
 
 def _expect_verification_failure(manifest: Path, evidence_root: Path) -> str:
@@ -370,6 +413,162 @@ def test_missing_artifact_fails_verification(tmp_path: Path) -> None:
     (case_dir / "dist" / "dbf_anonymizer-1.0.0.dev0.tar.gz").unlink()
     with pytest.raises(VerificationFailure):
         verify_evidence(manifest, case_dir)
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Manifest integrity binding (trusted digest layer)
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_digest_sidecar_binds_the_exact_manifest_bytes() -> None:
+    sidecar = (FIXTURE_ROOT / MANIFEST_DIGEST_SIDECAR).read_text(encoding="utf-8")
+    parts = sidecar.strip().split()
+    assert len(parts) == 2
+    digest, filename = parts
+    assert filename == MANIFEST_NAME
+    manifest_bytes = (FIXTURE_ROOT / MANIFEST_NAME).read_bytes()
+    assert hashlib.sha256(manifest_bytes).hexdigest() == digest
+
+
+def test_correct_manifest_with_correct_expected_digest_passes() -> None:
+    verdict = verify_evidence(
+        FIXTURE_ROOT / MANIFEST_NAME,
+        FIXTURE_ROOT,
+        expected_manifest_sha256=_fixture_trusted_digest(),
+    )
+    assert verdict["result"] == "PASS"
+
+
+def test_wrong_expected_manifest_digest_fails(tmp_path: Path) -> None:
+    manifest, case_dir = _tampered_copy(tmp_path, None, None)
+    wrong = "0" * 64  # valid 64-hex, but not this manifest's digest
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(manifest, case_dir, expected_manifest_sha256=wrong)
+    assert "trusted expected" in str(expected.value)
+    completed = _run_verifier_with_expected(manifest, case_dir, wrong)
+    assert completed.returncode != 0
+    shutil.rmtree(tmp_path / "evidence-copy", ignore_errors=True)
+
+
+def test_malformed_expected_manifest_digest_fails(tmp_path: Path) -> None:
+    manifest, case_dir = _tampered_copy(tmp_path, None, None)
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(manifest, case_dir, expected_manifest_sha256="not-a-digest")
+    assert "malformed" in str(expected.value)
+    shutil.rmtree(tmp_path / "evidence-copy", ignore_errors=True)
+
+
+def test_missing_manifest_digest_source_fails(tmp_path: Path) -> None:
+    case_dir = tmp_path / "no-sidecar"
+    shutil.copytree(FIXTURE_ROOT, case_dir)
+    (case_dir / MANIFEST_DIGEST_SIDECAR).unlink()
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(case_dir / MANIFEST_NAME, case_dir)
+    assert "missing manifest integrity binding" in str(expected.value)
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_tampered_manifest_digest_sidecar_fails(tmp_path: Path) -> None:
+    case_dir = tmp_path / "sidecar-tamper"
+    shutil.copytree(FIXTURE_ROOT, case_dir)
+    sidecar = case_dir / MANIFEST_DIGEST_SIDECAR
+    original = sidecar.read_text(encoding="utf-8")
+    digest, filename = original.strip().split()
+    flipped = ("0" if digest[0] != "0" else "1") + digest[1:]
+    sidecar.write_text(f"{flipped}  {filename}\n", encoding="utf-8")
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(case_dir / MANIFEST_NAME, case_dir)
+    assert "sidecar" in str(expected.value)
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_coherent_artifact_manifest_substitution_rejected_against_trusted_digest(
+    tmp_path: Path,
+) -> None:
+    """A coherent malicious modification (artifact + manifest + re-signed
+    sidecar) is internally self-consistent, so the plain verifier accepts it —
+    proving that internal checks alone cannot authenticate evidence.  Against
+    the TRUSTED original manifest digest (the value the privileged CI
+    attestation would cover) the same bundle is rejected."""
+    manifest, case_dir = _tampered_copy(
+        tmp_path,
+        None,
+        "dist/dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
+    )
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    # The attacker recomputes every manifest reference to the substituted wheel
+    # and re-signs the sidecar (already re-signed by the helper).
+    wheel_path = case_dir / str(document["artifacts"]["wheel"]["filename"])
+    substituted = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+    document["artifacts"]["wheel"]["sha256"] = substituted
+    repro = document["reproducibility"]
+    assert isinstance(repro, dict)
+    repro["wheel_sha256_build_1"] = substituted
+    repro["wheel_sha256_build_2"] = substituted
+    manifest.write_bytes((json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    copy_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    (case_dir / MANIFEST_DIGEST_SIDECAR).write_text(
+        f"{copy_digest}  {MANIFEST_NAME}\n", encoding="utf-8"
+    )
+
+    # Internally self-consistent: the plain (sidecar-mode) verifier accepts.
+    assert verify_evidence(manifest, case_dir)["result"] == "PASS"
+
+    # Against the TRUSTED original digest: rejected fail-closed.
+    trusted = _fixture_trusted_digest()
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(manifest, case_dir, expected_manifest_sha256=trusted)
+    assert "trusted expected" in str(expected.value)
+    completed = _run_verifier_with_expected(manifest, case_dir, trusted)
+    assert completed.returncode != 0
+    shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def _run_verifier_with_expected(
+    manifest: Path, evidence_root: Path, expected: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(VERIFIER),
+            "--manifest",
+            str(manifest),
+            "--evidence-root",
+            str(evidence_root),
+            "--expected-manifest-sha256",
+            expected,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_verifier_accepts_bundle_without_expected_digest_via_sidecar() -> None:
+    completed = _run_verifier(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT)
+    assert completed.returncode == 0, completed.stderr
+    verdict = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert verdict["result"] == "PASS"
+    assert verdict["manifest_digest_source"] == MANIFEST_DIGEST_SIDECAR
+
+
+def test_verifier_rejects_bundle_when_sidecar_and_expected_disagree(tmp_path: Path) -> None:
+    case_dir = tmp_path / "disagree"
+    shutil.copytree(FIXTURE_ROOT, case_dir)
+    # The sidecar stays consistent with the manifest, but the caller supplies a
+    # DIFFERENT trusted digest: the trusted expectation wins and must reject.
+    manifest_digest = hashlib.sha256((case_dir / MANIFEST_NAME).read_bytes()).hexdigest()
+    assert manifest_digest == _fixture_trusted_digest()
+    first_char = manifest_digest[0]
+    different = ("f" if first_char != "f" else "0") + manifest_digest[1:]
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(
+            case_dir / MANIFEST_NAME,
+            case_dir,
+            expected_manifest_sha256=different,
+        )
+    assert "trusted expected" in str(expected.value)
     shutil.rmtree(case_dir, ignore_errors=True)
 
 
