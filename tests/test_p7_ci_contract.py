@@ -8,7 +8,7 @@ comprehensive gate matrix structurally:
   workflows target only hosted Linux/Windows runners);
 * the TWO-TRUST-ZONE model: an ordinary (untrusted) zone and a DEDICATED
   trusted real-VFP lane that is workflow_dispatch-only, refuses every ref
-  except protected main, never checks out caller-provided refs, requires the
+  except the main branch, never checks out caller-provided refs, requires the
   platform-authorized runner-group boundary (``runs-on`` ``group``+``labels``
   bound to authoritative repository variables — fail-closed, no invented
   names), and invokes the established REQ-P6-003 acceptance tool with exact
@@ -16,8 +16,13 @@ comprehensive gate matrix structurally:
 * a machine-readable PLATFORM POLICY SPECIFICATION exists that states the
   required external runner-group configuration.  That file is explicitly a
   SPECIFICATION, not proof: platform isolation and real-VFP execution remain
-  EXTERNAL evidence until the runner group is provisioned, verified from live
-  GitHub configuration, and dispatched on protected main;
+  EXTERNAL, live-verified evidence for the requirements that explicitly
+  demand them;
+* the acceptance contract describes green mandatory jobs for the reviewed
+  change WITHOUT claiming execution on an exact HEAD SHA: hosted
+  ``pull_request`` workflows execute the prospective merge ref
+  (``refs/pull/<N>/merge``), so an exact-HEAD claim would be admissible only
+  if a hosted workflow objectively enforced such a checkout;
 * format / lint / strict typecheck / compile gates exist;
 * package build + twine + wheel-metadata + dependency/security audit gates
   exist;
@@ -28,6 +33,14 @@ comprehensive gate matrix structurally:
   explicit CI steps;
 * cross-platform (Linux and Windows) no-VFP hosted smoke exists;
 * the accepted P0 package-boundary jobs are preserved.
+
+Immutable acceptance semantics (REQ-P7-006): the acceptance evidence is
+version-controlled workflows and green mandatory jobs.  Real-VFP9 execution
+is CONDITIONAL evidence for requirements that explicitly demand it (especially
+REQ-P6-003) — the ABSENCE of a provisioned trusted self-hosted VFP runner
+never invalidates the repository-side CI/isolation acceptance, and this
+module forbids any policy field that turns live VFP execution or external
+runner provisioning into an additional mandatory REQ-P7-006 closure gate.
 
 Evidence classes (deliberately distinguished):
 A. repository structural evidence — what this module asserts from YAML/JSON
@@ -63,6 +76,9 @@ CANONICAL_SELECTED_WORKFLOW_TEMPLATE = (
     "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main"
 )
 ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+IMMUTABLE_ACCEPTANCE_EVIDENCE = "version-controlled workflows and green mandatory jobs"
+FORBIDDEN_EXACT_HEAD_WORDING = "exact reviewed HEAD"
+EXACT_REVISION_CLAIM = re.compile(r"\bexact\b[^.]*\b(?:HEAD|SHA)\b", re.IGNORECASE)
 
 ACCEPTED_BOUNDARY_JOBS = (
     "dbfbridge-floor-compatibility",
@@ -148,6 +164,34 @@ def _all_workflows() -> dict[str, dict[str, Any]]:
     workflows = _load_workflows()
     assert workflows, "no workflow YAML files found"
     return workflows
+
+
+def _hosted_pull_request_workflows() -> dict[str, dict[str, Any]]:
+    """The ordinary hosted workflows triggered by ``pull_request`` (never the
+    dispatch-only trusted lane)."""
+    return {
+        name: document
+        for name, document in _load_workflows().items()
+        if name != TRUSTED_WORKFLOW and "pull_request" in _triggers(document)
+    }
+
+
+def _hosted_workflows_pin_head_sha_checkout() -> bool:
+    """Whether any hosted pull_request workflow OBJECTIVELY enforces a checkout
+    of the PR head SHA via an explicit ``ref:``.  With the default checkout
+    GitHub executes the prospective merge ref ``refs/pull/<N>/merge`` instead
+    of the branch HEAD."""
+    for document in _hosted_pull_request_workflows().values():
+        for job in _jobs(document).values():
+            for step in job.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                if not str(step.get("uses", "")).startswith("actions/checkout"):
+                    continue
+                ref = (step.get("with") or {}).get("ref")
+                if ref is not None and "head.sha" in str(ref):
+                    return True
+    return False
 
 
 def test_workflows_are_version_controlled_and_parse() -> None:
@@ -242,15 +286,23 @@ def test_dedicated_trusted_vfp_workflow_exists() -> None:
 
 def test_trusted_vfp_workflow_is_dispatch_only() -> None:
     """The trusted lane may only be dispatched manually: no pull_request, no
-    pull_request_target, no workflow_run and no push trigger may start it.
-    This is workflow defense in depth (LAYER 2, repository structural
-    evidence): it removes every automated scheduling path from this file, but
-    by itself it does NOT establish the platform authorization boundary that
-    protects the runner from other workflow files — that boundary is the
-    external runner-group policy (LAYER 1)."""
+    pull_request_target, no workflow_run, no push and no repository_dispatch
+    trigger may start it.  This is workflow defense in depth (LAYER 2,
+    repository structural evidence): it removes every automated scheduling
+    path from this file, but by itself it does NOT establish the platform
+    authorization boundary that protects the runner from other workflow
+    files — that boundary is the external runner-group policy (LAYER 1)."""
     document = _load_workflows()[TRUSTED_WORKFLOW]
     triggers = _triggers(document)
     assert set(triggers) == {"workflow_dispatch"}
+    for forbidden_trigger in (
+        "pull_request",
+        "pull_request_target",
+        "workflow_run",
+        "push",
+        "repository_dispatch",
+    ):
+        assert forbidden_trigger not in triggers, forbidden_trigger
     assert document.get("name") is not None
     assert "trusted" in str(document.get("name", "")).lower()
 
@@ -282,6 +334,81 @@ def test_trusted_vfp_job_requires_platform_authorized_runner_group() -> None:
                     f"{name}:{job_name}: untrusted workflow targets a "
                     f"trusted-runner configuration: {label}"
                 )
+
+
+def test_trusted_lane_fails_closed_without_external_routing_configuration() -> None:
+    """FAIL-CLOSED (repository structural evidence): while either
+    authoritative repository variable is unset the trusted job cannot be
+    scheduled — the ``runs-on`` mapping contains ONLY the two controlled
+    variable expressions, with no literal runner identity and no
+    fallback/default targeting, so the inert lane produces no evidence."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    runs_on = _jobs(document)[TRUSTED_JOB]["runs-on"]
+    assert isinstance(runs_on, dict)
+    assert runs_on["group"] == "${{ vars.DBF_TRUSTED_VFP9_RUNNER_GROUP }}"
+    assert runs_on["labels"] == "${{ vars.DBF_TRUSTED_VFP9_RUNNER_LABELS }}"
+    serialized = json.dumps(runs_on)
+    for forbidden_fragment in ("ubuntu", "windows-latest", "self-hosted", "||"):
+        assert forbidden_fragment not in serialized, forbidden_fragment
+    targeting = _trusted_policy()["layer_2_workflow_defense_in_depth"]["runner_targeting"]
+    assert targeting["fallback_or_default_values"] == "forbidden"
+    assert "cannot be scheduled" in targeting["fail_closed"]
+
+
+def test_trusted_guard_refuses_non_main_refs_before_checkout() -> None:
+    """The FIRST step of the trusted job is a shell trust guard that refuses
+    every ref except refs/heads/main and every event except
+    workflow_dispatch — and it runs BEFORE any checkout action."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    job = _jobs(document)[TRUSTED_JOB]
+    steps = [step for step in (job.get("steps") or []) if isinstance(step, dict)]
+    assert steps, "the trusted job has no steps"
+    guard = steps[0]
+    assert not str(guard.get("uses", "")), "the trust guard must run before any action"
+    run = str(guard.get("run", ""))
+    assert "refs/heads/main" in run
+    assert "throw" in run
+    assert "workflow_dispatch" in run
+    checkout_positions = [
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("actions/checkout")
+    ]
+    assert checkout_positions, "the trusted job never checks out the revision"
+    assert min(checkout_positions) > 0, "the trust guard must precede checkout"
+
+
+def test_trusted_checkout_checks_out_no_caller_controlled_ref() -> None:
+    """The trusted checkout declares no explicit ``ref``: it checks out the
+    dispatched main revision only — never a caller-provided SHA or branch,
+    never ``github.event.pull_request.head.sha``."""
+    document = _load_workflows()[TRUSTED_WORKFLOW]
+    checkout_steps = [
+        step
+        for job in _jobs(document).values()
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout")
+    ]
+    assert checkout_steps, "the trusted workflow has no checkout step"
+    for step in checkout_steps:
+        with_block = step.get("with") or {}
+        assert "ref" not in with_block, with_block
+        assert "github.event.pull_request.head.sha" not in json.dumps(with_block)
+    for run in _step_runs(document):
+        assert "github.event.pull_request" not in run
+        assert "pull_request" not in run
+
+
+def test_actions_are_sha_pinned() -> None:
+    """Every ``uses:`` step in every version-controlled workflow is pinned to
+    an exact 40-character commit SHA (mutable tags are forbidden)."""
+    sha_pinned = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+    for name, document in _load_workflows().items():
+        for job_name, job in _jobs(document).items():
+            for step in job.get("steps") or []:
+                uses = step.get("uses")
+                if isinstance(uses, str):
+                    assert sha_pinned.match(uses), f"{name}:{job_name}: {uses}"
 
 
 def test_trusted_vfp_platform_policy_specification_exists() -> None:
@@ -338,52 +465,106 @@ def test_canonical_selected_workflow_is_fully_qualified_template() -> None:
     )
 
 
-def test_policy_defines_two_stage_enabling_merge_lifecycle() -> None:
-    """The acceptance-sequencing deadlock is resolved by an explicit
-    TWO-STAGE lifecycle: the enabling merge is ALLOWED once the repository
-    Stage-A conditions hold (GitHub legally accepts dispatch events only for
-    workflow files on the default branch), but it does NOT mark REQ-P7-006
-    PASS and does NOT authorize REQ-P7-007.  The previous unconditional
-    'do not merge while trusted-VFP execution evidence is missing'
-    instruction is RETIRED."""
+def test_policy_separates_p7_006_acceptance_from_conditional_vfp_evidence() -> None:
+    """The specification separates the immutable REQ-P7-006 repository
+    CI/isolation acceptance (version-controlled workflows + green mandatory
+    jobs) from the CONDITIONAL real-VFP9 execution evidence that only
+    requirements explicitly demanding it (especially REQ-P6-003) may use."""
     policy = _trusted_policy()
-    stage_a = policy["lifecycle"]["stage_a_pre_merge_repository_evidence"]
-    assert stage_a["does_not_mark_pass"] is True
-    assert stage_a["does_not_authorize_next_requirement"] is True
-    assert stage_a["requirement_remains_partial_after_enabling_merge"] == (
-        "REQ-P7-006 remains PARTIAL/BLOCKED after the enabling merge"
+    separation = policy["acceptance_separation"]
+    repository_acceptance = separation["req_p7_006_repository_ci_isolation_acceptance"]
+    assert repository_acceptance["requirement"] == "REQ-P7-006"
+    assert repository_acceptance["immutable_acceptance_evidence"] == IMMUTABLE_ACCEPTANCE_EVIDENCE
+    assert repository_acceptance["live_vfp_execution_dependency"] == "none"
+    assert any("isolate" in criterion for criterion in repository_acceptance["criteria"])
+    conditional = separation["conditional_real_vfp_execution_evidence"]
+    assert conditional["requirement"] == "REQ-P6-003"
+    assert conditional["evidence_class"] == "conditional"
+    assert conditional["tool"] == "tools/run_real_vfp9_acceptance.py"
+    assert conditional["platform_boundary_required_before_any_execution"] == (
+        "layer_1_platform_authorization"
     )
-    assert stage_a["next_requirement_blocked_until_full_pass"] == "REQ-P7-007"
-    enabling_conditions = stage_a["enabling_merge_allowed_when"]
-    assert isinstance(enabling_conditions, list) and len(enabling_conditions) >= 5
-    assert any(
-        "all hosted/public mandatory gates are green" in item for item in enabling_conditions
-    )
-    assert any(
-        "no unsafe repository-level self-hosted runner" in item for item in enabling_conditions
-    )
-    assert stage_a["purpose"].startswith("Repository-side enabling evidence")
-    assert "default branch" in stage_a["purpose"]
-    assert "RETIRED" in policy["lifecycle"]["removed_instruction"]
-    assert "impossible closure" in policy["lifecycle"]["removed_instruction"]
 
 
-def test_stage_b_requires_live_verification_and_real_vfp_execution() -> None:
-    """Stage B (external, class B evidence) requires the LIVE runner-group
-    policy verification from GitHub configuration and the real trusted VFP9
-    execution — and the specification records both as currently FALSE."""
+def test_policy_does_not_overstate_the_tested_hosted_revision() -> None:
+    """Evidence-semantics regression: the hosted ``pull_request`` workflows
+    execute the prospective merge ref (``refs/pull/<N>/merge``), not the PR
+    branch HEAD itself, so the REQ-P7-006 acceptance contract must describe
+    green mandatory jobs for the reviewed change WITHOUT claiming execution on
+    an exact HEAD SHA.  Such a claim would be admissible only if a hosted
+    workflow objectively enforced a head-SHA checkout (see
+    ``_hosted_workflows_pin_head_sha_checkout``); none does, so no acceptance
+    criterion may assert an exact-HEAD/SHA execution identity for hosted PR
+    CI."""
     policy = _trusted_policy()
-    stage_b = policy["lifecycle"]["stage_b_post_merge_external_acceptance"]
-    assert stage_b["live_runner_group_policy_verified"] is False
-    assert stage_b["trusted_vfp_execution_verified"] is False
-    required = stage_b["required_after_enabling_merge"]
-    assert any("live runner-group configuration is verified" in item for item in required)
-    assert any("workflow access is restricted_to_workflows" in item for item in required)
-    assert any(
-        "only then may workflow_dispatch be used on protected main" in item for item in required
-    )
-    assert any("real Visual FoxPro 9 executes with no acceptance skip" in item for item in required)
-    assert any("no untrusted PR code on the trusted runner" in item for item in required)
+    repository_acceptance = policy["acceptance_separation"][
+        "req_p7_006_repository_ci_isolation_acceptance"
+    ]
+    assert repository_acceptance["immutable_acceptance_evidence"] == IMMUTABLE_ACCEPTANCE_EVIDENCE
+    assert FORBIDDEN_EXACT_HEAD_WORDING not in json.dumps(policy)
+    assert _hosted_pull_request_workflows(), "no hosted pull_request workflow found"
+    if not _hosted_workflows_pin_head_sha_checkout():
+        for criterion in repository_acceptance["criteria"]:
+            assert not EXACT_REVISION_CLAIM.search(criterion), criterion
+
+
+def test_absence_of_live_vfp_execution_does_not_invalidate_p7_006() -> None:
+    """REQ-P7-006 is a repository CI/isolation acceptance: the specification
+    must state explicitly that a missing provisioned trusted self-hosted VFP
+    runner does NOT make REQ-P7-006 PARTIAL when the isolation contract is
+    objectively present and no unsafe execution occurs."""
+    policy = _trusted_policy()
+    repository_acceptance = policy["acceptance_separation"][
+        "req_p7_006_repository_ci_isolation_acceptance"
+    ]
+    note = repository_acceptance["note"]
+    assert "does NOT make REQ-P7-006 PARTIAL" in note
+    assert "isolation contract" in note
+    assert "External runner provisioning is NOT a mandatory REQ-P7-006 closure stage" in note
+    assert "does not invalidate this repository-side acceptance" in note
+
+
+def test_real_vfp_execution_remains_conditional_evidence_for_p6_003() -> None:
+    """Real VFP9 execution stays CONDITIONAL acceptance evidence for the
+    requirements that explicitly demand it (REQ-P6-003) — never a mandatory
+    REQ-P7-006 closure stage."""
+    policy = _trusted_policy()
+    conditional = policy["acceptance_separation"]["conditional_real_vfp_execution_evidence"]
+    note = conditional["note"]
+    assert "CONDITIONAL acceptance evidence" in note
+    assert "REQ-P6-003" in note
+    assert "NOT a REQ-P7-006 closure gate" in note
+    assert "NOT required to close REQ-P7-006" in note
+
+
+def test_policy_does_not_invent_additional_p7_006_closure_gates() -> None:
+    """The immutable REQ-P7-006 acceptance contract is version-controlled
+    workflows + green mandatory jobs + trusted-VFP isolation.  The policy
+    must NOT define an additional mandatory closure stage (no two-stage
+    lifecycle status machine) and must NOT claim that REQ-P7-006 stays
+    PARTIAL after a merge or that live VFP execution is required to close
+    it."""
+    policy = _trusted_policy()
+    for forbidden_key in ("lifecycle", "acceptance_requires_all_of", "until_then"):
+        assert forbidden_key not in policy, forbidden_key
+    serialized = json.dumps(policy)
+    for forbidden_fragment in (
+        "remains PARTIAL/BLOCKED",
+        "requirement_remains_partial_after_enabling_merge",
+        "next_requirement_blocked_until_full_pass",
+        "full_pass_only_when",
+    ):
+        assert forbidden_fragment not in serialized, forbidden_fragment
+
+
+def test_policy_does_not_claim_verified_branch_protection() -> None:
+    """The specification must not overstate platform enforcement: it does not
+    assert branch-protection enforcement; effective required-status-check
+    enforcement is an external setting verified from live platform
+    configuration."""
+    note = _trusted_policy()["branch_protection_note"]
+    assert "does not assert GitHub branch-protection enforcement" in note
+    assert "verified from live platform configuration" in note
 
 
 def test_volatile_external_facts_are_marked_not_live_evidence() -> None:

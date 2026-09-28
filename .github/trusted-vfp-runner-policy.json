@@ -1,9 +1,32 @@
 {
   "specification_id": "DBF-TRUSTED-VFP9-RUNNER-POLICY",
-  "specification_version": "2.0",
+  "specification_version": "3.0",
   "requirement": "REQ-P7-006",
-  "purpose": "Platform-enforced trusted runner isolation for the real-VFP9 acceptance lane, plus the explicit TWO-STAGE acceptance lifecycle. This file is a REQUIRED-CONFIGURATION SPECIFICATION, NOT evidence: it does not prove that GitHub is configured this way and it does not prove any execution. Objective proof can only come from verifying the live GitHub runner-group configuration (GitHub REST API / organization settings) plus a real dispatched workflow run on protected main.",
+  "purpose": "REQUIRED-CONFIGURATION SPECIFICATION for the platform-enforced trusted runner isolation of the real-VFP9 acceptance lane. This file is NOT evidence of configuration and NOT evidence of execution: it states the security boundary that MUST hold before any trusted self-hosted VFP9 execution may ever be scheduled. It deliberately separates the immutable REQ-P7-006 repository CI/isolation acceptance from the CONDITIONAL real-VFP9 execution evidence that only requirements explicitly demanding it (especially REQ-P6-003) may use.",
   "evidence_status": "SPECIFICATION_NOT_PROOF",
+  "acceptance_separation": {
+    "note": "Two evidence classes that must never be conflated: the repository CI/isolation acceptance of REQ-P7-006 and the conditional real-VFP9 execution evidence of REQ-P6-003.",
+    "req_p7_006_repository_ci_isolation_acceptance": {
+      "requirement": "REQ-P7-006",
+      "immutable_acceptance_evidence": "version-controlled workflows and green mandatory jobs",
+      "criteria": [
+        "every mandatory CI category (format, lint, strict typecheck, compile, unit, integration, property/privacy, relationship, recovery, transfer-bundle, malformed-input, package, security) is version-controlled in this repository",
+        "every declared Python version is covered on Windows hosted runners",
+        "a no-VFP cross-platform hosted smoke path exists",
+        "the trusted self-hosted VFP9 check path is isolated from untrusted pull-request code",
+        "all mandatory jobs required by REQ-P7-006 are green for the reviewed change"
+      ],
+      "live_vfp_execution_dependency": "none",
+      "note": "The absence of a currently provisioned trusted self-hosted VFP runner does NOT make REQ-P7-006 PARTIAL when this isolation contract is objectively present and no unsafe execution occurs. External runner provisioning is NOT a mandatory REQ-P7-006 closure stage, and the absence of live VFP execution does not invalidate this repository-side acceptance."
+    },
+    "conditional_real_vfp_execution_evidence": {
+      "requirement": "REQ-P6-003",
+      "evidence_class": "conditional",
+      "tool": "tools/run_real_vfp9_acceptance.py",
+      "note": "Real Visual FoxPro 9 execution on a trusted Windows runner is CONDITIONAL acceptance evidence for requirements that explicitly demand it (especially REQ-P6-003). It is NOT a REQ-P7-006 closure gate, and provisioning external runner infrastructure is NOT required to close REQ-P7-006.",
+      "platform_boundary_required_before_any_execution": "layer_1_platform_authorization"
+    }
+  },
   "canonical_selected_workflow": {
     "fully_qualified_template": "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main",
     "placeholder": "<FINAL_OWNER>",
@@ -14,41 +37,6 @@
     "workflow_file": ".github/workflows/p6-trusted-vfp-acceptance.yml",
     "pinned_ref": "refs/heads/main",
     "github_note": "GitHub runner-group workflow restrictions require a fully qualified workflow identity (owner/repository/path@ref); the template above corresponds to that format."
-  },
-  "lifecycle": {
-    "stage_a_pre_merge_repository_evidence": {
-      "purpose": "Repository-side enabling evidence. The trusted workflow is workflow_dispatch-only and GitHub accepts dispatch events ONLY when the workflow file exists on the default branch; therefore the enabling merge is the ONLY legal way to place the lane where it can later be dispatched. This resolves the acceptance-sequencing deadlock without weakening any security property.",
-      "enabling_merge_allowed_when": [
-        "the trusted workflow is version-controlled on this PR branch",
-        "all repository structural security tests pass (tests/test_p7_ci_contract.py)",
-        "runner targeting is fail-closed (runner group + labels bound to authoritative repository variables; no committed literal group/label)",
-        "no unsafe repository-level self-hosted runner is registered",
-        "all hosted/public mandatory gates are green on the exact PR HEAD",
-        "ordinary PR code cannot use the trusted lane from any checked-in workflow",
-        "this specification still states that external platform configuration is NOT PROVEN"
-      ],
-      "does_not_mark_pass": true,
-      "does_not_authorize_next_requirement": true,
-      "requirement_remains_partial_after_enabling_merge": "REQ-P7-006 remains PARTIAL/BLOCKED after the enabling merge",
-      "next_requirement_blocked_until_full_pass": "REQ-P7-007"
-    },
-    "stage_b_post_merge_external_acceptance": {
-      "purpose": "Trusted acceptance evidence, obtainable ONLY after the enabling merge placed the workflow on the default branch.",
-      "live_runner_group_policy_verified": false,
-      "trusted_vfp_execution_verified": false,
-      "required_after_enabling_merge": [
-        "PM-controlled GitHub ownership/topology provides an organization or enterprise runner group, or an objectively equivalent platform isolation",
-        "live runner-group configuration is verified from GitHub (API/settings): repository access allowlisted to exactly the intended DBF_Anonymizer repository",
-        "public-repository access, if applicable, is deliberate",
-        "workflow access is restricted_to_workflows with exactly the canonical selected workflow pinned to refs/heads/main",
-        "only after platform verification may the runner-group variables be populated",
-        "only then may workflow_dispatch be used on protected main",
-        "real Visual FoxPro 9 executes with no acceptance skip",
-        "REQ-P6-003/P7-006 evidence is obtained: source immutability; staging and published reopen; record count; tag inventory; sanitized evidence; exact commit identity; no untrusted PR code on the trusted runner"
-      ],
-      "full_pass_only_when": "every item of acceptance_requires_all_of is objectively satisfied"
-    },
-    "removed_instruction": "The previous unconditional 'do not merge while trusted-VFP execution evidence is missing' is RETIRED: it created an impossible closure (workflow_dispatch legally requires the workflow on the default branch first). The enabling merge must not be confused with acceptance: it changes NO status of the requirement itself."
   },
   "layer_1_platform_authorization": {
     "required": true,
@@ -69,7 +57,7 @@
       "pinned_ref": "refs/heads/main",
       "equivalent_platform_isolation": "acceptable only if it provably prevents every other workflow file - including future PR-modified files - from scheduling jobs on the trusted runner"
     },
-    "verification_procedure": "After provisioning, verify through GitHub configuration APIs/settings (runner group exists; repository allowlist == the single DBF_Anonymizer repository; workflow allowlist exactly the canonical selected workflow pinned to refs/heads/main) and only then dispatch the trusted workflow on protected main to produce execution evidence."
+    "verification_procedure": "After provisioning, verify through GitHub configuration APIs/settings (runner group exists; repository allowlist == the single DBF_Anonymizer repository; workflow allowlist exactly the canonical selected workflow pinned to refs/heads/main) and only then dispatch the trusted workflow on refs/heads/main to produce conditional REQ-P6-003 execution evidence."
   },
   "layer_2_workflow_defense_in_depth": {
     "required": true,
@@ -89,10 +77,12 @@
       "group_source": "vars.DBF_TRUSTED_VFP9_RUNNER_GROUP",
       "labels_source": "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS",
       "committed_literal_group_or_label": "forbidden",
+      "fallback_or_default_values": "forbidden",
       "fail_closed": "while either variable is unset the job cannot be scheduled and the lane produces no evidence"
     },
     "environment_approvals": "NOT a substitute for the runner-group boundary (an attacker-controlled workflow could omit the environment)"
   },
+  "branch_protection_note": "This specification does not assert GitHub branch-protection enforcement. Effective required-status-check enforcement is an external platform setting that must be verified from live platform configuration before relying on it; the trusted lane's own ref guard (LAYER 2) is the repository-side isolation mechanism.",
   "stable_topology_constraints": {
     "note": "Normative facts that hold under the CURRENT topology and must be re-evaluated when ownership/topology changes.",
     "repository_visibility": "public",
@@ -112,20 +102,12 @@
       "repository_secrets": 0
     }
   },
-  "acceptance_requires_all_of": [
-    "safe trusted self-hosted Windows/VFP9 runner",
-    "platform-level runner access isolation (runner group allowlisting only this repository)",
-    "workflow access restricted to the dedicated trusted VFP workflow (canonical fully-qualified template, pinned to refs/heads/main)",
-    "trusted workflow pinned to protected main",
-    "runner-group policy verified from live GitHub configuration",
-    "a real workflow_dispatch run on protected main",
-    "real Visual FoxPro 9 executed (no skip)",
-    "source immutability proved",
-    "staging + published dataset reopen proved",
-    "record count / tag inventory proved per accepted P6-003 evidence",
-    "sanitized machine-readable evidence",
-    "exact commit identity recorded",
-    "no untrusted PR code executed on the trusted machine"
-  ],
-  "until_then": "REQ-P7-006 remains PARTIAL/BLOCKED. Stage A (the enabling merge of this repository work) is PERMITTED once the stage_a conditions hold and does NOT constitute PASS. P7-007 remains blocked until full Stage B pass. Do NOT register a repository-level self-hosted runner as a workaround."
+  "invariants": [
+    "no repository-level self-hosted runner workaround: the trusted lane may only target a platform-authorized runner group",
+    "the trusted workflow is workflow_dispatch-only and refuses every ref except refs/heads/main before any checkout",
+    "no caller-provided SHA or pull-request ref is ever checked out; the checked-out revision is verified against origin/main and the canonical architecture hash",
+    "runner targeting is fail-closed: group and labels are read only from the authoritative repository variables; no literal group or label is committed to the repository",
+    "the real-VFP9 lane delegates all acceptance semantics to tools/run_real_vfp9_acceptance.py and never executes untrusted pull-request code",
+    "GitHub accepts workflow_dispatch events only for workflow files on the default branch, so the trusted workflow becomes dispatchable once it is merged to the default branch; that fact alone changes no acceptance status of any requirement"
+  ]
 }
