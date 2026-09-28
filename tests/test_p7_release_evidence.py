@@ -333,7 +333,7 @@ def _tampered_copy(
     # the verifier must detect.
     document["tamper_detection_selftest"] = {
         "result": "PASS",
-        "cases": ["artifact", "sbom", "manifest_hash", "private_path"],
+        "cases": ["artifact", "sbom", "manifest_hash", "private_path", "coherent_substitution"],
     }
     if manifest_patch is not None:
         for pointer, value in manifest_patch.items():

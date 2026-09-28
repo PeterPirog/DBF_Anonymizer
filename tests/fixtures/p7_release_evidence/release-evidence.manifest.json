@@ -2,11 +2,11 @@
   "artifacts": {
     "sdist": {
       "filename": "dist/dbf_anonymizer-1.0.0.dev0.tar.gz",
-      "sha256": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a"
+      "sha256": "8067ce7ff1ef9dd999d2b394626b77f79bf85bd796964fdc918e434bdcab26a2"
     },
     "wheel": {
       "filename": "dist/dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
-      "sha256": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c"
+      "sha256": "135136005d930879dc7d4e5752e766e3e5de379dadcd3b3910a383a99a93fb8e"
     }
   },
   "build_environment": {
@@ -14,7 +14,7 @@
     "platform_system": "Windows",
     "python_implementation": "CPython",
     "python_version": "3.12.10",
-    "source_date_epoch": 1790607426,
+    "source_date_epoch": 1790611309,
     "tool_versions": {
       "build": "1.6.0",
       "pip": "26.2.1",
@@ -105,28 +105,31 @@
     "independent_builds": 2,
     "result": "PASS",
     "sdist_canonicalization": "metadata-only deterministic normalization of the standard setuptools sdist: GNU tar format, every member mtime set to SOURCE_DATE_EPOCH, uid/gid set to 0, uname/gname cleared, directory modes 0755 and file modes 0644, members sorted by name, gzip header mtime set to SOURCE_DATE_EPOCH at compresslevel 9; file contents are byte-identical to the standard build output",
-    "sdist_sha256_build_1": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a",
-    "sdist_sha256_build_2": "15c2716c33ee8eaa9b83c04bf5531f5bf67ad1fbf1ab491aba2252d27ae3616a",
-    "wheel_sha256_build_1": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c",
-    "wheel_sha256_build_2": "f13001c3d0bc0ca54ee6156f68986ff0b191eabd53ba27c1f1bc851f4b50c27c"
+    "sdist_sha256_build_1": "8067ce7ff1ef9dd999d2b394626b77f79bf85bd796964fdc918e434bdcab26a2",
+    "sdist_sha256_build_2": "8067ce7ff1ef9dd999d2b394626b77f79bf85bd796964fdc918e434bdcab26a2",
+    "wheel_sha256_build_1": "135136005d930879dc7d4e5752e766e3e5de379dadcd3b3910a383a99a93fb8e",
+    "wheel_sha256_build_2": "135136005d930879dc7d4e5752e766e3e5de379dadcd3b3910a383a99a93fb8e"
   },
   "sbom": {
     "filename": "release-sbom.cdx.json",
     "format": "CycloneDX",
-    "sha256": "927093eb0b7e86d0fcbec85e43b3d18be462f64a43a21f1cac0517b4b081fa42",
+    "sha256": "9c7c2c6767a33ccdda3122828a45f38651f4c72e7eef9029efee3e9aca6ab300",
     "spec_version": "1.5"
   },
   "schema_version": "1.0",
   "source": {
     "architecture_sha256": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615",
-    "git_commit_sha": "6f55249849776deb7803c8ebcbe95044c7c5375d"
+    "cleanliness_check": "PASS",
+    "git_commit_sha": "9870134ebfc09b163e0ca5a2626194c39e1773f0",
+    "source_export_mode": "git archive --format=tar <recorded-commit> extracted into a task-owned temp tree; the working directory is not the build source and no .git data is copied"
   },
   "tamper_detection_selftest": {
     "cases": [
       "artifact",
       "sbom",
       "manifest_hash",
-      "private_path"
+      "private_path",
+      "coherent_substitution"
     ],
     "result": "PASS"
   },

@@ -110,18 +110,18 @@
     "properties": [
       {
         "name": "dbf_anonymizer:git_commit_sha",
-        "value": "6f55249849776deb7803c8ebcbe95044c7c5375d"
+        "value": "9870134ebfc09b163e0ca5a2626194c39e1773f0"
       },
       {
         "name": "dbf_anonymizer:source_date_epoch",
-        "value": "1790607426"
+        "value": "1790611309"
       },
       {
         "name": "dbf_anonymizer:architecture_sha256",
         "value": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
       }
     ],
-    "timestamp": "2026-09-28T14:57:06Z",
+    "timestamp": "2026-09-28T16:01:49Z",
     "tools": {
       "components": [
         {
@@ -132,7 +132,7 @@
       ]
     }
   },
-  "serialNumber": "urn:uuid:0f50b503-0796-5086-bff3-1de86dc01d38",
+  "serialNumber": "urn:uuid:77976936-46f5-5350-bf3a-4e2b083654d0",
   "specVersion": "1.5",
   "version": 1
 }
