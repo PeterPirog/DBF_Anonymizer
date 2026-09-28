@@ -309,10 +309,13 @@ def _tampered_copy(
     }
     if manifest_patch is not None:
         for pointer, value in manifest_patch.items():
-            section, key = pointer.split(".", 1)
-            target = document[section]
-            assert isinstance(target, dict)
-            target[key] = value
+            parts = pointer.split(".")
+            target: object = document
+            for part in parts[:-1]:
+                assert isinstance(target, dict), pointer
+                target = target[part]
+            assert isinstance(target, dict), pointer
+            target[parts[-1]] = value
     manifest_path.write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
