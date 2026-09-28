@@ -1,0 +1,6 @@
+# REQ-P7-008: the committed release evidence bundle must remain byte-identical
+# to the SHA-256 values recorded in release-evidence.manifest.json on every
+# platform checkout. The JSON evidence files are text but MUST never be
+# line-ending-converted (Windows autocrlf would break the recorded hashes), so
+# the whole evidence subtree is pinned to no text conversion.
+tests/fixtures/p7_release_evidence/** -text

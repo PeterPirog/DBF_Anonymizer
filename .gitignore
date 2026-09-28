@@ -258,6 +258,11 @@ jsonl_recovered/
 !tests/fixtures/p0/**/*.dct
 !tests/fixtures/p0/**/*.dcx
 
+# REQ-P7-008 committed release evidence bundle: narrow allowlist under the
+# global dist/ exclusion above. Only the committed release evidence subtree
+# is included.
+!tests/fixtures/p7_release_evidence/dist/
+
 # Self-test artifacts
 selftest_report.json
 *_quality_report.jsonl

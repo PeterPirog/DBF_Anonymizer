@@ -1,0 +1,74 @@
+name: P7 release evidence
+
+# REQ-P7-008 NON-PRIVILEGED RELEASE VALIDATION — validates the release
+# machinery on every pull_request/push WITHOUT any publication authority:
+#
+# * builds the SAME source revision TWICE in independent, clean, task-owned
+#   build directories (deterministic SOURCE_DATE_EPOCH + pinned build
+#   backends + deterministic sdist canonicalization) and fails unless the
+#   final sdist/wheel SHA-256 values are identical;
+# * validates distribution metadata (twine check, wheel metadata gate, sdist
+#   PKG-INFO identity);
+# * downloads the exact pinned runtime wheelhouse and records every artifact
+#   filename + SHA-256;
+# * performs the fresh-wheel smoke OUTSIDE the workspace: the EXACT release
+#   wheel is installed --no-deps into a fresh venv together with the pinned
+#   dbfbridge acceptance closure (--no-index from the evidence wheelhouse),
+#   then the installed-wheel contract and the full nine-command standalone
+#   runtime contract run with network/process sentinels;
+# * generates the deterministic CycloneDX 1.5 SBOM, the deterministic
+#   release evidence manifest (schema 1.0) and runs the fail-closed verifier,
+#   including the tamper self-test;
+# * uploads the whole evidence bundle as a workflow artifact.
+#
+# This job holds NO publication authority (top-level permissions stay
+# contents: read; no id-token, no attestations, no PyPI publishing): the
+# privileged publication lane lives exclusively in dbf-release-publish.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-evidence-validation:
+    name: Reproducible build, SBOM, manifest, fresh-wheel smoke (non-publishing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the release-evidence tooling environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Build the reproducible release evidence bundle
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+        run: |
+          python tools/build_release_evidence.py \
+            --output-dir "$EVIDENCE_DIR" \
+            --workflow-name "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-event "$GITHUB_EVENT_NAME"
+      - name: Show the release evidence identity
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+        run: |
+          cat "$EVIDENCE_DIR/release-evidence.manifest.json"
+          cat "$EVIDENCE_DIR/release-evidence.manifest.sha256"
+          cat "$EVIDENCE_DIR/release-sbom.cdx.json"
+      - name: Upload the release evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+          if-no-files-found: error

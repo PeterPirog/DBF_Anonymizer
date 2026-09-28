@@ -72,6 +72,11 @@ TRUSTED_GROUP_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_GROUP"
 TRUSTED_LABELS_VARIABLE = "vars.DBF_TRUSTED_VFP9_RUNNER_LABELS"
 TRUSTED_POLICY_SPEC = ".github/trusted-vfp-runner-policy.json"
 TRUSTED_WORKFLOW_PATH = ".github/workflows/p6-trusted-vfp-acceptance.yml"
+# REQ-P7-008: the dedicated PRIVILEGED release lane is the only workflow that
+# may hold id-token/attestations/publication authority; it is trigger-isolated
+# from pull_request execution (see test_p7_release_ci_contract.py).
+PRIVILEGED_RELEASE_WORKFLOW = "dbf-release-publish.yml"
+PRIVILEGED_RELEASE_POLICY_SPEC = ".github/release-publishing-policy.json"
 CANONICAL_SELECTED_WORKFLOW_TEMPLATE = (
     "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main"
 )
@@ -91,6 +96,17 @@ ACCEPTED_BOUNDARY_JOBS = (
 
 HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest"})
 ALLOWED_TRIGGERS = frozenset({"push", "pull_request", "workflow_dispatch"})
+# The privileged release lane never executes for untrusted pull-request code;
+# its only authorized triggers are an explicit release publication or a
+# deliberate main/tag dispatch.
+ALLOWED_PRIVILEGED_RELEASE_TRIGGERS = frozenset({"release", "workflow_dispatch"})
+FORBIDDEN_TRIGGERS = frozenset({"pull_request_target", "workflow_run", "repository_dispatch"})
+ALLOWED_JOB_PERMISSIONS = (None, {"contents": "read"})
+ALLOWED_PRIVILEGED_RELEASE_JOB_PERMISSIONS = (
+    {"contents": "read"},
+    {"contents": "read", "id-token": "write", "attestations": "write"},
+    {"contents": "read", "id-token": "write"},
+)
 
 
 def _load_workflows() -> dict[str, dict[Any, Any]]:
@@ -204,22 +220,53 @@ def test_workflows_are_version_controlled_and_parse() -> None:
 
 
 def test_all_workflows_declare_bounded_permissions() -> None:
+    """Every workflow declares top-level ``contents: read``.  Ordinary jobs may
+    hold no elevated permissions at all; the dedicated PRIVILEGED release lane
+    (REQ-P7-008) is the ONLY place where ``id-token: write`` /
+    ``attestations: write`` may appear, in exactly the enumerated minimal
+    combinations."""
     for name, document in _load_workflows().items():
         permissions = document.get("permissions")
         assert permissions == {"contents": "read"}, name
         for job_name, job in _jobs(document).items():
             job_permissions = job.get("permissions")
-            assert job_permissions in (None, {"contents": "read"}), f"{name}:{job_name}"
+            if name == PRIVILEGED_RELEASE_WORKFLOW:
+                assert job_permissions in ALLOWED_PRIVILEGED_RELEASE_JOB_PERMISSIONS, (
+                    f"{name}:{job_name}"
+                )
+            else:
+                assert job_permissions in ALLOWED_JOB_PERMISSIONS, f"{name}:{job_name}"
+
+
+def test_id_token_and_attestation_authority_are_exclusively_privileged() -> None:
+    """No workflow except the dedicated privileged release lane may reference
+    ``id-token`` or ``attestations`` authority anywhere in its document."""
+    for name, document in _load_workflows().items():
+        if name == PRIVILEGED_RELEASE_WORKFLOW:
+            continue
+        serialized = json.dumps(document)
+        assert "id-token" not in serialized, name
+        assert "attestations" not in serialized, name
+        assert "gh-action-pypi-publish" not in serialized, name
 
 
 def test_no_untrusted_trigger_reaches_any_runner() -> None:
-    """No pull_request_target/workflow_run trigger may exist anywhere, so
-    untrusted pull-request code can never execute in an elevated context."""
+    """No pull_request_target/workflow_run/repository_dispatch trigger may
+    exist anywhere, so untrusted pull-request code can never execute in an
+    elevated context.  Ordinary workflows may only use the hosted trigger set;
+    the privileged release lane is restricted to release/workflow_dispatch and
+    can therefore never start from a pull_request event."""
     for name, document in _load_workflows().items():
         triggers = _triggers(document)
         assert isinstance(triggers, dict), name
-        unexpected = set(triggers) - ALLOWED_TRIGGERS
-        assert not unexpected, f"{name}: untrusted triggers {unexpected}"
+        assert not set(triggers) & FORBIDDEN_TRIGGERS, f"{name}: untrusted triggers"
+        allowed = (
+            ALLOWED_PRIVILEGED_RELEASE_TRIGGERS
+            if name == PRIVILEGED_RELEASE_WORKFLOW
+            else ALLOWED_TRIGGERS
+        )
+        unexpected = set(triggers) - allowed
+        assert not unexpected, f"{name}: unexpected triggers {unexpected}"
 
 
 def _resolved_runs_on(job: dict[str, Any]) -> set[str]:

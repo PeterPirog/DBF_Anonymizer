@@ -1,0 +1,16 @@
+# REQ-P7-008 release-build backend constraints.
+#
+# These constraints pin the EXACT build-backend versions used by
+# tools/build_release_evidence.py when it produces the release sdist/wheel
+# evidence. `python -m build` creates an isolated build environment from
+# pyproject.toml [build-system].requires (setuptools>=77, wheel); the
+# constraint below upgrades that open range to exact pins so two independent
+# builds of the same revision cannot observe different backend versions
+# (a backend update between the two builds would break byte reproducibility).
+#
+# This file is release/dev tooling only. It is NOT a runtime dependency and
+# must never be referenced by pyproject.toml [project] dependencies or by the
+# REQ-P7-004 offline runtime wheelhouse.
+
+setuptools==84.0.0
+wheel==0.48.0
