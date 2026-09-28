@@ -689,6 +689,22 @@ def test_category_gates_integrate_every_required_test_family() -> None:
         assert test_file in runs, f"missing {family} gate"
 
 
+def test_property_gate_executes_the_p7_007_adversarial_property_suite() -> None:
+    """REQ-P7-007 CI integration: the mandatory
+    ``Property / adversarial / malformed inputs`` gate executes the
+    deterministic P7-007 property/adversarial evidence file."""
+    document = _load_workflows()[GATES_WORKFLOW]
+    property_step = [
+        step
+        for job in _jobs(document).values()
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict) and "adversarial / malformed inputs" in str(step.get("name", ""))
+    ]
+    assert property_step, "the mandatory property/adversarial gate is missing"
+    runs = "\n".join(step.get("run", "") for step in property_step)
+    assert "tests/test_p7_adversarial_properties.py" in runs
+
+
 def test_transfer_contamination_gate_is_explicit() -> None:
     document = _load_workflows()[GATES_WORKFLOW]
     contamination_jobs = [

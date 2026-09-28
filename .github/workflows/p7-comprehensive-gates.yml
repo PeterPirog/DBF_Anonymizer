@@ -193,6 +193,7 @@ jobs:
         run: |
           python -m pytest \
             tests/test_p2_global_adversarial.py \
+            tests/test_p7_adversarial_properties.py \
             tests/test_dbfbridge_capability_contract.py \
             -ra
       - name: Privacy diagnostics
