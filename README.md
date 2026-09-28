@@ -16,7 +16,8 @@ The 1.0 line has no compatibility obligation toward the historical 0.3 API,
 CLI, JSONL pipeline, salt-based generator or legacy recovery formats; see
 [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md).
 
-The public 1.0 operation surface is the synchronous, transport-neutral
+The public 1.0-line operation surface (the current 1.0.0.dev0 development
+contract, not yet a stable release) is the synchronous, transport-neutral
 package root `dbf_anonymizer` (capabilities, build_plan, preflight,
 pseudonymize, verify_dataset, recover, create_transfer_bundle,
 verify_transfer_bundle) plus the standalone `dbf-anonymizer` console script

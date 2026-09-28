@@ -1,9 +1,11 @@
 # DBF_Anonymizer operations guide
 
-This guide documents the supported 1.0 operation surface of DBF_Anonymizer:
-internal-network offline installation, one-vault-per-dataset operation, policy
-configuration, relationship configuration, the pseudonymization workflow,
-dataset verification, protected recovery, and DATA_ONLY transfer bundles.
+This guide documents the public operation surface of the DBF_Anonymizer
+1.0.0.dev0 development line (the target stable 1.0 contract is not yet
+released): internal-network offline installation, one-vault-per-dataset
+operation, policy configuration, relationship configuration, the
+pseudonymization workflow, dataset verification, protected recovery, and
+DATA_ONLY transfer bundles.
 
 All statements in this document describe the public, synchronous,
 transport-neutral Python API (`dbf_anonymizer`) and the standalone
@@ -238,14 +240,15 @@ or installs anything at run time: no HTTP, no package indexes, no Git, no
 `pip install` inside DBF_Anonymizer — the complete standalone feature set
 (including recovery and bundles) works with the network removed.
 
-Step 1 — in the trusted connected environment, build the release artifacts and
-download the exact pinned runtime wheelhouse:
+Step 1 — in the trusted connected environment (Windows PowerShell), build the
+release artifacts and download the exact pinned runtime wheelhouse:
 
-```text
-python -m pip install build
+```powershell
+# Windows PowerShell, trusted connected environment
+python -m pip install --upgrade pip build
 python -m build
 python -m pip download --only-binary=:all: --no-cache-dir --no-deps --dest WHEELHOUSE --requirement requirements/p7-offline-wheelhouse.txt
-copy dist\*.whl into WHEELHOUSE
+Copy-Item -Path "dist\*.whl" -Destination "WHEELHOUSE"
 ```
 
 Step 2 — verify the wheelhouse is the exact pinned closure:
@@ -269,20 +272,27 @@ stays `dbfbridge[write]>=1.1.0,<2`; the pin files record the exact tested
 closure, they do not change the range.
 
 Step 3 — move `WHEELHOUSE` (and the bundle of your release artifacts) to the
-internal environment, then install with local wheels only:
+internal environment, then install with local wheels only (Windows
+PowerShell; the `INTERNAL_VENV\Scripts\...` layout is Windows-specific, which
+matches the Windows P7-004 clean offline acceptance):
 
-```text
+```powershell
+# Windows PowerShell, internal environment
 python -m venv INTERNAL_VENV
-python -m pip install --no-index --find-links WHEELHOUSE --no-cache-dir dbf-anonymizer==1.0.0.dev0
+INTERNAL_VENV\Scripts\python.exe -m pip install --no-index --find-links WHEELHOUSE --no-cache-dir dbf-anonymizer==1.0.0.dev0
+INTERNAL_VENV\Scripts\python.exe -m pip check
 INTERNAL_VENV\Scripts\dbf-anonymizer --version
 INTERNAL_VENV\Scripts\dbf-anonymizer self-test --json
 ```
 
 `--no-index` disables every remote index; `--find-links` points pip at the
-local wheelhouse only. `python -m pip check` verifies the installed metadata
-matches the environment. After installation the runtime performs no network
-and no package installation: the standalone contract blocks network and
-process boundaries during operation (see
+local wheelhouse only. `pip check` verifies the installed metadata matches
+the environment. After installation the runtime performs no network use, no
+Git access, no package installation and no dependency download during
+operation; the default standalone run with `index_backend=None` additionally
+starts no VFP/index subprocess, while the opt-in `VFP_INDEXED` profile's
+explicitly injected backend performs its authoritative VFP work outside the
+standalone core boundary under the host's policy (see
 [limits-and-integrity.md](limits-and-integrity.md) for what that means for
 indexes).
 
@@ -559,7 +569,8 @@ and refuses by construction:
 - the recovery vault (`dictionary.sqlite3` / `recovery.sqlite3`) and every
   foreign SQLite database,
 - SQLite WAL/SHM/journal sidecars,
-- reverse mappings and recovery parameters,
+- the protected mapping material (the authoritative original → pseudonym
+  mappings and any reverse lookup) and recovery parameters,
 - secrets, salts, keyfiles and private manifests,
 - original source values and private paths or logs,
 - stale/unverified index artifacts (`.cdx`, `.idx`, `.dbc`, `.dct`, `.dcx`),

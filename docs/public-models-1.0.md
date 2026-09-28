@@ -8,7 +8,7 @@ DBF_Anonymizer 1.0 is a clean-slate API. The historical 0.3 Python API is not a 
 
 - Public models are frozen dataclasses and use immutable tuples for collections.
 - Every model exposes `to_dict()` and serializes to a JSON-safe dictionary.
-- Every serialized model contains `schema_version = "1.0"` and an explicit `model_type`.
+- Every serialized model contains `schema_version = "1.8"` and an explicit `model_type`.
 - Public paths are relative only and are normalized to POSIX separators (`/`). Absolute paths, drive-qualified Windows paths and `..` traversal are rejected.
 - Public result/progress models contain operational codes, counters, fingerprints and normalized relative paths, not original DBF values, memo payloads, reverse mappings, vault contents, secrets or arbitrary diagnostic messages.
 - The package ships `py.typed`; the public source tree is checked with `mypy --strict`.

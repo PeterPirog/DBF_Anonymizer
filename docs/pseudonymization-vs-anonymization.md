@@ -18,7 +18,8 @@ anonymous.
 ## What DATA_ONLY changes — and what it does not
 
 A verified DATA_ONLY bundle removes direct recovery material (the vault,
-WAL/SHM/journal sidecars, reverse mappings, recovery parameters, secrets).
+WAL/SHM/journal sidecars, the protected mapping material, recovery
+parameters, secrets).
 Removing recovery material makes the DATA_ONLY bundle non-reversible by its
 recipient, but it does NOT make the data anonymous. A DATA_ONLY bundle may
 still preserve:

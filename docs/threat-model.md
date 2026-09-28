@@ -1,7 +1,8 @@
 # Threat model
 
-This document describes the concrete threat model of DBF_Anonymizer 1.0: what
-is protected, what is transferable, where the trust boundaries are, which
+This document describes the concrete threat model of the DBF_Anonymizer
+1.0.0.dev0 development line (stable 1.0 release closure is not yet achieved):
+what is protected, what is transferable, where the trust boundaries are, which
 attack/failure classes the design defends against, and — equally important —
 what the tool does NOT protect against.
 
@@ -18,8 +19,9 @@ before making any statement about anonymity.
   `protected/recovery.sqlite3`.
 - Recovery parameters and vault-internal state (SQLite WAL/SHM/journal and
   other recovery sidecars).
-- Reverse mappings (original value → pseudonym) — exist only inside the
-  vault.
+- The protected mapping material (the authoritative forward mappings,
+  original value → pseudonym, from which recovery derives the reverse lookup
+  pseudonym → original) — exists only inside the vault.
 - Secrets, salts, keyfiles, private manifests and private paths/logs.
 
 These artifacts are internal by construction: the transfer bundle creation
@@ -43,7 +45,7 @@ vault and any recovery material must never be transferred.
    pseudonymized output, updates the vault).
 3. The protected vault (SQLite, recovery-capable).
 4. The external / Internet-connected DATA_ONLY consumer (receives only the
-   verified bundle; has no vault, no reverse mappings, no recovery).
+   verified bundle; has no vault, no mapping/recovery material, no recovery).
 
 Recovery authorization is a host decision: a host can independently disable
 recovery, and a disabled policy fails before any vault access

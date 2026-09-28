@@ -7,20 +7,33 @@ Proves the user documentation objectively:
 2. every relative documentation link resolves and every doc is reachable from
    the README;
 3. documented public Python symbols actually exist on the public package root;
-4. documented CLI command names match the real CLI command set exactly;
-5. documented schema/version constants match the current code constants;
+4. documented CLI command names match the real CLI command set exactly and
+   every command advertises its ``--json`` machine mode;
+5. every published version/schema value in the docs matches the actual
+   package metadata, the actual pyproject.toml requirement and the actual
+   public code constants (labelled documentation values, compared exactly);
 6. fenced blocks marked ``python p7-009-exec`` are real executable acceptance
    examples: they are extracted deterministically and run against synthetic
-   task-owned TEMP data;
-7. offline-install examples stay consistent with the pinned wheelhouse
-   contract;
-8. DATA_ONLY documentation enumerates the excluded recovery material and never
-   instructs copying the vault into a transfer;
-9. VFP/index documentation stays truthful (backend-evidence requirement,
-   P6-006 BLOCKED/DEFERRED, no automatic VFP project understanding);
+   task-owned TEMP data. Within ONE document the blocks are intentionally
+   cumulative: the first block of a document bootstraps that document's
+   namespace (including its synthetic work root) and every later block of the
+   same document reuses that namespace; each document starts fresh;
+7. offline-install examples are real, repository-consistent commands (real
+   PowerShell copy/venv commands, pinned wheelhouse closure, no network);
+8. DATA_ONLY documentation enumerates the excluded recovery material and
+   never instructs copying the vault into a transfer;
+9. index/VFP/DBC documentation stays truthful: DBC-bound SOURCE facts are
+   reported without claiming DBC preservation in standalone output, the
+   standalone core requires no VFP/COM/subprocess/network and never scans for
+   VFP, the injected ``IndexBackend`` capability is not denied, P7-004 stays
+   the no-HTTP/no-Git/no-install/no-download guarantee, and P6-006 remains
+   BLOCKED/DEFERRED;
 10. DBF_Anonymizer is described as transport-neutral and NOT an MCP server;
 11. the pseudonymized-vs-anonymous distinction is present and explicit;
-12. docs contain no private paths, secrets or production-data instructions.
+12. docs contain no private paths, secrets or production-data instructions;
+13. English-first is proven structurally: explicit English primary headings,
+    explicit English operational/security terms, and no Polish or Chinese
+    user-facing markers in the P7-009 user documents.
 
 The examples use synthetic fixtures only; the harness never touches
 production datasets.
@@ -29,8 +42,10 @@ production datasets.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import re
 import shutil
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +71,106 @@ LIMITS = "docs/limits-and-integrity.md"
 MCP_DOC = "docs/mcp-integration.md"
 THREAT = "docs/threat-model.md"
 DISTINCTION = "docs/pseudonymization-vs-anonymization.md"
+
+#: The P7-009 user documents (new in this requirement) whose primary language
+#: evidence is proven structurally.
+P7_009_DOCUMENT_NAMES = (
+    "README.md",
+    "docs/operations.md",
+    "docs/limits-and-integrity.md",
+    "docs/mcp-integration.md",
+    "docs/threat-model.md",
+    "docs/pseudonymization-vs-anonymization.md",
+)
+
+#: Required explicit English primary (H1) headings of the P7-009 documents.
+REQUIRED_ENGLISH_PRIMARY_HEADINGS = {
+    "README.md": "DBF_Anonymizer",
+    "docs/operations.md": "DBF_Anonymizer operations guide",
+    "docs/limits-and-integrity.md": "Index, VFP and DBC limitations (truthful capability boundaries)",
+    "docs/mcp-integration.md": "mcp-vfp9sp2-toolchain consumer integration",
+    "docs/threat-model.md": "Threat model",
+    "docs/pseudonymization-vs-anonymization.md": "Pseudonymized is not anonymous",
+}
+
+#: Required explicit English operational/security vocabulary across the
+#: P7-009 user documents (structural anchor, not language detection).
+REQUIRED_ENGLISH_OPERATIONAL_TERMS = (
+    "internal-network offline installation",
+    "one vault per dataset",
+    "policy configuration",
+    "relationship configuration",
+    "pseudonymization",
+    "verification",
+    "recovery",
+    "DATA_ONLY transfer bundles",
+    "recovery vault",
+    "threat model",
+    "trust boundaries",
+    "pseudonymized is not anonymous",
+    "not an MCP server",
+)
+
+#: Unambiguous Polish user-facing words (word-bounded). The guard is a
+#: regression tripwire against accidental Polish primary documentation, not a
+#: language-detection engine.
+POLISH_USER_MARKERS = re.compile(
+    r"\b(?:oraz|dla|jest|nie|ktory|ktora|ktore|poniewaz|przez|tylko|danych|nalezy)"
+    r"\b",
+    re.IGNORECASE,
+)
+
+#: Chinese (Han) script ranges — any match fails the English-first guard.
+CJK_MARKER = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+
+#: Negation tokens that legitimately scope a mention of a forbidden claim.
+NEGATION_TOKEN = re.compile(r"\b(?:not|no|never|cannot|without)\b", re.IGNORECASE)
+
+#: Claims that DBC binding survives into the OUTPUT (contradicts REQ-P6-005:
+#: fresh Direct Write output is standalone data). Only negated mentions are
+#: truthful; every match must carry a negation token in the preceding window.
+DBC_OUTPUT_PRESERVATION_CLAIMS = (
+    r"\bpreserv\w*[^.\n]{0,30}\boutput\b",
+    r"\bbinding[^.\n]{0,30}\bpreserv\w*",
+    r"\bpreserv\w*[^.\n]{0,30}\b(?:source\s+)?(?:dbc\s+|database[-\s]container\s+)*binding\b",
+    r"\bdbc[-\s]bound\s+output\b",
+    r"\boutput\b[^.\n]{0,30}\bdbc[-\s]bound\b",
+    r"\b(?:keeps?|retains?|carries?|includes?)\s+(?:the\s+)?(?:source\s+)?"
+    r"(?:dbc\s+|database[-\s]container\s+)*(?:binding|backlink)",
+)
+
+#: Unconditional no-subprocess/no-process guarantees (contradict the injected
+#: IndexBackend capability; P7-004 is no-HTTP/no-Git/no-install/no-download,
+#: never a blanket process prohibition).
+UNCONDITIONAL_SUBPROCESS_CLAIMS = (
+    r"no\s+subprocess(?:es)?\s+execution\s+during\s+operation",
+    r"blocks?\s+network\s+and\s+process\s+boundaries",
+    r"\bnever\s+start\w*\s+subprocess\w*\s+during\s+operation\b",
+    r"\bno\s+subprocess(?:es)?\s+(?:ever|at\s+any\s+point)\b",
+)
+
+#: Blanket "the product never launches/reads VFP" claims (too broad: the
+#: injected backend may perform the authoritative VFP work).
+ABSOLUTE_VFP_LAUNCH_CLAIMS = (
+    r"\bdbf[-_]anonymizer\s+never\s+launch\w*\s+vfp\b",
+    r"\bdbf[-_]anonymizer\s+never\s+reads?\s+vfp\b",
+    r"\bnever\s+launch\w*\s+vfp\b",
+)
+
+#: Wordings that deny the legitimate injected backend capability or imply
+#: automatic VFP installation discovery.
+BACKEND_CAPABILITY_DENIALS = (
+    r"backend\s+(?:must\s+not|may\s+not|cannot|can\s*not|never)[^.\n]{0,40}\b"
+    r"(?:launch|start|run|invoke|perform)\b[^.\n]{0,40}\bvfp\b",
+    r"no\s+vfp\s+(?:work|execution|rebuild)\s+(?:is\s+)?(?:ever\s+)?permitted",
+)
+
+AUTOMATIC_VFP_DISCOVERY_CLAIMS = (
+    r"\bautomatic(?:ally)?\s+(?:vfp|visual\s+foxpro)\s+"
+    r"(?:installation\s+)?(?:discovery|discovering|detection|search|scanning)\b",
+    r"\b(?:scans?|search(?:es)?|probes?|discovers?)\s+(?:the\s+|for\s+|any\s+)*"
+    r"(?:machine|program\s+files|installed\s+vfp)[^.\n]{0,40}\bvfp\b",
+)
 
 
 def _documents() -> dict[str, str]:
@@ -106,6 +221,28 @@ def _topic_text(topic_markers: tuple[str, ...]) -> None:
     aggregated = _normalized(_all_text())
     missing = [marker for marker in topic_markers if _normalized(marker) not in aggregated]
     assert not missing, f"documentation topic markers missing: {missing}"
+
+
+def _assert_no_unnegated_claim(text: str, pattern: str, *, label: str) -> None:
+    """Every regex match of *pattern* must carry a negation token in the same
+    sentence (within the 40 characters before it, never crossing a sentence
+    or line boundary), so only negated (truthful) mentions of the forbidden
+    claim remain in the documentation."""
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        prefix = text[max(0, match.start() - 40) : match.start()]
+        boundary = max(prefix.rfind("."), prefix.rfind("!"), prefix.rfind("?"), prefix.rfind("\n"))
+        if boundary != -1:
+            prefix = prefix[boundary + 1 :]
+        if not NEGATION_TOKEN.search(prefix):
+            raise AssertionError(
+                f"unnegated forbidden documentation claim ({label}): {match.group(0)!r}"
+            )
+
+
+def _forbid_unnegated_claims(patterns: tuple[str, ...], *, label: str) -> None:
+    text = _all_text()
+    for pattern in patterns:
+        _assert_no_unnegated_claim(text, pattern, label=label)
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +328,7 @@ def test_data_only_topic_is_covered() -> None:
             "verify_transfer_bundle",
             "EXCLUDES",
             "SQLite WAL/SHM/journal",
-            "reverse mappings",
+            "the protected mapping material",
             "fresh FPT companions",
             "sanitized public manifest",
         )
@@ -244,10 +381,53 @@ def test_threat_model_topic_is_covered() -> None:
 
 
 def test_documentation_is_english_first() -> None:
+    """Structural English-first evidence (no language-detection dependency):
+
+    (a) no Polish diacritics and no Chinese characters anywhere in the user
+        documentation (UTF-8 stays supported; the guard is character-class
+        based, deterministic and dependency-free);
+    (b) every P7-009 user document opens with the required explicit English
+        primary heading;
+    (c) every heading of a P7-009 user document is ASCII (English);
+    (d) required operational/security vocabulary is explicit English;
+    (e) no known Polish user-facing marker appears in a P7-009 document.
+    """
+    documents = _documents()
     polish_diacritics = set("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
-    for name, text in _documents().items():
+    for name, text in documents.items():
         found = sorted(set(text) & polish_diacritics)
-        assert not found, f"{name} contains non-English characters: {found}"
+        assert not found, f"{name} contains Polish diacritics: {found}"
+        cjk = CJK_MARKER.search(text)
+        assert cjk is None, f"{name} contains a Chinese character: {cjk.group(0)!r}"
+
+    for name in P7_009_DOCUMENT_NAMES:
+        primary = next(
+            (line for line in documents[name].splitlines() if line.startswith("# ")),
+            None,
+        )
+        assert primary is not None, f"{name} has no primary (H1) heading"
+        assert primary[2:] == REQUIRED_ENGLISH_PRIMARY_HEADINGS[name], (
+            f"{name}: unexpected primary heading {primary!r}"
+        )
+
+    for name in P7_009_DOCUMENT_NAMES:
+        headings = [line for line in documents[name].splitlines() if re.match(r"^#{1,6} ", line)]
+        assert headings, f"{name} has no section headings"
+        for heading in headings:
+            non_ascii_letters = sorted({ch for ch in heading if ch.isalpha() and not ch.isascii()})
+            assert not non_ascii_letters, (
+                f"{name}: non-English letters in heading {heading!r}: {non_ascii_letters}"
+            )
+
+    aggregated = _normalized("\n".join(documents[name] for name in P7_009_DOCUMENT_NAMES))
+    missing = [
+        term for term in REQUIRED_ENGLISH_OPERATIONAL_TERMS if _normalized(term) not in aggregated
+    ]
+    assert not missing, f"required English operational terms missing: {missing}"
+
+    for name in P7_009_DOCUMENT_NAMES:
+        marker = POLISH_USER_MARKERS.search(documents[name])
+        assert marker is None, f"{name} contains a Polish user-facing marker: {marker.group(0)!r}"
 
 
 _LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
@@ -316,32 +496,74 @@ def test_documented_cli_commands_match_the_real_cli_set() -> None:
 
 
 def test_documented_schema_and_version_constants_match_the_code() -> None:
-    from dbf_anonymizer.errors import ERROR_REGISTRY_VERSION, ERROR_SCHEMA_VERSION
-    from dbf_anonymizer.models import (
-        INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
-        MODEL_SCHEMA_VERSION,
-    )
+    """Documentation and code agree on every published version/schema value.
+
+    Each comparison parses the LABELLED documented value from the user docs
+    and compares it EXACTLY to the actual installed package metadata, the
+    actual pyproject.toml runtime requirement or the actual public code
+    constant — never a code constant against a hardcoded test literal.
+    """
+    public = importlib.import_module("dbf_anonymizer")
     from dbf_anonymizer.relationships.models import RELATIONSHIP_METADATA_SCHEMA_VERSION
 
-    text = _all_text()
-    assert importlib.import_module("dbf_anonymizer").__version__ == "1.0.0.dev0"
-    assert importlib.metadata_version if False else True
-    assert "1.0.0.dev0" in text
-    assert "dbfbridge[write]>=1.1.0,<2" in text
-    # The pinned wheelhouse closure is documented with the exact versions.
-    assert "dbfbridge" in text and "1.1.1" in text
-    assert "dbfread" in text and "2.0.7" in text
-    assert "dbf" in text and "0.99.11" in text
-    assert "aenum" in text and "3.1.17" in text
-    # Relationship metadata schema version is documented as 1.0.
-    assert 'metadata_schema_version == "1.0"' in text or '"1.0"' in text
-    # The public model/error/index schema constants referenced by docs.
-    assert MODEL_SCHEMA_VERSION == "1.8"
-    assert ERROR_SCHEMA_VERSION == "1.1"
-    assert ERROR_REGISTRY_VERSION == "1.5"
-    assert INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION == "1.2"
-    assert RELATIONSHIP_METADATA_SCHEMA_VERSION == "1.0"
+    # A. Package version: installed public metadata vs the labelled
+    # application wheel pin published by the offline installation guide.
+    package_version = importlib.metadata.version("dbf-anonymizer")
+    assert package_version == public.__version__
+    operations = _documents()[OPERATIONS]
+    application_pins = re.findall(r"dbf-anonymizer==([^\s`|)\"]+)", operations)
+    assert application_pins, "operations.md must publish the application wheel pin"
+    assert set(application_pins) == {package_version}, application_pins
+
+    # B. Runtime dependency range: pyproject.toml vs the labelled documented
+    # runtime boundary in limits-and-integrity.md and the README.
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    actual_requirement = next(
+        (
+            requirement
+            for requirement in pyproject["project"]["dependencies"]
+            if requirement.startswith("dbfbridge")
+        ),
+        None,
+    )
+    assert actual_requirement is not None, (
+        "pyproject.toml must declare the dbfbridge[write] runtime dependency"
+    )
+    limits = _documents()[LIMITS]
+    readme = _documents()["README.md"]
+    for name, text in (("limits-and-integrity.md", limits), ("README.md", readme)):
+        documented_suffixes = re.findall(r"dbfbridge\[write\]([^\s`|)\"]+)", text)
+        assert documented_suffixes, f"{name} must publish the runtime dependency range"
+        documented_requirements = {f"dbfbridge[write]{suffix}" for suffix in documented_suffixes}
+        assert documented_requirements == {actual_requirement}
+
+    # C. Relationship metadata schema: labelled documented value vs code.
+    relationship_labels = re.findall(r"metadata_schema_version\s*==\s*\"([^\"]+)\"", operations)
+    assert relationship_labels == [RELATIONSHIP_METADATA_SCHEMA_VERSION]
+
+    # D. Public model / error / index-protocol schemas: the docs that publish
+    # them as user contract carry labelled values compared to the code
+    # constants. INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION is documented with the
+    # VFP_INDEXED backend-evidence requirement in limits-and-integrity.md.
+    models_doc = (REPO_ROOT / "docs/public-models-1.0.md").read_text(encoding="utf-8")
+    model_labels = re.findall(r"schema_version\s*=\s*\"([^\"]+)\"", models_doc)
+    assert model_labels == [public.MODEL_SCHEMA_VERSION]
+
+    errors_doc = (REPO_ROOT / "docs/errors-1.0.md").read_text(encoding="utf-8")
+    error_labels = re.findall(r"public error payload schema\s*\(`([^`]+)`\)", errors_doc)
+    assert error_labels == [public.ERROR_SCHEMA_VERSION]
+    registry_labels = re.findall(r"error-code registry\s*\(`([^`]+)`\)", errors_doc)
+    assert registry_labels == [public.ERROR_REGISTRY_VERSION]
+
+    index_labels = re.findall(r"index-backend protocol schema version\s+`([0-9][^`]*)`", limits)
+    assert index_labels == [public.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION]
+
+    # E. The CLI command set is proven separately (exact COMMANDS comparison)
+    # and the relative links separately (exact resolution); this test covers
+    # only the published version/schema labels.
+
     # Private module paths are not documented as public contract.
+    text = _all_text()
     for private in ("dbf_anonymizer.engine.", "dbf_anonymizer.vault.", "dbf_anonymizer.planning."):
         assert private not in text, private
 
@@ -412,14 +634,33 @@ def test_executable_documentation_examples_run() -> None:
             shutil.rmtree(root, ignore_errors=True)
 
 
-def test_executable_examples_never_reference_private_temp_paths() -> None:
+def test_executable_marker_blocks_share_one_cumulative_namespace() -> None:
+    """The marker blocks are intentionally cumulative within one document
+    namespace, and the harness documents that actual design: the FIRST
+    p7-009-exec block of a document bootstraps that document's namespace
+    (including its own synthetic ``tempfile.mkdtemp`` work root) and every
+    later block of the same document reuses that namespace instead of
+    creating new temporaries. Every block stays free of private temp paths.
+    """
     for name, text in _documents().items():
-        for info, body in _fenced_blocks(text):
-            if not (info.startswith("python") and EXECUTABLE_INFO_MARKER in info):
-                continue
-            assert "C:\\" not in body and "C:/" not in body, name
-            assert "Users/" not in body, name
-            assert body.count("tempfile.mkdtemp") >= 0  # marker blocks are self-contained
+        blocks = [
+            body
+            for info, body in _fenced_blocks(text)
+            if info.startswith("python") and EXECUTABLE_INFO_MARKER in info
+        ]
+        if not blocks:
+            continue
+        first_block, later_blocks = blocks[0], blocks[1:]
+        assert 'tempfile.mkdtemp(prefix="dbf-anonymizer-doc-")' in first_block, (
+            f"{name}: the first marker block must bootstrap the document namespace"
+        )
+        for index, block in enumerate(later_blocks, start=1):
+            assert "tempfile.mkdtemp" not in block, (
+                f"{name}: block {index} must reuse the document namespace, not create a new temp root"
+            )
+        for block in blocks:
+            assert "C:\\" not in block and "C:/" not in block, name
+            assert "Users/" not in block, name
 
 
 # ---------------------------------------------------------------------------
@@ -438,14 +679,45 @@ def test_offline_install_examples_match_the_pinned_wheelhouse_contract() -> None
         "--requirement requirements/p7-offline-wheelhouse.txt",
         "--no-index",
         "--find-links",
-        "python -m pip check",
     ):
         assert required in operations, required
-    application_pin = next(iter(EXPECTED_APPLICATION.items()))
-    assert f"dbf-anonymizer=={application_pin[1]}" in operations
-    for name, version in EXPECTED_RUNTIME_PINS.items():
-        assert name in operations, name
-        assert version in operations, version
+    # The copy step is a REAL Windows PowerShell command (never prose).
+    assert 'Copy-Item -Path "dist\\*.whl" -Destination "WHEELHOUSE"' in operations
+    assert "copy dist\\*.whl into WHEELHOUSE" not in operations
+    # The manifest and checker referenced by the commands exist in the repo.
+    assert (REPO_ROOT / "requirements" / "p7-offline-wheelhouse.txt").is_file()
+    assert (REPO_ROOT / "tools" / "check_p7_offline_wheelhouse.py").is_file()
+    # The documented pinned-closure table equals the tool constants exactly.
+    closure_section = operations.split("The exact pinned runtime closure is:", 1)[1]
+    closure_section = closure_section.split("Step 3", 1)[0]
+    closure_rows = re.findall(
+        r"^\| `?([A-Za-z0-9._-]+)`? \| ([0-9][^|]+) \|$",
+        closure_section,
+        flags=re.MULTILINE,
+    )
+    parsed_pins: dict[str, str] = {}
+    for name, cell in closure_rows:
+        version = re.match(r"([0-9][A-Za-z0-9.]*)", cell.strip())
+        assert version is not None, f"unparsable pinned version for {name}: {cell!r}"
+        parsed_pins[name] = version.group(1)
+    assert parsed_pins == EXPECTED_RUNTIME_PINS
+    # The application wheel is the DBF_Anonymizer distribution itself, at the
+    # actual installed package metadata version.
+    application_version = importlib.metadata.version("dbf-anonymizer")
+    assert EXPECTED_APPLICATION == {"dbf-anonymizer": application_version}
+    assert f"dbf-anonymizer=={application_version}" in operations
+    # The internal install uses the venv interpreter with --no-index and
+    # --find-links only, and verifies the installed metadata with pip check.
+    assert (
+        "INTERNAL_VENV\\Scripts\\python.exe -m pip install --no-index "
+        "--find-links WHEELHOUSE" in operations
+    )
+    assert "INTERNAL_VENV\\Scripts\\python.exe -m pip check" in operations
+    # The Windows-specific command blocks are explicitly labelled PowerShell.
+    powershell_blocks = [
+        info for info, _ in _fenced_blocks(operations) if info.startswith("powershell")
+    ]
+    assert len(powershell_blocks) >= 2, powershell_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +730,8 @@ def test_data_only_documentation_excludes_recovery_material() -> None:
         (
             "the recovery vault (`dictionary.sqlite3` / `recovery.sqlite3`)",
             "SQLite WAL/SHM/journal sidecars",
-            "reverse mappings and recovery parameters",
+            "the protected mapping material (the authoritative original → pseudonym",
+            "mappings and any reverse lookup) and recovery parameters",
             "secrets, salts, keyfiles and private manifests",
             "original source values and private paths or logs",
             "stale/unverified index artifacts",
@@ -473,6 +746,17 @@ def test_data_only_documentation_excludes_recovery_material() -> None:
         "copy dictionary.sqlite3 into the bundle",
     ):
         assert forbidden not in _all_text(), forbidden
+    # Mapping terminology stays technically correct: the vault stores the
+    # authoritative FORWARD mappings (original → pseudonym) and recovery
+    # derives the reverse lookup — "original → pseudonym" is never described
+    # as a "reverse mapping" (in any phrasing or arrow form), and no real
+    # mapping values are exposed.
+    terminology = re.compile(
+        r"reverse\s+mappings?[^.\n]{0,30}\boriginal\s+(?:value\s+)?(?:→|->|=>)",
+        re.IGNORECASE,
+    )
+    match = terminology.search(_all_text())
+    assert match is None, f"forbidden mapping-direction terminology: {match.group(0)!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +785,79 @@ def test_vfp_index_documentation_is_truthful() -> None:
         "fully preserves DBC triggers",
     ):
         assert forbidden not in _all_text(), forbidden
+
+
+def test_dbc_source_and_output_truth_semantics() -> None:
+    """REQ-P6-005 truth semantics, positive and negative.
+
+    Positive: a DBC-bound SOURCE stays truthfully reported as DBC-bound in
+    the source inventory/plan/public source facts, fresh Direct Write output
+    is standalone data unless authoritative higher-level metadata is
+    injected, the standalone output schema does NOT retain the source DBC
+    binding/backlink, DBC rules/triggers/relations/views/procedures are never
+    invented or rewritten, and DATA_ONLY omits DBC/DCT/DCX plus stale
+    CDX/IDX artifacts.
+
+    Negative: no sentence may claim (unnegated) that DBC binding is preserved
+    in the output, that the output remains/keeps DBC-bound, or that the
+    output retains the DBC binding/backlink — regardless of exact phrasing.
+    """
+    limits = _normalized(_documents()[LIMITS])
+    for required in (
+        "reported as DBC-bound in the source inventory",
+        "STANDALONE data unless authoritative higher-level metadata is injected",
+        "does NOT retain the source DBC binding",
+        "does NOT imply preservation",
+        "DBC rules, triggers, persistent relations, views or stored procedures",
+        "invents, rewrites or copies none of them",
+        "omits DBC/DCT/DCX and stale CDX/IDX artifacts",
+    ):
+        assert _normalized(required) in limits, required
+    _forbid_unnegated_claims(DBC_OUTPUT_PRESERVATION_CLAIMS, label="DBC output preservation")
+
+
+def test_subprocess_and_vfp_boundary_semantics() -> None:
+    """The VFP/subprocess boundary is stated with the required precision.
+
+    Positive: default standalone operation (index_backend=None) requires no
+    VFP, no COM, starts no VFP/index subprocess and requires no network;
+    import/capability discovery instantiates no COM, discovers no VFP and
+    starts no subprocess; the injected IndexBackend may perform the
+    authoritative VFP work outside the standalone core boundary; P7-004 is
+    exactly no-HTTP/no-Git/no-package-installation/no-dependency-download;
+    the core never scans the machine for VFP.
+
+    Negative: unconditional "no subprocess during operation" guarantees,
+    blanket "never launches VFP" claims, backend-capability denials and
+    automatic-VFP-discovery implications are rejected.
+    """
+    limits = _normalized(_documents()[LIMITS])
+    for required in (
+        "require no VFP, no COM",
+        "start no VFP/index subprocess",
+        "contact no network",
+        "never scan the machine for VFP installations",
+        "does not instantiate COM",
+        "does not discover or search for VFP",
+        "starts no subprocesses",
+        "no import-time VFP backend dependency",
+        "explicitly injects",
+        "may perform the authoritative VFP work",
+        "outside the standalone core boundary",
+        "no HTTP",
+        "no Git",
+        "no package installation",
+        "no dependency download",
+    ):
+        assert _normalized(required) in limits, required
+    # The P7-004 guarantee must NOT be stated as a blanket process ban, and
+    # the product must NOT be described as never launching VFP at all.
+    for forbidden in UNCONDITIONAL_SUBPROCESS_CLAIMS:
+        assert re.search(forbidden, _all_text(), flags=re.IGNORECASE) is None, forbidden
+    for forbidden in ABSOLUTE_VFP_LAUNCH_CLAIMS:
+        assert re.search(forbidden, _all_text(), flags=re.IGNORECASE) is None, forbidden
+    _forbid_unnegated_claims(BACKEND_CAPABILITY_DENIALS, label="injected backend capability denial")
+    _forbid_unnegated_claims(AUTOMATIC_VFP_DISCOVERY_CLAIMS, label="automatic VFP discovery")
 
 
 # ---------------------------------------------------------------------------
@@ -570,16 +927,35 @@ def test_documentation_contains_no_private_paths_or_sensitive_material() -> None
 
 
 def test_documentation_never_points_outside_the_project() -> None:
+    repo_root = REPO_ROOT.resolve()
     for name, text in _documents().items():
+        base = (REPO_ROOT / name).parent
         for target in _LINK.findall(text):
-            assert target.startswith(("http://", "https://", "#", "../", "docs/")) or not (
-                target.startswith("/")
-            ), f"{name}: unexpected absolute link target {target!r}"
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            path_part = target.split("#", 1)[0]
+            if not path_part:
+                continue  # pure in-page anchor
+            resolved = (base / path_part).resolve()
+            assert repo_root == resolved or repo_root in resolved.parents, (
+                f"{name}: link {target!r} escapes the repository root"
+            )
 
 
 def test_documented_json_contract_names_are_public() -> None:
-    """Machine-mode examples must expose only public model_type names."""
+    """Machine-mode documentation exposes the versioned JSON contract: the
+    CLI command table must name exactly the real command set and every
+    command must advertise its ``--json`` machine mode."""
+    from dbf_anonymizer.cli import COMMANDS
+
     operations = _documents()[OPERATIONS]
-    assert "--json" in operations
-    # The CLI table exists and every command has a purpose column.
-    assert operations.count("| `") >= 9
+    cli_section = operations.split("## Public API and CLI truth", 1)[1]
+    cli_section = cli_section.split("## Quick start", 1)[0]
+    command_rows = re.findall(
+        r"^\| `([a-z-]+)` \|([^|]*)\|([^|]*)\|$",
+        cli_section,
+        flags=re.MULTILINE,
+    )
+    assert {name for name, _, _ in command_rows} == set(COMMANDS)
+    for name, _purpose, machine_mode in command_rows:
+        assert "--json" in machine_mode, f"{name} must advertise --json machine mode"
