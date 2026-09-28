@@ -1,0 +1,63 @@
+{
+  "specification_id": "DBF-RELEASE-PUBLISHING-POLICY",
+  "specification_version": "1.0",
+  "requirement": "REQ-P7-008",
+  "purpose": "REQUIRED-CONFIGURATION SPECIFICATION for the credentialless release publication path (GitHub OIDC Trusted Publishing) and for the CI-issued cryptographic attestation of release artifacts. This file is NOT evidence of configuration and NOT evidence of publication: it states the security boundary and the exact external configuration that MUST exist before any publication may ever run. It deliberately separates repository structural evidence from externally verified live configuration.",
+  "evidence_status": "SPECIFICATION_NOT_PROOF",
+  "evidence_classes": {
+    "repository_structural_evidence": {
+      "note": "What this repository version-controls and its non-privileged CI proves: the fail-closed privileged release workflow, the release evidence builder/verifier tooling, the reproducible-build/SBOM/manifest evidence bundle, and green non-privileged validation jobs.",
+      "live_publication_dependency": "external PyPI trusted-publisher configuration and an explicitly authorized release run"
+    },
+    "external_live_configuration_evidence": {
+      "note": "Facts verifiable ONLY from live GitHub/PyPI configuration and an authorized release execution. The repository never fabricates them.",
+      "pypi_trusted_publishing_configured": false,
+      "publication_performed": false,
+      "note_details": "PyPI Trusted Publishing for the dbf-anonymizer project has NOT been externally configured or live-verified. The publication job is fail-closed and cannot run until the authoritative gate repository variable is set AND the PyPI project owner completes the Trusted Publisher configuration."
+    }
+  },
+  "publication": {
+    "mechanism": "github_oidc_trusted_publishing",
+    "workflow_file": ".github/workflows/dbf-release-publish.yml",
+    "allowed_triggers_exactly": ["release", "workflow_dispatch"],
+    "forbidden_triggers": [
+      "pull_request",
+      "pull_request_target",
+      "workflow_run",
+      "push",
+      "repository_dispatch"
+    ],
+    "ref_guard": "refs/heads/main or refs/tags/* only, verified before any checkout; every other ref is refused",
+    "permissions": {"contents": "read", "id-token": "write"},
+    "publisher_action": "pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc",
+    "publisher_action_version": "v1.12.4",
+    "fail_closed_gate_variable": "vars.DBF_PYPI_TRUSTED_PUBLISHING_ENABLED",
+    "fail_closed_note": "The publication job condition is vars.DBF_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true'. While the variable is unset the job cannot run and nothing is published; the gate deliberately follows the fail-closed pattern established for the trusted VFP9 runner lane (REQ-P7-006).",
+    "pre_publication_verification": "The publication job re-runs tools/verify_release_evidence.py against the downloaded evidence bundle and refuses to publish on any mismatch (fail-closed).",
+    "external_configuration_required": [
+      "The PyPI project owner must configure the dbf-anonymizer project's Trusted Publisher on PyPI (owner/repository/workflow filename/environment) before any publication can succeed.",
+      "The repository owner must set the repository variable DBF_PYPI_TRUSTED_PUBLISHING_ENABLED to 'true' only after the PyPI-side configuration is live."
+    ],
+    "external_configuration_verified": false
+  },
+  "attestation": {
+    "mechanism": "github_artifact_attestations",
+    "action": "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+    "action_version": "v4.2.2",
+    "permissions": {"contents": "read", "id-token": "write", "attestations": "write"},
+    "note": "GitHub artifact attestations are cryptographically verifiable, CI-issued build provenance statements signed through GitHub's OIDC/Sigstore infrastructure. No private signing key exists: no signing key is created, stored, or read anywhere in this repository, and the attestation job can never execute for pull_request events."
+  },
+  "integrity": {
+    "evidence_manifest": "release-evidence.manifest.json",
+    "verifier_tool": "tools/verify_release_evidence.py",
+    "note": "Every artifact and the SBOM carry SHA-256 values recorded in the deterministic evidence manifest; the verifier recomputes them and fails closed on any tampering."
+  },
+  "invariants": [
+    "no publication credential, token, or id-token authority may ever be exposed to pull_request execution",
+    "the privileged release workflow must never contain a pull_request, pull_request_target or workflow_run trigger",
+    "any job holding id-token: write or attestations: write must live exclusively in the privileged release workflow and must remain SHA-pinned and minimally permissioned",
+    "the publication job is fail-closed: it runs only from an authorized release context (release published or a main/tag dispatch) AND only when the authoritative gate repository variable equals 'true'",
+    "the repository never claims PyPI Trusted Publishing is configured; that platform fact stays external and must be verified live before publication",
+    "no private signing key exists; cryptographic authenticity comes from CI-issued GitHub artifact attestations, and integrity comes from the SHA-256 hashed evidence manifest"
+  ]
+}

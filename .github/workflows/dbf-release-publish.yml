@@ -1,0 +1,160 @@
+name: DBF release publication (privileged)
+
+# REQ-P7-008 PRIVILEGED RELEASE LANE — security-critical, FAIL-CLOSED.
+#
+# UNTRUSTED PULL-REQUEST CODE MUST NEVER GAIN PUBLICATION AUTHORITY.
+#
+# This workflow is the ONLY workflow in the repository allowed to hold
+# `id-token: write` / `attestations: write` or any publication authority.  It
+# can never execute for pull_request events: its only triggers are a published
+# GitHub release and an explicit workflow_dispatch, and a first-step trust
+# guard refuses every ref except refs/heads/main and refs/tags/* BEFORE any
+# checkout.  There is no pull_request, no pull_request_target and no
+# workflow_run trigger anywhere in this file.
+#
+# JOBS:
+#   build-reproducible-release — non-publishing: two independent deterministic
+#     builds, metadata validation, pinned wheelhouse, fresh-wheel smoke,
+#     CycloneDX SBOM, hashed evidence manifest (tools/build_release_evidence.py).
+#   attest-release-artifacts — CI-issued cryptographic provenance via GitHub
+#     artifact attestations (Sigstore-backed OIDC; no private key exists).
+#   publish-pypi — FAIL-CLOSED PyPI publication via OIDC Trusted Publishing
+#     (pypa/gh-action-pypi-publish, SHA-pinned).  It runs ONLY when the
+#     authoritative repository variable DBF_PYPI_TRUSTED_PUBLISHING_ENABLED
+#     equals 'true' AND the PyPI-side Trusted Publisher configuration exists
+#     (an external platform fact that this repository does NOT claim:
+#     see .github/release-publishing-policy.json).  The job re-verifies the
+#     downloaded evidence bundle with the fail-closed verifier before publishing.
+#
+# No package is published by pull-request validation, and no publication
+# happens unless the external gate is configured and an authorized release
+# context dispatches this lane.  See .github/release-publishing-policy.json.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-reproducible-release:
+    name: Reproducible release build + evidence (non-publishing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Trust guard — the publication lane accepts ONLY main/tag refs
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/tags/*) echo "release ref accepted: $GITHUB_REF" ;;
+            *) echo "FAIL: publication lane refuses ref $GITHUB_REF" >&2; exit 1 ;;
+          esac
+          case "$GITHUB_EVENT_NAME" in
+            release|workflow_dispatch) echo "release event accepted: $GITHUB_EVENT_NAME" ;;
+            *) echo "FAIL: publication lane refuses event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No explicit ref: checks out exactly the dispatched/published trusted
+        # ref, never github.event.pull_request.head.sha or caller-provided SHA.
+      - name: Exact release revision identity
+        run: |
+          echo "release_head=$(git rev-parse HEAD)"
+          echo "release_ref=$GITHUB_REF"
+          echo "release_event=$GITHUB_EVENT_NAME"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the release-evidence tooling environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Build the reproducible release evidence bundle
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+        run: |
+          python tools/build_release_evidence.py \
+            --output-dir "$EVIDENCE_DIR" \
+            --workflow-name "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-event "$GITHUB_EVENT_NAME"
+      - name: Show the release evidence identity
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+        run: cat "$EVIDENCE_DIR/release-evidence.manifest.json"
+      - name: Upload the release evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dbf-anonymizer-release-evidence
+          if-no-files-found: error
+
+  attest-release-artifacts:
+    name: GitHub artifact attestations (Sigstore-backed OIDC provenance)
+    needs: build-reproducible-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Trust guard — attestations come only from the authorized release context
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/tags/*) echo "attestation ref accepted: $GITHUB_REF" ;;
+            *) echo "FAIL: attestation lane refuses ref $GITHUB_REF" >&2; exit 1 ;;
+          esac
+          case "$GITHUB_EVENT_NAME" in
+            release|workflow_dispatch) echo "attestation event accepted: $GITHUB_EVENT_NAME" ;;
+            *) echo "FAIL: attestation lane refuses event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+      - name: Attest the exact release artifacts (sdist + wheel)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            evidence/dist/*.tar.gz
+            evidence/dist/*.whl
+
+  publish-pypi:
+    name: PyPI publication via OIDC Trusted Publishing (fail-closed gate)
+    needs: attest-release-artifacts
+    if: vars.DBF_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Trust guard — the publication job runs ONLY for main/tag release contexts
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/tags/*) echo "publication ref accepted: $GITHUB_REF" ;;
+            *) echo "FAIL: publication job refuses ref $GITHUB_REF" >&2; exit 1 ;;
+          esac
+          case "$GITHUB_EVENT_NAME" in
+            release|workflow_dispatch) echo "publication event accepted: $GITHUB_EVENT_NAME" ;;
+            *) echo "FAIL: publication job refuses event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+      - name: Fail-closed pre-publication evidence verification
+        run: |
+          python tools/verify_release_evidence.py \
+            --manifest evidence/release-evidence.manifest.json \
+            --evidence-root evidence
+      - name: Publish to PyPI via OIDC Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          packages-dir: evidence/dist
