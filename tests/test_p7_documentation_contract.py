@@ -139,6 +139,22 @@ DBC_OUTPUT_PRESERVATION_CLAIMS = (
     r"(?:dbc\s+|database[-\s]container\s+)*(?:binding|backlink)",
 )
 
+#: False deterministic pseudonym claims (contradict REQ-P2-004: text
+#: pseudonyms use cryptographically secure randomness, fresh vaults produce
+#: independent sets, same vault reuses stored mappings). Only negated
+#: mentions are truthful; blanket "deterministic" claims about pseudonym
+#: generation are architecturally false.
+#: Patterns are scoped to avoid matching correctly negated/qualified statements.
+DETERMINISTIC_PSEUDONYM_CLAIMS = (
+    r"transforms?\s+values?\s+deterministic(?:ally)?\s+(?:and\s+reversibly)?",
+    r"deterministic(?:ally)?\s+(?:derives?|generates?|produces?)\s+(?:text\s+)?pseudonyms?",
+    r"pseudonyms?\s+are\s+deterministic(?:ally)?\s+(?:derived|generated|produced)\s+from",
+    r"same\s+(?:source\s+)?value\s+(?:always\s+)?produces\s+the\s+same\s+pseudonym\s+(?:across|in)\s+fresh",
+    r"predictably\s+derived\s+from\s+(?:the\s+)?(?:original\s+)?value",
+    r"deterministic\s+mapping\s+from\s+original\s+(?:to\s+)?pseudonym",
+    r"fresh\s+vault\s+(?:produces?|yields?|gives?)\s+the\s+same\s+pseudonym",
+)
+
 #: Unconditional no-subprocess/no-process guarantees (contradict the injected
 #: IndexBackend capability; P7-004 is no-HTTP/no-Git/no-install/no-download,
 #: never a blanket process prohibition).
@@ -899,6 +915,46 @@ def test_pseudonymized_vs_anonymous_distinction_is_explicit() -> None:
     ):
         assert required in distinction, required
     _topic_text(("is not proof of full anonymity",))
+
+
+# ---------------------------------------------------------------------------
+# 11b. Pseudonym allocation truthfulness (REQ-P2-004 / REQ-P7-009)
+# ---------------------------------------------------------------------------
+
+
+def test_pseudonym_allocation_documentation_is_truthful() -> None:
+    """REQ-P2-004 / REQ-P7-009 truth semantics for text pseudonym allocation.
+
+    Positive: the documentation must explicitly state:
+    - cryptographically secure/random text pseudonym allocation on first creation
+    - fresh-vault independence / non-repeatability semantics
+    - same-compatible-vault mapping stability and reuse
+    - reversibility through the protected vault (not deterministic derivation)
+
+    Negative: the documentation must NOT contain unnegated blanket claims such as:
+    - "transforms values deterministically"
+    - "deterministically derives pseudonyms from original values"
+    - "the same source value always produces the same pseudonym across fresh vaults"
+    - "predictably derived from the original value"
+    """
+    distinction = _documents()[DISTINCTION]
+
+    # Positive required markers
+    for required in (
+        "cryptographically secure randomness",
+        "fresh compatible vault",
+        "independent pseudonym set",
+        "same compatible vault",
+        "stable and reused consistently",
+        "reversibility through the protected vault",
+        "not guaranteed to receive the same pseudonym",
+    ):
+        assert _normalized(required) in _normalized(distinction), (
+            f"required pseudonym allocation truth missing: {required!r}"
+        )
+
+    # Negative: forbid unnegated false deterministic claims
+    _forbid_unnegated_claims(DETERMINISTIC_PSEUDONYM_CLAIMS, label="false deterministic pseudonym")
 
 
 # ---------------------------------------------------------------------------

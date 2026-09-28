@@ -7,13 +7,41 @@ absence of the vault in a transfer does not change that classification.
 
 ## What pseudonymization means here
 
-DBF_Anonymizer transforms values deterministically and reversibly: the
-mapping from original values to pseudonyms is authoritative and complete
-inside the single protected recovery vault. Pseudonymized data plus the vault
+DBF_Anonymizer performs reversible pseudonymization backed by a protected
+vault. Text pseudonyms are allocated with cryptographically secure randomness
+when a mapping is first created; the persisted mapping is then reused
+consistently by the same compatible vault. Pseudonymized data plus the vault
 is, by design, fully recoverable by authorized operators
 ([operations.md](operations.md), "Recovery"). That reversibility is a feature
 for the internal environment and simultaneously the reason the output is not
 anonymous.
+
+### Reversibility through the protected vault
+
+Recovery is possible because the protected vault persists the authoritative
+reversible mapping and recovery material. The vault is the single source of
+truth for reversing pseudonymized values back to their originals.
+
+### Fresh vault independence
+
+When a fresh compatible vault is used, text pseudonym allocation uses
+cryptographically secure randomness; the same original value is NOT guaranteed
+to receive the same pseudonym in a different fresh vault. Each vault produces
+an independent pseudonym set.
+
+### Same compatible vault stability
+
+When the SAME compatible vault is reused, the previously stored mapping is
+stable and reused consistently. Within one dataset and vault, the same exact
+mapped domain value receives the same persisted pseudonym across all
+participating tables and fields.
+
+### Domain consistency
+
+Within one dataset and vault, the same exact mapped domain value receives the
+same persisted pseudonym across all participating tables and fields. This
+consistency is achieved through vault-persisted mappings, not through
+deterministic derivation from the original value.
 
 ## What DATA_ONLY changes — and what it does not
 
