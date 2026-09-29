@@ -284,7 +284,9 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
     p7 = _read_p7_manifest(evidence_root)
     if p7["tamper_detection_selftest"]["result"] != "PASS":
         _fail("release evidence tamper self-test did not pass")
-    digest = (evidence_root / "release-evidence.manifest.sha256").read_text(encoding="utf-8")
+    digest = (
+        (evidence_root / "release-evidence.manifest.sha256").read_text(encoding="utf-8").strip()
+    )
     code, _ = _run_json(
         [
             sys.executable,
@@ -641,6 +643,17 @@ def main() -> int:
     args = parser.parse_args()
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale in (
+        "p7-evidence",
+        "wheelhouse",
+        "acceptance-venv",
+        CANDIDATE_DIRECTORY,
+        "runtime-contract",
+        "roundtrip",
+    ):
+        stale_path = output_dir / stale
+        if stale_path.exists():
+            shutil.rmtree(stale_path)
 
     stages: dict[str, StageResult] = {}
     bind: dict[str, Any] = {}
