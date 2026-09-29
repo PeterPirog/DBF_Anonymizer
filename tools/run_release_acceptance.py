@@ -284,9 +284,12 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
     p7 = _read_p7_manifest(evidence_root)
     if p7["tamper_detection_selftest"]["result"] != "PASS":
         _fail("release evidence tamper self-test did not pass")
-    digest = (
-        (evidence_root / "release-evidence.manifest.sha256").read_text(encoding="utf-8").strip()
+    digest_sidecar = (
+        (evidence_root / "release-evidence.manifest.sha256").read_text(encoding="utf-8").split()
     )
+    if len(digest_sidecar) != 2:
+        _fail("unexpected release-evidence digest sidecar layout")
+    digest = digest_sidecar[0]
     code, _ = _run_json(
         [
             sys.executable,
