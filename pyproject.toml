@@ -51,6 +51,9 @@ dbf_anonymizer = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo-root modules (tools/*) are imported by contract tests; pin the import
+# root to the rootdir so collection is independent of the invocation CWD.
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
