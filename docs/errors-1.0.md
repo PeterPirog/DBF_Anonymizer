@@ -8,8 +8,8 @@ DBF_Anonymizer exposes a typed error hierarchy for machine consumers, CLI adapte
 
 Every public DBF_Anonymizer failure derives from `AnonymizerError` and serializes through `to_dict()` with:
 
-- `schema_version` — public error payload schema (`1.0`);
-- `registry_version` — version of the error-code registry (`1.0`);
+- `schema_version` — public error payload schema (`1.1`);
+- `registry_version` — version of the error-code registry (`1.5`);
 - `code` — stable DBF_Anonymizer machine code;
 - `category` — stable failure category;
 - `message` — fixed registry-controlled English message;

@@ -10,9 +10,9 @@ read this database can reverse the pseudonymization completely.
 
 * The vault directory must stay inside a **protected internal environment**.
   It must never be published, transferred or backed up together with
-  pseudonymized output.  The future transfer bundle (REQ-P5-004) will never
-  contain the recovery vault — the path policy in
-  `dbf_anonymizer.vault.protection` already refuses vault roots that overlap
+  pseudonymized output.  The transfer bundle (REQ-P5-004) never
+  contains the recovery vault — the protected-vault path policy already
+  refuses vault roots that overlap
   the source, working-output or transfer-output trees.
 * **Operator-controlled filesystem ACLs are required.**  On POSIX the vault
   applies owner-only modes (`0700` directory, `0600` dictionary) as

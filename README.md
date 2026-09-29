@@ -1,8 +1,8 @@
 # DBF_Anonymizer
 
-Clean-slate 1.0 development baseline. DBF_Anonymizer will pseudonymize Visual
-FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite recovery
-vault inside the internal environment, and produce transferable
+Clean-slate 1.0 development baseline. DBF_Anonymizer pseudonymizes Visual
+FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
+recovery vault inside the internal environment, and produces transferable
 pseudonymized data-only bundles.
 
 - Distribution: `dbf-anonymizer`
@@ -16,14 +16,47 @@ The 1.0 line has no compatibility obligation toward the historical 0.3 API,
 CLI, JSONL pipeline, salt-based generator or legacy recovery formats; see
 [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md).
 
-The public 1.0 operation surface and CLI are specified by the immutable target
-architecture and are under active development; this repository does not yet
-ship working 1.0 product operations. The console script
-`dbf-anonymizer` is installed with the distribution but currently supports
-only `--help` and `--version`; no target command (`capabilities`, `plan`,
-`preflight`, `pseudonymize`, `verify`, `recover`, `export-bundle`,
-`verify-bundle`, `self-test`) is implemented yet, and unknown invocations
-fail rather than pretend success.
+The public 1.0-line operation surface (the current 1.0.0.dev0 development
+contract, not yet a stable release) is the synchronous, transport-neutral
+package root `dbf_anonymizer` (capabilities, build_plan, preflight,
+pseudonymize, verify_dataset, recover, create_transfer_bundle,
+verify_transfer_bundle) plus the standalone `dbf-anonymizer` console script
+with exactly nine commands: `capabilities`, `plan`, `preflight`,
+`pseudonymize`, `verify`, `recover`, `export-bundle`, `verify-bundle`,
+`self-test`. DBF_Anonymizer is not an MCP server: it ships no transport, no
+authentication/authorization and no job orchestration — those belong to the
+downstream host (see [docs/mcp-integration.md](docs/mcp-integration.md)).
+
+**Pseudonymized is not anonymous.** Reversible data with a protected recovery
+vault is pseudonymized data; DATA_ONLY output removes direct recovery
+material but is still not anonymized. See
+[docs/pseudonymization-vs-anonymization.md](docs/pseudonymization-vs-anonymization.md).
+
+## Documentation
+
+English-first operational and security documentation (validated by
+`tests/test_p7_documentation_contract.py`, including executable examples):
+
+- [docs/operations.md](docs/operations.md) — internal-network offline
+  installation, one-vault-per-dataset operation, policy configuration,
+  relationship configuration, pseudonymization, verification, recovery, and
+  DATA_ONLY transfer bundles, with executable examples.
+- [docs/limits-and-integrity.md](docs/limits-and-integrity.md) — index/VFP/DBC
+  limitations, the VFP_INDEXED backend-evidence requirement and the P6-006
+  status.
+- [docs/mcp-integration.md](docs/mcp-integration.md) — how a downstream host
+  (mcp-vfp9sp2-toolchain) wraps the synchronous public API.
+- [docs/threat-model.md](docs/threat-model.md) — protected/transferable
+  assets, trust boundaries, attack/failure classes.
+- [docs/pseudonymization-vs-anonymization.md](docs/pseudonymization-vs-anonymization.md) —
+  the pseudonymized-vs-anonymous distinction.
+- [docs/public-models-1.0.md](docs/public-models-1.0.md) — public model
+  contract.
+- [docs/errors-1.0.md](docs/errors-1.0.md) — public error contract.
+- [docs/vault-protection.md](docs/vault-protection.md) — protected vault
+  security notes.
+- [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md) —
+  1.0 clean-slate reset.
 
 ## Development
 
@@ -41,3 +74,6 @@ range stays `dbfbridge[write]>=1.1.0,<2`.
 P0 boundary evidence lives in `tests/` (dependency contract, public dbfbridge
 capability contract, architecture boundary, root public API regression) and is
 proven from a clean environment by `.github/workflows/p0-package-boundary.yml`.
+Operational release evidence (reproducible distributions, SBOM, tamper-evident
+manifest) is produced by `tools/build_release_evidence.py` and validated by
+`.github/workflows/p7-release-evidence.yml`.
