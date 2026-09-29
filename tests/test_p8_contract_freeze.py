@@ -10,6 +10,7 @@ from typing import Any
 
 import dbf_anonymizer as package
 import pytest
+import tools.generate_public_contract_snapshot as snapshot_module
 
 from tools.generate_public_contract_snapshot import SNAPSHOT_PATH, build_contract
 
@@ -108,6 +109,32 @@ def _widened_dbfbridge_major(contract: dict[str, Any]) -> None:
     contract["dependency_contract"]["requirement"] = "dbfbridge[write]>=1.1.0,<3"
 
 
+def _changed_external_metadata_contract_version(contract: dict[str, Any]) -> None:
+    contract["relationships"]["external_metadata"]["schema_version"] = "1.9"
+
+
+def _changed_external_metadata_resource(contract: dict[str, Any]) -> None:
+    contract["relationships"]["external_metadata"]["schema_resource"] = (
+        "schemas/wrong-resource.json"
+    )
+
+
+def _changed_external_metadata_schema_digest(contract: dict[str, Any]) -> None:
+    contract["relationships"]["external_metadata"]["schema_sha256"] = "0" * 64
+
+
+def _widened_external_index_verification_states(contract: dict[str, Any]) -> None:
+    contract["relationships"]["external_metadata"]["index_verification_states"].append("HEURISTIC")
+
+
+def _widened_external_claim_assurances(contract: dict[str, Any]) -> None:
+    contract["relationships"]["external_metadata"]["claim_assurances"].append("HEURISTIC")
+
+
+def _narrowed_external_provenance_vocabulary(contract: dict[str, Any]) -> None:
+    contract["relationships"]["provenances"].remove("EXTERNAL_VFP_METADATA")
+
+
 @pytest.mark.parametrize(
     ("mutation", "difference_path"),
     [
@@ -123,6 +150,30 @@ def _widened_dbfbridge_major(contract: dict[str, Any]) -> None:
         (_changed_relationship_assurance, r"\$\.relationships\.assurance_levels"),
         (_changed_bundle_schema, r"\$\.transfer_bundle\.schema_version"),
         (_widened_dbfbridge_major, r"\$\.dependency_contract\.requirement"),
+        (
+            _changed_external_metadata_contract_version,
+            r"\$\.relationships\.external_metadata\.schema_version",
+        ),
+        (
+            _changed_external_metadata_resource,
+            r"\$\.relationships\.external_metadata\.schema_resource",
+        ),
+        (
+            _changed_external_metadata_schema_digest,
+            r"\$\.relationships\.external_metadata\.schema_sha256",
+        ),
+        (
+            _widened_external_index_verification_states,
+            r"\$\.relationships\.external_metadata\.index_verification_states",
+        ),
+        (
+            _widened_external_claim_assurances,
+            r"\$\.relationships\.external_metadata\.claim_assurances",
+        ),
+        (
+            _narrowed_external_provenance_vocabulary,
+            r"\$\.relationships\.provenances",
+        ),
     ],
     ids=lambda value: value.__name__.removeprefix("_") if callable(value) else None,
 )
@@ -144,6 +195,21 @@ def test_removed_public_root_export_is_detected_end_to_end(
         [name for name in package.__all__ if name != "recover"],
     )
     with pytest.raises(AssertionError, match=r"\$\.python_api\.root_exports"):
+        _assert_frozen(build_contract(), _frozen_contract())
+
+
+def test_external_metadata_schema_mutation_is_detected_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = snapshot_module.load_external_metadata_schema()
+    schema["required"] = [
+        key for key in schema["required"] if key != "external_metadata_schema_version"
+    ]
+    monkeypatch.setattr(snapshot_module, "load_external_metadata_schema", lambda: schema)
+    with pytest.raises(
+        AssertionError,
+        match=r"\$\.relationships\.external_metadata\.schema_sha256",
+    ):
         _assert_frozen(build_contract(), _frozen_contract())
 
 

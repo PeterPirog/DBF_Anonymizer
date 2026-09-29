@@ -658,6 +658,11 @@ class _PlanExecutionContext:
     vault_path: str
     relationship_document: Any = None
     relationship_bindings: Any = None
+    #: REQ-P6-006 (revised): the in-process P3-007 authority binding minted by
+    #: the authoritative ingestion adapter for CONTRACT-AUTHORITATIVE external
+    #: metadata.  Non-public, in-process trust proof: never serialized and
+    #: never part of any public model.
+    authoritative_binding: Any = None
     resolved_policy: Any = None
 
     def __repr__(self) -> str:
@@ -859,6 +864,7 @@ class _PseudonymizationExecutionContext:
     output_root: str
     source_root: str
     vault_path: str
+    authoritative_binding: Any = None
 
     def __repr__(self) -> str:
         return "<_PseudonymizationExecutionContext>"

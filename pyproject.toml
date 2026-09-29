@@ -47,7 +47,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-dbf_anonymizer = ["py.typed"]
+dbf_anonymizer = ["py.typed", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,20 @@
+{
+  "metadata_schema_version": "1.0",
+  "external_metadata_schema_version": "1.0",
+  "producer": {"producer_id": "hypothetical-independent-producer", "producer_version": "1.0.0"},
+  "authority": "CONTRACT_AUTHORITATIVE",
+  "relations": [
+    {
+      "relation_id": "orders-lines-composite",
+      "comparison": "EXACT_VALUE",
+      "provenance": "EXTERNAL_VFP_METADATA",
+      "assurance": "VERIFIED",
+      "members": [
+        {"table": "orders/data.dbf", "field": "ORDER_ID", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 10, "encoding": "cp1250", "nullable": false},
+        {"table": "orders/data.dbf", "field": "LINE_NO", "role": "PRIMARY", "ordinal": 2, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": false},
+        {"table": "lines/data.dbf", "field": "ORDER_REF", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 10, "encoding": "cp1250", "nullable": false},
+        {"table": "lines/data.dbf", "field": "LINE_SEQ", "role": "FOREIGN", "ordinal": 2, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": false}
+      ]
+    }
+  ]
+}

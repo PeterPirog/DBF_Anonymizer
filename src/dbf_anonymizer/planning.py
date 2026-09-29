@@ -271,6 +271,13 @@ def build_plan(
     field_facts: dict[tuple[str, str], tuple[str, int, str, int, bool, bool]] = {}
     numeric_identity_review: list[NumericIdentityReview] = []
     reviewed_identities: set[tuple[str, str]] = set()
+    #: REQ-P6-006 (revised): the in-process authority binding minted ONLY by
+    #: the existing P3-007 authoritative ingestion adapter when the supplied
+    #: external metadata envelope is CONTRACT-AUTHORITATIVE.  It participates
+    #: in post-transform verification (VFP_METADATA_VERIFIED requires BOTH
+    #: the binding AND successful verification); it is non-public, in-process
+    #: trust proof and never serialized.
+    authoritative_binding: Any = None
     #: REQ-P3-005 planning truthfulness: the explicitly declared reversible
     #: numeric key member fields.  They ARE reversible pseudonymization
     #: targets (they consume vault mappings), so they count as transformed
@@ -281,6 +288,10 @@ def build_plan(
         from dbf_anonymizer.relationships.document import (
             parse_relationship_document,
             relationship_metadata_from_document,
+        )
+        from dbf_anonymizer.relationships.external_metadata import (
+            AUTHORITY_CONTRACT_AUTHORITATIVE,
+            AUTHORITY_INFERRED,
         )
         from dbf_anonymizer.relationships.models import (
             NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
@@ -293,7 +304,48 @@ def build_plan(
         # transformation-equivalent action) — see _check_relationships.
         parsed_relationship_document = parse_relationship_document(relationship_document)
         rel_meta = relationship_metadata_from_document(parsed_relationship_document)
-        for group in parsed_relationship_document.groups:
+        effective_groups = parsed_relationship_document.effective_groups()
+        if parsed_relationship_document.external_authority == AUTHORITY_INFERRED:
+            # REQ-P6-006 (revised): INFERRED external claims are retained only
+            # as non-authoritative planning/reporting information.  They can
+            # never drive authoritative mapping-domain grouping - a declared
+            # REVERSIBLE_BIJECTIVE numeric key domain is such an authoritative
+            # grouping action, so an inferred envelope cannot declare it
+            # (fail closed; no silent downgrade of the declared strategy).
+            for group in parsed_relationship_document.groups:
+                if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
+                    raise _relationship_binding_error(
+                        "EXTERNAL_METADATA_INFERRED_GROUPING_UNSUPPORTED"
+                    )
+        elif parsed_relationship_document.external_authority == AUTHORITY_CONTRACT_AUTHORITATIVE:
+            for group in parsed_relationship_document.groups:
+                if (
+                    group not in effective_groups
+                    and group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+                ):
+                    raise _relationship_binding_error(
+                        "EXTERNAL_METADATA_UNVERIFIED_GROUPING_UNSUPPORTED"
+                    )
+            # CONTRACT-AUTHORITATIVE external claims qualify for the EXISTING
+            # authoritative ingestion boundary (the ONE tested P3-007
+            # adapter, producer-independent since the revised P6-006).  The
+            # binding participates in post-transform verification:
+            # VFP_METADATA_VERIFIED requires BOTH the authoritative ingestion
+            # AND successful relevant verification - metadata alone is never
+            # verification.  An envelope with NO relation claims has nothing
+            # to certify: no binding is minted (index claims are carried as
+            # value-free planning metadata only).
+            if effective_groups:
+                from dbf_anonymizer.relationships.document import (
+                    authoritative_vfp_metadata_from_document,
+                )
+
+                authoritative = authoritative_vfp_metadata_from_document(
+                    parsed_relationship_document
+                )
+                rel_meta = authoritative.metadata
+                authoritative_binding = authoritative.binding
+        for group in effective_groups:
             if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                 for member in group.members:
                     if member.is_numeric_member:
@@ -441,6 +493,9 @@ def build_plan(
         )
 
         discovered_paths = {table.relative_path for table in discovered}
+        for claim in parsed_relationship_document.index_claims:
+            if claim.table_path not in discovered_paths:
+                raise _relationship_binding_error("EXTERNAL_METADATA_INDEX_TABLE_UNKNOWN")
         for group in parsed_relationship_document.groups:
             for member in group.members:
                 if member.table_path not in discovered_paths:
@@ -547,6 +602,7 @@ def build_plan(
         vault_path=str(vault_path),
         relationship_document=parsed_relationship_document,
         relationship_bindings=(dict(relationship_bindings) if relationship_bindings else None),
+        authoritative_binding=authoritative_binding,
         resolved_policy=dict(merged_policy),
     )
 

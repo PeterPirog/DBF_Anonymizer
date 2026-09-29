@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PeterPirog/DBF_Anonymizer/schemas/external-vfp-metadata-1.0.schema.json",
+  "x-contract-schema-version": "1.0",
+  "x-contract-owner": "DBF_ANONYMIZER",
+  "title": "DBF_Anonymizer external VFP relationship/index metadata contract",
+  "description": "Producer-independent, transport-neutral consumer contract (REQ-P6-006, revised). A higher-level analyzer (including mcp-vfp9sp2-toolchain) emits one conforming JSON document; DBF_Anonymizer validates, preserves provenance and normalizes the claims into its ONE typed relationship model. Value-free: no original record values, no absolute or private machine paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metadata_schema_version", "external_metadata_schema_version", "producer", "authority", "relations"],
+  "properties": {
+    "metadata_schema_version": {
+      "const": "1.0",
+      "description": "The DBF_Anonymizer relationship-metadata schema version of the normalized relation claims."
+    },
+    "external_metadata_schema_version": {
+      "const": "1.0",
+      "description": "The DBF_Anonymizer-owned external metadata CONTRACT schema version. Any other version is rejected fail closed."
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_id", "producer_version"],
+      "description": "Structured, bounded, producer-independent provenance of the concrete emitter. No producer is hardcoded; both tokens are free bounded identifiers.",
+      "properties": {
+        "producer_id": {"$ref": "#/$defs/boundedToken"},
+        "producer_version": {"$ref": "#/$defs/boundedToken"}
+      }
+    },
+    "authority": {
+      "enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"],
+      "description": "Envelope-level authority classification applied to every supplied relation claim. Only CONTRACT_AUTHORITATIVE claims may influence authoritative grouping or support VFP_METADATA_VERIFIED; INFERRED claims are retained as non-authoritative planning/reporting information only."
+    },
+    "index_claims": {
+      "type": "array",
+      "maxItems": 256,
+      "description": "Optional value-free index claims. Only VERIFIED claims may ever support an index-validity guarantee; UNVERIFIED claims are planning/reporting information only.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "table", "index_file", "index_kind", "tags", "verification_state", "assurance", "provenance"],
+        "properties": {
+          "claim_id": {"$ref": "#/$defs/boundedToken"},
+          "table": {"$ref": "#/$defs/relativePath"},
+          "index_file": {"$ref": "#/$defs/relativePath"},
+          "index_kind": {"enum": ["STRUCTURAL_CDX", "STANDALONE_IDX"]},
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "sort_order"],
+              "properties": {
+                "name": {"$ref": "#/$defs/boundedToken"},
+                "sort_order": {"enum": ["ASCENDING", "DESCENDING"]},
+                "expression": {"type": "string", "minLength": 1, "maxLength": 256}
+              }
+            }
+          },
+          "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"verification_state": {"const": "VERIFIED"}}},
+            "then": {"properties": {"assurance": {"const": "VERIFIED"}}},
+            "else": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          }
+        ]
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 256,
+      "description": "The normalized relation claims (the existing P3 relationship-document group shape).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relation_id", "provenance", "assurance", "comparison", "members"],
+        "properties": {
+          "relation_id": {"$ref": "#/$defs/boundedToken"},
+          "comparison": {"enum": ["EXACT_VALUE", "UNSPECIFIED"]},
+          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]},
+          "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "numeric_strategy": {"enum": ["IDENTITY", "REVERSIBLE_BIJECTIVE"]},
+          "source_digest": {"$ref": "#/$defs/boundedToken"},
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 512,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["table", "field", "role", "ordinal", "dbf_type", "byte_width", "encoding", "nullable"],
+              "properties": {
+                "table": {"$ref": "#/$defs/relativeTablePath"},
+                "field": {"$ref": "#/$defs/boundedToken"},
+                "role": {"enum": ["PRIMARY", "CANDIDATE", "FOREIGN"]},
+                "ordinal": {"type": "integer", "minimum": 1},
+                "dbf_type": {"enum": ["C", "V", "I", "N"]},
+                "byte_width": {"type": "integer", "minimum": 1},
+                "encoding": {"type": "string", "minLength": 1, "maxLength": 64},
+                "nullable": {"type": "boolean"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"authority": {"const": "INFERRED"}}},
+      "then": {
+        "properties": {
+          "relations": {
+            "items": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          "index_claims": {
+            "items": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "boundedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "relativeTablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Normalized relative dataset table identity. Absolute paths, drive-qualified paths, UNC paths and traversal segments are rejected by the consumer.",
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_. -]+(?:/[A-Za-z0-9_. -]+)*[.][Dd][Bb][Ff]$",
+      "not": {"pattern": "(^|[\\\\/.][\\\\/])\\.\\.([\\\\/]|$)"}
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Normalized relative dataset artifact identity. Absolute, drive-qualified, UNC, backslash and parent-traversal paths are forbidden.",
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_. -]+(?:/[A-Za-z0-9_. -]+)*$"
+    }
+  }
+}

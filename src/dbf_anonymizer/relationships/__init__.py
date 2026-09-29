@@ -7,7 +7,7 @@ derivation (REQ-P3-007, delivered through the canonical public
 ``dbf_anonymizer.RelationalAssurance`` model).  It is independent from DBF
 parsing, imports no ``dbfbridge`` namespace and never carries actual key
 values.  The document boundary accepts metadata from policy files or
-``mcp-vfp9sp2-toolchain``-produced material (adapter boundary only — no MCP
+producer-independent external VFP metadata (adapter boundary only - no MCP
 transport exists in this package); the tested
 ``authoritative_vfp_metadata_from_document`` adapter certifies ALREADY
 INJECTED authoritative VFP metadata.
@@ -35,6 +35,12 @@ from dbf_anonymizer.relationships.document import (
 from dbf_anonymizer.relationships.evidence import (
     RelationalMetrics,
     relation_metrics,
+)
+from dbf_anonymizer.relationships.external_metadata import (
+    EXTERNAL_METADATA_CONTRACT_OWNER,
+    EXTERNAL_METADATA_SCHEMA_RESOURCE,
+    EXTERNAL_METADATA_SCHEMA_VERSION,
+    load_external_metadata_schema,
 )
 from dbf_anonymizer.relationships.models import (
     COMPARISON_EXACT_VALUE,
@@ -125,4 +131,8 @@ __all__ = [
     "verify_relationships",
     "RELATIONAL_ASSURANCE_SCOPE_NOTE",
     "derive_relational_assurance",
+    "EXTERNAL_METADATA_CONTRACT_OWNER",
+    "EXTERNAL_METADATA_SCHEMA_RESOURCE",
+    "EXTERNAL_METADATA_SCHEMA_VERSION",
+    "load_external_metadata_schema",
 ]
