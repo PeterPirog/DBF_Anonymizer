@@ -2,7 +2,16 @@
 
 Executes the complete release acceptance for one exact source revision from a
 clean commit and produces the machine-readable release-acceptance evidence
-manifest (``release-acceptance-evidence.json`` plus its SHA-256 sidecar):
+manifest plus its SHA-256 sidecar in a PUBLISHABLE output directory, while
+all private/ephemeral acceptance work happens in a separate task-owned work
+root:
+
+    PRIVATE WORK ROOT (--work-root, never uploaded):
+      p7-evidence/ wheelhouse/ acceptance-venv/ roundtrip/ runtime-contract/
+    PUBLISHABLE OUTPUT (--output-dir, the only uploaded artifact):
+      release-acceptance-evidence.json + .sha256 sidecar + release-candidate/
+
+Stages:
 
  1. source_binding            fail-closed clean-tree check + exact commit/version bind
  2. quality_gates             ruff format/lint, strict mypy, compileall, full pytest
@@ -17,21 +26,35 @@ manifest (``release-acceptance-evidence.json`` plus its SHA-256 sidecar):
                               nine-command standalone runtime contract (sentinels)
  8. canonical_roundtrip       synthetic PK/FK dataset through the complete public
                               workflow, logical oracle and DATA_ONLY content scan,
-                              executed from the INSTALLED wheel under sentinels
+                              executed from the INSTALLED wheel under sentinels,
+                              with an objective import-origin proof that fails
+                              closed unless ``dbf_anonymizer`` resolves from the
+                              acceptance venv site-packages (never from the
+                              source checkout, editable install or PYTHONPATH)
  9. no_vfp_standalone         hosted no-VFP import-purity + standalone smoke
-10. evidence_manifest         deterministic fail-closed aggregation, final verdict
 
 ONLINE PREPARATION covers stages 1-6 (including the PyPI wheelhouse download
 performed by the accepted P7-008 evidence tool).  The OFFLINE RUNTIME
 ACCEPTANCE phase covers stages 7-9: local wheels only, ``--no-index``,
-controlled pip cache, no runtime HTTP, no Git and no package installation
+``--no-cache-dir``, no runtime HTTP, no Git and no package installation
 after the environment has been prepared.
+
+Mandatory platform/security gates (REQ-P7-006 contract: every declared
+Windows Python version plus the pip-audit advisory audit) are enforced in the
+authoritative CI release-acceptance workflow: the Windows matrix and the
+security audit are jobs of the SAME workflow and their ``needs.*.result``
+values are passed into this command as privacy-safe environment indicators.
+The manifest records them truthfully.  Without those indicators (an ordinary
+maintainer invocation) the command truthfully reports
+``final_status: LOCAL_PRECHECK`` — never a release-candidate PASS.
 
 Fail-closed: any failed stage makes ``final_status`` FAIL and the command
 exits non-zero.  A failing test NEVER regenerates any snapshot or evidence.
 
 Usage (maintainer):
-    python tools/run_release_acceptance.py --output-dir build/p8-release-acceptance
+    python tools/run_release_acceptance.py ^
+        --work-root   build/p8-release-acceptance-work ^
+        --output-dir  build/p8-release-acceptance-publishable
 """
 
 from __future__ import annotations
@@ -44,14 +67,17 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+try:  # package context (pytest import) ...
+    from tools.acceptance_fixtures import BINARY_CANARIES, TEXT_CANARIES
+except ImportError:  # ... or direct script execution from the tools directory
+    from acceptance_fixtures import BINARY_CANARIES, TEXT_CANARIES  # type: ignore[no-redef]
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_SNAPSHOT = REPO_ROOT / "contracts" / "public-contract-1.0.json"
 ACCEPTANCE_PIN = REPO_ROOT / "requirements" / "p0-dbfbridge-tested.txt"
 WHEELHOUSE_MANIFEST = REPO_ROOT / "requirements" / "p7-offline-wheelhouse.txt"
@@ -66,6 +92,19 @@ CANDIDATE_DIRECTORY = "release-candidate"
 
 VFP_STATUS_NO_RUN = "NOT_RUN"
 VFP_STATUS_AVAILABLE_NOT_REQUIRED = "AVAILABLE_BUT_NOT_REQUIRED"
+
+WINDOWS_MATRIX_VARIABLE = "DBF_MANDATORY_WINDOWS_MATRIX_RESULT"
+SECURITY_AUDIT_VARIABLE = "DBF_MANDATORY_SECURITY_AUDIT_RESULT"
+GATES_SOURCE_CI = "GITHUB_WORKFLOW_NEEDS"
+GATES_SOURCE_LOCAL = "LOCAL_MAINTAINER_PRECHECK"
+
+PRIVATE_WORK_SUBDIRS = (
+    "p7-evidence",
+    "wheelhouse",
+    "acceptance-venv",
+    "runtime-contract",
+    "roundtrip",
+)
 
 _BIND_KEYS = (
     "source_commit",
@@ -89,6 +128,46 @@ class StageResult:
         return {"status": self.status, "facts": self.facts}
 
 
+class AcceptancePaths:
+    """Private (ephemeral) work root and publishable output directory."""
+
+    def __init__(self, work_root: Path, output_dir: Path) -> None:
+        self.work_root = work_root
+        self.output_dir = output_dir
+
+    @property
+    def p7_evidence(self) -> Path:
+        return self.work_root / "p7-evidence"
+
+    @property
+    def wheelhouse(self) -> Path:
+        return self.work_root / "wheelhouse"
+
+    @property
+    def acceptance_venv(self) -> Path:
+        return self.work_root / "acceptance-venv"
+
+    @property
+    def roundtrip(self) -> Path:
+        return self.work_root / "roundtrip"
+
+    @property
+    def runtime_contract(self) -> Path:
+        return self.work_root / "runtime-contract"
+
+    @property
+    def candidate(self) -> Path:
+        return self.output_dir / CANDIDATE_DIRECTORY
+
+    def acceptance_python(self) -> Path:
+        candidate = self.acceptance_venv / "Scripts" / "python.exe"
+        if not candidate.is_file():
+            candidate = self.acceptance_venv / "bin" / "python"
+        if not candidate.is_file():
+            _fail("acceptance venv missing; the offline fresh-wheel stage must run first")
+        return candidate
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -103,7 +182,12 @@ def _fail(message: str) -> None:
 
 def _run(command: list[str], *, cwd: Path = REPO_ROOT, env: dict[str, str] | None = None) -> int:
     completed = subprocess.run(  # noqa: S603 - fixed maintainer tool arguments
-        command, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+        command,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=env,
     )
     return completed.returncode
 
@@ -161,15 +245,6 @@ def _package_version() -> str:
     raise AssertionError  # pragma: no cover - defensive
 
 
-def _acceptance_python(work_root: Path) -> Path:
-    candidate = work_root / "acceptance-venv" / "Scripts" / "python.exe"
-    if not candidate.is_file():
-        candidate = work_root / "acceptance-venv" / "bin" / "python"
-    if not candidate.is_file():
-        _fail("acceptance venv missing; the offline fresh-wheel stage must run first")
-    return candidate
-
-
 def _command_facts(
     commands: list[tuple[str, list[str]]], cwd: Path = REPO_ROOT, **extra: object
 ) -> dict[str, object]:
@@ -183,8 +258,70 @@ def _command_facts(
     return facts
 
 
-def stage_source_binding(work_root: Path) -> dict[str, object]:
-    del work_root
+def _wheelhouse_install_command(
+    venv_python: Path, wheelhouse: Path, wheelhouse_manifest: Path
+) -> list[str]:
+    """Offline wheelhouse closure install (no index, no cache)."""
+    return [
+        str(venv_python),
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--find-links",
+        str(wheelhouse),
+        "--no-cache-dir",
+        "-r",
+        str(wheelhouse_manifest),
+    ]
+
+
+def _wheel_install_command(venv_python: Path, wheel_path: Path) -> list[str]:
+    """Exact release-wheel install (no index, no cache, no deps)."""
+    return [
+        str(venv_python),
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--no-cache-dir",
+        "--no-deps",
+        str(wheel_path),
+    ]
+
+
+def _sanitized_roundtrip_environment() -> dict[str, str]:
+    """Environment for the installed-wheel round trip: no repository paths.
+
+    The repository root is removed from ``PYTHONPATH`` and ``NO_PROXY``-style
+    hygiene is preserved otherwise.  The child never receives a PYTHONPATH
+    entry that points into the source checkout.
+    """
+    env = _env()
+    pythonpath = env.get("PYTHONPATH", "")
+    kept = [
+        entry
+        for entry in pythonpath.split(os.pathsep)
+        if entry and Path(entry).resolve() != REPO_ROOT.resolve()
+    ]
+    if kept:
+        env["PYTHONPATH"] = os.pathsep.join(kept)
+    else:
+        env.pop("PYTHONPATH", None)
+    return env
+
+
+def _roundtrip_cwd(work_root: Path) -> Path:
+    """Task-owned working directory OUTSIDE the repository for the child."""
+    if REPO_ROOT.resolve() not in work_root.resolve().parents:
+        work_root.mkdir(parents=True, exist_ok=True)
+        return work_root
+
+    return Path(tempfile.mkdtemp(prefix="dbf-p8-roundtrip-cwd-"))
+
+
+def stage_source_binding(paths: AcceptancePaths) -> dict[str, object]:
+    del paths
     clean, status = _git_clean()
     if not clean:
         _fail(f"release acceptance requires an exact clean commit; git status: {status}")
@@ -206,8 +343,8 @@ def stage_source_binding(work_root: Path) -> dict[str, object]:
     }
 
 
-def stage_quality_gates(work_root: Path) -> dict[str, object]:
-    del work_root
+def stage_quality_gates(paths: AcceptancePaths) -> dict[str, object]:
+    del paths
     return _command_facts(
         [
             ("ruff_format", [sys.executable, "-m", "ruff", "format", "--check", "."]),
@@ -219,8 +356,8 @@ def stage_quality_gates(work_root: Path) -> dict[str, object]:
     )
 
 
-def stage_public_contract_freeze(work_root: Path) -> dict[str, object]:
-    del work_root
+def stage_public_contract_freeze(paths: AcceptancePaths) -> dict[str, object]:
+    del paths
     code = _run([sys.executable, "-m", "pytest", "tests/test_p8_contract_freeze.py", "-ra"])
     if code != 0:
         _fail(f"REQ-P8-001 contract freeze test failed (exit {code}); snapshot not regenerated")
@@ -231,8 +368,8 @@ def stage_public_contract_freeze(work_root: Path) -> dict[str, object]:
     }
 
 
-def stage_dependency_audit(work_root: Path) -> dict[str, object]:
-    del work_root
+def stage_dependency_audit(paths: AcceptancePaths) -> dict[str, object]:
+    del paths
     pin_lines = [
         line.strip()
         for line in ACCEPTANCE_PIN.read_text(encoding="utf-8").splitlines()
@@ -255,25 +392,24 @@ def stage_dependency_audit(work_root: Path) -> dict[str, object]:
     return facts
 
 
-def _read_p7_manifest(evidence_root: Path) -> dict[str, Any]:
-    manifest_path = evidence_root / "release-evidence.manifest.json"
+def _read_p7_manifest(paths: AcceptancePaths) -> dict[str, Any]:
+    manifest_path = paths.p7_evidence / "release-evidence.manifest.json"
     if not manifest_path.is_file():
         _fail("P7-008 release evidence manifest missing")
     manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
     return manifest
 
 
-def stage_release_build(work_root: Path) -> dict[str, object]:
+def stage_release_build(paths: AcceptancePaths) -> dict[str, object]:
     workflow_name = _env().get("DBF_ACCEPTANCE_WORKFLOW_NAME", "local-deterministic-acceptance")
     run_id = _env().get("DBF_ACCEPTANCE_RUN_ID", "local")
     run_event = _env().get("DBF_ACCEPTANCE_RUN_EVENT", "local")
-    evidence_root = work_root / "p7-evidence"
     code = _run(
         [
             sys.executable,
             str(REPO_ROOT / "tools" / "build_release_evidence.py"),
             "--output-dir",
-            str(evidence_root),
+            str(paths.p7_evidence),
             "--workflow-name",
             workflow_name,
             "--run-id",
@@ -284,13 +420,13 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
     )
     if code != 0:
         _fail(f"reproducible release evidence build failed (exit {code})")
-    p7 = _read_p7_manifest(evidence_root)
+    p7 = _read_p7_manifest(paths)
     if p7["tamper_detection_selftest"]["result"] != "PASS":
         _fail("release evidence tamper self-test did not pass")
-    digest_sidecar = (
-        (evidence_root / "release-evidence.manifest.sha256").read_text(encoding="utf-8").split()
+    digest_parts = (
+        (paths.p7_evidence / "release-evidence.manifest.sha256").read_text(encoding="utf-8").split()
     )
-    if len(digest_sidecar) != 2:
+    if len(digest_sidecar := digest_parts) != 2:
         _fail("unexpected release-evidence digest sidecar layout")
     digest = digest_sidecar[0]
     code, _ = _run_json(
@@ -298,9 +434,9 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
             sys.executable,
             str(REPO_ROOT / "tools" / "verify_release_evidence.py"),
             "--manifest",
-            str(evidence_root / "release-evidence.manifest.json"),
+            str(paths.p7_evidence / "release-evidence.manifest.json"),
             "--evidence-root",
-            str(evidence_root),
+            str(paths.p7_evidence),
             "--expected-manifest-sha256",
             digest,
         ]
@@ -311,13 +447,12 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
     sdist_name = str(p7["artifacts"]["sdist"]["filename"])
     wheel_sha = str(p7["artifacts"]["wheel"]["sha256"])
     sdist_sha = str(p7["artifacts"]["sdist"]["sha256"])
-    candidate_dir = work_root / CANDIDATE_DIRECTORY
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(evidence_root / wheel_name, candidate_dir / Path(wheel_name).name)
-    shutil.copyfile(evidence_root / sdist_name, candidate_dir / Path(sdist_name).name)
-    if _sha256(candidate_dir / Path(wheel_name).name) != wheel_sha:
+    paths.candidate.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(paths.p7_evidence / wheel_name, paths.candidate / Path(wheel_name).name)
+    shutil.copyfile(paths.p7_evidence / sdist_name, paths.candidate / Path(sdist_name).name)
+    if _sha256(paths.candidate / Path(wheel_name).name) != wheel_sha:
         _fail("copied release candidate wheel hash drift")
-    if _sha256(candidate_dir / Path(sdist_name).name) != sdist_sha:
+    if _sha256(paths.candidate / Path(sdist_name).name) != sdist_sha:
         _fail("copied release candidate sdist hash drift")
     provenance: dict[str, Any] = p7["dependency_provenance"]
     dbfbridge_entries = [
@@ -342,54 +477,33 @@ def stage_release_build(work_root: Path) -> dict[str, object]:
     }
 
 
-def stage_offline_fresh_wheel(work_root: Path) -> dict[str, object]:
-    from tools.check_p7_offline_wheelhouse import validate_wheelhouse
+def stage_offline_fresh_wheel(paths: AcceptancePaths) -> dict[str, object]:
+    try:
+        from tools.check_p7_offline_wheelhouse import validate_wheelhouse
+    except ImportError:  # direct script execution from the tools directory
+        from check_p7_offline_wheelhouse import validate_wheelhouse
 
-    evidence_root = work_root / "p7-evidence"
-    p7 = _read_p7_manifest(evidence_root)
+    p7 = _read_p7_manifest(paths)
     wheel_name = str(p7["artifacts"]["wheel"]["filename"])
-    wheelhouse = work_root / "wheelhouse"
-    if wheelhouse.exists():
-        shutil.rmtree(wheelhouse)
-    shutil.copytree(evidence_root / "wheelhouse", wheelhouse)
-    validate_wheelhouse(WHEELHOUSE_MANIFEST, wheelhouse)
-    venv_dir = work_root / "acceptance-venv"
-    if venv_dir.exists():
-        shutil.rmtree(venv_dir)
-    code = _run([sys.executable, "-m", "venv", str(venv_dir)])
+    if paths.wheelhouse.exists():
+        shutil.rmtree(paths.wheelhouse)
+    shutil.copytree(paths.p7_evidence / "wheelhouse", paths.wheelhouse)
+    validate_wheelhouse(WHEELHOUSE_MANIFEST, paths.wheelhouse)
+    if paths.acceptance_venv.exists():
+        shutil.rmtree(paths.acceptance_venv)
+    code = _run([sys.executable, "-m", "venv", str(paths.acceptance_venv)])
     if code != 0:
         _fail(f"fresh venv creation failed (exit {code})")
-    venv_python = _acceptance_python(work_root)
+    venv_python = paths.acceptance_python()
     preparation_env = _env()
     preparation_env["PIP_NO_CACHE_DIR"] = "1"
     code = _run(
-        [
-            str(venv_python),
-            "-m",
-            "pip",
-            "install",
-            "--no-index",
-            "--find-links",
-            str(wheelhouse),
-            "-r",
-            str(WHEELHOUSE_MANIFEST),
-        ],
+        _wheelhouse_install_command(venv_python, paths.wheelhouse, WHEELHOUSE_MANIFEST),
         env=preparation_env,
     )
     if code != 0:
         _fail(f"offline wheelhouse install failed (exit {code})")
-    code = _run(
-        [
-            str(venv_python),
-            "-m",
-            "pip",
-            "install",
-            "--no-index",
-            "--no-cache-dir",
-            "--no-deps",
-            str(evidence_root / wheel_name),
-        ]
-    )
+    code = _run(_wheel_install_command(venv_python, paths.p7_evidence / wheel_name))
     if code != 0:
         _fail(f"exact release wheel install failed (exit {code})")
     facts = _command_facts(
@@ -401,6 +515,7 @@ def stage_offline_fresh_wheel(work_root: Path) -> dict[str, object]:
             ),
         ],
         install_mode="NO_INDEX_LOCAL_WHEELHOUSE_ONLY",
+        pip_cache="DISABLED_NO_CACHE_DIR",
         runtime_install_after_preparation="NONE",
         installed_from_exact_release_wheel=Path(wheel_name).name,
     )
@@ -425,8 +540,8 @@ def stage_offline_fresh_wheel(work_root: Path) -> dict[str, object]:
     return facts
 
 
-def stage_installed_wheel_contract(work_root: Path) -> dict[str, object]:
-    venv_python = _acceptance_python(work_root)
+def stage_installed_wheel_contract(paths: AcceptancePaths) -> dict[str, object]:
+    venv_python = paths.acceptance_python()
     return _command_facts(
         [
             (
@@ -439,7 +554,7 @@ def stage_installed_wheel_contract(work_root: Path) -> dict[str, object]:
                     str(venv_python),
                     str(REPO_ROOT / "tools" / "check_p7_offline_runtime.py"),
                     "--work-root",
-                    str(work_root / "runtime-contract"),
+                    str(paths.runtime_contract),
                 ],
             ),
         ],
@@ -447,17 +562,20 @@ def stage_installed_wheel_contract(work_root: Path) -> dict[str, object]:
     )
 
 
-def stage_canonical_roundtrip(work_root: Path) -> dict[str, object]:
-    venv_python = _acceptance_python(work_root)
-    env = _env()
-    env["PYTHONPATH"] = str(REPO_ROOT)
+def stage_canonical_roundtrip(paths: AcceptancePaths) -> dict[str, object]:
+    venv_python = paths.acceptance_python()
+    env = _sanitized_roundtrip_environment()
     code, output = _run_json(
         [
             str(venv_python),
             str(REPO_ROOT / "tools" / "release_acceptance_roundtrip.py"),
             "--work-root",
-            str(work_root / "roundtrip"),
+            str(paths.roundtrip),
+            "--expected-version",
+            _package_version(),
+            "--require-installed-origin",
         ],
+        cwd=_roundtrip_cwd(paths.work_root),
         env=env,
     )
     if code != 0:
@@ -468,11 +586,13 @@ def stage_canonical_roundtrip(work_root: Path) -> dict[str, object]:
     facts: dict[str, object] = dict(payload["facts"])
     if facts["network_attempts"] != 0 or facts["process_attempts"] != 0:
         _fail("offline sentinels observed forbidden runtime activity")
+    if facts["installed_wheel_origin_verified"] is not True:
+        _fail("canonical round trip did not prove the installed-wheel import origin")
     return facts
 
 
-def stage_no_vfp_standalone(work_root: Path) -> dict[str, object]:
-    venv_python = _acceptance_python(work_root)
+def stage_no_vfp_standalone(paths: AcceptancePaths) -> dict[str, object]:
+    venv_python = paths.acceptance_python()
     code = _run(
         [
             sys.executable,
@@ -506,7 +626,121 @@ def _fact(stages: dict[str, StageResult], name: str, key: str, default: object =
     return result.facts.get(key, default)
 
 
-def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict[str, object]:
+def _mandatory_gate_statuses() -> dict[str, object]:
+    """Truthful Windows/security gate statuses from workflow-controlled inputs."""
+    windows = _env().get(WINDOWS_MATRIX_VARIABLE)
+    security = _env().get(SECURITY_AUDIT_VARIABLE)
+    if windows is None and security is None:
+        return {
+            "execution_context": "LOCAL_PRECHECK",
+            "windows_python_matrix": "NOT_RUN_LOCAL_PRECHECK",
+            "security_advisory_audit": "NOT_RUN_LOCAL_PRECHECK",
+            "gates_source": "LOCAL_MAINTAINER_PRECHECK",
+        }
+    return {
+        "execution_context": "CI_RELEASE_ACCEPTANCE",
+        "windows_python_matrix": "PASS" if windows == "success" else "FAIL",
+        "security_advisory_audit": "PASS" if security == "success" else "FAIL",
+        "gates_source": GATES_SOURCE_CI,
+    }
+
+
+def assert_publishable_hygiene(output_dir: Path) -> dict[str, object]:
+    """Fail-closed publishable-artifact hygiene (privacy-safe allowlist only)."""
+    files = [
+        path.relative_to(output_dir).as_posix()
+        for path in sorted(output_dir.rglob("*"))
+        if path.is_file()
+    ]
+    allowlisted = (
+        {
+            MANIFEST_FILENAME,
+            MANIFEST_DIGEST_SIDECAR,
+        }
+        | {
+            f"{CANDIDATE_DIRECTORY}/{name}"
+            for name in (
+                "dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
+                "dbf_anonymizer-1.0.0.dev0.tar.gz",
+            )
+        }
+        | {f"{CANDIDATE_DIRECTORY}/{name}" for name in _candidate_names()}
+    )
+    allowlist_ok = all(name in allowlisted for name in files)
+    forbidden_fragments = (
+        "dictionary.sqlite3",
+        "recovery.sqlite3",
+        ".sqlite3-wal",
+        ".sqlite3-shm",
+        ".sqlite3-journal",
+        "oracle",
+        "recovered",
+        "acceptance-venv",
+        "wheelhouse",
+        "runtime-contract",
+        "roundtrip",
+        "protected",
+    )
+    forbidden_absent = not any(
+        fragment in name.lower() for name in files for fragment in forbidden_fragments
+    )
+    evidence_files = [output_dir / name for name in files if name.endswith((".json", ".sha256"))]
+    canaries_absent = not any(
+        canary in path.read_bytes() for path in evidence_files for canary in _content_canaries()
+    )
+    absolute_paths_absent = not any(
+        _has_absolute_machine_path(path.read_text(encoding="utf-8"))
+        for path in evidence_files
+        if path.suffix == ".json"
+    )
+    return {
+        "hygiene": "PASS"
+        if allowlist_ok and forbidden_absent and canaries_absent and absolute_paths_absent
+        else "FAIL",
+        "publishable_file_count": len(files),
+        "publishable_files": files,
+        "allowlist_ok": allowlist_ok,
+        "forbidden_artifacts_absent": forbidden_absent,
+        "canaries_absent": canaries_absent,
+        "absolute_private_paths_absent": absolute_paths_absent,
+    }
+
+
+def _content_canaries() -> tuple[bytes, ...]:
+    text = [canary.encode("utf-8") for canary in TEXT_CANARIES]
+    return tuple(text) + tuple(BINARY_CANARIES)
+
+
+def _has_absolute_machine_path(text: str) -> bool:
+    import re
+
+    return re.search(r"[A-Za-z]:[\\/]", text) is not None
+
+
+def _candidate_names() -> tuple[str, ...]:
+    wheel = _env().get("DBF_ACCEPTANCE_WHEEL_FILENAME")
+    sdist = _env().get("DBF_ACCEPTANCE_SDIST_FILENAME")
+    if wheel and sdist:
+        return (Path(wheel).name, Path(sdist).name)
+    return ()
+
+
+def _manifest_content_hygiene(serialized: str) -> bool:
+    """The serialized manifest must contain no canary values and no machine paths."""
+    lowered = serialized.lower()
+    canaries_absent = not any(canary in lowered for canary in TEXT_CANARIES)
+    binary_absent = not any(
+        canary.decode("utf-8", "ignore") in serialized for canary in BINARY_CANARIES
+    )
+    return canaries_absent and binary_absent and not _has_absolute_machine_path(serialized)
+
+
+def build_manifest(
+    stages: dict[str, StageResult],
+    bind: dict[str, Any],
+    mandatory: dict[str, object],
+    hygiene: dict[str, object],
+) -> dict[str, object]:
     stage_view: dict[str, object] = {name: result.as_dict() for name, result in stages.items()}
     vfp_declared = bool(bind.get("trusted_vfp_runtime_declared", False))
 
@@ -549,9 +783,25 @@ def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict
         and status_of("installed_wheel_contract") == "PASS"
         else "FAIL"
     )
-    final = (
+    origin_ok = (
+        roundtrip_ok
+        and _fact(stages, "canonical_roundtrip", "installed_wheel_origin_verified") is True
+        and _fact(stages, "canonical_roundtrip", "repository_source_shadowing") is False
+    )
+    ubuntu_full_acceptance = (
         "PASS"
-        if len(stages) == len(STAGES)
+        if quality_status == "PASS"
+        and roundtrip_ok
+        and no_vfp_status == "PASS"
+        and wheel_install_ok
+        and origin_ok
+        else "FAIL"
+    )
+    windows_ok = mandatory["windows_python_matrix"] == "PASS"
+    security_ok = mandatory["security_advisory_audit"] == "PASS"
+    hygiene_ok = hygiene.get("hygiene") == "PASS"
+    internal_ok = (
+        len(stages) == len(STAGES)
         and all(result.status == "PASS" for result in stages.values())
         and quality_status == "PASS"
         and freeze_status == "PASS"
@@ -561,9 +811,20 @@ def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict
         and transfer_status == "PASS"
         and forbidden_status == "PASS"
         and offline_status == "PASS"
+        and origin_ok
         and no_vfp_status == "PASS"
-        else "FAIL"
+        and ubuntu_full_acceptance == "PASS"
+        and hygiene_ok
     )
+    execution_context = str(mandatory["execution_context"])
+    if not internal_ok:
+        final = "FAIL"
+    elif execution_context == "CI_RELEASE_ACCEPTANCE" and windows_ok and security_ok:
+        final = "PASS"
+    elif execution_context == "CI_RELEASE_ACCEPTANCE":
+        final = "FAIL"
+    else:
+        final = "LOCAL_PRECHECK"
     wheelhouse_entry = _fact(stages, "release_build", "wheelhouse_dbfbridge")
     wheelhouse_entry = wheelhouse_entry if isinstance(wheelhouse_entry, dict) else {}
     manifest: dict[str, object] = {
@@ -575,6 +836,7 @@ def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict
         "package_version": bind.get("package_version"),
         "python_version": bind.get("python_version"),
         "platform": bind.get("platform"),
+        "execution_context": mandatory["execution_context"],
         "release_candidate": {
             "wheel_filename": _fact(stages, "release_build", "wheel_filename"),
             "wheel_sha256": _fact(stages, "release_build", "wheel_sha256"),
@@ -608,6 +870,39 @@ def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict
             "vcs_url": None,
             "local_path_dependency": False,
         },
+        "installed_wheel_origin": {
+            "verified": _fact(stages, "canonical_roundtrip", "installed_wheel_origin_verified")
+            is True,
+            "repository_source_shadowing": _fact(
+                stages, "canonical_roundtrip", "repository_source_shadowing"
+            )
+            is True,
+            "import_origin": _fact(stages, "canonical_roundtrip", "import_origin"),
+            "pythonpath_contains_repo_root": _fact(
+                stages, "canonical_roundtrip", "repo_root_in_pythonpath"
+            ),
+            "sys_path_contains_repo_root": _fact(
+                stages, "canonical_roundtrip", "repo_root_in_sys_path"
+            ),
+            "cwd_outside_repository": _fact(
+                stages, "canonical_roundtrip", "cwd_outside_repository"
+            ),
+        },
+        "mandatory_quality_gates": {
+            "windows_python_matrix": mandatory["windows_python_matrix"],
+            "security_advisory_audit": mandatory["security_advisory_audit"],
+            "ubuntu_full_acceptance": ubuntu_full_acceptance,
+            "gates_source": mandatory["gates_source"],
+        },
+        "publishable_artifact": {
+            "hygiene": hygiene.get("hygiene"),
+            "publishable_file_count": hygiene.get("publishable_file_count"),
+            "allowlist_ok": hygiene.get("allowlist_ok"),
+            "forbidden_artifacts_absent": hygiene.get("forbidden_artifacts_absent"),
+            "canaries_absent": hygiene.get("canaries_absent"),
+            "absolute_private_paths_absent": hygiene.get("absolute_private_paths_absent"),
+            "private_work_root_scope": "NOT_PUBLISHED",
+        },
         "stages": stage_view,
         "quality_gate_status": quality_status,
         "wheel_install_status": "PASS" if wheel_install_ok else "FAIL",
@@ -616,6 +911,7 @@ def build_manifest(stages: dict[str, StageResult], bind: dict[str, Any]) -> dict
         "transfer_bundle_status": transfer_status,
         "forbidden_material_status": forbidden_status,
         "offline_status": offline_status,
+        "installed_wheel_origin_status": "PASS" if origin_ok else "FAIL",
         "no_vfp_standalone_status": no_vfp_status,
         "vfp_evidence_status": (
             VFP_STATUS_NO_RUN if not vfp_declared else VFP_STATUS_AVAILABLE_NOT_REQUIRED
@@ -643,29 +939,37 @@ def _write_manifest(output_dir: Path, manifest: dict[str, object]) -> str:
     return digest
 
 
+def _stale_cleanup(paths: AcceptancePaths) -> None:
+    for directory in PRIVATE_WORK_SUBDIRS:
+        stale = paths.work_root / directory
+        if stale.exists():
+            shutil.rmtree(stale)
+    for stale in (
+        paths.candidate,
+        paths.output_dir / MANIFEST_FILENAME,
+        paths.output_dir / MANIFEST_DIGEST_SIDECAR,
+    ):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--work-root", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for stale in (
-        "p7-evidence",
-        "wheelhouse",
-        "acceptance-venv",
-        CANDIDATE_DIRECTORY,
-        "runtime-contract",
-        "roundtrip",
-    ):
-        stale_path = output_dir / stale
-        if stale_path.exists():
-            shutil.rmtree(stale_path)
+    paths = AcceptancePaths(work_root=args.work_root, output_dir=args.output_dir)
+    paths.work_root.mkdir(parents=True, exist_ok=True)
+    paths.output_dir.mkdir(parents=True, exist_ok=True)
+    _stale_cleanup(paths)
 
     stages: dict[str, StageResult] = {}
     bind: dict[str, Any] = {}
     for name, runner in STAGES:
         try:
-            facts = runner(output_dir)
+            facts = runner(paths)
         except Exception as error:  # noqa: BLE001 - fail-closed aggregation, no fail-open
             stages[name] = StageResult(name, "FAIL", {"error": type(error).__name__})
             break
@@ -686,23 +990,45 @@ def main() -> int:
             )
         if name == "dependency_audit":
             bind["acceptance_pin"] = facts["acceptance_pin"]
+        if name == "release_build":
+            _env()["DBF_ACCEPTANCE_WHEEL_FILENAME"] = str(facts["wheel_filename"])
+            _env()["DBF_ACCEPTANCE_SDIST_FILENAME"] = str(facts["sdist_filename"])
 
+    mandatory = _mandatory_gate_statuses()
     complete = len(stages) == len(STAGES) and all(key in bind for key in _BIND_KEYS)
-    manifest = build_manifest(stages, bind)
-    digest = _write_manifest(output_dir, manifest)
-    final = str(manifest["final_status"])
+    if complete:
+        hygiene = assert_publishable_hygiene(paths.output_dir)
+        manifest = build_manifest(stages, bind, mandatory, hygiene)
+        serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        if not _manifest_content_hygiene(serialized):
+            manifest["publishable_artifact"]["hygiene"] = "FAIL"  # type: ignore[index]
+            manifest["final_status"] = "FAIL"  # type: ignore[index]
+            serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        digest = _write_manifest(paths.output_dir, manifest)
+        final = str(manifest["final_status"])
+        print(
+            json.dumps(
+                {
+                    "final_status": final,
+                    "manifest": MANIFEST_FILENAME,
+                    "manifest_sha256": digest,
+                    "stages_completed": len(stages),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if final in {"PASS", "LOCAL_PRECHECK"} else 1
     print(
         json.dumps(
             {
-                "final_status": final,
+                "final_status": "FAIL",
                 "manifest": MANIFEST_FILENAME,
-                "manifest_sha256": digest,
                 "stages_completed": len(stages),
             },
             sort_keys=True,
         )
     )
-    return 0 if final == "PASS" and complete else 1
+    return 1
 
 
 if __name__ == "__main__":
