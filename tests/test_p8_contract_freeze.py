@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import dbf_anonymizer as package
 import pytest
 
 from tools.generate_public_contract_snapshot import SNAPSHOT_PATH, build_contract
@@ -133,6 +134,46 @@ def test_incompatible_mutation_is_detected(mutation: Mutation, difference_path: 
         _assert_frozen(mutated, frozen)
 
 
+def test_removed_public_root_export_is_detected_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real public-API symbol removal from ``__all__`` must fail the freeze."""
+    monkeypatch.setattr(
+        package,
+        "__all__",
+        [name for name in package.__all__ if name != "recover"],
+    )
+    with pytest.raises(AssertionError, match=r"\$\.python_api\.root_exports"):
+        _assert_frozen(build_contract(), _frozen_contract())
+
+
+def test_incompatible_production_schema_version_is_detected_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real public model schema-version change must fail the freeze."""
+    monkeypatch.setattr(package, "MODEL_SCHEMA_VERSION", "1.9")
+    with pytest.raises(AssertionError, match=r"\$\.public_json\.schema_versions\.model"):
+        _assert_frozen(build_contract(), _frozen_contract())
+
+
+def test_incompatible_error_registry_version_is_detected_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real error-registry version change must fail the freeze."""
+    monkeypatch.setattr(package, "ERROR_REGISTRY_VERSION", "9.9")
+    with pytest.raises(AssertionError, match=r"\$\.errors\.registry_version"):
+        _assert_frozen(build_contract(), _frozen_contract())
+
+
+def test_removed_public_function_breaks_the_contract_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting a package-root callable must deterministically break the build."""
+    monkeypatch.delattr(package, "recover")
+    with pytest.raises(AttributeError):
+        build_contract()
+
+
 def test_snapshot_contains_no_sensitive_rows_or_recovery_material() -> None:
     frozen = _frozen_contract()
     frozen_text = SNAPSHOT_PATH.read_text(encoding="ascii").lower()
@@ -162,7 +203,7 @@ def test_snapshot_contains_no_sensitive_rows_or_recovery_material() -> None:
         return [value] if isinstance(value, str) else []
 
     assert not (forbidden_data_keys & keys(frozen))
-    private_path = re.compile(r"(?i)(?:^[a-z]:[\\/]|^\\\\|^/(?:home|users|private|var)/)")
+    private_path = re.compile(r"(?i)[a-z]:[\\/]|\\\\|/(?:home|users|private|var)/")
     assert not [value for value in strings(frozen) if private_path.search(value)]
     assert "production data" not in frozen_text
 
