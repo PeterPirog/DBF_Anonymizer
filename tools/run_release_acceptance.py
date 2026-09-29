@@ -49,6 +49,9 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 CONTRACT_SNAPSHOT = REPO_ROOT / "contracts" / "public-contract-1.0.json"
 ACCEPTANCE_PIN = REPO_ROOT / "requirements" / "p0-dbfbridge-tested.txt"
 WHEELHOUSE_MANIFEST = REPO_ROOT / "requirements" / "p7-offline-wheelhouse.txt"
