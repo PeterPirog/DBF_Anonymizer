@@ -1,0 +1,208 @@
+name: P8 release acceptance
+
+# REQ-P8-002: THE authoritative single release-acceptance workflow.
+#
+# The final one-command job executes the deterministic maintainer tool
+# ``tools/run_release_acceptance.py`` from a clean checkout, which:
+#   * refuses a dirty working tree (fail-closed source binding);
+#   * runs every mandatory quality gate (ruff format/lint, strict mypy,
+#     compileall, the FULL test suite including the frozen REQ-P8-001
+#     public-contract snapshot test);
+#   * audits the exact pinned dbfbridge acceptance artifact;
+#   * builds the reproducible release evidence bundle (REQ-P7-008) and
+#     re-verifies it with the independent fail-closed verifier;
+#   * installs the EXACT release wheel into a fresh venv from the pinned
+#     offline wheelhouse only (--no-index, --no-cache-dir);
+#   * executes the installed-wheel recovery-boundary contract and the
+#     nine-command standalone runtime contract with network/process
+#     sentinels (OFFLINE RUNTIME ACCEPTANCE phase);
+#   * performs the canonical synthetic PK/FK round trip from the INSTALLED
+#     wheel with an objective import-origin proof (fail-closed: the child
+#     must resolve ``dbf_anonymizer`` from the acceptance venv
+#     site-packages, never from the source checkout, and the repository
+#     root is removed from the child's ``PYTHONPATH`` and never added to
+#     its ``sys.path``);
+#   * runs the no-VFP standalone smoke;
+#   * writes the deterministic, privacy-safe release-acceptance evidence
+#     manifest with a fail-closed final verdict.
+#
+# MANDATORY GATES IN THIS WORKFLOW (same prospective merge revision):
+#   * windows-release-matrix — every declared Windows Python version
+#     (3.10-3.14): reproducible packaging contract, wheel metadata, clean
+#     pinned-dbfbridge install, fresh-wheel smoke with import-origin
+#     assertion, console entry point, installed-wheel contract and focused
+#     contract tests against the installed wheel;
+#   * security-advisory-audit — the accepted CI-only pip-audit advisory
+#     audit of the locked runtime closure (REQ-P7-004 runtime-network
+#     prohibition stays untouched; the offline wheelhouse lane proves the
+#     runtime boundary separately);
+#   * release-acceptance (needs: both jobs) — refuses PASS unless both
+#     mandatory jobs report ``success`` (the truth values come from
+#     ``needs.<job>.result``, passed as privacy-safe env indicators; the
+#     final command fails closed on anything else).
+#
+# VFP evidence is recorded TRUTHFULLY as NOT_RUN: no trusted VFP machine is
+# scheduled by this workflow and no real-VFP capability is claimed.  Real
+# VFP execution remains the isolated trusted lane of
+# p6-trusted-vfp-acceptance.yml (workflow_dispatch, main-only).
+#
+# Artifact hygiene: the uploaded artifact contains ONLY the publishable
+# output directory (final manifest + sidecar + release-candidate
+# distributions).  The private work root (vaults, wheelhouse, venv,
+# roundtrip oracle/recovered data, runtime-contract protected directories)
+# is never uploaded.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release-matrix:
+    name: Windows packaging + installed wheel / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+      - name: Verify wheel metadata and content
+        shell: pwsh
+        run: python tools/check_wheel_metadata.py (Get-ChildItem dist\*.whl).FullName
+      - name: Clean install (pinned public dbfbridge + built wheel, no deps)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv clean-env
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir --upgrade pip
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+          & "clean-env\Scripts\python.exe" -m pip install --no-cache-dir --no-deps (Get-ChildItem dist\*.whl).FullName
+          & "clean-env\Scripts\python.exe" -m pip check
+      - name: Fresh-wheel smoke outside the workspace (site-packages execution)
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p8-win-${{ matrix.python-version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (Test-Path -LiteralPath $env:SMOKE_ROOT) {
+            Remove-Item -LiteralPath $env:SMOKE_ROOT -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\wheelhouse" | Out-Null
+          New-Item -ItemType Directory -Path "$env:SMOKE_ROOT\work" | Out-Null
+          Copy-Item -Path "dist\*.whl" -Destination "$env:SMOKE_ROOT\wheelhouse"
+          python -m venv "$env:SMOKE_ROOT\venv"
+          $venvPython = "$env:SMOKE_ROOT\venv\Scripts\python.exe"
+          & $venvPython -m pip install --no-cache-dir --upgrade pip
+          & $venvPython -m pip install --no-cache-dir -r "$env:GITHUB_WORKSPACE\requirements\p0-dbfbridge-tested.txt"
+          & $venvPython -m pip install --no-cache-dir --no-deps (Get-ChildItem "$env:SMOKE_ROOT\wheelhouse\*.whl").FullName
+          & $venvPython -m pip check
+          Set-Location -LiteralPath "$env:SMOKE_ROOT\work"
+          if ($PWD.Path.StartsWith($env:GITHUB_WORKSPACE)) {
+            throw "smoke cwd is inside GITHUB_WORKSPACE"
+          }
+          & $venvPython -c "import dbf_anonymizer, sys; f = dbf_anonymizer.__file__; assert 'site-packages' in f.lower(), f; assert not f.lower().startswith('$env:GITHUB_WORKSPACE'.lower()), f; print('import origin:', f)"
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --help
+          & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --version
+          & $venvPython "$env:GITHUB_WORKSPACE\tools\check_p7_installed_wheel.py"
+      - name: No-VFP standalone smoke (Windows)
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p8-win-${{ matrix.python-version }}
+        run: |
+          python tools/check_p7_no_vfp_smoke.py --python "$env:SMOKE_ROOT\venv\Scripts\python.exe"
+      - name: Focused contract tests against the installed wheel
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ runner.temp }}\dbf-anonymizer-p8-win-${{ matrix.python-version }}
+          PYTHONUTF8: "1"
+        run: |
+          & "$env:SMOKE_ROOT\venv\Scripts\python.exe" -m pip install --no-cache-dir pytest
+          Set-Location -LiteralPath $env:GITHUB_WORKSPACE
+          & "$env:SMOKE_ROOT\venv\Scripts\python.exe" -m pytest `
+            tests/test_p1_packaging.py `
+            tests/test_p1_public_models.py `
+            tests/test_p1_errors.py `
+            tests/test_p7_public_json_contract.py `
+            -ra
+
+  security-advisory-audit:
+    name: Security advisory audit (locked runtime closure; CI network only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the audit tooling (CI-only, never a runtime dependency)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit==2.10.1 build
+      - name: Audit the locked standalone runtime closure against the advisory database
+        run: python -m pip_audit --no-deps -r requirements/p7-offline-wheelhouse.txt
+      - name: Fresh-wheel installability and pip check (objective dependency consistency)
+        run: |
+          python -m build
+          python -m venv audit-env
+          audit-env/bin/python -m pip install --no-cache-dir --upgrade pip
+          audit-env/bin/python -m pip install --no-cache-dir -r requirements/p0-dbfbridge-tested.txt
+          audit-env/bin/python -m pip install --no-cache-dir --no-deps dist/*.whl
+          audit-env/bin/python -m pip check
+      - name: Document the P7-004 boundary
+        run: |
+          echo "This audit's network use is CI-only tooling. The P7-004"
+          echo "runtime-network prohibition is unchanged and remains proven by"
+          echo "the offline wheelhouse validation inside the release-acceptance job."
+
+  release-acceptance:
+    name: One-command release acceptance (P8-002)
+    needs: [windows-release-matrix, security-advisory-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DBF_MANDATORY_WINDOWS_MATRIX_RESULT: ${{ needs.windows-release-matrix.result }}
+      DBF_MANDATORY_SECURITY_AUDIT_RESULT: ${{ needs.security-advisory-audit.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the acceptance tooling environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Run the release acceptance (one command)
+        env:
+          DBF_ACCEPTANCE_WORKFLOW_NAME: ${{ github.workflow }}
+          DBF_ACCEPTANCE_RUN_ID: ${{ github.run_id }}
+          DBF_ACCEPTANCE_RUN_EVENT: ${{ github.event_name }}
+        run: |
+          python tools/run_release_acceptance.py \
+            --work-root "$RUNNER_TEMP/p8-release-acceptance-work" \
+            --output-dir "$RUNNER_TEMP/p8-release-acceptance-publishable"
+      - name: Show the release-acceptance identity
+        run: |
+          cat "$RUNNER_TEMP/p8-release-acceptance-publishable/release-acceptance-evidence.json"
+          cat "$RUNNER_TEMP/p8-release-acceptance-publishable/release-acceptance-evidence.sha256"
+      - name: Upload the publishable release-acceptance evidence and release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: p8-release-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p8-release-acceptance-publishable
+          if-no-files-found: error
