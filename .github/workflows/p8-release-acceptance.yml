@@ -1,0 +1,74 @@
+name: P8 release acceptance
+
+# REQ-P8-002: ONE release-acceptance entry point for the whole repository.
+#
+# The single job executes the deterministic maintainer tool
+# ``tools/run_release_acceptance.py`` from a clean checkout, which:
+#   * refuses a dirty working tree (fail-closed source binding);
+#   * runs every mandatory quality gate (ruff format/lint, strict mypy,
+#     compileall, the FULL test suite including the frozen REQ-P8-001
+#     public-contract snapshot test);
+#   * audits the exact pinned dbfbridge acceptance artifact;
+#   * builds the reproducible release evidence bundle (REQ-P7-008) and
+#     re-verifies it with the independent fail-closed verifier;
+#   * installs the EXACT release wheel into a fresh venv from the pinned
+#     offline wheelhouse only (--no-index, controlled pip cache);
+#   * executes the installed-wheel recovery-boundary contract and the
+#     nine-command standalone runtime contract with network/process
+#     sentinels (OFFLINE RUNTIME ACCEPTANCE phase);
+#   * performs the canonical synthetic PK/FK round trip from the installed
+#     wheel (build_plan -> preflight -> pseudonymize -> verify_dataset ->
+#     DATA_ONLY bundle -> standalone verify -> recover -> logical oracle)
+#     and proves the bundle excludes every forbidden artifact class;
+#   * runs the cross-check no-VFP standalone smoke;
+#   * writes the deterministic, privacy-safe release-acceptance evidence
+#     manifest with a fail-closed final verdict.
+#
+# VFP evidence is recorded TRUTHFULLY as NOT_RUN: no trusted VFP machine is
+# scheduled by this workflow and no real-VFP capability is claimed.  Real
+# VFP execution remains the isolated trusted lane of
+# p6-trusted-vfp-acceptance.yml (workflow_dispatch, main-only).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-acceptance:
+    name: One-command release acceptance (P8-002)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the acceptance tooling environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements/p0-dbfbridge-tested.txt
+          python -m pip check
+      - name: Run the release acceptance (one command)
+        env:
+          DBF_ACCEPTANCE_WORKFLOW_NAME: ${{ github.workflow }}
+          DBF_ACCEPTANCE_RUN_ID: ${{ github.run_id }}
+          DBF_ACCEPTANCE_RUN_EVENT: ${{ github.event_name }}
+        run: |
+          python tools/run_release_acceptance.py \
+            --output-dir "$RUNNER_TEMP/p8-release-acceptance"
+      - name: Show the release-acceptance identity
+        run: |
+          cat "$RUNNER_TEMP/p8-release-acceptance/release-acceptance-evidence.json"
+          cat "$RUNNER_TEMP/p8-release-acceptance/release-acceptance-evidence.sha256"
+      - name: Upload the release-acceptance evidence and release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: p8-release-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p8-release-acceptance
+          if-no-files-found: error
