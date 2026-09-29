@@ -33,6 +33,13 @@ Stages:
                               source checkout, editable install or PYTHONPATH)
  9. no_vfp_standalone         hosted no-VFP import-purity + standalone smoke
 
+Nine execution stages are followed by the final evidence aggregation and
+finalization: the manifest and its SHA-256 sidecar are written, then the
+ACTUAL final publishable tree is verified against the manifest's own claims
+(exact allowlisted filenames, declared file count equal to the actual final
+count, sidecar digest equal to the final manifest bytes, no canaries, no
+private machine paths) - any inconsistency is fail-closed.
+
 ONLINE PREPARATION covers stages 1-6 (including the PyPI wheelhouse download
 performed by the accepted P7-008 evidence tool).  The OFFLINE RUNTIME
 ACCEPTANCE phase covers stages 7-9: local wheels only, ``--no-index``,
@@ -645,27 +652,25 @@ def _mandatory_gate_statuses() -> dict[str, object]:
     }
 
 
-def assert_publishable_hygiene(output_dir: Path) -> dict[str, object]:
-    """Fail-closed publishable-artifact hygiene (privacy-safe allowlist only)."""
+def assert_publishable_hygiene(
+    output_dir: Path, candidate_names: tuple[str, str]
+) -> dict[str, object]:
+    """Fail-closed publishable-artifact hygiene (privacy-safe allowlist only).
+
+    The allowlisted candidate distribution names come EXPLICITLY from the
+    actual build evidence (the caller passes them from the release-build
+    facts); no package version is hardcoded here, so a future stable-style
+    candidate (e.g. ``dbf_anonymizer-1.0.0-py3-none-any.whl``) is accepted
+    exactly when it is the expected candidate and rejected otherwise.
+    """
     files = [
         path.relative_to(output_dir).as_posix()
         for path in sorted(output_dir.rglob("*"))
         if path.is_file()
     ]
-    allowlisted = (
-        {
-            MANIFEST_FILENAME,
-            MANIFEST_DIGEST_SIDECAR,
-        }
-        | {
-            f"{CANDIDATE_DIRECTORY}/{name}"
-            for name in (
-                "dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
-                "dbf_anonymizer-1.0.0.dev0.tar.gz",
-            )
-        }
-        | {f"{CANDIDATE_DIRECTORY}/{name}" for name in _candidate_names()}
-    )
+    allowlisted = {MANIFEST_FILENAME, MANIFEST_DIGEST_SIDECAR} | {
+        f"{CANDIDATE_DIRECTORY}/{name}" for name in candidate_names
+    }
     allowlist_ok = all(name in allowlisted for name in files)
     forbidden_fragments = (
         "dictionary.sqlite3",
@@ -717,12 +722,14 @@ def _has_absolute_machine_path(text: str) -> bool:
     return re.search(r"[A-Za-z]:[\\/]", text) is not None
 
 
-def _candidate_names() -> tuple[str, ...]:
-    wheel = _env().get("DBF_ACCEPTANCE_WHEEL_FILENAME")
-    sdist = _env().get("DBF_ACCEPTANCE_SDIST_FILENAME")
-    if wheel and sdist:
-        return (Path(wheel).name, Path(sdist).name)
-    return ()
+def _expected_final_files(candidate_names: tuple[str, str]) -> tuple[str, ...]:
+    """The exact, deterministic final publishable tree (manifest + sidecar + candidate)."""
+    return (
+        MANIFEST_FILENAME,
+        MANIFEST_DIGEST_SIDECAR,
+        f"{CANDIDATE_DIRECTORY}/{candidate_names[0]}",
+        f"{CANDIDATE_DIRECTORY}/{candidate_names[1]}",
+    )
 
 
 def _manifest_content_hygiene(serialized: str) -> bool:
@@ -733,6 +740,65 @@ def _manifest_content_hygiene(serialized: str) -> bool:
         canary.decode("utf-8", "ignore") in serialized for canary in BINARY_CANARIES
     )
     return canaries_absent and binary_absent and not _has_absolute_machine_path(serialized)
+
+
+def finalize_publishable_evidence(
+    output_dir: Path, candidate_names: tuple[str, str], manifest: dict[str, object]
+) -> tuple[dict[str, object], str, str]:
+    """Two-pass finalization of the publishable release-acceptance evidence.
+
+    Pass 1 writes the aggregated manifest and its SHA-256 sidecar.  Pass 2
+    performs hygiene against the ACTUAL final publishable tree (manifest +
+    sidecar + candidate distributions) and verifies the manifest's own
+    claims: the publishable file count equals the actual final file count,
+    the actual filenames equal the expected allowlist, the sidecar digest
+    equals the final manifest bytes, and the manifest contains no canaries
+    or private machine paths.  Any inconsistency is fail-closed: the
+    manifest is rewritten with FAIL facts and the verdict becomes FAIL.
+    """
+    manifest_path = output_dir / MANIFEST_FILENAME
+    sidecar_path = output_dir / MANIFEST_DIGEST_SIDECAR
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+    )
+    manifest_bytes = manifest_path.read_bytes()
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    sidecar_path.write_text(digest + "\n", encoding="utf-8", newline="\n")
+
+    actual = assert_publishable_hygiene(output_dir, candidate_names)
+    expected_names = sorted(_expected_final_files(candidate_names))
+    content_clean = _manifest_content_hygiene(manifest_path.read_text(encoding="utf-8"))
+    sidecar_digest = sidecar_path.read_text(encoding="utf-8").split()[0]
+    publishable_section = manifest["publishable_artifact"]
+    assert isinstance(publishable_section, dict)
+    actual_files = actual["publishable_files"]
+    assert isinstance(actual_files, list)
+    consistent = (
+        actual["hygiene"] == "PASS"
+        and content_clean
+        and actual["publishable_file_count"] == publishable_section["publishable_file_count"]
+        and sorted(actual_files) == expected_names
+        and sidecar_digest == digest
+        and hashlib.sha256(manifest_path.read_bytes()).hexdigest() == digest
+    )
+    if consistent:
+        return actual, digest, str(manifest["final_status"])
+
+    failed = dict(manifest)
+    failed["publishable_artifact"] = {
+        **publishable_section,
+        "hygiene": "FAIL",
+        "publishable_file_count": actual["publishable_file_count"],
+        "publishable_files": actual["publishable_files"],
+        "expected_final_files": expected_names,
+        "consistency": "FINAL_TREE_VERIFICATION_FAILED",
+    }
+    failed["final_status"] = "FAIL"
+    serialized = json.dumps(failed, indent=2, sort_keys=True) + "\n"
+    manifest_path.write_text(serialized, encoding="utf-8", newline="\n")
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    sidecar_path.write_text(digest + "\n", encoding="utf-8", newline="\n")
+    return actual, digest, "FAIL"
 
 
 def build_manifest(
@@ -897,6 +963,7 @@ def build_manifest(
         "publishable_artifact": {
             "hygiene": hygiene.get("hygiene"),
             "publishable_file_count": hygiene.get("publishable_file_count"),
+            "publishable_files": hygiene.get("publishable_files"),
             "allowlist_ok": hygiene.get("allowlist_ok"),
             "forbidden_artifacts_absent": hygiene.get("forbidden_artifacts_absent"),
             "canaries_absent": hygiene.get("canaries_absent"),
@@ -930,15 +997,6 @@ def build_manifest(
     return manifest
 
 
-def _write_manifest(output_dir: Path, manifest: dict[str, object]) -> str:
-    serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    manifest_path = output_dir / MANIFEST_FILENAME
-    manifest_path.write_text(serialized, encoding="utf-8", newline="\n")
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    (output_dir / MANIFEST_DIGEST_SIDECAR).write_text(digest + "\n", encoding="utf-8", newline="\n")
-    return digest
-
-
 def _stale_cleanup(paths: AcceptancePaths) -> None:
     for directory in PRIVATE_WORK_SUBDIRS:
         stale = paths.work_root / directory
@@ -967,6 +1025,7 @@ def main() -> int:
 
     stages: dict[str, StageResult] = {}
     bind: dict[str, Any] = {}
+    candidate_names: tuple[str, str] | None = None
     for name, runner in STAGES:
         try:
             facts = runner(paths)
@@ -991,27 +1050,44 @@ def main() -> int:
         if name == "dependency_audit":
             bind["acceptance_pin"] = facts["acceptance_pin"]
         if name == "release_build":
-            _env()["DBF_ACCEPTANCE_WHEEL_FILENAME"] = str(facts["wheel_filename"])
-            _env()["DBF_ACCEPTANCE_SDIST_FILENAME"] = str(facts["sdist_filename"])
+            candidate_names = (
+                Path(str(facts["wheel_filename"])).name,
+                Path(str(facts["sdist_filename"])).name,
+            )
 
     mandatory = _mandatory_gate_statuses()
     complete = len(stages) == len(STAGES) and all(key in bind for key in _BIND_KEYS)
-    if complete:
-        hygiene = assert_publishable_hygiene(paths.output_dir)
-        manifest = build_manifest(stages, bind, mandatory, hygiene)
-        serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        if not _manifest_content_hygiene(serialized):
-            manifest["publishable_artifact"]["hygiene"] = "FAIL"  # type: ignore[index]
-            manifest["final_status"] = "FAIL"  # type: ignore[index]
-            serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        digest = _write_manifest(paths.output_dir, manifest)
-        final = str(manifest["final_status"])
+    if complete and candidate_names is not None:
+        # Pass 1: hygiene over the publishable tree BEFORE the manifest exists
+        # (candidate distributions only), then the expected FINAL facts: the
+        # deterministic final tree additionally contains the manifest and its
+        # SHA-256 sidecar.
+        pre_hygiene = assert_publishable_hygiene(paths.output_dir, candidate_names)
+        pre_files = pre_hygiene["publishable_files"]
+        assert isinstance(pre_files, list)
+        expected_final_hygiene = {
+            "hygiene": pre_hygiene["hygiene"],
+            "publishable_file_count": len(pre_files) + 2,
+            "publishable_files": sorted([*pre_files, MANIFEST_FILENAME, MANIFEST_DIGEST_SIDECAR]),
+            "allowlist_ok": pre_hygiene["allowlist_ok"],
+            "forbidden_artifacts_absent": pre_hygiene["forbidden_artifacts_absent"],
+            "canaries_absent": pre_hygiene["canaries_absent"],
+            "absolute_private_paths_absent": pre_hygiene["absolute_private_paths_absent"],
+        }
+        manifest = build_manifest(stages, bind, mandatory, expected_final_hygiene)
+        # Pass 2: write manifest + sidecar, then verify the ACTUAL final tree
+        # against the manifest's own claims (count, exact filenames, sidecar
+        # digest, canaries, private paths).  Fail-closed on any inconsistency.
+        hygiene, digest, final = finalize_publishable_evidence(
+            paths.output_dir, candidate_names, manifest
+        )
         print(
             json.dumps(
                 {
                     "final_status": final,
                     "manifest": MANIFEST_FILENAME,
                     "manifest_sha256": digest,
+                    "publishable_file_count": hygiene["publishable_file_count"],
                     "stages_completed": len(stages),
                 },
                 sort_keys=True,

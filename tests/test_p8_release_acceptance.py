@@ -14,6 +14,7 @@ import yaml
 
 from tools.run_release_acceptance import (
     ENTRY_POINT,
+    MANIFEST_DIGEST_SIDECAR,
     MANIFEST_FILENAME,
     REPO_ROOT,
     SECURITY_AUDIT_VARIABLE,
@@ -30,6 +31,7 @@ from tools.run_release_acceptance import (
     _wheelhouse_install_command,
     assert_publishable_hygiene,
     build_manifest,
+    finalize_publishable_evidence,
 )
 from tools.release_acceptance_roundtrip import installed_wheel_origin_facts
 
@@ -669,13 +671,14 @@ def test_publishable_artifact_hygiene_is_fail_closed(tmp_path: Path) -> None:
     output_dir = tmp_path / "publishable"
     candidate = output_dir / "release-candidate"
     candidate.mkdir(parents=True)
+    candidates = ("dbf_anonymizer-1.0.0.dev0-py3-none-any.whl", "dbf_anonymizer-1.0.0.dev0.tar.gz")
     (output_dir / "release-acceptance-evidence.json").write_text("{}", encoding="utf-8")
     (output_dir / "release-acceptance-evidence.sha256").write_text(
         "a" * 64 + "\n", encoding="utf-8"
     )
-    (candidate / "dbf_anonymizer-1.0.0.dev0-py3-none-any.whl").write_bytes(b"wheel")
-    (candidate / "dbf_anonymizer-1.0.0.dev0.tar.gz").write_bytes(b"sdist")
-    facts = assert_publishable_hygiene(output_dir)
+    (candidate / candidates[0]).write_bytes(b"wheel")
+    (candidate / candidates[1]).write_bytes(b"sdist")
+    facts = assert_publishable_hygiene(output_dir, candidates)
     assert facts["hygiene"] == "PASS"
 
     def violation(name: str, content: bytes | str = b"") -> None:
@@ -685,7 +688,7 @@ def test_publishable_artifact_hygiene_is_fail_closed(tmp_path: Path) -> None:
             path.write_text(content, encoding="utf-8")
         else:
             path.write_bytes(content)
-        assert assert_publishable_hygiene(output_dir)["hygiene"] == "FAIL"
+        assert assert_publishable_hygiene(output_dir, candidates)["hygiene"] == "FAIL"
         path.unlink()
 
     violation("dictionary.sqlite3")
@@ -706,6 +709,136 @@ def test_publishable_artifact_hygiene_is_fail_closed(tmp_path: Path) -> None:
     )
     extra = output_dir / "unexpected.txt"
     extra.write_text("x", encoding="utf-8")
-    assert assert_publishable_hygiene(output_dir)["allowlist_ok"] is False
+    assert assert_publishable_hygiene(output_dir, candidates)["allowlist_ok"] is False
     extra.unlink()
-    assert assert_publishable_hygiene(output_dir)["hygiene"] == "PASS"
+    assert assert_publishable_hygiene(output_dir, candidates)["hygiene"] == "PASS"
+
+
+def test_publishable_hygiene_accepts_alternate_stable_candidate_names(tmp_path: Path) -> None:
+    """Candidate distribution names come from explicit build facts: the
+    hygiene allowlist contains no hardcoded dev0 assumption, so a future
+    stable-style candidate is accepted when it IS the expected candidate."""
+    output_dir = tmp_path / "publishable"
+    candidate = output_dir / "release-candidate"
+    candidate.mkdir(parents=True)
+    stable_candidates = ("dbf_anonymizer-1.0.0-py3-none-any.whl", "dbf_anonymizer-1.0.0.tar.gz")
+    (output_dir / "release-acceptance-evidence.json").write_text("{}", encoding="utf-8")
+    (output_dir / "release-acceptance-evidence.sha256").write_text(
+        "b" * 64 + "\n", encoding="utf-8"
+    )
+    (candidate / stable_candidates[0]).write_bytes(b"stable wheel")
+    (candidate / stable_candidates[1]).write_bytes(b"stable sdist")
+    facts = assert_publishable_hygiene(output_dir, stable_candidates)
+    assert facts["hygiene"] == "PASS"
+    assert facts["publishable_file_count"] == 4
+    unexpected_distribution = candidate / "dbfbridge-2.0.0-py3-none-any.whl"
+    unexpected_distribution.write_bytes(b"third")
+    assert assert_publishable_hygiene(output_dir, stable_candidates)["hygiene"] == "FAIL"
+    unexpected_distribution.unlink()
+    unexpected_filename = output_dir / "release-acceptance-evidence.old.json"
+    unexpected_filename.write_text("{}", encoding="utf-8")
+    assert assert_publishable_hygiene(output_dir, stable_candidates)["allowlist_ok"] is False
+    unexpected_filename.unlink()
+    assert assert_publishable_hygiene(output_dir, stable_candidates)["hygiene"] == "PASS"
+    dev_names = ("dbf_anonymizer-1.0.0.dev0-py3-none-any.whl", "dbf_anonymizer-1.0.0.dev0.tar.gz")
+    assert assert_publishable_hygiene(output_dir, dev_names)["hygiene"] == "FAIL"
+
+
+def test_finalize_publishable_count_equals_actual_final_files(tmp_path: Path) -> None:
+    """The two-pass finalization writes the manifest/sidecar, then verifies the
+    manifest's own claims against the ACTUAL final tree: the declared
+    publishable_file_count must equal the real number of final files and the
+    exact file identities must match."""
+    output_dir = tmp_path / "publishable"
+    candidate = output_dir / "release-candidate"
+    candidate.mkdir(parents=True)
+    candidate_names = (
+        "dbf_anonymizer-1.0.0.dev0-py3-none-any.whl",
+        "dbf_anonymizer-1.0.0.dev0.tar.gz",
+    )
+    (candidate / candidate_names[0]).write_bytes(b"wheel")
+    (candidate / candidate_names[1]).write_bytes(b"sdist")
+    pre = assert_publishable_hygiene(output_dir, candidate_names)
+    pre_files = pre["publishable_files"]
+    assert isinstance(pre_files, list)
+    expected_final_hygiene = {
+        "hygiene": pre["hygiene"],
+        "publishable_file_count": len(pre_files) + 2,
+        "publishable_files": sorted([*pre_files, MANIFEST_FILENAME, MANIFEST_DIGEST_SIDECAR]),
+        "allowlist_ok": pre["allowlist_ok"],
+        "forbidden_artifacts_absent": pre["forbidden_artifacts_absent"],
+        "canaries_absent": pre["canaries_absent"],
+        "absolute_private_paths_absent": pre["absolute_private_paths_absent"],
+    }
+    manifest = build_manifest(
+        _passing_stages(), _passing_bind(), _ci_mandatory(), expected_final_hygiene
+    )
+    hygiene, digest, final = finalize_publishable_evidence(output_dir, candidate_names, manifest)
+    assert final == "PASS"
+    actual_files = sorted(
+        path.relative_to(output_dir).as_posix() for path in output_dir.rglob("*") if path.is_file()
+    )
+    assert hygiene["publishable_file_count"] == 4
+    section = manifest["publishable_artifact"]
+    assert isinstance(section, dict)
+    assert section["publishable_file_count"] == len(actual_files)
+    assert section["publishable_files"] == sorted(hygiene["publishable_files"])  # type: ignore[arg-type]
+    assert actual_files == sorted(
+        [
+            "release-acceptance-evidence.json",
+            "release-acceptance-evidence.sha256",
+            f"release-candidate/{candidate_names[0]}",
+            f"release-candidate/{candidate_names[1]}",
+        ]
+    )
+    sidecar_digest = (
+        (output_dir / "release-acceptance-evidence.sha256").read_text(encoding="utf-8").split()[0]
+    )
+    assert sidecar_digest == digest
+    import hashlib
+
+    assert (
+        hashlib.sha256((output_dir / "release-acceptance-evidence.json").read_bytes()).hexdigest()
+        == digest
+    )
+
+
+def test_finalize_fails_closed_on_an_inconsistent_final_tree(tmp_path: Path) -> None:
+    """An unexpected extra publishable file makes the final verification refuse
+    the manifest claims: the verdict becomes FAIL and the rewritten manifest
+    records the consistency failure."""
+    output_dir = tmp_path / "publishable"
+    candidate = output_dir / "release-candidate"
+    candidate.mkdir(parents=True)
+    candidate_names = ("dbf_anonymizer-1.0.0-py3-none-any.whl", "dbf_anonymizer-1.0.0.tar.gz")
+    (candidate / candidate_names[0]).write_bytes(b"stable wheel")
+    (candidate / candidate_names[1]).write_bytes(b"stable sdist")
+    (candidate / "surprise-extra.whl").write_bytes(b"unexpected third distribution")
+    pre = assert_publishable_hygiene(output_dir, candidate_names)
+    pre_files = pre["publishable_files"]
+    assert isinstance(pre_files, list)
+    expected_final_hygiene = {
+        "hygiene": pre["hygiene"],
+        "publishable_file_count": len(pre_files) + 2,
+        "publishable_files": sorted([*pre_files, MANIFEST_FILENAME, MANIFEST_DIGEST_SIDECAR]),
+        "allowlist_ok": pre["allowlist_ok"],
+        "forbidden_artifacts_absent": pre["forbidden_artifacts_absent"],
+        "canaries_absent": pre["canaries_absent"],
+        "absolute_private_paths_absent": pre["absolute_private_paths_absent"],
+    }
+    manifest = build_manifest(
+        _passing_stages(), _passing_bind(), _ci_mandatory(), expected_final_hygiene
+    )
+    hygiene, digest, final = finalize_publishable_evidence(output_dir, candidate_names, manifest)
+    assert final == "FAIL"
+    assert hygiene["allowlist_ok"] is False
+    rewritten = json.loads(
+        (output_dir / "release-acceptance-evidence.json").read_text(encoding="utf-8")
+    )
+    assert rewritten["final_status"] == "FAIL"
+    section = rewritten["publishable_artifact"]
+    assert section["consistency"] == "FINAL_TREE_VERIFICATION_FAILED"
+    sidecar_digest = (
+        (output_dir / "release-acceptance-evidence.sha256").read_text(encoding="utf-8").split()[0]
+    )
+    assert sidecar_digest == digest
