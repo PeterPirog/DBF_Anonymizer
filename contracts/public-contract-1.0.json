@@ -1,0 +1,2616 @@
+{
+  "cli": {
+    "command_order": [
+      "capabilities",
+      "plan",
+      "preflight",
+      "pseudonymize",
+      "verify",
+      "recover",
+      "export-bundle",
+      "verify-bundle",
+      "self-test"
+    ],
+    "commands": {
+      "capabilities": [
+        {
+          "action": "store",
+          "choices": [
+            "disabled",
+            "enabled"
+          ],
+          "const": null,
+          "default": "enabled",
+          "dest": "recovery_policy",
+          "nargs": null,
+          "option_strings": [
+            "--recovery-policy"
+          ],
+          "required": false,
+          "type": null
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "export-bundle": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "pseudonymized",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "destination",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "policy",
+          "nargs": null,
+          "option_strings": [
+            "--policy"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "relationships",
+          "nargs": null,
+          "option_strings": [
+            "--relationships"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "plan": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "output",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "policy",
+          "nargs": null,
+          "option_strings": [
+            "--policy"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "relationships",
+          "nargs": null,
+          "option_strings": [
+            "--relationships"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "preflight": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "output",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "policy",
+          "nargs": null,
+          "option_strings": [
+            "--policy"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "relationships",
+          "nargs": null,
+          "option_strings": [
+            "--relationships"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "pseudonymize": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "output",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "policy",
+          "nargs": null,
+          "option_strings": [
+            "--policy"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "relationships",
+          "nargs": null,
+          "option_strings": [
+            "--relationships"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": 1,
+          "dest": "workers",
+          "nargs": null,
+          "option_strings": [
+            "--workers"
+          ],
+          "required": false,
+          "type": "int"
+        }
+      ],
+      "recover": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "pseudonymized",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "output",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": [
+            "disabled",
+            "enabled"
+          ],
+          "const": null,
+          "default": "enabled",
+          "dest": "recovery_policy",
+          "nargs": null,
+          "option_strings": [
+            "--recovery-policy"
+          ],
+          "required": false,
+          "type": null
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "self-test": [
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "verify": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "pseudonymized",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "vault",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "policy",
+          "nargs": null,
+          "option_strings": [
+            "--policy"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "relationships",
+          "nargs": null,
+          "option_strings": [
+            "--relationships"
+          ],
+          "required": false,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ],
+      "verify-bundle": [
+        {
+          "action": "store",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "dest": "bundle",
+          "nargs": null,
+          "option_strings": [],
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "action": "store_true",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "option_strings": [
+            "--json"
+          ],
+          "required": false,
+          "type": null
+        }
+      ]
+    },
+    "program": "dbf-anonymizer"
+  },
+  "contract_version": "1.0",
+  "default_policy": {
+    "indexes": {
+      "profile": "DATA_ONLY"
+    },
+    "memo": {
+      "binary": "MASK_REVERSIBLE",
+      "text": "MASK_REVERSIBLE"
+    },
+    "numeric": {
+      "default_action": "KEEP"
+    },
+    "profile": "SAFE_TRANSFER",
+    "relationships": {
+      "metadata_file": null
+    },
+    "schema_version": 1,
+    "temporal": {
+      "date": "SHIFT_REVERSIBLE",
+      "datetime": "SHIFT_REVERSIBLE"
+    },
+    "text": {
+      "default_action": "PSEUDONYMIZE_REVERSIBLE",
+      "domain": "GLOBAL_TEXT"
+    }
+  },
+  "dependency_contract": {
+    "incompatible_major_without_new_contract": "2.x",
+    "local_path_dependency_allowed": false,
+    "private_api_allowed": false,
+    "requirement": "dbfbridge[write]>=1.1.0,<2",
+    "supported_major": "1.x",
+    "vcs_dependency_allowed": false
+  },
+  "errors": {
+    "codes": [
+      {
+        "category": "path",
+        "code": "PATH_INVALID"
+      },
+      {
+        "category": "path",
+        "code": "PATH_NOT_FOUND"
+      },
+      {
+        "category": "path",
+        "code": "PATH_OVERLAP"
+      },
+      {
+        "category": "path",
+        "code": "DESTINATION_CONFLICT"
+      },
+      {
+        "category": "policy",
+        "code": "POLICY_INVALID"
+      },
+      {
+        "category": "policy",
+        "code": "POLICY_UNSUPPORTED"
+      },
+      {
+        "category": "dbfbridge",
+        "code": "DBFBRIDGE_FAILURE"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_UNAVAILABLE"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_CORRUPT"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_ACCESS_DENIED"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_SCHEMA_UNSUPPORTED"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_IDENTITY_MISMATCH"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_STATE_INVALID"
+      },
+      {
+        "category": "vault",
+        "code": "VAULT_WRITER_CONFLICT"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CAPACITY_EXHAUSTED"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CONSTRAINT_INFEASIBLE"
+      },
+      {
+        "category": "mapping",
+        "code": "MAPPING_CONFLICT"
+      },
+      {
+        "category": "relationship",
+        "code": "RELATIONSHIP_INVALID"
+      },
+      {
+        "category": "relationship",
+        "code": "RELATIONSHIP_VERIFICATION_FAILED"
+      },
+      {
+        "category": "publication",
+        "code": "PUBLICATION_FAILED"
+      },
+      {
+        "category": "publication",
+        "code": "PUBLICATION_INCOMPLETE"
+      },
+      {
+        "category": "verification",
+        "code": "VERIFICATION_FAILED"
+      },
+      {
+        "category": "recovery",
+        "code": "RECOVERY_FAILED"
+      },
+      {
+        "category": "recovery",
+        "code": "RECOVERY_NOT_PERMITTED"
+      },
+      {
+        "category": "transfer",
+        "code": "TRANSFER_FAILED"
+      },
+      {
+        "category": "index_backend",
+        "code": "INDEX_BACKEND_FAILED"
+      },
+      {
+        "category": "cancellation",
+        "code": "OPERATION_CANCELLED"
+      },
+      {
+        "category": "callback",
+        "code": "PROGRESS_CALLBACK_FAILED"
+      },
+      {
+        "category": "callback",
+        "code": "CANCEL_CALLBACK_FAILED"
+      }
+    ],
+    "registry_version": "1.5",
+    "schema_version": "1.1"
+  },
+  "field_capability_matrix": {
+    "fallback_disposition": "UNSAFE",
+    "rules": [
+      {
+        "binary_descriptor_allowed": false,
+        "dbf_types": [
+          "C",
+          "V"
+        ],
+        "default_action": "PSEUDONYMIZE_REVERSIBLE",
+        "disposition": "TRANSFORM",
+        "logical_class": "TEXT",
+        "nocptrans_allowed": false,
+        "policy_key": "default_action",
+        "policy_section": "text"
+      },
+      {
+        "binary_descriptor_allowed": false,
+        "dbf_types": [
+          "M"
+        ],
+        "default_action": "MASK_REVERSIBLE",
+        "disposition": "TRANSFORM",
+        "logical_class": "MEMO_TEXT_OR_BINARY_PAYLOAD",
+        "nocptrans_allowed": false,
+        "policy_key": "text",
+        "policy_section": "memo"
+      },
+      {
+        "binary_descriptor_allowed": true,
+        "dbf_types": [
+          "G",
+          "P"
+        ],
+        "default_action": "MASK_REVERSIBLE",
+        "disposition": "TRANSFORM",
+        "logical_class": "BINARY_MEMO",
+        "nocptrans_allowed": true,
+        "policy_key": "binary",
+        "policy_section": "memo"
+      },
+      {
+        "binary_descriptor_allowed": false,
+        "dbf_types": [
+          "D"
+        ],
+        "default_action": "SHIFT_REVERSIBLE",
+        "disposition": "TRANSFORM",
+        "logical_class": "DATE",
+        "nocptrans_allowed": true,
+        "policy_key": "date",
+        "policy_section": "temporal"
+      },
+      {
+        "binary_descriptor_allowed": false,
+        "dbf_types": [
+          "T"
+        ],
+        "default_action": "SHIFT_REVERSIBLE",
+        "disposition": "TRANSFORM",
+        "logical_class": "DATETIME",
+        "nocptrans_allowed": true,
+        "policy_key": "datetime",
+        "policy_section": "temporal"
+      },
+      {
+        "binary_descriptor_allowed": false,
+        "dbf_types": [
+          "N",
+          "F",
+          "I",
+          "Y",
+          "B",
+          "L"
+        ],
+        "default_action": null,
+        "disposition": "IDENTITY",
+        "logical_class": "SCALAR_IDENTITY",
+        "nocptrans_allowed": true,
+        "policy_key": null,
+        "policy_section": null
+      }
+    ],
+    "schema_version": "1.0",
+    "trusted_system_field": {
+      "dbf_type": "0",
+      "disposition": "WRITER_MANAGED",
+      "name": "_NULLFLAGS",
+      "system": true
+    }
+  },
+  "index_backend": {
+    "artifact_classes": [
+      "STRUCTURAL_CDX",
+      "STANDALONE_IDX"
+    ],
+    "protocol_schema_version": "1.2",
+    "result_detail_codes": [
+      "REBUILT_OK",
+      "REFUSED",
+      "INTERNAL_ERROR"
+    ],
+    "result_statuses": [
+      "REBUILT",
+      "REFUSED",
+      "FAILED"
+    ],
+    "standalone_idx_association_detail_codes": [
+      "ASSOCIATED_OK",
+      "DEFINITION_UNAVAILABLE"
+    ],
+    "standalone_idx_association_statuses": [
+      "ASSOCIATED",
+      "UNAVAILABLE"
+    ],
+    "standalone_idx_evidence_statuses": [
+      "OMITTED_DATA_ONLY",
+      "OMITTED_UNVERIFIED",
+      "REBUILT_VERIFIED"
+    ],
+    "transport": "INJECTED_SYNCHRONOUS_TRANSPORT_NEUTRAL_PROTOCOL",
+    "verification_detail_codes": [
+      "VERIFIED_OK",
+      "OPEN_FAILED",
+      "RECORD_COUNT_MISMATCH",
+      "TAG_INVENTORY_MISMATCH",
+      "INTERNAL_ERROR"
+    ],
+    "verification_statuses": [
+      "VERIFIED",
+      "MISMATCH",
+      "FAILED"
+    ]
+  },
+  "mapping_semantics": {
+    "memo": {
+      "action": "MASK_REVERSIBLE",
+      "empty_semantics": "MASK_AND_RECOVER_AS_NON_NULL_PAYLOAD",
+      "field_types": [
+        "G",
+        "M",
+        "P"
+      ],
+      "mapping": "TYPE_PRESERVING_MASK_WITH_SELF_EXCLUSION",
+      "null_semantics": "PRESERVE_NULL_WITHOUT_RECOVERY_ROW",
+      "payload_kinds": [
+        "TEXT",
+        "BINARY"
+      ],
+      "policy_version": "1.1",
+      "recovery": "ORIGINAL_PAYLOAD_ONLY_IN_PROTECTED_VAULT"
+    },
+    "numeric_relationships": {
+      "identity": "VALUE_IDENTICAL_AND_PRIVACY_REVIEW_REQUIRED",
+      "reversible_bijective": "SHARED_DOMAIN_BIJECTION_WITH_SELF_EXCLUSION",
+      "reversible_domain_kind": "NUMERIC_KEY",
+      "strategies": [
+        "IDENTITY",
+        "REVERSIBLE_BIJECTIVE"
+      ]
+    },
+    "temporal": {
+      "action": "SHIFT_REVERSIBLE",
+      "domain_kind": "TEMPORAL",
+      "field_types": [
+        "D",
+        "T"
+      ],
+      "mapping": "ONE_NONZERO_REVERSIBLE_SHIFT_PER_COMPATIBLE_DOMAIN",
+      "null_semantics": "PRESERVE_NULL",
+      "policy_version": "1.0",
+      "public_material": "NO_PRIVATE_OFFSET_OR_RECOVERY_PARAMETER"
+    },
+    "text": {
+      "action": "PSEUDONYMIZE_REVERSIBLE",
+      "domain_id": "dom-6eb26518e3520ed1",
+      "domain_kind": "TEXT",
+      "domain_name": "GLOBAL_TEXT",
+      "empty_semantics": "PRESERVE_EMPTY_WITHOUT_MAPPING_ROW",
+      "first_allocation_random_source": "secrets.randbelow",
+      "fresh_vault": "INDEPENDENT_SECURE_RANDOM_ALLOCATION",
+      "mapping": "BIJECTIVE_WITH_SELF_EXCLUSION",
+      "null_semantics": "PRESERVE_NULL_WITHOUT_MAPPING_ROW",
+      "policy_version": "1.0",
+      "same_compatible_vault": "STABLE_PERSISTED_REUSE_WITHOUT_REALLOCATION",
+      "scope": "ONE_GLOBAL_DOMAIN_ACROSS_TABLES_FIELDS_AND_DIRECTORIES",
+      "secure_random_default": true
+    }
+  },
+  "package_version_status": "1.0.0.dev0",
+  "public_json": {
+    "capabilities": {
+      "enabled": {
+        "dbfbridge_version": {
+          "contract": "RUNTIME_VERSION_IN_DECLARED_SUPPORTED_RANGE",
+          "observed_major": "1"
+        },
+        "direct_read": true,
+        "direct_write": true,
+        "model_type": "Capabilities",
+        "recovery": true,
+        "schema_version": "1.8",
+        "transfer_bundle": true,
+        "vfp_index_backend": false
+      },
+      "recovery_disabled": {
+        "dbfbridge_version": {
+          "contract": "RUNTIME_VERSION_IN_DECLARED_SUPPORTED_RANGE",
+          "observed_major": "1"
+        },
+        "direct_read": true,
+        "direct_write": true,
+        "model_type": "Capabilities",
+        "recovery": false,
+        "schema_version": "1.8",
+        "transfer_bundle": true,
+        "vfp_index_backend": false
+      }
+    },
+    "enums": {
+      "ErrorCategory": [
+        "path",
+        "policy",
+        "dbfbridge",
+        "vault",
+        "mapping",
+        "relationship",
+        "publication",
+        "verification",
+        "recovery",
+        "transfer",
+        "index_backend",
+        "cancellation",
+        "callback"
+      ],
+      "ErrorCode": [
+        "PATH_INVALID",
+        "PATH_NOT_FOUND",
+        "PATH_OVERLAP",
+        "DESTINATION_CONFLICT",
+        "POLICY_INVALID",
+        "POLICY_UNSUPPORTED",
+        "DBFBRIDGE_FAILURE",
+        "VAULT_UNAVAILABLE",
+        "VAULT_CORRUPT",
+        "VAULT_ACCESS_DENIED",
+        "VAULT_SCHEMA_UNSUPPORTED",
+        "VAULT_IDENTITY_MISMATCH",
+        "VAULT_STATE_INVALID",
+        "VAULT_WRITER_CONFLICT",
+        "MAPPING_CAPACITY_EXHAUSTED",
+        "MAPPING_CONSTRAINT_INFEASIBLE",
+        "MAPPING_CONFLICT",
+        "RELATIONSHIP_INVALID",
+        "RELATIONSHIP_VERIFICATION_FAILED",
+        "PUBLICATION_FAILED",
+        "PUBLICATION_INCOMPLETE",
+        "VERIFICATION_FAILED",
+        "RECOVERY_FAILED",
+        "RECOVERY_NOT_PERMITTED",
+        "TRANSFER_FAILED",
+        "INDEX_BACKEND_FAILED",
+        "OPERATION_CANCELLED",
+        "PROGRESS_CALLBACK_FAILED",
+        "CANCEL_CALLBACK_FAILED"
+      ],
+      "OutputDataState": [
+        "STANDALONE_REDUCED_SEMANTICS"
+      ],
+      "RawByteEquivalence": [
+        "PROVEN_EQUAL",
+        "PROVEN_DIFFERENT",
+        "NOT_EVALUATED"
+      ],
+      "RecoveryPolicy": [
+        "enabled",
+        "disabled"
+      ],
+      "RelationalAssuranceLevel": [
+        "GLOBAL_EXACT_VALUE",
+        "DECLARED_RELATIONS_VERIFIED",
+        "VFP_METADATA_VERIFIED",
+        "INCOMPLETE"
+      ],
+      "TransferProfile": [
+        "DATA_ONLY",
+        "VFP_INDEXED"
+      ],
+      "VaultStrategy": [
+        "NONE",
+        "SINGLE_DATASET_SQLITE"
+      ],
+      "VerificationStatus": [
+        "PASS",
+        "PARTIAL",
+        "FAIL"
+      ]
+    },
+    "limits": {
+      "count_max": 9223372036854775807,
+      "dataset_tables_max_items": 256,
+      "finding_codes_max_items": 64,
+      "index_artifacts_max_items": 256,
+      "numeric_identity_reviews_max_items": 1024,
+      "operation_id_max_length": 64,
+      "relative_path_max_length": 512,
+      "token_max_length": 128,
+      "transformation_classes_max_items": 64
+    },
+    "model_fields": {
+      "Capabilities": [
+        "schema_version",
+        "model_type",
+        "direct_read",
+        "direct_write",
+        "recovery",
+        "transfer_bundle",
+        "vfp_index_backend",
+        "dbfbridge_version"
+      ],
+      "DatasetIdentity": [
+        "schema_version",
+        "model_type",
+        "dataset_id",
+        "source_fingerprint",
+        "table_paths",
+        "standalone_idx_paths",
+        "dbc_bound_table_paths"
+      ],
+      "IndexBackendCapability": [
+        "schema_version",
+        "model_type",
+        "backend_id",
+        "backend_schema_version",
+        "protocol_schema_version",
+        "supports_structural_cdx_rebuild",
+        "supports_standalone_idx_rebuild",
+        "supports_verification",
+        "vfp_runtime_available"
+      ],
+      "IndexBackendResult": [
+        "schema_version",
+        "model_type",
+        "backend_id",
+        "protocol_schema_version",
+        "artifact_class",
+        "table_path",
+        "status",
+        "detail_code",
+        "artifact_path"
+      ],
+      "IndexVerificationResult": [
+        "schema_version",
+        "model_type",
+        "backend_id",
+        "protocol_schema_version",
+        "artifact_class",
+        "table_path",
+        "status",
+        "detail_code",
+        "artifact_path"
+      ],
+      "NumericIdentityReview": [
+        "schema_version",
+        "model_type",
+        "table_path",
+        "field_name",
+        "dbf_type",
+        "status"
+      ],
+      "Plan": [
+        "schema_version",
+        "model_type",
+        "plan_id",
+        "dataset",
+        "tables",
+        "policy",
+        "relationships",
+        "output_profile",
+        "relationship_assurance_target",
+        "output_data_state",
+        "numeric_identity_review"
+      ],
+      "PolicySummary": [
+        "schema_version",
+        "model_type",
+        "policy_schema_version",
+        "policy_fingerprint",
+        "transformed_field_count",
+        "relationship_count",
+        "recovery_enabled",
+        "transformation_classes",
+        "vault_strategy"
+      ],
+      "PreflightResult": [
+        "schema_version",
+        "model_type",
+        "ready",
+        "plan_id",
+        "capabilities",
+        "check_codes",
+        "warning_codes",
+        "error_codes"
+      ],
+      "ProgressEvent": [
+        "schema_version",
+        "model_type",
+        "operation_id",
+        "phase_code",
+        "event_code",
+        "completed_units",
+        "total_units",
+        "table_path"
+      ],
+      "PseudonymizationResult": [
+        "schema_version",
+        "model_type",
+        "operation_id",
+        "dataset",
+        "output_path",
+        "table_count",
+        "record_count",
+        "vault_created",
+        "output_fingerprint",
+        "assurance",
+        "output_data_state",
+        "index_artifacts"
+      ],
+      "RecoveryResult": [
+        "schema_version",
+        "model_type",
+        "operation_id",
+        "dataset",
+        "output_path",
+        "table_count",
+        "record_count",
+        "canonical_verified",
+        "raw_byte_equivalence"
+      ],
+      "RelationalAssurance": [
+        "schema_version",
+        "model_type",
+        "level",
+        "declared_relations",
+        "verified_relations",
+        "failed_relations",
+        "incomplete_relations",
+        "evidence_fingerprint",
+        "relationship_fingerprint",
+        "evidence_schema_version",
+        "scope_note"
+      ],
+      "RelationshipMetadata": [
+        "schema_version",
+        "model_type",
+        "metadata_schema_version",
+        "provenance",
+        "relationship_fingerprint",
+        "relation_count",
+        "authoritative",
+        "metadata_path"
+      ],
+      "StandaloneIdxAssociationResult": [
+        "schema_version",
+        "model_type",
+        "backend_id",
+        "protocol_schema_version",
+        "artifact_path",
+        "status",
+        "detail_code",
+        "table_path"
+      ],
+      "StandaloneIdxEvidence": [
+        "schema_version",
+        "model_type",
+        "artifact_id",
+        "artifact_path",
+        "status",
+        "source_sha256",
+        "backend_id",
+        "table_path",
+        "output_sha256"
+      ],
+      "TablePlan": [
+        "schema_version",
+        "model_type",
+        "table_path",
+        "memo_path",
+        "record_count",
+        "field_count",
+        "transform_field_count",
+        "structural_cdx",
+        "dbc_bound",
+        "index_strategy",
+        "memo_required",
+        "memo_companion_present",
+        "structural_cdx_companion_present",
+        "unsupported_field_count",
+        "unsafe_field_count",
+        "system_field_count"
+      ],
+      "TransferBundleResult": [
+        "schema_version",
+        "model_type",
+        "bundle_path",
+        "profile",
+        "file_count",
+        "manifest_fingerprint",
+        "verified",
+        "assurance"
+      ],
+      "VerificationResult": [
+        "schema_version",
+        "model_type",
+        "status",
+        "dataset",
+        "operation_id",
+        "table_count",
+        "record_count",
+        "check_codes",
+        "assurance",
+        "output_data_state",
+        "index_artifacts"
+      ]
+    },
+    "progress": {
+      "event_codes": [
+        "STARTED",
+        "PROGRESS",
+        "COMPLETED"
+      ],
+      "phase_codes": [
+        "OPERATION",
+        "DISCOVERY",
+        "FINGERPRINT",
+        "TABLE_EVALUATION",
+        "SOURCE_VERIFICATION",
+        "SOURCE_REVALIDATION",
+        "CAPACITY_SCAN",
+        "SCAN",
+        "WRITE",
+        "VERIFICATION",
+        "VAULT_VERIFICATION",
+        "OUTPUT_VERIFICATION",
+        "RECOVERY_SCAN",
+        "TRANSFER_SCAN",
+        "PUBLICATION",
+        "PASS1_SCAN",
+        "PASS1_FINALIZE",
+        "PASS2_WRITE",
+        "INDEX_REBUILD"
+      ],
+      "privacy_rule": "BOUNDED_METADATA_ONLY_NO_SOURCE_VALUES",
+      "quantum_version": "1.4"
+    },
+    "schema_versions": {
+      "error": "1.1",
+      "error_registry": "1.5",
+      "field_capability_matrix": "1.0",
+      "index_backend_protocol": "1.2",
+      "model": "1.8",
+      "policy": "1",
+      "progress_quantum": "1.4",
+      "relationship_evidence": "1.0",
+      "relationship_metadata": "1.0",
+      "transfer_manifest": "1.1",
+      "vault": "1.1"
+    }
+  },
+  "python_api": {
+    "callables": {
+      "build_plan": {
+        "parameters": [
+          {
+            "annotation": "str | os.PathLike[str]",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "source"
+          },
+          {
+            "annotation": "str | os.PathLike[str]",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "output"
+          },
+          {
+            "annotation": "str | os.PathLike[str]",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "vault"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": null,
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "policy"
+          },
+          {
+            "annotation": "RelationshipMetadata | None",
+            "default": null,
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "relationships"
+          },
+          {
+            "annotation": "Mapping[str, Any] | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "relationship_document"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          }
+        ],
+        "return": "Plan"
+      },
+      "capabilities": {
+        "parameters": [
+          {
+            "annotation": "RecoveryPolicy",
+            "default": {
+              "enum": "RecoveryPolicy",
+              "value": "enabled"
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "recovery_policy"
+          }
+        ],
+        "return": "Capabilities"
+      },
+      "create_transfer_bundle": {
+        "parameters": [
+          {
+            "annotation": "PseudonymizationResult",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "result"
+          },
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "destination"
+          },
+          {
+            "annotation": "str | TransferProfile",
+            "default": "DATA_ONLY",
+            "kind": "KEYWORD_ONLY",
+            "name": "profile"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          }
+        ],
+        "return": "TransferBundleResult"
+      },
+      "preflight": {
+        "parameters": [
+          {
+            "annotation": "Plan",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "plan"
+          },
+          {
+            "annotation": "IndexBackend | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "index_backend"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          }
+        ],
+        "return": "PreflightResult"
+      },
+      "pseudonymize": {
+        "parameters": [
+          {
+            "annotation": "Plan",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "plan"
+          },
+          {
+            "annotation": "IndexBackend | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "index_backend"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          },
+          {
+            "annotation": "int",
+            "default": 1,
+            "kind": "KEYWORD_ONLY",
+            "name": "workers"
+          }
+        ],
+        "return": "PseudonymizationResult"
+      },
+      "recover": {
+        "parameters": [
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "pseudonymized"
+          },
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "vault"
+          },
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "output"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          },
+          {
+            "annotation": "RecoveryPolicy",
+            "default": {
+              "enum": "RecoveryPolicy",
+              "value": "enabled"
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "recovery_policy"
+          }
+        ],
+        "return": "RecoveryResult"
+      },
+      "verify_dataset": {
+        "parameters": [
+          {
+            "annotation": "PseudonymizationResult",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "result"
+          },
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "source"
+          },
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "KEYWORD_ONLY",
+            "name": "vault"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          }
+        ],
+        "return": "VerificationResult"
+      },
+      "verify_transfer_bundle": {
+        "parameters": [
+          {
+            "annotation": "str | Path",
+            "default": {
+              "required": true
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "bundle"
+          },
+          {
+            "annotation": "ProgressCallback | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "progress"
+          },
+          {
+            "annotation": "CancelCheck | None",
+            "default": null,
+            "kind": "KEYWORD_ONLY",
+            "name": "cancel_check"
+          }
+        ],
+        "return": "TransferBundleResult"
+      }
+    },
+    "root_exports": [
+      "AnonymizerError",
+      "CallbackError",
+      "CancellationError",
+      "Capabilities",
+      "DBFBridgeError",
+      "DatasetIdentity",
+      "ERROR_REGISTRY",
+      "ERROR_REGISTRY_VERSION",
+      "ERROR_SCHEMA_VERSION",
+      "ErrorCategory",
+      "ErrorCode",
+      "ErrorContext",
+      "ErrorDefinition",
+      "IDENTITY_PRIVACY_REVIEW_REQUIRED",
+      "INDEX_ARTIFACT_CLASSES",
+      "INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION",
+      "INDEX_BACKEND_RESULT_DETAIL_CODES",
+      "INDEX_BACKEND_RESULT_STATUSES",
+      "INDEX_VERIFICATION_DETAIL_CODES",
+      "INDEX_VERIFICATION_STATUSES",
+      "IndexBackend",
+      "IndexBackendCapability",
+      "IndexBackendError",
+      "IndexBackendResult",
+      "IndexVerificationResult",
+      "MODEL_SCHEMA_VERSION",
+      "MappingError",
+      "NumericIdentityReview",
+      "OutputDataState",
+      "PathError",
+      "Plan",
+      "PolicyError",
+      "PolicySummary",
+      "PreflightResult",
+      "ProgressEvent",
+      "PseudonymizationResult",
+      "PublicationError",
+      "RawByteEquivalence",
+      "RecoveryError",
+      "RecoveryPolicy",
+      "RecoveryResult",
+      "RelationalAssurance",
+      "RelationalAssuranceLevel",
+      "RelationshipError",
+      "RelationshipMetadata",
+      "STANDALONE_IDX_ASSOCIATION_DETAIL_CODES",
+      "STANDALONE_IDX_ASSOCIATION_STATUSES",
+      "STANDALONE_IDX_EVIDENCE_STATUSES",
+      "StandaloneIdxAssociationResult",
+      "StandaloneIdxEvidence",
+      "TablePlan",
+      "TransferBundleResult",
+      "TransferError",
+      "TransferProfile",
+      "VaultError",
+      "VaultStrategy",
+      "VerificationError",
+      "VerificationResult",
+      "VerificationStatus",
+      "build_plan",
+      "capabilities",
+      "create_transfer_bundle",
+      "preflight",
+      "pseudonymize",
+      "recover",
+      "verify_dataset",
+      "verify_transfer_bundle"
+    ]
+  },
+  "relationships": {
+    "assurance_levels": [
+      "GLOBAL_EXACT_VALUE",
+      "DECLARED_RELATIONS_VERIFIED",
+      "VFP_METADATA_VERIFIED",
+      "INCOMPLETE"
+    ],
+    "assurance_scope": "DECLARED_AND_INJECTED_METADATA_SCOPE_ONLY",
+    "comparison_semantics": [
+      "EXACT_VALUE",
+      "UNSPECIFIED"
+    ],
+    "evidence_schema_version": "1.0",
+    "key_roles": [
+      "PRIMARY",
+      "CANDIDATE",
+      "FOREIGN"
+    ],
+    "metadata_schema_version": "1.0",
+    "numeric_dbf_types": [
+      "I",
+      "N"
+    ],
+    "numeric_member_encoding": "none",
+    "numeric_strategies": [
+      "IDENTITY",
+      "REVERSIBLE_BIJECTIVE"
+    ],
+    "provenances": [
+      "POLICY_FILE",
+      "MCP_VFP9SP2_TOOLCHAIN"
+    ],
+    "supported_dbf_types": [
+      "C",
+      "V",
+      "I",
+      "N"
+    ],
+    "text_dbf_types": [
+      "C",
+      "V"
+    ]
+  },
+  "semantic_versioning": {
+    "major_required_for": [
+      "PUBLIC_API_REMOVAL_OR_RENAME",
+      "INCOMPATIBLE_PUBLIC_SIGNATURE",
+      "INCOMPATIBLE_CLI_CHANGE",
+      "SCHEMA_REINTERPRETATION",
+      "ERROR_CODE_REUSE_OR_REMOVAL",
+      "INCOMPATIBLE_VAULT_SCHEMA_OR_POLICY",
+      "INCOMPATIBLE_MAPPING_SEMANTICS",
+      "SUPPORTED_FIELD_BEHAVIOR_REMOVAL",
+      "INCOMPATIBLE_RELATIONSHIP_SEMANTICS",
+      "INCOMPATIBLE_TRANSFER_BUNDLE_SCHEMA",
+      "SUPPORTED_DBFBRIDGE_MAJOR_RANGE_BREAK"
+    ],
+    "minor": "BACKWARD_COMPATIBLE_ADDITION_SUBJECT_TO_SCHEMA_VERSION_POLICY",
+    "patch": "BUGFIX_WITHOUT_INCOMPATIBLE_PUBLIC_CONTRACT_CHANGE",
+    "schema_rule": "PACKAGE_MINOR_DOES_NOT_AUTHORIZE_A_VERSIONED_JSON_SCHEMA_CHANGE_WITHOUT_THE_REQUIRED_SCHEMA_VERSION_CHANGE"
+  },
+  "transfer_bundle": {
+    "allowed_artifact_classes": [
+      "DBF",
+      "FPT"
+    ],
+    "assurance_keys": [
+      "declared_relations",
+      "evidence_fingerprint",
+      "evidence_schema_version",
+      "failed_relations",
+      "incomplete_relations",
+      "level",
+      "relationship_fingerprint",
+      "scope_note",
+      "verified_relations"
+    ],
+    "classification": "PSEUDONYMIZED",
+    "data_state": "STANDALONE_REDUCED_SEMANTICS",
+    "dbf_artifact_keys": [
+      "artifact_type",
+      "path",
+      "record_count",
+      "schema_fingerprint",
+      "sha256",
+      "size_bytes"
+    ],
+    "forbidden_basename_markers": [
+      "temp-",
+      "dictionary.sqlite",
+      "recovery",
+      "private-manifest",
+      "source-manifest",
+      "reverse-mapping",
+      "mapping-table",
+      "secret",
+      "salt",
+      "keyfile",
+      "debug"
+    ],
+    "forbidden_material": [
+      "SQLITE_VAULT_AND_WAL_SHM_JOURNAL",
+      "RECOVERY_MAPPINGS_AND_MATERIAL",
+      "PRIVATE_OFFSETS_AND_RECOVERY_PARAMETERS",
+      "SECRETS_AND_ORIGINAL_VALUES",
+      "PRIVATE_PATHS_AND_LOGS",
+      "STALE_OR_UNVERIFIED_CDX_IDX_DBC_DCT_DCX"
+    ],
+    "forbidden_suffixes": [
+      "-shm",
+      "-wal",
+      ".bak",
+      ".bat",
+      ".bin",
+      ".cdx",
+      ".cmd",
+      ".dbc",
+      ".dct",
+      ".dcx",
+      ".dll",
+      ".exe",
+      ".idx",
+      ".journal",
+      ".jrn",
+      ".lock",
+      ".log",
+      ".partial",
+      ".ps1",
+      ".py",
+      ".pyc",
+      ".sh",
+      ".sqlite",
+      ".sqlite-wal",
+      ".sqlite3",
+      ".sqlite3-wal",
+      ".staging",
+      ".temp",
+      ".tmp"
+    ],
+    "fpt_artifact_keys": [
+      "artifact_type",
+      "path",
+      "record_count",
+      "schema_fingerprint",
+      "sha256",
+      "size_bytes"
+    ],
+    "index_states": [
+      "DATA_ONLY_INDEX_OMITTED"
+    ],
+    "manifest_filename": "transfer-manifest.json",
+    "profile": "DATA_ONLY",
+    "schema_version": "1.1",
+    "top_level_keys": [
+      "artifacts",
+      "assurance",
+      "classification",
+      "data_state",
+      "dataset_id",
+      "dbfbridge_version",
+      "index_state",
+      "package_version",
+      "profile",
+      "schema_version",
+      "verification_status"
+    ],
+    "verification_statuses": [
+      "CREATION_SELF_VERIFIED"
+    ]
+  },
+  "vault": {
+    "clean_close_checkpoint": "TRUNCATE",
+    "compatibility_identity": [
+      "source_fingerprint",
+      "policy_fingerprint",
+      "relationship_fingerprint",
+      "package_version",
+      "dbfbridge_version"
+    ],
+    "database_filename": "dictionary.sqlite3",
+    "ddl": [
+      "CREATE TABLE meta ( singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version TEXT NOT NULL, vault_id TEXT NOT NULL, created_at TEXT NOT NULL, package_version TEXT NOT NULL, dbfbridge_version TEXT NOT NULL )",
+      "CREATE TABLE dataset ( singleton INTEGER PRIMARY KEY CHECK (singleton = 1), source_fingerprint TEXT NOT NULL, policy_fingerprint TEXT NOT NULL, relationship_fingerprint TEXT NOT NULL )",
+      "CREATE TABLE writer_authority ( singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner_token TEXT, acquire_tick INTEGER NOT NULL DEFAULT 0 )",
+      "CREATE TABLE operations ( operation_id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('STARTED', 'COMPLETED')), source_fingerprint TEXT, policy_fingerprint TEXT, relationship_fingerprint TEXT, vault_fingerprint TEXT, destination_identity TEXT, binding_fingerprint TEXT, output_fingerprint TEXT, result_json TEXT, started_at TEXT, completed_at TEXT )",
+      "CREATE UNIQUE INDEX uq_operations_destination ON operations (destination_identity)",
+      "CREATE TABLE publication ( operation_id TEXT NOT NULL REFERENCES operations(operation_id), phase TEXT NOT NULL, output_fingerprint TEXT, vault_fingerprint TEXT, PRIMARY KEY (operation_id, phase) )",
+      "CREATE TABLE mapping_domains ( domain_id TEXT PRIMARY KEY, domain_kind TEXT NOT NULL CHECK (length(domain_kind) BETWEEN 1 AND 64), normalization TEXT, relational_role TEXT )",
+      "CREATE TABLE tables ( table_id TEXT PRIMARY KEY, relative_path TEXT NOT NULL UNIQUE, schema_fingerprint TEXT, source_fingerprint TEXT )",
+      "CREATE TABLE fields ( field_id TEXT PRIMARY KEY, table_id TEXT NOT NULL REFERENCES tables(table_id), name TEXT NOT NULL, dbf_type TEXT NOT NULL, encoding TEXT, width INTEGER NOT NULL CHECK (width >= 0), transform_action TEXT, mapping_domain_id TEXT REFERENCES mapping_domains(domain_id), UNIQUE (table_id, name), UNIQUE (field_id, table_id) )",
+      "CREATE TABLE text_mappings ( domain_id TEXT NOT NULL REFERENCES mapping_domains(domain_id), original_value TEXT NOT NULL, pseudonym_value TEXT NOT NULL, logical_byte_length INTEGER NOT NULL CHECK (logical_byte_length >= 0) )",
+      "CREATE UNIQUE INDEX uq_text_mappings_domain_original ON text_mappings (domain_id, original_value)",
+      "CREATE UNIQUE INDEX uq_text_mappings_domain_pseudonym ON text_mappings (domain_id, pseudonym_value)",
+      "CREATE TABLE numeric_key_mappings ( domain_id TEXT NOT NULL REFERENCES mapping_domains(domain_id), original_value TEXT NOT NULL, pseudonym_value TEXT NOT NULL )",
+      "CREATE UNIQUE INDEX uq_numeric_key_mappings_domain_original ON numeric_key_mappings (domain_id, original_value)",
+      "CREATE UNIQUE INDEX uq_numeric_key_mappings_domain_pseudonym ON numeric_key_mappings (domain_id, pseudonym_value)",
+      "CREATE TABLE memo_recovery ( table_id TEXT NOT NULL REFERENCES tables(table_id), physical_record_index INTEGER NOT NULL CHECK (physical_record_index >= 0), field_id TEXT NOT NULL, original_payload BLOB NOT NULL, payload_kind TEXT NOT NULL CHECK (payload_kind IN ('TEXT', 'BINARY')), PRIMARY KEY (table_id, physical_record_index, field_id), FOREIGN KEY (field_id, table_id) REFERENCES fields (field_id, table_id) )",
+      "CREATE TABLE temporal_parameters ( domain_id TEXT PRIMARY KEY REFERENCES mapping_domains(domain_id), offset_days INTEGER NOT NULL )",
+      "CREATE INDEX idx_fields_table ON fields (table_id)",
+      "CREATE INDEX idx_fields_domain ON fields (mapping_domain_id)",
+      "CREATE INDEX idx_memo_recovery_field ON memo_recovery (field_id)"
+    ],
+    "expected_tables": [
+      "meta",
+      "dataset",
+      "writer_authority",
+      "operations",
+      "publication",
+      "mapping_domains",
+      "tables",
+      "fields",
+      "text_mappings",
+      "numeric_key_mappings",
+      "memo_recovery",
+      "temporal_parameters"
+    ],
+    "journal_mode": "WAL",
+    "migration_policy": "EXACT_VERSION_ONLY_NO_AUTOMATIC_MIGRATION",
+    "named_bijection_indexes": [
+      "uq_text_mappings_domain_original",
+      "uq_text_mappings_domain_pseudonym",
+      "uq_numeric_key_mappings_domain_original",
+      "uq_numeric_key_mappings_domain_pseudonym"
+    ],
+    "schema_version": "1.1",
+    "tables": {
+      "dataset": {
+        "columns": [
+          {
+            "default": null,
+            "name": "singleton",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "default": null,
+            "name": "source_fingerprint",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "policy_fingerprint",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "relationship_fingerprint",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": []
+      },
+      "fields": {
+        "columns": [
+          {
+            "default": null,
+            "name": "field_id",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "table_id",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "name",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "dbf_type",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "encoding",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "width",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "default": null,
+            "name": "transform_action",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "mapping_domain_id",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "mapping_domain_id",
+                "domain_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "mapping_domains"
+          },
+          {
+            "columns": [
+              [
+                "table_id",
+                "table_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "tables"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "mapping_domain_id"
+            ],
+            "name": "idx_fields_domain",
+            "origin": "c",
+            "unique": false
+          },
+          {
+            "columns": [
+              "table_id"
+            ],
+            "name": "idx_fields_table",
+            "origin": "c",
+            "unique": false
+          },
+          {
+            "columns": [
+              "field_id"
+            ],
+            "name": "sqlite_autoindex_fields_1",
+            "origin": "pk",
+            "unique": true
+          },
+          {
+            "columns": [
+              "table_id",
+              "name"
+            ],
+            "name": "sqlite_autoindex_fields_2",
+            "origin": "u",
+            "unique": true
+          },
+          {
+            "columns": [
+              "field_id",
+              "table_id"
+            ],
+            "name": "sqlite_autoindex_fields_3",
+            "origin": "u",
+            "unique": true
+          }
+        ]
+      },
+      "mapping_domains": {
+        "columns": [
+          {
+            "default": null,
+            "name": "domain_id",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "domain_kind",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "normalization",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "relational_role",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": [
+          {
+            "columns": [
+              "domain_id"
+            ],
+            "name": "sqlite_autoindex_mapping_domains_1",
+            "origin": "pk",
+            "unique": true
+          }
+        ]
+      },
+      "memo_recovery": {
+        "columns": [
+          {
+            "default": null,
+            "name": "table_id",
+            "not_null": true,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "physical_record_index",
+            "not_null": true,
+            "primary_key_position": 2,
+            "type": "INTEGER"
+          },
+          {
+            "default": null,
+            "name": "field_id",
+            "not_null": true,
+            "primary_key_position": 3,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "original_payload",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "BLOB"
+          },
+          {
+            "default": null,
+            "name": "payload_kind",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "field_id",
+                "field_id"
+              ],
+              [
+                "table_id",
+                "table_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "fields"
+          },
+          {
+            "columns": [
+              [
+                "table_id",
+                "table_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "tables"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "field_id"
+            ],
+            "name": "idx_memo_recovery_field",
+            "origin": "c",
+            "unique": false
+          },
+          {
+            "columns": [
+              "table_id",
+              "physical_record_index",
+              "field_id"
+            ],
+            "name": "sqlite_autoindex_memo_recovery_1",
+            "origin": "pk",
+            "unique": true
+          }
+        ]
+      },
+      "meta": {
+        "columns": [
+          {
+            "default": null,
+            "name": "singleton",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "default": null,
+            "name": "schema_version",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "vault_id",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "created_at",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "package_version",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "dbfbridge_version",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": []
+      },
+      "numeric_key_mappings": {
+        "columns": [
+          {
+            "default": null,
+            "name": "domain_id",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "original_value",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "pseudonym_value",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "domain_id",
+                "domain_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "mapping_domains"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "domain_id",
+              "original_value"
+            ],
+            "name": "uq_numeric_key_mappings_domain_original",
+            "origin": "c",
+            "unique": true
+          },
+          {
+            "columns": [
+              "domain_id",
+              "pseudonym_value"
+            ],
+            "name": "uq_numeric_key_mappings_domain_pseudonym",
+            "origin": "c",
+            "unique": true
+          }
+        ]
+      },
+      "operations": {
+        "columns": [
+          {
+            "default": null,
+            "name": "operation_id",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "state",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "source_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "policy_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "relationship_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "vault_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "destination_identity",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "binding_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "output_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "result_json",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "started_at",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "completed_at",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": [
+          {
+            "columns": [
+              "operation_id"
+            ],
+            "name": "sqlite_autoindex_operations_1",
+            "origin": "pk",
+            "unique": true
+          },
+          {
+            "columns": [
+              "destination_identity"
+            ],
+            "name": "uq_operations_destination",
+            "origin": "c",
+            "unique": true
+          }
+        ]
+      },
+      "publication": {
+        "columns": [
+          {
+            "default": null,
+            "name": "operation_id",
+            "not_null": true,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "phase",
+            "not_null": true,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "output_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "vault_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "operation_id",
+                "operation_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "operations"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "operation_id",
+              "phase"
+            ],
+            "name": "sqlite_autoindex_publication_1",
+            "origin": "pk",
+            "unique": true
+          }
+        ]
+      },
+      "tables": {
+        "columns": [
+          {
+            "default": null,
+            "name": "table_id",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "relative_path",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "schema_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "source_fingerprint",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": [
+          {
+            "columns": [
+              "table_id"
+            ],
+            "name": "sqlite_autoindex_tables_1",
+            "origin": "pk",
+            "unique": true
+          },
+          {
+            "columns": [
+              "relative_path"
+            ],
+            "name": "sqlite_autoindex_tables_2",
+            "origin": "u",
+            "unique": true
+          }
+        ]
+      },
+      "temporal_parameters": {
+        "columns": [
+          {
+            "default": null,
+            "name": "domain_id",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "offset_days",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "domain_id",
+                "domain_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "mapping_domains"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "domain_id"
+            ],
+            "name": "sqlite_autoindex_temporal_parameters_1",
+            "origin": "pk",
+            "unique": true
+          }
+        ]
+      },
+      "text_mappings": {
+        "columns": [
+          {
+            "default": null,
+            "name": "domain_id",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "original_value",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "pseudonym_value",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "logical_byte_length",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "columns": [
+              [
+                "domain_id",
+                "domain_id"
+              ]
+            ],
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "parent_table": "mapping_domains"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "domain_id",
+              "original_value"
+            ],
+            "name": "uq_text_mappings_domain_original",
+            "origin": "c",
+            "unique": true
+          },
+          {
+            "columns": [
+              "domain_id",
+              "pseudonym_value"
+            ],
+            "name": "uq_text_mappings_domain_pseudonym",
+            "origin": "c",
+            "unique": true
+          }
+        ]
+      },
+      "writer_authority": {
+        "columns": [
+          {
+            "default": null,
+            "name": "singleton",
+            "not_null": false,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "default": null,
+            "name": "owner_token",
+            "not_null": false,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": "0",
+            "name": "acquire_tick",
+            "not_null": true,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "foreign_keys": [],
+        "indexes": []
+      }
+    },
+    "vault_strategy": "SINGLE_DATASET_SQLITE"
+  }
+}

@@ -53,6 +53,8 @@ English-first operational and security documentation (validated by
 - [docs/public-models-1.0.md](docs/public-models-1.0.md) — public model
   contract.
 - [docs/errors-1.0.md](docs/errors-1.0.md) — public error contract.
+- [docs/public-contract-1.0.md](docs/public-contract-1.0.md) — frozen 1.0
+  contract matrix and semantic-versioning rules.
 - [docs/vault-protection.md](docs/vault-protection.md) — protected vault
   security notes.
 - [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md) —
