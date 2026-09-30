@@ -47,8 +47,30 @@ MANIFEST_DIGEST_SIDECAR = "release-evidence.manifest.sha256"
 SBOM_FILENAME = "release-sbom.cdx.json"
 SBOM_FORMAT = "CycloneDX"
 SBOM_SPEC_VERSION = "1.5"
-ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+#: The CURRENT authoritative immutable architecture Source-of-Truth digest.
+#: CURRENT release evidence (the default, non-optional verification mode) must
+#: record EXACTLY this digest; anything else fails closed.
+CURRENT_ARCHITECTURE_SHA256 = "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587"
+#: The architecture digest recorded by the committed HISTORICAL release-evidence
+#: bundle (a real run performed under the former 2026-09-10 architecture
+#: snapshot).  It is explicitly HISTORICAL: ONLY the explicit non-default
+#: historical verification mode accepts it, and the current-evidence mode
+#: rejects a bundle carrying this stale digest fail closed.
+HISTORICAL_ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+#: The tamper self-test protocol of the CURRENT builder: every freshly
+#: generated bundle must record exactly these cases.
 EXPECTED_TAMPER_CASES = (
+    "artifact",
+    "sbom",
+    "manifest_hash",
+    "private_path",
+    "coherent_substitution",
+    "stale_architecture",
+)
+#: The tamper self-test protocol RECORDED by the committed HISTORICAL evidence
+#: bundle (built by the former builder revision under the former architecture).
+#: The explicit historical mode validates the record AS RECORDED.
+HISTORICAL_TAMPER_CASES = (
     "artifact",
     "sbom",
     "manifest_hash",
@@ -181,9 +203,19 @@ def verify_evidence(
     manifest_path: Path,
     evidence_root: Path,
     expected_manifest_sha256: str | None = None,
+    *,
+    historical: bool = False,
 ) -> dict[str, object]:
     """Layer 1 (manifest digest binding) is enforced before any manifest
-    content is trusted; layer 2 is the internal self-consistency proof."""
+    content is trusted; layer 2 is the internal self-consistency proof.
+
+    ``historical`` is an explicit, non-default mode for the committed
+    historical evidence bundle ONLY: it requires the recorded HISTORICAL
+    architecture digest and never accepts a bundle that claims any other
+    architecture identity.  The default CURRENT mode requires
+    :data:`CURRENT_ARCHITECTURE_SHA256`, so a bundle recording the obsolete
+    historical digest fails closed as stale architecture evidence.
+    """
     if not manifest_path.is_file():
         _fail(f"manifest file missing: {manifest_path}")
     manifest_bytes = manifest_path.read_bytes()
@@ -231,8 +263,19 @@ def verify_evidence(
     commit = source.get("git_commit_sha")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         _fail("manifest source.git_commit_sha must be a 40-hex commit SHA")
-    if source.get("architecture_sha256") != ARCHITECTURE_SHA256:
-        _fail("manifest source.architecture_sha256 is not the immutable architecture hash")
+    required_architecture_digest = (
+        HISTORICAL_ARCHITECTURE_SHA256 if historical else CURRENT_ARCHITECTURE_SHA256
+    )
+    if source.get("architecture_sha256") != required_architecture_digest:
+        if historical:
+            _fail(
+                "manifest source.architecture_sha256 is not the recorded HISTORICAL "
+                "architecture digest"
+            )
+        _fail(
+            "manifest source.architecture_sha256 is not the CURRENT immutable "
+            "architecture hash (stale architecture evidence)"
+        )
     if source.get("cleanliness_check") != "PASS":
         _fail(
             "manifest source.cleanliness_check must be PASS: the build source must come "
@@ -399,10 +442,9 @@ def verify_evidence(
     if selftest.get("result") != "PASS":
         _fail("tamper detection self-test did not pass")
     cases = selftest.get("cases")
-    if not isinstance(cases, list) or sorted(str(case) for case in cases) != sorted(
-        EXPECTED_TAMPER_CASES
-    ):
-        _fail(f"tamper self-test cases must be exactly {sorted(EXPECTED_TAMPER_CASES)}")
+    expected_cases = HISTORICAL_TAMPER_CASES if historical else EXPECTED_TAMPER_CASES
+    if not isinstance(cases, list) or sorted(str(case) for case in cases) != sorted(expected_cases):
+        _fail(f"tamper self-test cases must be exactly {sorted(expected_cases)}")
 
     workflow_identity = _section(document, "workflow_identity")
     name = workflow_identity.get("name")
@@ -424,6 +466,8 @@ def verify_evidence(
             if expected_manifest_sha256 is not None
             else MANIFEST_DIGEST_SIDECAR
         ),
+        "architecture_mode": "HISTORICAL" if historical else "CURRENT",
+        "architecture_sha256": required_architecture_digest,
         "sdist_verified": True,
         "wheel_verified": True,
         "wheelhouse_artifacts_verified": sorted(closure),
@@ -464,9 +508,23 @@ def main() -> int:
             "verified before any manifest content is trusted"
         ),
     )
+    parser.add_argument(
+        "--historical",
+        action="store_true",
+        help=(
+            "explicit non-default mode for the committed HISTORICAL evidence "
+            "bundle: requires the recorded historical architecture digest "
+            "(never usable for current evidence)"
+        ),
+    )
     args = parser.parse_args()
     try:
-        evidence = verify_evidence(args.manifest, args.evidence_root, args.expected_manifest_sha256)
+        evidence = verify_evidence(
+            args.manifest,
+            args.evidence_root,
+            args.expected_manifest_sha256,
+            historical=args.historical,
+        )
     except VerificationFailure as failure:
         print(f"release evidence verification FAILED: {failure}", file=sys.stderr)
         return 1

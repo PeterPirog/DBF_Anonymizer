@@ -54,7 +54,11 @@ DOWNLOAD_ARTIFACT_SHA = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
 EVIDENCE_TOOL = "tools/build_release_evidence.py"
 VERIFIER_TOOL = "tools/verify_release_evidence.py"
 SBOM_TOOL = "tools/generate_release_sbom.py"
-ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+ARCHITECTURE_SHA256 = "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587"
+#: The obsolete architecture digest: in the CURRENT release builder/verifier it
+#: may appear ONLY as the explicitly HISTORICAL material (tamper case /
+#: historical verification mode), never as a current identity binding.
+HISTORICAL_ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
 
 ALLOWED_PRIVILEGED_TRIGGERS = frozenset({"release", "workflow_dispatch"})
 FORBIDDEN_TRIGGERS = frozenset(
@@ -382,6 +386,39 @@ def test_evidence_builder_uses_the_deterministic_two_build_protocol() -> None:
     verifier_source = (REPO_ROOT / VERIFIER_TOOL).read_text(encoding="utf-8")
     assert "VerificationFailure" in verifier_source
     assert ARCHITECTURE_SHA256 in verifier_source
+
+
+def test_release_tools_bind_current_architecture_and_isolate_history() -> None:
+    """CURRENT release builder/verifier must bind the live architecture digest
+    and may reference the obsolete digest ONLY as explicitly HISTORICAL
+    material (a reintroduction as a current identity binding must fail)."""
+    import re
+
+    builder_source = (REPO_ROOT / EVIDENCE_TOOL).read_text(encoding="utf-8")
+    verifier_source = (REPO_ROOT / VERIFIER_TOOL).read_text(encoding="utf-8")
+    for label, tool_source in (("builder", builder_source), ("verifier", verifier_source)):
+        assert "CURRENT_ARCHITECTURE_SHA256" in tool_source, label
+        assert "HISTORICAL_ARCHITECTURE_SHA256" in tool_source, label
+        stale_occurrences = [
+            match.start()
+            for match in re.finditer(re.escape(HISTORICAL_ARCHITECTURE_SHA256), tool_source)
+        ]
+        assert stale_occurrences, label
+        for position in stale_occurrences:
+            line = tool_source[:position].rsplit("\n", 1)[-1]
+            # Every obsolete-digest occurrence sits on a line that names it
+            # HISTORICAL explicitly (constant definition or historical-mode
+            # reference), never as a plain current binding.
+            assert "HISTORICAL" in line, f"{label}: stale digest outside HISTORICAL context"
+        # The current digest appears as the operational constant, never on a
+        # line that would call it historical.
+        current_lines = [
+            tool_source[: match.start()].rsplit("\n", 1)[-1]
+            for match in re.finditer(re.escape(ARCHITECTURE_SHA256), tool_source)
+        ]
+        assert current_lines, label
+        for line in current_lines:
+            assert "HISTORICAL" not in line, line
 
 
 def test_release_build_source_is_bound_to_the_exact_commit_object() -> None:

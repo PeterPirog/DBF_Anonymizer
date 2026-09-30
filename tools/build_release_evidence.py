@@ -49,7 +49,8 @@ bound to the exact Git commit object:
    (tools/verify_release_evidence.py) must then accept the bundle WITH the
    trusted expected digest, and a tamper self-test proves the verifier rejects
    tampered copies (artifact, SBOM, manifest hash, private-path injection,
-   coherent artifact+manifest substitution against the trusted digest).
+   coherent artifact+manifest substitution against the trusted digest, and a
+   CURRENT bundle claiming the obsolete stale architecture digest).
 
 The tool prints the release identity (commit SHA, version, Python/build-tool
 versions, architecture SHA-256, artifact filenames and hashes, manifest
@@ -87,7 +88,14 @@ from tools.generate_release_sbom import (  # noqa: E402
     render_sbom,
 )
 
-ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+#: The CURRENT authoritative immutable architecture Source-of-Truth digest.
+#: Every freshly generated release-evidence record (manifest source section,
+#: CycloneDX SBOM property and the build summary) records EXACTLY this digest.
+CURRENT_ARCHITECTURE_SHA256 = "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587"
+#: The obsolete architecture digest, used ONLY as the tamper material of the
+#: ``stale_architecture`` self-test case: the verifier must fail closed when a
+#: CURRENT evidence bundle claims this obsolete identity.
+HISTORICAL_ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
 ACCEPTANCE_PIN = "requirements/p0-dbfbridge-tested.txt"
 WHEELHOUSE_MANIFEST = "requirements/p7-offline-wheelhouse.txt"
 BUILD_CONSTRAINTS = "requirements/p7-release-build-constraints.txt"
@@ -107,7 +115,14 @@ SDIST_CANONICALIZATION = (
     "by name, gzip header mtime set to SOURCE_DATE_EPOCH at compresslevel 9; file "
     "contents are byte-identical to the standard build output"
 )
-TAMPER_CASES = ("artifact", "sbom", "manifest_hash", "private_path", "coherent_substitution")
+TAMPER_CASES = (
+    "artifact",
+    "sbom",
+    "manifest_hash",
+    "private_path",
+    "coherent_substitution",
+    "stale_architecture",
+)
 
 
 class ReleaseEvidenceError(Exception):
@@ -643,6 +658,11 @@ def _tamper_selftest(
             document["artifacts"]["wheel"]["sha256"] = substituted
             document["reproducibility"]["wheel_sha256_build_1"] = substituted
             document["reproducibility"]["wheel_sha256_build_2"] = substituted
+        elif case == "stale_architecture":
+            # A CURRENT evidence bundle claiming the obsolete architecture
+            # digest: internally self-consistent, yet the verifier must fail
+            # closed because the stale identity is not the current SOT.
+            document["source"]["architecture_sha256"] = HISTORICAL_ARCHITECTURE_SHA256
         else:  # pragma: no cover - exhaustive over TAMPER_CASES
             _fail(f"unknown tamper case: {case}")
         case_manifest.write_text(
@@ -722,7 +742,7 @@ def build_release_evidence(
             source_date_epoch=source_date_epoch,
             wheelhouse_manifest=source_root / WHEELHOUSE_MANIFEST,
             wheelhouse_dir=evidence_root / "wheelhouse",
-            architecture_sha256=ARCHITECTURE_SHA256,
+            architecture_sha256=CURRENT_ARCHITECTURE_SHA256,
             exclude_filenames=frozenset({wheel_path.name}),
         )
         sbom_path = evidence_root / "release-sbom.cdx.json"
@@ -735,7 +755,7 @@ def build_release_evidence(
             "package": {"name": "dbf-anonymizer", "version": version},
             "source": {
                 "git_commit_sha": commit,
-                "architecture_sha256": ARCHITECTURE_SHA256,
+                "architecture_sha256": CURRENT_ARCHITECTURE_SHA256,
                 "cleanliness_check": cleanliness,
                 "source_export_mode": SOURCE_EXPORT_MODE,
             },
@@ -828,7 +848,7 @@ def build_release_evidence(
             "release_evidence": "PASS",
             "git_commit_sha": commit,
             "package_version": version,
-            "architecture_sha256": ARCHITECTURE_SHA256,
+            "architecture_sha256": CURRENT_ARCHITECTURE_SHA256,
             "python": platform.python_version(),
             "build_tools": build_environment["tool_versions"],
             "source_cleanliness": cleanliness,
