@@ -181,6 +181,40 @@ def test_composite_and_index_claims_are_carried_value_free() -> None:
     assert unverified.index_claims[0].verification_state == "UNVERIFIED"
 
 
+def test_index_only_payload_accepted_and_preserves_provenance(tmp_path: Path) -> None:
+    """Index-only payload (relations=[]) is valid and preserves provenance."""
+    source = tmp_path / "source"
+    _write_conforming_dataset(source)
+    plan = build_plan(
+        source,
+        tmp_path / "output",
+        tmp_path / "vault" / "dictionary.sqlite3",
+        relationship_document=_load_fixture("valid_index_only.json"),
+    )
+    # Schema valid and runtime accepted
+    assert preflight(plan).ready is True
+    # External schema version preserved
+    assert plan.relationships.external_metadata_schema_version == "1.0"
+    # Producer provenance preserved
+    assert plan.relationships.producer_id == "index-only-producer"
+    assert plan.relationships.producer_version == "1.0.0"
+    # No relations, so relation_count is 0 but NOT because of MIXED provenance
+    assert plan.relationships.relation_count == 0
+    assert plan.relationships.provenance != "MIXED"
+    # Relational assurance not upgraded
+    assert plan.relationship_assurance_target == RelationalAssuranceLevel.INCOMPLETE
+    # Index claims truthfulness preserved
+    assert len(plan.execution_context.relationship_document.index_claims) == 2
+    verified_claims = plan.execution_context.relationship_document.verified_index_claims()
+    assert len(verified_claims) == 1
+    assert verified_claims[0].claim_id == "customers-pk-cdx"
+    unverified_claims = [
+        c for c in plan.execution_context.relationship_document.index_claims if not c.verified
+    ]
+    assert len(unverified_claims) == 1
+    assert unverified_claims[0].claim_id == "orders-idx"
+
+
 # ---------------------------------------------------------------------------
 # 4-7. Deterministic relationship fingerprint
 # ---------------------------------------------------------------------------
@@ -515,7 +549,7 @@ def test_inferred_relation_cannot_produce_vfp_metadata_verified(tmp_path: Path) 
     assert inferred_document.external_authority == "INFERRED"
     with pytest.raises(PolicyError) as adapter_excinfo:
         authoritative_vfp_metadata_from_document(inferred_document)
-    assert "RELATIONSHIP_AUTHORITATIVE_AUTHORITY_MISMATCH" in _detail(adapter_excinfo)
+    assert "RELATIONSHIP_AUTHORITATIVE_EMPTY" in _detail(adapter_excinfo)
 
 
 def test_authoritative_binding_with_complete_report_produces_vfp_metadata_verified(

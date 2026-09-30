@@ -29,7 +29,7 @@
     },
     "authority": {
       "enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"],
-      "description": "Envelope-level authority classification applied to every supplied relation claim. Only CONTRACT_AUTHORITATIVE claims may influence authoritative grouping or support VFP_METADATA_VERIFIED; INFERRED claims are retained as non-authoritative planning/reporting information only."
+      "description": "Envelope-level default authority classification. Individual claims may override this with their own authority field. Only CONTRACT_AUTHORITATIVE claims may influence authoritative grouping or support VFP_METADATA_VERIFIED; INFERRED claims are retained as non-authoritative planning/reporting information only."
     },
     "index_claims": {
       "type": "array",
@@ -38,7 +38,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["claim_id", "table", "index_file", "index_kind", "tags", "verification_state", "assurance", "provenance"],
+        "required": ["claim_id", "table", "index_file", "index_kind", "tags", "verification_state", "assurance", "provenance", "authority"],
         "properties": {
           "claim_id": {"$ref": "#/$defs/boundedToken"},
           "table": {"$ref": "#/$defs/relativePath"},
@@ -56,36 +56,48 @@
               "properties": {
                 "name": {"$ref": "#/$defs/boundedToken"},
                 "sort_order": {"enum": ["ASCENDING", "DESCENDING"]},
-                "expression": {"type": "string", "minLength": 1, "maxLength": 256}
+                "expression": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "not": {"pattern": "(^|[\\\\/])\\.(?:[\\\\/]|$)"},
+                "pattern": "^(?!.*[A-Za-z]:)(?!.*\\\\\\)[ -~]+$"
+              }
               }
             }
           },
           "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
           "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
-          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}
+          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]},
+          "authority": {"enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"]}
         },
         "allOf": [
           {
             "if": {"properties": {"verification_state": {"const": "VERIFIED"}}},
             "then": {"properties": {"assurance": {"const": "VERIFIED"}}},
             "else": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "INFERRED"}}},
+            "then": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
           }
         ]
       }
     },
-    "relations": {
+"relations": {
       "type": "array",
       "maxItems": 256,
       "description": "The normalized relation claims (the existing P3 relationship-document group shape).",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["relation_id", "provenance", "assurance", "comparison", "members"],
+        "required": ["relation_id", "provenance", "assurance", "comparison", "members", "authority"],
         "properties": {
           "relation_id": {"$ref": "#/$defs/boundedToken"},
           "comparison": {"enum": ["EXACT_VALUE", "UNSPECIFIED"]},
           "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]},
           "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "authority": {"enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"]},
           "numeric_strategy": {"enum": ["IDENTITY", "REVERSIBLE_BIJECTIVE"]},
           "source_digest": {"$ref": "#/$defs/boundedToken"},
           "members": {
@@ -103,16 +115,15 @@
                 "ordinal": {"type": "integer", "minimum": 1},
                 "dbf_type": {"enum": ["C", "V", "I", "N"]},
                 "byte_width": {"type": "integer", "minimum": 1},
-                "encoding": {"type": "string", "minLength": 1, "maxLength": 64},
+                "encoding": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.-]+$"},
                 "nullable": {"type": "boolean"}
               }
             }
           }
         }
       }
-    }
-  },
-  "allOf": [
+    },
+    "allOf": [
     {
       "if": {"properties": {"authority": {"const": "INFERRED"}}},
       "then": {
@@ -125,6 +136,14 @@
           }
         }
       }
+    },
+    {
+      "if": {"properties": {"relations": {"items": {"properties": {"authority": {"const": "INFERRED"}}}}}},
+      "then": {"properties": {"relations": {"items": {"properties": {"assurance": {"const": "UNVERIFIED"}}}}}}
+    },
+    {
+      "if": {"properties": {"index_claims": {"items": {"properties": {"authority": {"const": "INFERRED"}}}}}},
+      "then": {"properties": {"index_claims": {"items": {"properties": {"assurance": {"const": "UNVERIFIED"}}}}}}
     }
   ],
   "$defs": {
@@ -150,4 +169,5 @@
       "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_. -]+(?:/[A-Za-z0-9_. -]+)*$"
     }
   }
+}
 }

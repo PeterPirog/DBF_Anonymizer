@@ -1,0 +1,11 @@
+{
+  "metadata_schema_version": "1.0",
+  "external_metadata_schema_version": "1.0",
+  "producer": {"producer_id": "index-only-producer", "producer_version": "1.0.0"},
+  "authority": "CONTRACT_AUTHORITATIVE",
+  "relations": [],
+  "index_claims": [
+    {"claim_id": "customers-pk-cdx", "table": "customers/data.dbf", "index_file": "customers/data.cdx", "index_kind": "STRUCTURAL_CDX", "tags": [{"name": "CUST_ID", "sort_order": "ASCENDING", "expression": "CUST_ID"}], "verification_state": "VERIFIED", "assurance": "VERIFIED", "provenance": "EXTERNAL_VFP_METADATA", "authority": "CONTRACT_AUTHORITATIVE"},
+    {"claim_id": "orders-idx", "table": "orders/data.dbf", "index_file": "orders/data.idx", "index_kind": "STANDALONE_IDX", "tags": [{"name": "ORDER_CUST", "sort_order": "DESCENDING"}], "verification_state": "UNVERIFIED", "assurance": "UNVERIFIED", "provenance": "EXTERNAL_VFP_METADATA", "authority": "CONTRACT_AUTHORITATIVE"}
+  ]
+}

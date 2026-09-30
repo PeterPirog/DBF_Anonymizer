@@ -9,6 +9,7 @@
       "comparison": "EXACT_VALUE",
       "provenance": "EXTERNAL_VFP_METADATA",
       "assurance": "VERIFIED",
+      "authority": "CONTRACT_AUTHORITATIVE",
       "members": [
         {"table": "orders/data.dbf", "field": "ORDER_ID", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 10, "encoding": "cp1250", "nullable": false},
         {"table": "orders/data.dbf", "field": "LINE_NO", "role": "PRIMARY", "ordinal": 2, "dbf_type": "I", "byte_width": 4, "encoding": "none", "nullable": false},

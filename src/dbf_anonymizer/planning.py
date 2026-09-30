@@ -305,46 +305,45 @@ def build_plan(
         parsed_relationship_document = parse_relationship_document(relationship_document)
         rel_meta = relationship_metadata_from_document(parsed_relationship_document)
         effective_groups = parsed_relationship_document.effective_groups()
-        if parsed_relationship_document.external_authority == AUTHORITY_INFERRED:
-            # REQ-P6-006 (revised): INFERRED external claims are retained only
-            # as non-authoritative planning/reporting information.  They can
-            # never drive authoritative mapping-domain grouping - a declared
-            # REVERSIBLE_BIJECTIVE numeric key domain is such an authoritative
-            # grouping action, so an inferred envelope cannot declare it
-            # (fail closed; no silent downgrade of the declared strategy).
-            for group in parsed_relationship_document.groups:
-                if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
+        # REQ-P6-006 (revised): check per-claim authority for numeric reversible grouping
+        for group in parsed_relationship_document.groups:
+            if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
+                if group.claim_authority == AUTHORITY_INFERRED:
+                    # INFERRED claims can never drive authoritative grouping
                     raise _relationship_binding_error(
                         "EXTERNAL_METADATA_INFERRED_GROUPING_UNSUPPORTED"
                     )
-        elif parsed_relationship_document.external_authority == AUTHORITY_CONTRACT_AUTHORITATIVE:
-            for group in parsed_relationship_document.groups:
                 if (
-                    group not in effective_groups
-                    and group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
+                    group.claim_authority == AUTHORITY_CONTRACT_AUTHORITATIVE
+                    and group not in effective_groups
                 ):
+                    # CONTRACT_AUTHORITATIVE but unverified claims cannot drive grouping
                     raise _relationship_binding_error(
                         "EXTERNAL_METADATA_UNVERIFIED_GROUPING_UNSUPPORTED"
                     )
-            # CONTRACT-AUTHORITATIVE external claims qualify for the EXISTING
-            # authoritative ingestion boundary (the ONE tested P3-007
-            # adapter, producer-independent since the revised P6-006).  The
-            # binding participates in post-transform verification:
-            # VFP_METADATA_VERIFIED requires BOTH the authoritative ingestion
-            # AND successful relevant verification - metadata alone is never
-            # verification.  An envelope with NO relation claims has nothing
-            # to certify: no binding is minted (index claims are carried as
-            # value-free planning metadata only).
-            if effective_groups:
-                from dbf_anonymizer.relationships.document import (
-                    authoritative_vfp_metadata_from_document,
-                )
+        # CONTRACT-AUTHORITATIVE external claims qualify for the EXISTING
+        # authoritative ingestion boundary (the ONE tested P3-007
+        # adapter, producer-independent since the revised P6-006).  The
+        # binding participates in post-transform verification:
+        # VFP_METADATA_VERIFIED requires BOTH the authoritative ingestion
+        # AND successful relevant verification - metadata alone is never
+        # verification.  An envelope with NO relation claims has nothing
+        # to certify: no binding is minted (index claims are carried as
+        # value-free planning metadata only).
+        # Only external metadata documents (with external_metadata_schema_version)
+        # can qualify for authoritative ingestion; legacy POLICY_FILE documents
+        # never become authoritative.
+        if (
+            effective_groups
+            and parsed_relationship_document.external_metadata_schema_version is not None
+        ):
+            from dbf_anonymizer.relationships.document import (
+                authoritative_vfp_metadata_from_document,
+            )
 
-                authoritative = authoritative_vfp_metadata_from_document(
-                    parsed_relationship_document
-                )
-                rel_meta = authoritative.metadata
-                authoritative_binding = authoritative.binding
+            authoritative = authoritative_vfp_metadata_from_document(parsed_relationship_document)
+            rel_meta = authoritative.metadata
+            authoritative_binding = authoritative.binding
         for group in effective_groups:
             if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                 for member in group.members:

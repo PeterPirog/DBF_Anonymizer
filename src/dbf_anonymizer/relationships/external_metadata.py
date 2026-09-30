@@ -77,6 +77,7 @@ __all__ = [
     "ExternalProducerProvenance",
     "load_external_metadata_schema",
     "parse_index_claims",
+    "validate_external_metadata_path",
 ]
 
 #: The single supported external-metadata CONTRACT schema version.  Any other
@@ -119,6 +120,41 @@ CLAIM_ASSURANCES: tuple[str, ...] = (
 _MAX_INDEX_CLAIMS = 256
 _MAX_INDEX_TAGS = 256
 _PRIVATE_PATH = re.compile(r"(?:^[A-Za-z]:[\\/]|^[/\\]{1,2}|(?:^|[/\\])\.\.(?:[/\\]|$))")
+_BACKSLASH_PATH = re.compile(r"\\")
+
+
+def validate_external_metadata_path(value: object, detail: str) -> str:
+    """Validate a path for EXTERNAL metadata contract.
+
+    Unlike the legacy P3 path normalization, the external contract REQUIRES
+    canonical forward-slash relative paths and REJECTS backslash forms
+    (fail closed, no silent normalization).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
+    stripped = value.strip()
+    # Check for absolute paths (drive letter, UNC, Unix absolute) before
+    # backslash check to produce the correct error code.
+    if re.match(r"^[A-Za-z]:", stripped):
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
+    if stripped.startswith("\\\\") or stripped.startswith("//"):
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
+    if stripped.startswith("/"):
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
+    if _BACKSLASH_PATH.search(stripped):
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
+    segments = re.split(r"/+", stripped)
+    if segments and segments[0] == "":
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
+    parts = [part for part in segments if part != ""]
+    if not parts:
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
+    for part in parts:
+        if part in {".", ".."}:
+            raise _external_invalid("RELATIONSHIP_TABLE_PATH_TRAVERSAL")
+        if ":" in part:
+            raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
+    return "/".join(parts)
 
 
 def _external_invalid(detail_code: str) -> PolicyError:
@@ -171,6 +207,9 @@ class ExternalIndexClaim:
     ``verification_state`` is the explicit truthfulness carrier: only
     ``VERIFIED`` claims may ever support an index-validity guarantee;
     ``UNVERIFIED`` claims are retained purely for planning/reporting.
+
+    ``authority`` is the per-claim authority classification (REQ-P6-006 revised):
+    only CONTRACT_AUTHORITATIVE claims may support index-validity guarantees.
     """
 
     claim_id: str
@@ -181,12 +220,14 @@ class ExternalIndexClaim:
     verification_state: str
     assurance: str
     provenance: str
+    authority: str
 
     @property
     def verified(self) -> bool:
         """Whether this claim may support, but never manufacture, index assurance."""
         return (
-            self.verification_state == INDEX_STATE_VERIFIED
+            self.authority == AUTHORITY_CONTRACT_AUTHORITATIVE
+            and self.verification_state == INDEX_STATE_VERIFIED
             and self.assurance == CLAIM_ASSURANCE_VERIFIED
             and external_provenance_class_allowed(self.provenance)
         )
@@ -207,6 +248,7 @@ class ExternalIndexClaim:
             "verification_state": self.verification_state,
             "assurance": self.assurance,
             "provenance": self.provenance,
+            "authority": self.authority,
         }
 
 
@@ -298,6 +340,7 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
             "verification_state",
             "assurance",
             "provenance",
+            "authority",
         }
         unknown = set(item) - required
         if unknown or not required <= set(item):
@@ -307,13 +350,18 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
         if claim_id in seen:
             raise _external_invalid("EXTERNAL_METADATA_INDEX_CLAIM_DUPLICATE")
         seen.add(claim_id)
-        from dbf_anonymizer.models import _normalized_relative_path
 
         try:
-            table_path = _normalized_relative_path(item["table"])
-            index_file_path = _normalized_relative_path(item["index_file"])
-        except (TypeError, ValueError):
-            raise _external_invalid("EXTERNAL_METADATA_INDEX_PATH_INVALID") from None
+            table_path = validate_external_metadata_path(
+                item["table"], "EXTERNAL_METADATA_INDEX_PATH_INVALID"
+            )
+            index_file_path = validate_external_metadata_path(
+                item["index_file"], "EXTERNAL_METADATA_INDEX_PATH_INVALID"
+            )
+        except PolicyError:
+            raise
+        except Exception:
+            raise _external_invalid("EXTERNAL_METADATA_INDEX_PATH_INVALID")
         index_kind = item["index_kind"]
         if index_kind not in INDEX_CLAIM_KINDS:
             raise _external_invalid("EXTERNAL_METADATA_INDEX_KIND_INVALID")
@@ -326,6 +374,9 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
             raise _external_invalid("EXTERNAL_METADATA_INDEX_ASSURANCE_INVALID")
         if assurance != verification_state:
             raise _external_invalid("EXTERNAL_METADATA_INDEX_ASSURANCE_INCONSISTENT")
+        authority = item["authority"]
+        if authority not in EXTERNAL_METADATA_AUTHORITIES:
+            raise _external_invalid("EXTERNAL_METADATA_INDEX_AUTHORITY_INVALID")
         index_suffix = PurePosixPath(index_file_path).suffix.lower()
         if (index_kind == INDEX_KIND_STRUCTURAL_CDX and index_suffix != ".cdx") or (
             index_kind == INDEX_KIND_STANDALONE_IDX and index_suffix != ".idx"
@@ -344,6 +395,7 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
                 verification_state=str(verification_state),
                 assurance=str(assurance),
                 provenance=str(provenance),
+                authority=str(authority),
             )
         )
     return tuple(claims)

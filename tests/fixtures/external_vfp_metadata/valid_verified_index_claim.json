@@ -4,12 +4,12 @@
   "producer": {"producer_id": "hypothetical-independent-producer", "producer_version": "1.0.0"},
   "authority": "CONTRACT_AUTHORITATIVE",
   "relations": [
-    {"relation_id": "customers-orders-fk", "comparison": "EXACT_VALUE", "provenance": "EXTERNAL_VFP_METADATA", "assurance": "VERIFIED", "members": [
+    {"relation_id": "customers-orders-fk", "comparison": "EXACT_VALUE", "provenance": "EXTERNAL_VFP_METADATA", "assurance": "VERIFIED", "authority": "CONTRACT_AUTHORITATIVE", "members": [
       {"table": "customers/data.dbf", "field": "CUST_ID", "role": "PRIMARY", "ordinal": 1, "dbf_type": "C", "byte_width": 10, "encoding": "cp1250", "nullable": false},
       {"table": "orders/data.dbf", "field": "ORDER_CUST", "role": "FOREIGN", "ordinal": 1, "dbf_type": "C", "byte_width": 10, "encoding": "cp1250", "nullable": false}
     ]}
   ],
   "index_claims": [
-    {"claim_id": "customers-pk-cdx", "table": "customers/data.dbf", "index_file": "customers/data.cdx", "index_kind": "STRUCTURAL_CDX", "tags": [{"name": "CUST_ID", "sort_order": "ASCENDING", "expression": "CUST_ID"}], "verification_state": "VERIFIED", "assurance": "VERIFIED", "provenance": "EXTERNAL_VFP_METADATA"}
+    {"claim_id": "customers-pk-cdx", "table": "customers/data.dbf", "index_file": "customers/data.cdx", "index_kind": "STRUCTURAL_CDX", "tags": [{"name": "CUST_ID", "sort_order": "ASCENDING", "expression": "CUST_ID"}], "verification_state": "VERIFIED", "assurance": "VERIFIED", "provenance": "EXTERNAL_VFP_METADATA", "authority": "CONTRACT_AUTHORITATIVE"}
   ]
 }

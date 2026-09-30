@@ -12,6 +12,7 @@
       "comparison": "EXACT_VALUE",
       "provenance": "EXTERNAL_VFP_METADATA",
       "assurance": "VERIFIED",
+      "authority": "CONTRACT_AUTHORITATIVE",
       "members": [
         {
           "table": "customers/data.dbf",

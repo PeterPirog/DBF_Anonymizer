@@ -67,6 +67,7 @@ _GROUP_KEYS = frozenset(
         "members",
         "numeric_strategy",
         "assurance",
+        "authority",
     }
 )
 #: REQ-P6-006 (revised): the ADDITIVE optional top-level keys of the external
@@ -134,7 +135,7 @@ def _require_mapping(value: object, detail: str) -> Mapping[str, Any]:
     return value
 
 
-def _parse_member(payload: object) -> RelationMember:
+def _parse_member(payload: object, *, external_authority: str | None = None) -> RelationMember:
     if not isinstance(payload, Mapping):
         raise _document_invalid("RELATIONSHIP_MEMBER_INVALID")
     unknown = set(payload) - _MEMBER_KEYS
@@ -157,6 +158,19 @@ def _parse_member(payload: object) -> RelationMember:
     raw_width: Any = payload.get("byte_width")
     raw_encoding: Any = payload.get("encoding")
     raw_nullable: Any = payload.get("nullable")
+    # REQ-P6-006 (revised): for EXTERNAL metadata, enforce canonical
+    # forward-slash paths and reject backslash forms (fail closed).
+    if external_authority is not None:
+        from dbf_anonymizer.relationships.external_metadata import validate_external_metadata_path
+
+        try:
+            raw_table = validate_external_metadata_path(
+                raw_table, "RELATIONSHIP_MEMBER_TABLE_PATH_INVALID"
+            )
+        except PolicyError:
+            raise
+        except Exception:
+            raise _document_invalid("RELATIONSHIP_MEMBER_TABLE_PATH_INVALID")
     return RelationMember(
         table_path=raw_table,
         field_name=raw_field,
@@ -194,7 +208,9 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
         or len(raw_members) > _MAX_RELATION_MEMBERS
     ):
         raise _document_invalid("RELATIONSHIP_MEMBERS_EMPTY")
-    members = tuple(_parse_member(member) for member in raw_members)
+    members = tuple(
+        _parse_member(member, external_authority=external_authority) for member in raw_members
+    )
     source_digest = group_payload.get("source_digest")
     if source_digest is not None:
         _validate_bounded_token(source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
@@ -205,11 +221,19 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
     raw_comparison: Any = comparison
     raw_provenance: Any = provenance
     claim_assurance = None
+    claim_authority = None
     if external_authority is not None:
         if "assurance" not in group_payload:
             raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_MISSING")
         claim_assurance = parse_claim_assurance(group_payload["assurance"])
-        validate_authority_assurance(external_authority, claim_assurance)
+        # REQ-P6-006 (revised): per-claim authority is REQUIRED for external
+        # metadata. If not present, fall back to envelope-level authority.
+        if "authority" in group_payload:
+            claim_authority = parse_external_authority(group_payload["authority"])
+            validate_authority_assurance(claim_authority, claim_assurance)
+        else:
+            claim_authority = external_authority
+            validate_authority_assurance(external_authority, claim_assurance)
     elif "assurance" in group_payload:
         raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_WITHOUT_ENVELOPE")
     return RelationGroup(
@@ -220,6 +244,7 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
         source_digest=None if source_digest is None else str(source_digest),
         numeric_strategy=(NUMERIC_STRATEGY_IDENTITY if raw_strategy is None else str(raw_strategy)),
         claim_assurance=claim_assurance,
+        claim_authority=claim_authority,
     )
 
 
@@ -277,7 +302,7 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
         if "index_claims" in document:
             index_claims = parse_index_claims(document["index_claims"])
             for claim in index_claims:
-                validate_authority_assurance(authority, claim.assurance)
+                validate_authority_assurance(claim.authority, claim.assurance)
 
     raw_relations = document.get("relations")
     if not isinstance(raw_relations, list) or len(raw_relations) > _MAX_RELATION_GROUPS:
@@ -328,11 +353,32 @@ def relationship_metadata_from_document(
     NON-authoritative: declared planning metadata never masquerades as
     injected authoritative VFP metadata (see
     :func:`authoritative_vfp_metadata_from_document`).
+
+    REQ-P6-006 (revised): preserves external metadata schema version and
+    producer provenance at the public API boundary.
     """
     effective_groups = document.effective_groups()
     provenance_groups = effective_groups or document.groups
     provenances = {group.provenance for group in provenance_groups}
+    # REQ-P6-006 (revised): for index-only payloads, fall back to index claim provenances
+    if not provenances and document.index_claims:
+        index_provenances = {claim.provenance for claim in document.index_claims}
+        provenances = index_provenances
     provenance = next(iter(provenances)) if len(provenances) == 1 else "MIXED"
+    # Compute authority summary for external metadata
+    authority_summary = None
+    if document.external_metadata_schema_version is not None:
+        authorities = set()
+        for group in document.groups:
+            if group.claim_authority is not None:
+                authorities.add(group.claim_authority)
+        for claim in document.index_claims:
+            if claim.authority is not None:
+                authorities.add(claim.authority)
+        if len(authorities) == 1:
+            authority_summary = next(iter(authorities))
+        elif authorities:
+            authority_summary = "MIXED"
     return RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
         provenance=provenance,
@@ -340,6 +386,10 @@ def relationship_metadata_from_document(
         relation_count=len(effective_groups),
         authoritative=False,
         metadata_path=metadata_path,
+        external_metadata_schema_version=document.external_metadata_schema_version,
+        producer_id=document.producer_id,
+        producer_version=document.producer_version,
+        authority_summary=authority_summary,
     )
 
 
@@ -362,7 +412,7 @@ def authoritative_vfp_metadata_from_document(
       metadata fingerprint (authority is bound to the same document the
       verification report must bind to);
     * the metadata version is the supported schema (the typed parser already
-      refuses every other version);
+      refuses every version);
     * paths stay normalized-relative and no key value or absolute path is
       added.
 
@@ -380,12 +430,6 @@ def authoritative_vfp_metadata_from_document(
     metadata; it is never by itself sufficient to cross the authoritative
     assurance boundary.
     """
-    if document.external_authority == "INFERRED":
-        # REQ-P6-006 (revised): INFERRED external claims are retained only as
-        # non-authoritative planning/reporting information - they can never
-        # be certified as authoritative (an inferred relationship claiming an
-        # authoritative result fails closed).
-        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_AUTHORITY_MISMATCH")
     effective_groups = document.effective_groups()
     if not effective_groups:
         raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_EMPTY")
@@ -402,6 +446,20 @@ def authoritative_vfp_metadata_from_document(
         raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
     document_provenance = next(iter(provenances))
     fingerprint = relationship_fingerprint(document)
+    # Compute authority summary for external metadata
+    authority_summary = None
+    if document.external_metadata_schema_version is not None:
+        authorities = set()
+        for group in document.groups:
+            if group.claim_authority is not None:
+                authorities.add(group.claim_authority)
+        for claim in document.index_claims:
+            if claim.authority is not None:
+                authorities.add(claim.authority)
+        if len(authorities) == 1:
+            authority_summary = next(iter(authorities))
+        elif authorities:
+            authority_summary = "MIXED"
     metadata = RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
         provenance=document_provenance,
@@ -409,6 +467,10 @@ def authoritative_vfp_metadata_from_document(
         relation_count=len(effective_groups),
         authoritative=True,
         metadata_path=metadata_path,
+        external_metadata_schema_version=document.external_metadata_schema_version,
+        producer_id=document.producer_id,
+        producer_version=document.producer_version,
+        authority_summary=authority_summary,
     )
     # The binding is minted ONLY here, after the typed validation above: it
     # is the in-process authority proof, not a cryptographic secret and not a

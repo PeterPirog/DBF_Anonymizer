@@ -248,6 +248,7 @@ class RelationGroup:
     source_digest: str | None = None
     numeric_strategy: str = NUMERIC_STRATEGY_IDENTITY
     claim_assurance: str | None = None
+    claim_authority: str | None = None
 
     def __post_init__(self) -> None:
         _validate_bounded_token(self.relation_id, "RELATIONSHIP_ID_INVALID")
@@ -262,6 +263,8 @@ class RelationGroup:
             raise _invalid("RELATIONSHIP_NUMERIC_STRATEGY_INVALID")
         if self.claim_assurance not in {None, "VERIFIED", "UNVERIFIED"}:
             raise _invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_INVALID")
+        if self.claim_authority not in {None, "CONTRACT_AUTHORITATIVE", "INFERRED"}:
+            raise _invalid("EXTERNAL_METADATA_RELATION_AUTHORITY_INVALID")
         if self.source_digest is not None:
             _validate_bounded_token(self.source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
         seen: set[tuple[str, str, str]] = set()
@@ -338,6 +341,8 @@ class RelationGroup:
         }
         if self.claim_assurance is not None:
             payload["assurance"] = self.claim_assurance
+        if self.claim_authority is not None:
+            payload["authority"] = self.claim_authority
         return payload
 
 
@@ -368,19 +373,20 @@ class RelationshipDocument:
         """Claims allowed to affect grouping and relational assurance.
 
         Legacy P3 documents have no external envelope and retain their exact
-        behavior. External claims are effective only when the envelope is
-        contract-authoritative and the individual claim is verified.
+        behavior. External claims are effective only when the claim's authority
+        is CONTRACT_AUTHORITATIVE and the individual claim is verified.
         """
         if self.external_metadata_schema_version is None:
             return self.groups
-        if self.external_authority != "CONTRACT_AUTHORITATIVE":
-            return ()
-        return tuple(group for group in self.groups if group.claim_assurance == "VERIFIED")
+        return tuple(
+            group
+            for group in self.groups
+            if group.claim_authority == "CONTRACT_AUTHORITATIVE"
+            and group.claim_assurance == "VERIFIED"
+        )
 
     def verified_index_claims(self) -> tuple[ExternalIndexClaim, ...]:
         """External index claims eligible to support existing index assurance."""
-        if self.external_authority != "CONTRACT_AUTHORITATIVE":
-            return ()
         return tuple(claim for claim in self.index_claims if claim.verified)
 
     def __post_init__(self) -> None:
