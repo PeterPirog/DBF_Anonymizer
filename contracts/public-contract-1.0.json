@@ -1161,7 +1161,11 @@
         "relationship_fingerprint",
         "relation_count",
         "authoritative",
-        "metadata_path"
+        "metadata_path",
+        "external_metadata_schema_version",
+        "producer_id",
+        "producer_version",
+        "authority_summary"
       ],
       "StandaloneIdxAssociationResult": [
         "schema_version",
@@ -1673,7 +1677,7 @@
       ],
       "producer_independent": true,
       "schema_resource": "schemas/external-vfp-metadata-1.0.schema.json",
-      "schema_sha256": "bd0b90a808274ba83ce1d7c3bd840db29ec720013ced71b1c8971a0dfbd37cc8",
+      "schema_sha256": "f08dc8e6bc32fa981a76c79931a5eab767725f983e4ff94978c864795ad94f17",
       "schema_version": "1.0"
     },
     "key_roles": [
