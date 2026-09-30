@@ -318,7 +318,11 @@
       "relationship_fingerprint",
       "relation_count",
       "authoritative",
-      "metadata_path"
+      "metadata_path",
+      "external_metadata_schema_version",
+      "producer_id",
+      "producer_version",
+      "authority_summary"
     ],
     "StandaloneIdxAssociationResult": [
       "schema_version",
