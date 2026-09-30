@@ -39,6 +39,15 @@ authoritative strength — and `INFERRED` or `UNVERIFIED` claims are retained in
 the canonical metadata fingerprint for planning/reporting but do not affect
 mapping domains or relational assurance.
 
+A `REVERSIBLE_BIJECTIVE` numeric-strategy declaration is itself a
+strengthening-capability declaration (reversible mapping-domain grouping);
+the shipped schema and the runtime therefore both reject such a declaration on
+any claim that is not contract-authoritative and verified, and require at
+least one numeric member on the effective claim (fail closed, same typed
+codes as the planner). Effective claims may use DIFFERENT authoritative
+VFP-metadata classes within one document: provenance eligibility is per
+claim, and the public provenance summary is then the truthful `MIXED` token.
+
 Index claims carry explicit provenance, authority, and verification state. Only
 a contract-authoritative claim whose assurance and verification state are both
 `VERIFIED` and whose provenance is an authoritative VFP-metadata class may

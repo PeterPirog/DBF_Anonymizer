@@ -1111,6 +1111,7 @@ _VALID_FIXTURES: tuple[str, ...] = (
     "valid_composite_relation.json",
     "valid_index_only.json",
     "valid_inferred_relation.json",
+    "valid_mixed_authoritative_provenance.json",
     "valid_policy_file_planning.json",
     "valid_structured_provenance.json",
     "valid_unverified_index_claim.json",
@@ -1200,6 +1201,223 @@ def test_public_ingestion_provenance_eligibility_parity(tmp_path: Path) -> None:
     assert retained_plan.relationships.authoritative is False
     assert retained_plan.relationships.relation_count == 0
     assert retained_plan.relationships.external_metadata_schema_version == "1.0"
+
+
+def _reversible_payload(authority: str, assurance: str, *, numeric: bool = True) -> dict:
+    """One numeric relation with the requested claim flags (three-oracle cases)."""
+    payload = deepcopy(_load_fixture("valid_authoritative_relation.json"))
+    members = (
+        [
+            {
+                "table": "customers/data.dbf",
+                "field": "CUST_NUM",
+                "role": "PRIMARY",
+                "ordinal": 1,
+                "dbf_type": "I",
+                "byte_width": 4,
+                "encoding": "none",
+                "nullable": False,
+            },
+            {
+                "table": "orders/data.dbf",
+                "field": "ORDER_NUM",
+                "role": "FOREIGN",
+                "ordinal": 1,
+                "dbf_type": "I",
+                "byte_width": 4,
+                "encoding": "none",
+                "nullable": False,
+            },
+        ]
+        if numeric
+        else [
+            {
+                "table": "customers/data.dbf",
+                "field": "CUST_ID",
+                "role": "PRIMARY",
+                "ordinal": 1,
+                "dbf_type": "C",
+                "byte_width": 10,
+                "encoding": "cp1250",
+                "nullable": False,
+            },
+            {
+                "table": "orders/data.dbf",
+                "field": "ORDER_CUST",
+                "role": "FOREIGN",
+                "ordinal": 1,
+                "dbf_type": "C",
+                "byte_width": 10,
+                "encoding": "cp1250",
+                "nullable": False,
+            },
+        ]
+    )
+    payload["relations"].append(
+        {
+            "relation_id": "numeric-reversible",
+            "comparison": "EXACT_VALUE",
+            "provenance": "EXTERNAL_VFP_METADATA",
+            "assurance": assurance,
+            "authority": authority,
+            "numeric_strategy": "REVERSIBLE_BIJECTIVE",
+            "members": members,
+        }
+    )
+    return payload
+
+
+_PUBLIC_INGESTION_CASES: tuple[tuple[str, dict, bool, str | None], ...] = (
+    (
+        "inferred_unverified_reversible",
+        _reversible_payload("INFERRED", "UNVERIFIED"),
+        False,
+        "EXTERNAL_METADATA_INFERRED_GROUPING_UNSUPPORTED",
+    ),
+    (
+        "authoritative_unverified_reversible",
+        _reversible_payload("CONTRACT_AUTHORITATIVE", "UNVERIFIED"),
+        False,
+        "EXTERNAL_METADATA_UNVERIFIED_GROUPING_UNSUPPORTED",
+    ),
+    (
+        "authoritative_verified_reversible",
+        _reversible_payload("CONTRACT_AUTHORITATIVE", "VERIFIED"),
+        True,
+        None,
+    ),
+    (
+        "mixed_authoritative_provenance",
+        _load_fixture("valid_mixed_authoritative_provenance.json"),
+        True,
+        None,
+    ),
+    (
+        "policy_file_authoritative",
+        _load_fixture("invalid_policy_file_authoritative.json"),
+        False,
+        "EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE",
+    ),
+    (
+        "policy_file_planning_retained",
+        _load_fixture("valid_policy_file_planning.json"),
+        True,
+        None,
+    ),
+    (
+        "authoritative_verified_index_valid_provenance",
+        _load_fixture("valid_verified_index_claim.json"),
+        True,
+        None,
+    ),
+    (
+        "index_policy_file_authoritative",
+        _load_fixture("invalid_policy_file_index_authoritative.json"),
+        False,
+        "EXTERNAL_METADATA_INDEX_PROVENANCE_INAUTHORITATIVE",
+    ),
+    (
+        "reversible_without_numeric_member",
+        _reversible_payload("CONTRACT_AUTHORITATIVE", "VERIFIED", numeric=False),
+        False,
+        "RELATIONSHIP_NUMERIC_STRATEGY_MEMBER_REQUIRED",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "schema_accepts", "runtime_code"),
+    list(_PUBLIC_INGESTION_CASES),
+    ids=[case[0] for case in _PUBLIC_INGESTION_CASES],
+)
+def test_public_ingestion_tier1_matrix(
+    tmp_path: Path, name: str, payload: dict, schema_accepts: bool, runtime_code: str | None
+) -> None:
+    """Three independent oracles decide EVERY schema-expressible case identically.
+
+    1. Draft202012Validator (the shipped schema as the oracle),
+    2. parse_relationship_document (the typed runtime parser),
+    3. PUBLIC build_plan ingestion (against a minimal conforming dataset).
+    """
+    validator = _draft_validator()
+    assert validator.is_valid(deepcopy(payload)) is schema_accepts, name
+    source = tmp_path / "source"
+    _write_conforming_dataset(source)
+    vault = tmp_path / name / "vault" / "dictionary.sqlite3"
+    output = tmp_path / name / "output"
+    if runtime_code is None:
+        parse_relationship_document(deepcopy(payload))  # parser ACCEPT
+        plan = build_plan(source, output, vault, relationship_document=deepcopy(payload))
+        assert preflight(plan).ready is True
+        if name == "authoritative_verified_reversible":
+            assert plan.relationships.authoritative is True
+            assert plan.execution_context.authoritative_binding is not None
+        if name == "mixed_authoritative_provenance":
+            assert plan.relationships.authoritative is True
+            assert plan.relationships.provenance == "MIXED"
+            assert plan.relationships.relation_count == 2
+        if name == "policy_file_planning_retained":
+            assert plan.relationships.authoritative is False
+            assert plan.relationships.relation_count == 0
+    else:
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(deepcopy(payload))
+        assert runtime_code in _detail(excinfo)
+        with pytest.raises(PolicyError) as plan_excinfo:
+            build_plan(source, output, vault, relationship_document=deepcopy(payload))
+        assert runtime_code in _detail(plan_excinfo)
+
+
+def test_mixed_authoritative_provenance_reaches_vfp_metadata_verified(tmp_path: Path) -> None:
+    """Mixed authoritative VFP-metadata classes qualify per claim and reach
+    the truthful VFP_METADATA_VERIFIED level with successful verification."""
+    source = tmp_path / "source"
+    _write_conforming_dataset(source)
+    plan = build_plan(
+        source,
+        tmp_path / "output",
+        tmp_path / "vault" / "dictionary.sqlite3",
+        relationship_document=_load_fixture("valid_mixed_authoritative_provenance.json"),
+    )
+    assert plan.relationships.authoritative is True
+    assert plan.relationships.provenance == "MIXED"
+    assert plan.relationships.relation_count == 2
+    assert plan.relationships.authority_summary == "CONTRACT_AUTHORITATIVE"
+    assert preflight(plan).ready is True
+    result = pseudonymize(plan, workers=2)
+    verified = verify_dataset(
+        result, source=source, vault=tmp_path / "vault" / "dictionary.sqlite3"
+    )
+    assert verified.assurance.level == RelationalAssuranceLevel.VFP_METADATA_VERIFIED
+    assert verified.assurance.verified_relations == verified.assurance.declared_relations == 2
+
+
+def test_mixed_provenance_fingerprint_tracks_per_claim_provenance() -> None:
+    """The deterministic fingerprint includes EACH claim's provenance."""
+    payload = _load_fixture("valid_mixed_authoritative_provenance.json")
+    document = parse_relationship_document(deepcopy(payload))
+    changed = deepcopy(payload)
+    changed["relations"][0]["provenance"] = "EXTERNAL_VFP_METADATA"
+    assert relationship_fingerprint(parse_relationship_document(changed)) != (
+        relationship_fingerprint(document)
+    )
+
+
+def test_non_effective_planning_claim_remains_in_fingerprint() -> None:
+    """A retained non-authoritative claim stays in the fingerprint.
+
+    Operational ignoring never silently removes supplied metadata: the
+    POLICY_FILE planning claim (declared but not effective) is part of the
+    canonical relationship fingerprint.
+    """
+    payload = _load_fixture("valid_policy_file_planning.json")
+    document = parse_relationship_document(deepcopy(payload))
+    assert document.effective_groups() == ()
+    without_claim = deepcopy(payload)
+    without_claim["relations"] = []
+    assert relationship_fingerprint(parse_relationship_document(without_claim)) != (
+        relationship_fingerprint(document)
+    )
 
 
 def test_frozen_fixture_schema_runtime_parity_matrix(tmp_path: Path) -> None:

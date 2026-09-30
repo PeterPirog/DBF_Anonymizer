@@ -60,6 +60,7 @@ __all__ = [
     "PROVENANCE_POLICY_FILE",
     "PROVENANCE_MCP_VFP9SP2_TOOLCHAIN",
     "PROVENANCE_EXTERNAL_VFP_METADATA",
+    "PROVENANCE_MIXED",
     "RelationMember",
     "RelationGroup",
     "RelationshipDocument",
@@ -88,6 +89,12 @@ PROVENANCE_MCP_VFP9SP2_TOOLCHAIN = "MCP_VFP9SP2_TOOLCHAIN"
 #: previously frozen tokens stay untouched and POLICY_FILE documents remain
 #: non-authoritative.
 PROVENANCE_EXTERNAL_VFP_METADATA = "EXTERNAL_VFP_METADATA"
+#: The truthful public provenance SUMMARY token for a document whose
+#: effective authoritative claims use MORE THAN ONE authoritative VFP-metadata
+#: class.  It is NOT a claim provenance vocabulary member (every claim carries
+#: its own explicit provenance); it is only the bounded public summary used by
+#: :class:`RelationshipMetadata` and the assurance kernel.
+PROVENANCE_MIXED = "MIXED"
 RELATIONSHIP_PROVENANCES: tuple[str, ...] = (
     PROVENANCE_POLICY_FILE,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,

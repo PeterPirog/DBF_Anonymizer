@@ -45,6 +45,7 @@ from dbf_anonymizer.relationships.document import _AuthoritativeVFPBinding
 from dbf_anonymizer.relationships.models import (
     PROVENANCE_EXTERNAL_VFP_METADATA,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+    PROVENANCE_MIXED,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
 )
 from dbf_anonymizer.relationships.verification import (
@@ -272,8 +273,18 @@ def _validated_authority_binding(
         binding.metadata_schema_version != RELATIONSHIP_METADATA_SCHEMA_VERSION
         or relationships.metadata_schema_version != binding.metadata_schema_version
         or not relationships.authoritative
-        or relationships.provenance
-        not in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+        or (
+            relationships.provenance
+            not in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+            # REQ-P6-006 (revised): a MIXED public provenance summary is
+            # accepted ONLY here, together with the complete binding
+            # validation below - the binding is minted exclusively by the
+            # authoritative ingestion adapter AFTER per-claim provenance
+            # eligibility was enforced, so a MIXED document can only carry
+            # authoritative VFP-metadata-class effective claims.  POLICY_FILE
+            # provenance never passes this boundary.
+            and relationships.provenance != PROVENANCE_MIXED
+        )
         or binding.relationship_fingerprint != relationships.relationship_fingerprint
         or binding.relation_count != relationships.relation_count
         or (
@@ -365,10 +376,16 @@ def derive_relational_assurance(
                 # REQ-P6-006 (revised): the VFP-metadata provenance CLASS is
                 # producer-independent - both the toolchain-class token and
                 # the external-contract token qualify; a POLICY_FILE document
-                # never qualifies.  The concrete producer is carried by the
+                # never qualifies.  A MIXED summary token qualifies ONLY
+                # together with the valid adapter-minted binding below (the
+                # adapter enforced per-claim provenance eligibility before
+                # minting it).  The concrete producer is carried by the
                 # envelope's structured provenance, never hardcoded.
-                and relationships.provenance
-                in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+                and (
+                    relationships.provenance
+                    in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+                    or relationships.provenance == PROVENANCE_MIXED
+                )
                 # The trust credential: a valid internal binding minted ONLY
                 # by the tested authoritative ingestion adapter.  The public
                 # boolean and provenance label alone are descriptive facts.

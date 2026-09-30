@@ -1677,7 +1677,7 @@
       ],
       "producer_independent": true,
       "schema_resource": "schemas/external-vfp-metadata-1.0.schema.json",
-      "schema_sha256": "3f41bf295bac7ea84a2b3225d32eefe59f16d8ce9bdb3d502d7847281234970c",
+      "schema_sha256": "075d22a1ffc5a51401a082ee8098440fb02d242b992887eb77ba689dd0f4b429",
       "schema_version": "1.0"
     },
     "key_roles": [

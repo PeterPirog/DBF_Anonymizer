@@ -99,7 +99,7 @@
     "relations": {
       "type": "array",
       "maxItems": 256,
-      "description": "The normalized relation claims (the existing P3 relationship-document group shape). Every claim carries its own explicit authority; only CONTRACT_AUTHORITATIVE + VERIFIED claims whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) are effective.",
+      "description": "The normalized relation claims (the existing P3 relationship-document group shape). Every claim carries its own explicit authority; only CONTRACT_AUTHORITATIVE + VERIFIED claims whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) are effective; a REVERSIBLE_BIJECTIVE strategy declaration is a strengthening capability and is only valid on such effective claims with at least one numeric member.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -151,6 +151,16 @@
           {
             "if": {"properties": {"authority": {"const": "CONTRACT_AUTHORITATIVE"}, "assurance": {"const": "VERIFIED"}}},
             "then": {"properties": {"provenance": {"enum": ["MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}}}
+          },
+          {
+            "if": {"properties": {"numeric_strategy": {"const": "REVERSIBLE_BIJECTIVE"}}, "required": ["numeric_strategy"]},
+            "then": {
+              "properties": {
+                "authority": {"const": "CONTRACT_AUTHORITATIVE"},
+                "assurance": {"const": "VERIFIED"},
+                "members": {"contains": {"properties": {"dbf_type": {"enum": ["I", "N"]}}}}
+              }
+            }
           }
         ]
       }

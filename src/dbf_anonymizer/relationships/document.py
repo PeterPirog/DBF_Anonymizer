@@ -29,6 +29,8 @@ from dbf_anonymizer.relationships.models import (
     KEY_ROLES,
     NUMERIC_STRATEGIES,
     NUMERIC_STRATEGY_IDENTITY,
+    NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+    PROVENANCE_MIXED,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RELATIONSHIP_PROVENANCES,
     SUPPORTED_RELATIONSHIP_DBF_TYPES,
@@ -39,6 +41,7 @@ from dbf_anonymizer.relationships.models import (
 )
 from dbf_anonymizer.relationships.external_metadata import (
     AUTHORITY_CONTRACT_AUTHORITATIVE,
+    AUTHORITY_INFERRED,
     CLAIM_ASSURANCE_VERIFIED,
     EXTERNAL_METADATA_SCHEMA_VERSION,
     external_provenance_class_allowed,
@@ -254,6 +257,24 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
             # encodes the same eligibility, so public build_plan ingestion
             # and the parser agree fail closed).
             raise _document_invalid("EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE")
+        # REQ-P6-006 (revised, parity with the shipped JSON Schema and PUBLIC
+        # build_plan ingestion): a REVERSIBLE_BIJECTIVE strategy declaration
+        # is a strengthening-capability declaration (reversible
+        # mapping-domain grouping).  Non-effective claims are retained ONLY
+        # as non-authoritative planning/reporting information, so such a
+        # declaration is an inconsistent authority/strategy combination and
+        # fails closed AT PARSE TIME with the SAME stable codes the planner
+        # uses - no schema-valid / parser-valid / public-rejected shape
+        # remains.
+        if raw_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE and (
+            claim_authority != AUTHORITY_CONTRACT_AUTHORITATIVE
+            or claim_assurance != CLAIM_ASSURANCE_VERIFIED
+        ):
+            raise _document_invalid(
+                "EXTERNAL_METADATA_INFERRED_GROUPING_UNSUPPORTED"
+                if claim_authority == AUTHORITY_INFERRED
+                else "EXTERNAL_METADATA_UNVERIFIED_GROUPING_UNSUPPORTED"
+            )
     elif "assurance" in group_payload:
         raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_WITHOUT_ENVELOPE")
     return RelationGroup(
@@ -384,7 +405,7 @@ def relationship_metadata_from_document(
     if not provenances and document.index_claims:
         index_provenances = {claim.provenance for claim in document.index_claims}
         provenances = index_provenances
-    provenance = next(iter(provenances)) if len(provenances) == 1 else "MIXED"
+    provenance = next(iter(provenances)) if len(provenances) == 1 else PROVENANCE_MIXED
     # Compute authority summary for external metadata
     authority_summary = None
     if document.external_metadata_schema_version is not None:
@@ -398,7 +419,7 @@ def relationship_metadata_from_document(
         if len(authorities) == 1:
             authority_summary = next(iter(authorities))
         elif authorities:
-            authority_summary = "MIXED"
+            authority_summary = PROVENANCE_MIXED
     return RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
         provenance=provenance,
@@ -426,8 +447,12 @@ def authoritative_vfp_metadata_from_document(
     internal trust binding:
 
     * the document declares at least one relation;
-    * every effective group has one accepted VFP-metadata-class provenance;
-      a POLICY_FILE or mixed-provenance document never qualifies;
+    * every effective group carries an accepted VFP-metadata-class provenance
+      (PER CLAIM - the SOT requires explicit provenance/authority/assurance
+      for every supplied claim); a POLICY_FILE provenance never qualifies,
+      while DIFFERENT authoritative VFP-metadata classes within one document
+      qualify (the public provenance summary is then the truthful MIXED
+      token);
     * the canonical relationship fingerprint of THIS document becomes the
       metadata fingerprint (authority is bound to the same document the
       verification report must bind to);
@@ -454,17 +479,23 @@ def authoritative_vfp_metadata_from_document(
     if not effective_groups:
         raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_EMPTY")
     provenances = {group.provenance for group in effective_groups}
-    if len(provenances) != 1 or not external_provenance_class_allowed(next(iter(provenances))):
-        # A POLICY_FILE document, a MIXED-provenance document or any document
-        # whose provenance is not a VFP-metadata class is never authoritative
-        # VFP metadata - the provenance label alone is never evidence, and
-        # mixed provenance is ambiguous by definition.  REQ-P6-006 (revised):
-        # the class is PRODUCER-INDEPENDENT - both the toolchain-class token
-        # and the external-contract token are VFP-metadata classes, and the
-        # concrete producer is carried by the envelope's structured
-        # provenance, never hardcoded here.
-        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
-    document_provenance = next(iter(provenances))
+    for provenance in provenances:
+        if not external_provenance_class_allowed(provenance):
+            # A POLICY_FILE provenance (or any non-VFP-metadata class) can
+            # never be authoritative VFP metadata - the provenance label alone
+            # is never evidence.  REQ-P6-006 (revised): the class is
+            # PRODUCER-INDEPENDENT - both the toolchain-class token and the
+            # external-contract token are VFP-metadata classes, and the
+            # concrete producer is carried by the envelope's structured
+            # provenance, never hardcoded here.
+            raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
+    # REQ-P6-006 (revised): provenance eligibility is PER CLAIM - the SOT
+    # requires explicit provenance/authority/assurance for every supplied
+    # claim and does NOT require a whole-document uniform provenance token,
+    # so a document mixing DIFFERENT authoritative VFP-metadata classes
+    # qualifies (each claim was already per-claim validated above); the
+    # public provenance summary stays truthful (single token or MIXED).
+    document_provenance = next(iter(provenances)) if len(provenances) == 1 else PROVENANCE_MIXED
     fingerprint = relationship_fingerprint(document)
     # Compute authority summary for external metadata
     authority_summary = None
@@ -479,7 +510,7 @@ def authoritative_vfp_metadata_from_document(
         if len(authorities) == 1:
             authority_summary = next(iter(authorities))
         elif authorities:
-            authority_summary = "MIXED"
+            authority_summary = PROVENANCE_MIXED
     metadata = RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
         provenance=document_provenance,
