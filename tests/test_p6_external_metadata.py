@@ -436,6 +436,7 @@ def test_authoritative_relation_drives_grouping(tmp_path: Path) -> None:
             "comparison": "EXACT_VALUE",
             "provenance": "EXTERNAL_VFP_METADATA",
             "assurance": "VERIFIED",
+            "authority": "CONTRACT_AUTHORITATIVE",
             "numeric_strategy": "REVERSIBLE_BIJECTIVE",
             "members": [
                 {
@@ -746,23 +747,43 @@ def test_external_metadata_schema_shipped_in_built_wheel(tmp_path: Path) -> None
     _write_conforming_dataset(source)
     valid_payload = tmp_path / "valid.json"
     invalid_payload = tmp_path / "invalid.json"
+    invalid_authority_payload = tmp_path / "invalid-authority.json"
     valid_payload.write_text(
         json.dumps(_load_fixture("valid_authoritative_relation.json")), encoding="utf-8"
     )
     invalid_payload.write_text(
         json.dumps(_load_fixture("invalid_unknown_version.json")), encoding="utf-8"
     )
-    environment = tmp_path / "clean-wheel-environment"
-    venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment)
-    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    installed = subprocess.run(  # noqa: S603 - task-owned isolated environment
-        [str(interpreter), "-m", "pip", "install", "--no-deps", str(wheels[-1])],
-        cwd=tmp_path,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    inferred_verified = _load_fixture("valid_authoritative_relation.json")
+    inferred_verified["relations"][0]["authority"] = "INFERRED"
+    invalid_authority_payload.write_text(json.dumps(inferred_verified), encoding="utf-8")
+    acceptance_pin = (
+        (Path(__file__).resolve().parents[1] / "requirements" / "p0-dbfbridge-tested.txt")
+        .read_text(encoding="utf-8")
+        .strip()
+        .splitlines()[-1]
+        .strip()
     )
-    assert installed.returncode == 0, installed.stderr.decode("utf-8", errors="replace")
+    assert acceptance_pin.startswith("dbfbridge[write]==")
+    environment = tmp_path / "clean-wheel-environment"
+    # GENUINELY isolated child venv: NO system-site-packages inheritance, so
+    # neither the parent's dbfbridge nor the repository source can leak in.
+    venv.EnvBuilder(with_pip=True, system_site_packages=False).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    child_pip = [str(interpreter), "-m", "pip", "install", "--no-cache-dir"]
+    for command in (
+        [*child_pip, acceptance_pin],
+        [*child_pip, "jsonschema>=4.21"],
+        [*child_pip, "--no-deps", str(wheels[-1])],
+    ):
+        installed = subprocess.run(  # noqa: S603 - task-owned isolated environment
+            command,
+            cwd=tmp_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert installed.returncode == 0, installed.stderr.decode("utf-8", errors="replace")
     probe = tmp_path / "installed_wheel_probe.py"
     probe.write_text(
         """
@@ -771,26 +792,57 @@ import sys
 from pathlib import Path
 
 import dbf_anonymizer
+import dbfbridge
 from dbf_anonymizer import build_plan
 from dbf_anonymizer.errors import PolicyError
 from dbf_anonymizer.relationships import (
     load_external_metadata_schema,
     parse_relationship_document,
 )
+from jsonschema import Draft202012Validator
 
-root, valid_path, invalid_path = map(Path, sys.argv[1:])
-assert root in Path(dbf_anonymizer.__file__).resolve().parents
+root, valid_path, invalid_path, invalid_authority_path = map(Path, sys.argv[1:])
+
+# Import-origin proof: BOTH packages resolve from the child venv
+# site-packages (never the repository checkout, never the parent env).
+for module in (dbf_anonymizer, dbfbridge):
+    origin = Path(module.__file__).resolve()
+    lowered = {part.lower() for part in origin.parts}
+    assert lowered & {"site-packages", "dist-packages"}, origin
+    assert root.resolve() in origin.parents, origin
+assert dbfbridge.__version__ == "1.1.1", dbfbridge.__version__
+assert not any(
+    entry and "DBF_Anonymizer" in str(Path(entry).resolve())
+    for entry in sys.path
+    if entry
+), sys.path
+
+# The schema loads from the INSTALLED wheel and is a valid Draft 2020-12
+# schema usable as a real validation oracle.
 schema = load_external_metadata_schema()
 assert schema["x-contract-schema-version"] == "1.0"
+Draft202012Validator.check_schema(schema)
+validator = Draft202012Validator(schema)
+
 valid = json.loads(valid_path.read_text(encoding="utf-8"))
 invalid = json.loads(invalid_path.read_text(encoding="utf-8"))
+invalid_authority = json.loads(invalid_authority_path.read_text(encoding="utf-8"))
+
+# Schema-oracle decisions on the installed artifact.
+assert validator.is_valid(valid) is True
+assert validator.is_valid(invalid) is False
+assert validator.is_valid(invalid_authority) is False
+
+# Runtime decisions agree with the schema (producer-independent contract).
 assert parse_relationship_document(valid).external_metadata_schema_version == "1.0"
-try:
-    parse_relationship_document(invalid)
-except PolicyError:
-    pass
-else:
-    raise AssertionError("unknown external metadata version was accepted")
+for hostile in (invalid, invalid_authority):
+    try:
+        parse_relationship_document(hostile)
+    except PolicyError:
+        pass
+    else:
+        raise AssertionError("hostile external metadata was accepted")
+
 plan = build_plan(
     valid_path.parent / "installed-wheel-source",
     valid_path.parent / "installed-wheel-output",
@@ -799,6 +851,11 @@ plan = build_plan(
 )
 assert plan.relationships.authoritative is True
 assert plan.relationships.relation_count == 1
+assert plan.relationships.external_metadata_schema_version == "1.0"
+serialized = plan.to_dict()["relationships"]
+assert serialized["external_metadata_schema_version"] == "1.0"
+assert serialized["producer"]["producer_id"] == "hypothetical-independent-producer"
+assert serialized["producer"]["producer_version"] == "1.0.0"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -806,7 +863,14 @@ assert plan.relationships.relation_count == 1
     child_env = os.environ.copy()
     child_env.pop("PYTHONPATH", None)
     checked = subprocess.run(  # noqa: S603 - task-owned installed-wheel probe
-        [str(interpreter), str(probe), str(environment), str(valid_payload), str(invalid_payload)],
+        [
+            str(interpreter),
+            str(probe),
+            str(environment),
+            str(valid_payload),
+            str(invalid_payload),
+            str(invalid_authority_payload),
+        ],
         cwd=tmp_path,
         env=child_env,
         stdout=subprocess.PIPE,
@@ -836,6 +900,7 @@ def test_producer_independent_downstream_conformance(tmp_path: Path) -> None:
                 "comparison": "EXACT_VALUE",
                 "provenance": "EXTERNAL_VFP_METADATA",
                 "assurance": "VERIFIED",
+                "authority": "CONTRACT_AUTHORITATIVE",
                 "members": [
                     {
                         "table": "customers/data.dbf",
@@ -939,3 +1004,558 @@ def test_schema_resource_matches_the_contract_for_frozen_fixtures() -> None:
     ):
         with pytest.raises(PolicyError):
             parse_relationship_document(_load_fixture(name))
+
+
+# ---------------------------------------------------------------------------
+# REAL Draft 2020-12 schema validation (the shipped schema is the oracle)
+# ---------------------------------------------------------------------------
+
+
+def _draft_validator():
+    from jsonschema import Draft202012Validator
+
+    schema = load_external_metadata_schema()
+    # Meta-validation: the shipped schema must be a valid Draft 2020-12
+    # schema BEFORE it is used as an oracle (not merely loadable JSON).
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+def test_shipped_schema_is_a_valid_draft_2020_12_schema() -> None:
+    """Meta-validation, $ref resolvability and pattern compilability."""
+    schema = load_external_metadata_schema()
+    _draft_validator()  # check_schema must pass (raises otherwise)
+    # Every $ref must resolve against the ROOT document ($defs at root scope).
+    definitions = schema.get("$defs") or {}
+    assert definitions, "$defs must exist at the schema root scope"
+    refs: list[str] = []
+
+    def _collect(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "$ref" and isinstance(value, str):
+                    refs.append(value)
+                _collect(value)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item)
+
+    _collect(schema)
+    assert refs, "the contract schema must use $defs references"
+    for ref in refs:
+        assert ref.startswith("#/$defs/"), f"non-local reference: {ref}"
+        assert ref.rsplit("/", 1)[-1] in definitions, f"unresolvable reference: {ref}"
+    # Every pattern must be a usable regular expression for the validator.
+    patterns: list[str] = []
+
+    def _collect_patterns(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "pattern" and isinstance(value, str):
+                    patterns.append(value)
+                _collect_patterns(value)
+        elif isinstance(node, list):
+            for item in node:
+                _collect_patterns(item)
+
+    _collect_patterns(schema)
+    assert patterns, "the contract schema constrains tokens with patterns"
+    import re
+
+    for pattern in patterns:
+        re.compile(pattern)
+
+
+# ---------------------------------------------------------------------------
+# Schema/runtime parity matrix over the frozen fixtures
+# ---------------------------------------------------------------------------
+#
+# Canonical semantics (documented in docs/external-vfp-metadata-contract.md):
+# TIER 1 - every single-claim syntactic constraint must accept EXACTLY the
+#          same payloads on both sides (schema ACCEPT <=> runtime ACCEPT).
+# TIER 2 - cross-claim structural rules (identity/ordinal/arity consistency)
+#          and dataset-reference validation are runtime-only (JSON Schema
+#          cannot express them); the runtime is a fail-closed superset: it
+#          never accepts a payload the schema rejects.
+
+_TIER1_REJECTED: dict[str, str] = {
+    "invalid_unknown_version.json": "RELATIONSHIP_EXTERNAL_METADATA_VERSION_UNSUPPORTED",
+    "invalid_malformed_version.json": "RELATIONSHIP_EXTERNAL_METADATA_VERSION_UNSUPPORTED",
+    "invalid_missing_version.json": "RELATIONSHIP_EXTERNAL_ENVELOPE_INCOMPLETE",
+    "invalid_malformed_producer.json": "EXTERNAL_METADATA_PRODUCER_INVALID",
+    "invalid_malformed_provenance.json": "RELATIONSHIP_PROVENANCE_INVALID",
+    "invalid_unsupported_comparison.json": "RELATIONSHIP_COMPARISON_INVALID",
+    "invalid_absolute_path.json": "RELATIONSHIP_TABLE_PATH_ABSOLUTE",
+    "invalid_unc_path.json": "RELATIONSHIP_TABLE_PATH_ABSOLUTE",
+    "invalid_unix_absolute_path.json": "RELATIONSHIP_TABLE_PATH_ABSOLUTE",
+    "invalid_traversal_path.json": "RELATIONSHIP_TABLE_PATH_TRAVERSAL",
+    "invalid_authority_assurance.json": "EXTERNAL_METADATA_AUTHORITY_ASSURANCE_INCONSISTENT",
+    "invalid_unverified_index_guarantee.json": "EXTERNAL_METADATA_INDEX_ASSURANCE_INCONSISTENT",
+}
+_TIER2_PARSE_REJECTED: dict[str, str] = {
+    "invalid_duplicate_composite_position.json": "RELATIONSHIP_ORDINAL_SEQUENCE_INVALID",
+    "invalid_inconsistent_key_roles.json": "RELATIONSHIP_FOREIGN_SIDE_MISSING",
+}
+_TIER2_DATASET_REJECTED: dict[str, str] = {
+    "invalid_missing_table.json": "RELATIONSHIP_MEMBER_TABLE_UNKNOWN",
+    "invalid_missing_field.json": "RELATIONSHIP_MEMBER_FIELD_UNKNOWN",
+}
+_VALID_FIXTURES: tuple[str, ...] = (
+    "valid_authoritative_relation.json",
+    "valid_composite_relation.json",
+    "valid_index_only.json",
+    "valid_inferred_relation.json",
+    "valid_structured_provenance.json",
+    "valid_unverified_index_claim.json",
+    "valid_verified_index_claim.json",
+)
+
+
+def test_frozen_fixture_schema_runtime_parity_matrix(tmp_path: Path) -> None:
+    """SCHEMA decision == RUNTIME decision for every expressible constraint."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    validator = _draft_validator()
+    all_fixtures = sorted(path.name for path in FIXTURES.glob("*.json"))
+    classified = (
+        set(_TIER1_REJECTED)
+        | set(_TIER2_PARSE_REJECTED)
+        | set(_TIER2_DATASET_REJECTED)
+        | set(_VALID_FIXTURES)
+    )
+    assert set(all_fixtures) == classified, "every frozen fixture must stay classified"
+    for name in all_fixtures:
+        payload = _load_fixture(name)
+        schema_accepts = validator.is_valid(deepcopy(payload))
+        if name in _VALID_FIXTURES:
+            assert schema_accepts is True, f"{name}: fixture must be schema-VALID"
+            document = parse_relationship_document(deepcopy(payload))
+            assert document.external_metadata_schema_version == "1.0"
+        elif name in _TIER1_REJECTED:
+            assert schema_accepts is False, f"{name}: fixture must be schema-INVALID"
+            with pytest.raises(PolicyError) as excinfo:
+                parse_relationship_document(deepcopy(payload))
+            assert _TIER1_REJECTED[name] in _detail(excinfo)
+        elif name in _TIER2_PARSE_REJECTED:
+            # Runtime-only structural rule (cross-claim; not expressible in
+            # JSON Schema): schema accepts, runtime fails closed.
+            assert schema_accepts is True, f"{name}: Tier-2 fixture is schema-valid"
+            with pytest.raises(PolicyError) as excinfo:
+                parse_relationship_document(deepcopy(payload))
+            assert _TIER2_PARSE_REJECTED[name] in _detail(excinfo)
+        else:
+            # Dataset-dependent semantic validation after schema validation.
+            assert schema_accepts is True, f"{name}: Tier-2 fixture is schema-valid"
+            _write_conforming_dataset(tmp_path / name / "source")
+            with pytest.raises(PolicyError) as excinfo:
+                build_plan(
+                    tmp_path / name / "source",
+                    tmp_path / name / "output",
+                    tmp_path / name / "vault" / "dictionary.sqlite3",
+                    relationship_document=deepcopy(payload),
+                )
+            assert _TIER2_DATASET_REJECTED[name] in _detail(excinfo)
+
+
+# ---------------------------------------------------------------------------
+# Adversarial schema/runtime parity cases
+# ---------------------------------------------------------------------------
+
+
+def _adversarial_base() -> dict:
+    return deepcopy(_load_fixture("valid_authoritative_relation.json"))
+
+
+_ADVERSARIAL_CASES: tuple[tuple[str, dict, bool, str | None], ...] = (
+    # (name, payload, schema_accepts, runtime_detail_code_or_None)
+    (
+        "per_claim_authority_overrides_inferred_envelope",
+        {**_adversarial_base(), "authority": "INFERRED"},
+        True,
+        None,
+    ),
+    (
+        "claim_inferred_but_verified",
+        {
+            **_adversarial_base(),
+            "relations": [{**_adversarial_base()["relations"][0], "authority": "INFERRED"}],
+        },
+        False,
+        "EXTERNAL_METADATA_AUTHORITY_ASSURANCE_INCONSISTENT",
+    ),
+    (
+        "inferred_index_claim_claiming_verified",
+        {
+            **deepcopy(_load_fixture("valid_verified_index_claim.json")),
+            "index_claims": [
+                {
+                    **_load_fixture("valid_verified_index_claim.json")["index_claims"][0],
+                    "authority": "INFERRED",
+                }
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_AUTHORITY_ASSURANCE_INCONSISTENT",
+    ),
+    (
+        "future_contract_version",
+        {**_adversarial_base(), "external_metadata_schema_version": "1.1"},
+        False,
+        "RELATIONSHIP_EXTERNAL_METADATA_VERSION_UNSUPPORTED",
+    ),
+    (
+        "producer_token_overlong",
+        {
+            **_adversarial_base(),
+            "producer": {"producer_id": "x" * 65, "producer_version": "1"},
+        },
+        False,
+        "EXTERNAL_METADATA_PRODUCER_ID_INVALID",
+    ),
+    (
+        "expression_drive_path",
+        {
+            **deepcopy(_load_fixture("valid_verified_index_claim.json")),
+            "index_claims": [
+                {
+                    **_load_fixture("valid_verified_index_claim.json")["index_claims"][0],
+                    "tags": [
+                        {"name": "CUST_ID", "sort_order": "ASCENDING", "expression": "C:/private"}
+                    ],
+                }
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_INDEX_EXPRESSION_INVALID",
+    ),
+    (
+        "expression_parent_traversal",
+        {
+            **deepcopy(_load_fixture("valid_verified_index_claim.json")),
+            "index_claims": [
+                {
+                    **_load_fixture("valid_verified_index_claim.json")["index_claims"][0],
+                    "tags": [
+                        {"name": "CUST_ID", "sort_order": "ASCENDING", "expression": "a/../b"}
+                    ],
+                }
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_INDEX_EXPRESSION_INVALID",
+    ),
+    (
+        "backslash_relative_table_identity",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "data\\customers.dbf",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "overlong_table_identity",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "d/" + "x" * 252 + ".dbf",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "illegal_table_identity_characters",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "data$/x.dbf",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "empty_path_segment",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "data//x.dbf",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "dot_path_segment",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "data/./x.dbf",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_TRAVERSAL",
+    ),
+    (
+        "table_identity_without_dbf_suffix",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "table": "customers/data.dat",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "index_file_suffix_kind_mismatch",
+        {
+            **deepcopy(_load_fixture("valid_unverified_index_claim.json")),
+            "index_claims": [
+                {
+                    **_load_fixture("valid_unverified_index_claim.json")["index_claims"][0],
+                    "index_file": "archive/data.txt",
+                }
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_INDEX_PATH_KIND_MISMATCH",
+    ),
+    (
+        "integer_member_wrong_width",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "dbf_type": "I",
+                            "byte_width": 5,
+                            "encoding": "none",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_INTEGER_WIDTH_INVALID",
+    ),
+    (
+        "numeric_member_overlong_width",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "dbf_type": "N",
+                            "byte_width": 21,
+                            "encoding": "none",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_NUMERIC_WIDTH_INVALID",
+    ),
+    (
+        "numeric_member_text_encoding",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "dbf_type": "I",
+                            "encoding": "cp1250",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_NUMERIC_ENCODING_INVALID",
+    ),
+    (
+        "uppercase_member_encoding_accepted",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            **_adversarial_base()["relations"][0]["members"][0],
+                            "encoding": "CP1250",
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        True,
+        None,
+    ),
+    (
+        "extra_top_level_key",
+        {**_adversarial_base(), "extra": "x"},
+        False,
+        "RELATIONSHIP_DOCUMENT_KEY_UNKNOWN",
+    ),
+    (
+        "extra_producer_key",
+        {
+            **_adversarial_base(),
+            "producer": {"producer_id": "p", "producer_version": "1", "note": "x"},
+        },
+        False,
+        "EXTERNAL_METADATA_PRODUCER_KEY_UNKNOWN",
+    ),
+    (
+        "extra_relation_key",
+        {
+            **_adversarial_base(),
+            "relations": [{**_adversarial_base()["relations"][0], "weight": 1}],
+        },
+        False,
+        "RELATIONSHIP_GROUP_KEY_UNKNOWN",
+    ),
+    (
+        "extra_member_key",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {**_adversarial_base()["relations"][0]["members"][0], "weight": 1},
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_MEMBER_KEY_UNKNOWN",
+    ),
+    (
+        "extra_index_claim_key",
+        {
+            **deepcopy(_load_fixture("valid_index_only.json")),
+            "index_claims": [
+                {**_load_fixture("valid_index_only.json")["index_claims"][0], "weight": 1}
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_INDEX_CLAIM_KEY_INVALID",
+    ),
+    (
+        "missing_required_member_key",
+        {
+            **_adversarial_base(),
+            "relations": [
+                {
+                    **_adversarial_base()["relations"][0],
+                    "members": [
+                        {
+                            key: value
+                            for key, value in _adversarial_base()["relations"][0]["members"][
+                                0
+                            ].items()
+                            if key != "field"
+                        },
+                        *_adversarial_base()["relations"][0]["members"][1:],
+                    ],
+                }
+            ],
+        },
+        False,
+        "RELATIONSHIP_MEMBER_KEY_MISSING",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "schema_accepts", "runtime_code"),
+    list(_ADVERSARIAL_CASES),
+    ids=[case[0] for case in _ADVERSARIAL_CASES],
+)
+def test_schema_runtime_adversarial_parity(
+    name: str, payload: dict, schema_accepts: bool, runtime_code: str | None
+) -> None:
+    """The shipped schema and the runtime decide EVERY case identically."""
+    validator = _draft_validator()
+    assert validator.is_valid(deepcopy(payload)) is schema_accepts, name
+    if runtime_code is None:
+        parse_relationship_document(deepcopy(payload))  # must ACCEPT
+    else:
+        with pytest.raises(PolicyError) as excinfo:
+            parse_relationship_document(deepcopy(payload))
+        assert runtime_code in _detail(excinfo)

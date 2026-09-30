@@ -159,13 +159,17 @@ def _parse_member(payload: object, *, external_authority: str | None = None) -> 
     raw_encoding: Any = payload.get("encoding")
     raw_nullable: Any = payload.get("nullable")
     # REQ-P6-006 (revised): for EXTERNAL metadata, enforce canonical
-    # forward-slash paths and reject backslash forms (fail closed).
+    # forward-slash paths and reject backslash forms (fail closed).  A table
+    # identity additionally requires the .dbf suffix, mirroring the shipped
+    # schema's relativeTablePath definition.
     if external_authority is not None:
         from dbf_anonymizer.relationships.external_metadata import validate_external_metadata_path
 
         try:
             raw_table = validate_external_metadata_path(
-                raw_table, "RELATIONSHIP_MEMBER_TABLE_PATH_INVALID"
+                raw_table,
+                "RELATIONSHIP_MEMBER_TABLE_PATH_INVALID",
+                require_table_suffix=True,
             )
         except PolicyError:
             raise
@@ -226,14 +230,15 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
         if "assurance" not in group_payload:
             raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_MISSING")
         claim_assurance = parse_claim_assurance(group_payload["assurance"])
-        # REQ-P6-006 (revised): per-claim authority is REQUIRED for external
-        # metadata. If not present, fall back to envelope-level authority.
-        if "authority" in group_payload:
-            claim_authority = parse_external_authority(group_payload["authority"])
-            validate_authority_assurance(claim_authority, claim_assurance)
-        else:
-            claim_authority = external_authority
-            validate_authority_assurance(external_authority, claim_assurance)
+        # REQ-P6-006 (revised): EVERY external relation claim carries its OWN
+        # explicit authority - the envelope authority is supplied contract
+        # metadata, never a silent per-claim default (a claim without its own
+        # authority fails closed, matching the shipped JSON Schema's required
+        # per-claim ``authority``).
+        if "authority" not in group_payload:
+            raise _document_invalid("EXTERNAL_METADATA_RELATION_AUTHORITY_MISSING")
+        claim_authority = parse_external_authority(group_payload["authority"])
+        validate_authority_assurance(claim_authority, claim_assurance)
     elif "assurance" in group_payload:
         raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_WITHOUT_ENVELOPE")
     return RelationGroup(

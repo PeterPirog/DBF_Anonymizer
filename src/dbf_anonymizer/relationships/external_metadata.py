@@ -119,42 +119,52 @@ CLAIM_ASSURANCES: tuple[str, ...] = (
 
 _MAX_INDEX_CLAIMS = 256
 _MAX_INDEX_TAGS = 256
+_MAX_EXTERNAL_PATH_LENGTH = 256
 _PRIVATE_PATH = re.compile(r"(?:^[A-Za-z]:[\\/]|^[/\\]{1,2}|(?:^|[/\\])\.\.(?:[/\\]|$))")
 _BACKSLASH_PATH = re.compile(r"\\")
+#: The EXACT segment character class of the shipped JSON Schema
+#: ``$defs.relativePath``/``relativeTablePath`` (single parity source).
+_EXTERNAL_PATH_SEGMENT = re.compile(r"[A-Za-z0-9_. -]+\Z")
 
 
-def validate_external_metadata_path(value: object, detail: str) -> str:
-    """Validate a path for EXTERNAL metadata contract.
+def validate_external_metadata_path(
+    value: object, detail: str, *, require_table_suffix: bool = False
+) -> str:
+    """Validate one EXTERNAL metadata path against the shipped JSON Schema.
 
-    Unlike the legacy P3 path normalization, the external contract REQUIRES
-    canonical forward-slash relative paths and REJECTS backslash forms
-    (fail closed, no silent normalization).
+    The external contract requires canonical forward-slash relative paths and
+    REJECTS backslash forms (fail closed, no silent normalization).  The
+    acceptance rules are the EXACT runtime mirror of the shipped schema's
+    ``$defs.relativePath``/``relativeTablePath`` patterns: verbatim identity
+    (no whitespace stripping), bounded length 1..256, forward-slash separated
+    segments of ``[A-Za-z0-9_. -]`` with no empty segment, no absolute/drive/
+    UNC form and no ``.``/``..`` segments.  Table identities additionally
+    require the ``.dbf`` suffix (case-insensitive) when
+    ``require_table_suffix`` is set.
     """
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not 1 <= len(value) <= _MAX_EXTERNAL_PATH_LENGTH:
         raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
-    stripped = value.strip()
-    # Check for absolute paths (drive letter, UNC, Unix absolute) before
-    # backslash check to produce the correct error code.
-    if re.match(r"^[A-Za-z]:", stripped):
+    if value.startswith("/"):
         raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
-    if stripped.startswith("\\\\") or stripped.startswith("//"):
+    if re.match(r"[A-Za-z]:", value):
         raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
-    if stripped.startswith("/"):
+    if value.startswith("\\\\") or value.startswith("//"):
         raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
-    if _BACKSLASH_PATH.search(stripped):
+    if _BACKSLASH_PATH.search(value):
         raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
-    segments = re.split(r"/+", stripped)
-    if segments and segments[0] == "":
-        raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
-    parts = [part for part in segments if part != ""]
-    if not parts:
-        raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
-    for part in parts:
+    for part in value.split("/"):
         if part in {".", ".."}:
             raise _external_invalid("RELATIONSHIP_TABLE_PATH_TRAVERSAL")
         if ":" in part:
             raise _external_invalid("RELATIONSHIP_TABLE_PATH_ABSOLUTE")
-    return "/".join(parts)
+        if _EXTERNAL_PATH_SEGMENT.fullmatch(part) is None:
+            # Covers empty segments ("//" or a trailing "/") and every
+            # character outside the schema's segment class - both sides of
+            # the contract reject them, with no silent normalization.
+            raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
+    if require_table_suffix and not value.lower().endswith(".dbf"):
+        raise _external_invalid("RELATIONSHIP_TABLE_PATH_INVALID")
+    return value
 
 
 def _external_invalid(detail_code: str) -> PolicyError:
@@ -312,7 +322,9 @@ def parse_index_tags(payload: object, detail: str) -> tuple[ExternalIndexTag, ..
             if (
                 not isinstance(expression, str)
                 or not (1 <= len(expression) <= 256)
-                or any(not character.isprintable() for character in expression)
+                # The EXACT runtime mirror of the shipped schema's
+                # ``[ -~]+`` expression pattern: printable ASCII only.
+                or any(not 32 <= ord(character) <= 126 for character in expression)
                 or _PRIVATE_PATH.search(expression)
             ):
                 raise _external_invalid("EXTERNAL_METADATA_INDEX_EXPRESSION_INVALID")
@@ -353,7 +365,9 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
 
         try:
             table_path = validate_external_metadata_path(
-                item["table"], "EXTERNAL_METADATA_INDEX_PATH_INVALID"
+                item["table"],
+                "EXTERNAL_METADATA_INDEX_PATH_INVALID",
+                require_table_suffix=True,
             )
             index_file_path = validate_external_metadata_path(
                 item["index_file"], "EXTERNAL_METADATA_INDEX_PATH_INVALID"

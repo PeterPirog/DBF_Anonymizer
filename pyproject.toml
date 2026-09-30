@@ -41,6 +41,10 @@ dev = [
     "ruff>=0.16",
     "twine>=6",
     "pyyaml>=6",
+    # TEST/DEV-only Draft 2020-12 JSON Schema validator for the shipped
+    # external-metadata contract (REQ-P6-006).  Never imported by production
+    # code; the published runtime dependency stays dbfbridge[write]>=1.1.0,<2.
+    "jsonschema>=4.21",
 ]
 
 [tool.setuptools.packages.find]
