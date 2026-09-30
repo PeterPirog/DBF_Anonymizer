@@ -23,19 +23,29 @@ unchanged.
 Every external relation claim carries explicit provenance, authority and
 assurance. Envelope-level `authority` is supplied contract metadata carried in
 the document fingerprint; it is NOT a per-claim default — every relation and
-index claim carries its OWN explicit `authority`, and only a claim that is
-both `CONTRACT_AUTHORITATIVE` and `VERIFIED` may affect relationship-driven
-mapping or become eligible for `VFP_METADATA_VERIFIED`. That level additionally
-requires successful post-transform relationship verification. `INFERRED` or
-`UNVERIFIED` claims are retained in the canonical metadata fingerprint for
-planning/reporting but do not affect mapping domains or relational assurance.
+index claim carries its OWN explicit `authority`. Only a claim that is
 
-Index claims carry explicit provenance, assurance, and verification state. Only
+- `CONTRACT_AUTHORITATIVE` and `VERIFIED` (index claims additionally
+  `VERIFIED` in `verification_state`), AND
+- whose provenance is an authoritative VFP-metadata class
+  (`MCP_VFP9SP2_TOOLCHAIN` or `EXTERNAL_VFP_METADATA`),
+
+may affect relationship-driven mapping or become eligible for
+`VFP_METADATA_VERIFIED`. That level additionally requires successful
+post-transform relationship verification. A `POLICY_FILE` provenance claim is
+retained as non-authoritative planning/reporting information — the shipped
+schema and the runtime both refuse any `POLICY_FILE` claim that claims
+authoritative strength — and `INFERRED` or `UNVERIFIED` claims are retained in
+the canonical metadata fingerprint for planning/reporting but do not affect
+mapping domains or relational assurance.
+
+Index claims carry explicit provenance, authority, and verification state. Only
 a contract-authoritative claim whose assurance and verification state are both
-`VERIFIED` may support the existing index-validity machinery. It does not by
-itself assert that an output CDX/IDX was rebuilt or authorize publication of a
-source index. Output validity still requires the existing backend rebuild and
-verification evidence.
+`VERIFIED` and whose provenance is an authoritative VFP-metadata class may
+support the existing index-validity machinery. It does not by itself assert
+that an output CDX/IDX was rebuilt or authorize publication of a source index.
+Output validity still requires the existing backend rebuild and verification
+evidence.
 
 Unknown or missing contract versions, malformed structures, inconsistent
 authority/assurance, unsafe paths, and dataset references that do not resolve to

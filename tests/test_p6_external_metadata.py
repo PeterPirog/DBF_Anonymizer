@@ -1091,6 +1091,12 @@ _TIER1_REJECTED: dict[str, str] = {
     "invalid_traversal_path.json": "RELATIONSHIP_TABLE_PATH_TRAVERSAL",
     "invalid_authority_assurance.json": "EXTERNAL_METADATA_AUTHORITY_ASSURANCE_INCONSISTENT",
     "invalid_unverified_index_guarantee.json": "EXTERNAL_METADATA_INDEX_ASSURANCE_INCONSISTENT",
+    "invalid_policy_file_authoritative.json": (
+        "EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE"
+    ),
+    "invalid_policy_file_index_authoritative.json": (
+        "EXTERNAL_METADATA_INDEX_PROVENANCE_INAUTHORITATIVE"
+    ),
 }
 _TIER2_PARSE_REJECTED: dict[str, str] = {
     "invalid_duplicate_composite_position.json": "RELATIONSHIP_ORDINAL_SEQUENCE_INVALID",
@@ -1105,10 +1111,95 @@ _VALID_FIXTURES: tuple[str, ...] = (
     "valid_composite_relation.json",
     "valid_index_only.json",
     "valid_inferred_relation.json",
+    "valid_policy_file_planning.json",
     "valid_structured_provenance.json",
     "valid_unverified_index_claim.json",
     "valid_verified_index_claim.json",
 )
+#: The documented RUNTIME-ONLY rule codes (Tier 2): genuinely cross-claim or
+#: inspected-dataset-dependent rules that JSON Schema cannot express.  A Tier-2
+#: classification may only use these codes, so Tier 2 can never silently
+#: absorb a schema-expressible single-claim constraint (Tier 1).
+_RUNTIME_ONLY_RULE_CODES = frozenset(
+    {
+        "RELATIONSHIP_ORDINAL_SEQUENCE_INVALID",
+        "RELATIONSHIP_FOREIGN_SIDE_MISSING",
+        "RELATIONSHIP_MEMBER_TABLE_UNKNOWN",
+        "RELATIONSHIP_MEMBER_FIELD_UNKNOWN",
+    }
+)
+
+
+def test_tier2_classification_cannot_absorb_schema_expressible_constraints() -> None:
+    """Every Tier-2 rejection must be a documented runtime-only rule."""
+    for code in (*_TIER2_PARSE_REJECTED.values(), *_TIER2_DATASET_REJECTED.values()):
+        assert code in _RUNTIME_ONLY_RULE_CODES, code
+    # No Tier-1 (schema-expressible) refusal may be reclassified as Tier 2.
+    for code in _TIER1_REJECTED.values():
+        assert code not in _RUNTIME_ONLY_RULE_CODES, code
+
+
+# ---------------------------------------------------------------------------
+# PUBLIC-INGESTION parity: schema, parser AND public build_plan must decide
+# every provenance-eligibility case identically (three independent oracles)
+# ---------------------------------------------------------------------------
+
+
+def test_public_ingestion_provenance_eligibility_parity(tmp_path: Path) -> None:
+    """POLICY_FILE provenance can never claim authoritative VFP strength.
+
+    The complete public ingestion path (not only the parser) must agree with
+    the shipped schema: a POLICY_FILE claim claiming CONTRACT_AUTHORITATIVE +
+    VERIFIED strength is schema-REJECTED, parser-REJECTED and rejected by the
+    PUBLIC build_plan ingestion; a NON-authoritative POLICY_FILE claim
+    (CONTRACT_AUTHORITATIVE + UNVERIFIED) remains schema-valid and is accepted
+    as planning/reporting information without any authoritative binding.
+    """
+    validator = _draft_validator()
+    authoritative_claiming = deepcopy(_load_fixture("invalid_policy_file_authoritative.json"))
+
+    # 1. Draft 2020-12 schema oracle: REJECT.
+    assert validator.is_valid(deepcopy(authoritative_claiming)) is False
+
+    # 2. Runtime parser oracle: typed fail-closed rejection.
+    with pytest.raises(PolicyError) as parse_excinfo:
+        parse_relationship_document(deepcopy(authoritative_claiming))
+    assert "EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE" in _detail(parse_excinfo)
+
+    # 3. PUBLIC ingestion oracle (build_plan): REJECT — the parser refusal
+    #    propagates fail closed before any binding is minted.
+    source = tmp_path / "source"
+    _write_conforming_dataset(source)
+    with pytest.raises(PolicyError) as plan_excinfo:
+        build_plan(
+            source,
+            tmp_path / "output",
+            tmp_path / "vault" / "dictionary.sqlite3",
+            relationship_document=deepcopy(authoritative_claiming),
+        )
+    assert "EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE" in _detail(plan_excinfo)
+
+    # 4. RETAINED: a NON-authoritative POLICY_FILE claim stays schema-valid
+    #    and is accepted as planning/reporting information (no binding, no
+    #    authoritative metadata, index claims remain the only carriers).
+    retained = deepcopy(_load_fixture("valid_policy_file_planning.json"))
+    assert validator.is_valid(deepcopy(retained)) is True
+    document = parse_relationship_document(deepcopy(retained))
+    assert document.groups[0].claim_authority == "CONTRACT_AUTHORITATIVE"
+    assert document.groups[0].claim_assurance == "UNVERIFIED"
+    assert document.groups[0].provenance == "POLICY_FILE"
+    # The claim is NOT effective: no authoritative grouping, no binding.
+    assert document.effective_groups() == ()
+    retained_plan = build_plan(
+        source,
+        tmp_path / "retained-output",
+        tmp_path / "retained-vault" / "dictionary.sqlite3",
+        relationship_document=deepcopy(retained),
+    )
+    assert preflight(retained_plan).ready is True
+    assert retained_plan.relationships.authoritative is False
+    assert retained_plan.relationships.relation_count == 0
+    assert retained_plan.relationships.external_metadata_schema_version == "1.0"
 
 
 def test_frozen_fixture_schema_runtime_parity_matrix(tmp_path: Path) -> None:
@@ -1364,6 +1455,20 @@ _ADVERSARIAL_CASES: tuple[tuple[str, dict, bool, str | None], ...] = (
         },
         False,
         "RELATIONSHIP_TABLE_PATH_INVALID",
+    ),
+    (
+        "index_policy_file_authoritative_claim",
+        {
+            **deepcopy(_load_fixture("valid_verified_index_claim.json")),
+            "index_claims": [
+                {
+                    **_load_fixture("valid_verified_index_claim.json")["index_claims"][0],
+                    "provenance": "POLICY_FILE",
+                }
+            ],
+        },
+        False,
+        "EXTERNAL_METADATA_INDEX_PROVENANCE_INAUTHORITATIVE",
     ),
     (
         "index_file_suffix_kind_mismatch",

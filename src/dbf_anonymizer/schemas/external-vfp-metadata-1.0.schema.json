@@ -34,7 +34,7 @@
     "index_claims": {
       "type": "array",
       "maxItems": 256,
-      "description": "Optional value-free index claims. Only a CONTRACT_AUTHORITATIVE claim whose verification state and assurance are both VERIFIED may ever support an index-validity guarantee; other claims are planning/reporting information only.",
+      "description": "Optional value-free index claims. Only a CONTRACT_AUTHORITATIVE claim whose verification state and assurance are both VERIFIED and whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) may ever support an index-validity guarantee; other claims are planning/reporting information only.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -88,6 +88,10 @@
           {
             "if": {"properties": {"index_kind": {"const": "STANDALONE_IDX"}}},
             "then": {"properties": {"index_file": {"pattern": "[.][Ii][Dd][Xx]$"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "CONTRACT_AUTHORITATIVE"}, "assurance": {"const": "VERIFIED"}, "verification_state": {"const": "VERIFIED"}}},
+            "then": {"properties": {"provenance": {"enum": ["MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}}}
           }
         ]
       }
@@ -95,7 +99,7 @@
     "relations": {
       "type": "array",
       "maxItems": 256,
-      "description": "The normalized relation claims (the existing P3 relationship-document group shape). Every claim carries its own explicit authority; only CONTRACT_AUTHORITATIVE + VERIFIED claims are effective.",
+      "description": "The normalized relation claims (the existing P3 relationship-document group shape). Every claim carries its own explicit authority; only CONTRACT_AUTHORITATIVE + VERIFIED claims whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) are effective.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -143,6 +147,10 @@
           {
             "if": {"properties": {"authority": {"const": "INFERRED"}}},
             "then": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "CONTRACT_AUTHORITATIVE"}, "assurance": {"const": "VERIFIED"}}},
+            "then": {"properties": {"provenance": {"enum": ["MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}}}
           }
         ]
       }

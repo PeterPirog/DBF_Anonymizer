@@ -62,6 +62,7 @@ __all__ = [
     "EXTERNAL_METADATA_AUTHORITIES",
     "AUTHORITY_CONTRACT_AUTHORITATIVE",
     "AUTHORITY_INFERRED",
+    "AUTHORITATIVE_PROVENANCES",
     "CLAIM_ASSURANCES",
     "CLAIM_ASSURANCE_VERIFIED",
     "CLAIM_ASSURANCE_UNVERIFIED",
@@ -98,6 +99,17 @@ AUTHORITY_INFERRED = "INFERRED"
 EXTERNAL_METADATA_AUTHORITIES: tuple[str, ...] = (
     AUTHORITY_CONTRACT_AUTHORITATIVE,
     AUTHORITY_INFERRED,
+)
+
+#: Provenance classes eligible for AUTHORITATIVE VFP metadata strength.  The
+#: shipped JSON Schema encodes the SAME eligibility for every claim that
+#: claims authoritative strength (CONTRACT_AUTHORITATIVE + VERIFIED, index
+#: claims additionally VERIFIED verification state): ``POLICY_FILE`` is a
+#: policy-side declaration class and can NEVER cross the authoritative
+#: boundary (REQ-P6-006 revised).
+AUTHORITATIVE_PROVENANCES: tuple[str, ...] = (
+    "MCP_VFP9SP2_TOOLCHAIN",
+    "EXTERNAL_VFP_METADATA",
 )
 
 INDEX_KIND_STRUCTURAL_CDX = "STRUCTURAL_CDX"
@@ -399,6 +411,19 @@ def parse_index_claims(payload: object) -> tuple[ExternalIndexClaim, ...]:
         provenance = item["provenance"]
         if provenance not in RELATIONSHIP_PROVENANCES:
             raise _external_invalid("EXTERNAL_METADATA_INDEX_PROVENANCE_INVALID")
+        if (
+            authority == AUTHORITY_CONTRACT_AUTHORITATIVE
+            and assurance == CLAIM_ASSURANCE_VERIFIED
+            and verification_state == INDEX_STATE_VERIFIED
+            and not external_provenance_class_allowed(str(provenance))
+        ):
+            # REQ-P6-006 (revised): a claim that claims authoritative index
+            # strength must carry an authoritative VFP-metadata-class
+            # provenance; POLICY_FILE provenance is retained only as
+            # non-authoritative planning/reporting information and can never
+            # cross the authoritative boundary (the shipped JSON Schema
+            # encodes the same eligibility).
+            raise _external_invalid("EXTERNAL_METADATA_INDEX_PROVENANCE_INAUTHORITATIVE")
         claims.append(
             ExternalIndexClaim(
                 claim_id=str(claim_id),
@@ -436,11 +461,11 @@ def validate_authority_assurance(authority: str, assurance: str) -> None:
 
 
 def external_provenance_class_allowed(provenance: str) -> bool:
-    """Whether one provenance token is a VFP-metadata-class provenance.
+    """Whether one provenance token is an authoritative VFP-metadata class.
 
     ``POLICY_FILE`` provenance is a policy-side declaration and can NEVER be
     authoritative VFP metadata; both the toolchain-class provenance and the
     producer-independent external-contract provenance are VFP-metadata
     classes.  The bounded vocabulary remains fail-closed.
     """
-    return provenance in RELATIONSHIP_PROVENANCES and provenance != "POLICY_FILE"
+    return provenance in AUTHORITATIVE_PROVENANCES

@@ -38,6 +38,8 @@ from dbf_anonymizer.relationships.models import (
     _validate_bounded_token,
 )
 from dbf_anonymizer.relationships.external_metadata import (
+    AUTHORITY_CONTRACT_AUTHORITATIVE,
+    CLAIM_ASSURANCE_VERIFIED,
     EXTERNAL_METADATA_SCHEMA_VERSION,
     external_provenance_class_allowed,
     parse_claim_assurance,
@@ -239,6 +241,19 @@ def _parse_group(payload: object, *, external_authority: str | None = None) -> R
             raise _document_invalid("EXTERNAL_METADATA_RELATION_AUTHORITY_MISSING")
         claim_authority = parse_external_authority(group_payload["authority"])
         validate_authority_assurance(claim_authority, claim_assurance)
+        if (
+            claim_authority == AUTHORITY_CONTRACT_AUTHORITATIVE
+            and claim_assurance == CLAIM_ASSURANCE_VERIFIED
+            and not external_provenance_class_allowed(raw_provenance)
+        ):
+            # REQ-P6-006 (revised): a claim that claims authoritative relation
+            # strength must carry an authoritative VFP-metadata-class
+            # provenance; POLICY_FILE provenance is retained only as
+            # non-authoritative planning/reporting information and can never
+            # cross the authoritative boundary (the shipped JSON Schema
+            # encodes the same eligibility, so public build_plan ingestion
+            # and the parser agree fail closed).
+            raise _document_invalid("EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE")
     elif "assurance" in group_payload:
         raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_WITHOUT_ENVELOPE")
     return RelationGroup(
