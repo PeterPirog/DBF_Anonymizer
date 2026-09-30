@@ -103,7 +103,7 @@ jobs:
       - name: Real VFP9 acceptance (established REQ-P6-003 trusted runner tool)
         shell: pwsh
         env:
-          DBF_EXPECTED_ARCHITECTURE_SHA256: 483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615
+          DBF_EXPECTED_ARCHITECTURE_SHA256: 126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true

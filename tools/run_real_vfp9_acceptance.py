@@ -29,7 +29,9 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src"
 EXPECTED_PACKAGE_FILE = SOURCE_ROOT / "dbf_anonymizer" / "__init__.py"
-ARCHITECTURE_FILENAME = "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md"
+#: The SOLE authoritative immutable architecture Source of Truth (the current
+#: converged architecture document, externally owned and verified by hash).
+ARCHITECTURE_FILENAME = "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-29.md"
 ARCHITECTURE_PATH = REPO_ROOT.parent / ARCHITECTURE_FILENAME
 VFP_SHORTCUT = Path(
     r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"
