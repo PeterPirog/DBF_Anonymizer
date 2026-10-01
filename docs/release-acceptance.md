@@ -109,6 +109,7 @@ workflow_dispatch/main-only trusted lane (`p6-trusted-vfp-acceptance.yml`).
 
 ## Scope
 
-REQ-P6-006 remains **BLOCKED/DEFERRED** (no consumer fixture is invented) and
-REQ-P8-003 is **NOT STARTED**.  The package version remains `1.0.0.dev0`;
-this acceptance produces a release candidate, not a stable publication.
+REQ-P6-006 (the producer-independent external VFP relationship/index metadata
+contract) and REQ-P8-003 (the frozen downstream-consumer acceptance contract)
+are complete. The package version is `1.0.0` (stable); PyPI publication has
+not happened and remains the fail-closed privileged release lane.

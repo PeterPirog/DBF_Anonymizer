@@ -890,7 +890,7 @@
       "secure_random_default": true
     }
   },
-  "package_version_status": "1.0.0.dev0",
+  "package_version_status": "1.0.0",
   "public_json": {
     "capabilities": {
       "enabled": {

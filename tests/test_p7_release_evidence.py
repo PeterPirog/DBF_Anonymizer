@@ -651,9 +651,9 @@ def test_live_release_artifacts_metadata_is_valid(
     assert isinstance(wheel_1, Path) and isinstance(sdist_1, Path)
     check_wheel(wheel_1)  # must not raise
     name, version = _sdist_identity(sdist_1)
-    assert (name, version) == ("dbf-anonymizer", "1.0.0.dev0")
+    assert (name, version) == ("dbf-anonymizer", "1.0.0")
     wheel_name, wheel_version = _wheel_identity(wheel_1)
-    assert (wheel_name, wheel_version) == ("dbf-anonymizer", "1.0.0.dev0")
+    assert (wheel_name, wheel_version) == ("dbf-anonymizer", "1.0.0")
 
 
 def test_live_release_wheel_works_from_site_packages(

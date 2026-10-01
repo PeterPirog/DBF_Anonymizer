@@ -1,8 +1,8 @@
 # DBF_Anonymizer operations guide
 
 This guide documents the public operation surface of the DBF_Anonymizer
-1.0.0.dev0 development line (the target stable 1.0 contract is not yet
-released): internal-network offline installation, one-vault-per-dataset
+1.0.0 stable release (the frozen 1.0 contract): internal-network offline
+installation, one-vault-per-dataset
 operation, policy configuration, relationship configuration, the
 pseudonymization workflow, dataset verification, protected recovery, and
 DATA_ONLY transfer bundles.
@@ -267,7 +267,7 @@ The exact pinned runtime closure is:
 | aenum | 3.1.17 |
 
 The application wheel must be the DBF_Anonymizer distribution itself
-(`dbf-anonymizer==1.0.0.dev0`). The runtime metadata range in `pyproject.toml`
+(`dbf-anonymizer==1.0.0`). The runtime metadata range in `pyproject.toml`
 stays `dbfbridge[write]>=1.1.0,<2`; the pin files record the exact tested
 closure, they do not change the range.
 
@@ -279,7 +279,7 @@ matches the Windows P7-004 clean offline acceptance):
 ```powershell
 # Windows PowerShell, internal environment
 python -m venv INTERNAL_VENV
-INTERNAL_VENV\Scripts\python.exe -m pip install --no-index --find-links WHEELHOUSE --no-cache-dir dbf-anonymizer==1.0.0.dev0
+INTERNAL_VENV\Scripts\python.exe -m pip install --no-index --find-links WHEELHOUSE --no-cache-dir dbf-anonymizer==1.0.0
 INTERNAL_VENV\Scripts\python.exe -m pip check
 INTERNAL_VENV\Scripts\dbf-anonymizer --version
 INTERNAL_VENV\Scripts\dbf-anonymizer self-test --json

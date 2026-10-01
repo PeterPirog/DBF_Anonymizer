@@ -1,13 +1,13 @@
 # DBF_Anonymizer
 
-Clean-slate 1.0 development baseline. DBF_Anonymizer pseudonymizes Visual
-FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
+Stable 1.0 release (clean-slate architecture). DBF_Anonymizer pseudonymizes
+Visual FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
 recovery vault inside the internal environment, and produces transferable
 pseudonymized data-only bundles.
 
 - Distribution: `dbf-anonymizer`
 - Import package: `dbf_anonymizer`
-- Development version: `1.0.0.dev0` (no stable release declared yet)
+- Version: `1.0.0` (stable)
 - DBF/FPT boundary: the public `dbfbridge[write]>=1.1.0,<2` distribution
   (Direct Read + Direct Write); DBF_Anonymizer implements no DBF/FPT parsing
   or writing of its own.
@@ -16,8 +16,8 @@ The 1.0 line has no compatibility obligation toward the historical 0.3 API,
 CLI, JSONL pipeline, salt-based generator or legacy recovery formats; see
 [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md).
 
-The public 1.0-line operation surface (the current 1.0.0.dev0 development
-contract, not yet a stable release) is the synchronous, transport-neutral
+The public 1.0-line operation surface (the frozen stable 1.0 contract) is the
+synchronous, transport-neutral
 package root `dbf_anonymizer` (capabilities, build_plan, preflight,
 pseudonymize, verify_dataset, recover, create_transfer_bundle,
 verify_transfer_bundle) plus the standalone `dbf-anonymizer` console script

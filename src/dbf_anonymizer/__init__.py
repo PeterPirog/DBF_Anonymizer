@@ -96,7 +96,7 @@ from .api import (
     verify_transfer_bundle,
 )
 
-__version__ = "1.0.0.dev0"
+__version__ = "1.0.0"
 
 __all__ = [
     "MODEL_SCHEMA_VERSION",

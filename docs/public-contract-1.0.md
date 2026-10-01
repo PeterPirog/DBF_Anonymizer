@@ -1,8 +1,8 @@
 # Frozen public contract 1.0
 
-REQ-P8-001 freezes the pre-release 1.0 contract in
+REQ-P8-001 freezes the stable 1.0 contract in
 [`contracts/public-contract-1.0.json`](../contracts/public-contract-1.0.json).
-The package version remains `1.0.0.dev0`; this freeze is not the stable release.
+The frozen package version state is `1.0.0` (the stable release).
 Normal test execution never updates the snapshot. A maintainer may explicitly
 regenerate it with:
 

@@ -247,7 +247,7 @@ jobs:
             --no-index `
             --find-links "$env:SMOKE_ROOT\wheelhouse" `
             --no-cache-dir `
-            dbf-anonymizer==1.0.0.dev0
+            dbf-anonymizer==1.0.0
           & $venvPython -m pip check
           Set-Location -LiteralPath "$env:SMOKE_ROOT\work"
           & "$env:SMOKE_ROOT\venv\Scripts\dbf-anonymizer.exe" --help

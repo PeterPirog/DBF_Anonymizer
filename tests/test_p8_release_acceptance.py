@@ -109,9 +109,7 @@ def _roundtrip_payload(result: subprocess.CompletedProcess[str]) -> dict[str, ob
 def test_canonical_roundtrip_runner_proves_the_full_public_workflow(
     tmp_path: Path,
 ) -> None:
-    payload = _roundtrip_payload(
-        _run_roundtrip(tmp_path / "work", "--expected-version", "1.0.0.dev0")
-    )
+    payload = _roundtrip_payload(_run_roundtrip(tmp_path / "work", "--expected-version", "1.0.0"))
     assert payload["stage"] == "canonical_roundtrip"
     assert payload["status"] == "PASS"
     facts: dict[str, object] = payload["facts"]  # type: ignore[index]
@@ -146,7 +144,7 @@ def test_roundtrip_refuses_a_non_wheel_import_origin_when_required(tmp_path: Pat
     result = _run_roundtrip(
         tmp_path / "roundtrip",
         "--expected-version",
-        "1.0.0.dev0",
+        "1.0.0",
         "--require-installed-origin",
     )
     assert result.returncode != 0
@@ -163,7 +161,7 @@ def test_roundtrip_reports_repository_path_poisoning_truthfully(tmp_path: Path) 
     result = _run_roundtrip(
         tmp_path / "poisoned",
         "--expected-version",
-        "1.0.0.dev0",
+        "1.0.0",
         env_overrides={"PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{tmp_path}"},
     )
     assert result.returncode == 0, result.stderr[-2000:]
@@ -176,7 +174,7 @@ def test_roundtrip_reports_repository_path_poisoning_truthfully(tmp_path: Path) 
     enforced = _run_roundtrip(
         tmp_path / "enforced",
         "--expected-version",
-        "1.0.0.dev0",
+        "1.0.0",
         "--require-installed-origin",
         env_overrides={"PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{tmp_path}"},
     )
@@ -187,7 +185,7 @@ def test_roundtrip_reports_repository_path_poisoning_truthfully(tmp_path: Path) 
 
 def test_roundtrip_facts_never_leak_sensitive_material(tmp_path: Path) -> None:
     payload = _roundtrip_payload(
-        _run_roundtrip(tmp_path / "roundtrip", "--expected-version", "1.0.0.dev0")
+        _run_roundtrip(tmp_path / "roundtrip", "--expected-version", "1.0.0")
     )
     serialized = json.dumps(payload)
     for canary in CANARY_TEXTS:
@@ -202,7 +200,7 @@ def test_roundtrip_facts_never_leak_sensitive_material(tmp_path: Path) -> None:
 def _passing_bind() -> dict[str, object]:
     return {
         "source_commit": "0" * 40,
-        "package_version": "1.0.0.dev0",
+        "package_version": "1.0.0",
         "python_version": "3.12.0",
         "platform": "Linux-x86_64",
         "public_contract_sha256": "a" * 64,
@@ -630,8 +628,8 @@ def test_installed_wheel_origin_facts_verdicts(tmp_path: Path) -> None:
     venv_site = tmp_path / "venv" / "Lib" / "site-packages" / "dbf_anonymizer" / "__init__.py"
     verified = installed_wheel_origin_facts(
         module_file=str(venv_site),
-        installed_version="1.0.0.dev0",
-        expected_version="1.0.0.dev0",
+        installed_version="1.0.0",
+        expected_version="1.0.0",
         repo_root=REPO_ROOT,
         pythonpath="",
         cwd=tmp_path,
@@ -643,8 +641,8 @@ def test_installed_wheel_origin_facts_verdicts(tmp_path: Path) -> None:
     source_origin = REPO_ROOT / "src" / "dbf_anonymizer" / "__init__.py"
     shadowed = installed_wheel_origin_facts(
         module_file=str(source_origin),
-        installed_version="1.0.0.dev0",
-        expected_version="1.0.0.dev0",
+        installed_version="1.0.0",
+        expected_version="1.0.0",
         repo_root=REPO_ROOT,
         pythonpath=str(REPO_ROOT),
         cwd=REPO_ROOT,
@@ -658,7 +656,7 @@ def test_installed_wheel_origin_facts_verdicts(tmp_path: Path) -> None:
     wrong_version = installed_wheel_origin_facts(
         module_file=str(venv_site),
         installed_version="9.9.9",
-        expected_version="1.0.0.dev0",
+        expected_version="1.0.0",
         repo_root=REPO_ROOT,
         pythonpath="",
         cwd=tmp_path,
