@@ -57,20 +57,30 @@ The `indexes.profile` policy section supports exactly two profiles:
   behaviors.
 - No claim that stale CDX/IDX/DBC files are valid after transfer: they are
   excluded from DATA_ONLY bundles by construction.
-- No claim that REQ-P6-006 (frozen authoritative VFP index/DBC metadata
-  producer/consumer contract) is complete. P6-006 remains BLOCKED/DEFERRED
-  because the frozen authoritative metadata contract from
-  mcp-vfp9sp2-toolchain is not yet available.
+- No claim that REQ-P6-006 turns DBF_Anonymizer into a VFP analyzer:
+  DBF_Anonymizer owns and ships the external VFP relationship/index metadata
+  CONSUMER contract (see
+  [external-vfp-metadata-contract.md](external-vfp-metadata-contract.md)),
+  while the concrete VFP/DBC/CDX project knowledge stays owned by the
+  downstream host, and authoritative claims may affect mapping/relationship
+  assurance only under the implemented per-claim
+  provenance/authority/assurance/verification rules.
 
-## Where authoritative VFP metadata would come from
+## Where authoritative VFP metadata comes from
 
-The only supported path for authoritative VFP/DBC/CDX project metadata is the
-downstream mcp-vfp9sp2-toolchain integration (adapter boundary only). When
-such a host supplies authoritative metadata, DBF_Anonymizer binds it
-fail-closed through the declared relationship/index contract and reports
-backend-verified index results; when it does not, DBF_Anonymizer keeps
-reporting the standalone truth. See [mcp-integration.md](mcp-integration.md)
-for the boundary.
+The supported path for authoritative VFP/DBC/CDX project metadata is the
+downstream mcp-vfp9sp2-toolchain integration (adapter boundary only): the host
+gathers authoritative project knowledge, emits a conforming
+producer-independent transport-neutral JSON metadata document, and injects it
+through DBF_Anonymizer's existing public synchronous planning boundary, where
+it is validated, fingerprinted and bound fail-closed (see
+[external-vfp-metadata-contract.md](external-vfp-metadata-contract.md) and
+[mcp-integration.md](mcp-integration.md) for the boundary). Injected metadata
+does NOT recreate source DBC semantics in the standalone output, and an
+injected verified index claim does NOT by itself prove that an output CDX/IDX
+was rebuilt: output index validity still requires the appropriate
+authoritative backend rebuild/verification evidence. When no host supplies
+metadata, DBF_Anonymizer keeps reporting the standalone truth.
 
 Within the standalone core boundary, default operation and import/capability
 discovery require no VFP, no COM, start no VFP/index subprocess, contact no

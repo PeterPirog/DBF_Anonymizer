@@ -42,8 +42,11 @@ English-first operational and security documentation (validated by
   relationship configuration, pseudonymization, verification, recovery, and
   DATA_ONLY transfer bundles, with executable examples.
 - [docs/limits-and-integrity.md](docs/limits-and-integrity.md) — index/VFP/DBC
-  limitations, the VFP_INDEXED backend-evidence requirement and the P6-006
-  status.
+  limitations, the VFP_INDEXED backend-evidence requirement and the
+  authoritative-metadata boundaries.
+- [docs/external-vfp-metadata-contract.md](docs/external-vfp-metadata-contract.md) —
+  the package-owned, producer-independent external VFP relationship/index
+  metadata consumer contract (versioned JSON Schema shipped with the wheel).
 - [docs/mcp-integration.md](docs/mcp-integration.md) — how a downstream host
   (mcp-vfp9sp2-toolchain) wraps the synchronous public API.
 - [docs/threat-model.md](docs/threat-model.md) — protected/transferable
