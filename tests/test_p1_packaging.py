@@ -34,12 +34,12 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
 def test_distribution_name_and_version_are_truthful() -> None:
     assert importlib.metadata.metadata(DISTRIBUTION)["Name"] == DISTRIBUTION
     version = importlib.metadata.version(DISTRIBUTION)
-    assert version == "1.0.0.dev0"
+    assert version == "1.0.0"
     assert importlib.metadata.metadata(DISTRIBUTION)["License-Expression"] == "MIT"
 
 
-def test_import_package_exposes_dev_version() -> None:
-    assert dbf_anonymizer.__version__ == "1.0.0.dev0"
+def test_import_package_exposes_the_release_version() -> None:
+    assert dbf_anonymizer.__version__ == "1.0.0"
     assert cli.__version__ == dbf_anonymizer.__version__
 
 
@@ -113,7 +113,7 @@ def test_version_sources_agree() -> None:
 
 
 def test_import_is_side_effect_free_and_exposes_the_implemented_surface() -> None:
-    assert dbf_anonymizer.__version__ == "1.0.0.dev0"
+    assert dbf_anonymizer.__version__ == "1.0.0"
     assert "Capabilities" in dbf_anonymizer.__all__
     assert "build_plan" in dbf_anonymizer.__all__
     assert "preflight" in dbf_anonymizer.__all__

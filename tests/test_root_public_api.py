@@ -199,5 +199,5 @@ def test_error_hierarchy_is_the_new_1_0_contract() -> None:
     assert issubclass(dbf_anonymizer.DBFBridgeError, dbf_anonymizer.AnonymizerError)
 
 
-def test_development_version_is_not_0_3() -> None:
-    assert dbf_anonymizer.__version__ == "1.0.0.dev0"
+def test_release_version_is_the_stable_1_0_line() -> None:
+    assert dbf_anonymizer.__version__ == "1.0.0"

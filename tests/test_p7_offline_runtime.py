@@ -139,7 +139,7 @@ def test_offline_manifest_pins_the_exact_runtime_dependency_closure() -> None:
         "aenum": "3.1.17",
     }
     assert EXPECTED_RUNTIME_PINS == _manifest_pins(MANIFEST)
-    assert EXPECTED_APPLICATION == {"dbf-anonymizer": "1.0.0.dev0"}
+    assert EXPECTED_APPLICATION == {"dbf-anonymizer": "1.0.0"}
     source = PYPROJECT.read_text(encoding="utf-8")
     assert '"dbfbridge[write]>=1.1.0,<2"' in source
 

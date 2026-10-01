@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 EXPECTED_NAME = "dbf-anonymizer"
-EXPECTED_VERSION_PREFIX = "1.0.0.dev"
+EXPECTED_VERSION = "1.0.0"
 EXPECTED_DBFBRIDGE_REQUIREMENT = "dbfbridge[write]>=1.1.0,<2"
 
 
@@ -43,8 +43,8 @@ def check_wheel(wheel: Path) -> None:
         _fail(f"distribution name is {name!r}, expected {EXPECTED_NAME!r}")
 
     version = fields.get("Version", [""])[0]
-    if not version.startswith(EXPECTED_VERSION_PREFIX):
-        _fail(f"version {version!r} is not the 1.0 development baseline")
+    if version != EXPECTED_VERSION:
+        _fail(f"version {version!r} is not the stable 1.0 release version")
 
     requirements = fields.get("Requires-Dist", [])
     dbfbridge_requirements = [

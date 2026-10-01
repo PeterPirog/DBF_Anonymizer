@@ -386,7 +386,7 @@ def test_meta_and_dataset_rows_carry_the_bound_identity(tmp_path: Path) -> None:
         assert meta is not None
         assert meta[0] == VAULT_SCHEMA_VERSION
         assert str(meta[1]) == vault.vault_id
-        assert str(meta[2]) == "1.0.0.dev0"
+        assert str(meta[2]) == "1.0.0"
         assert meta[3] == DBFBRIDGE_VERSION
 
         dataset = (

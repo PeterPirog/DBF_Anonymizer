@@ -15,7 +15,7 @@ EXPECTED_RUNTIME_PINS = {
     "dbfbridge": "1.1.1",
     "dbfread": "2.0.7",
 }
-EXPECTED_APPLICATION = {"dbf-anonymizer": "1.0.0.dev0"}
+EXPECTED_APPLICATION = {"dbf-anonymizer": "1.0.0"}
 
 
 def _normalize_name(value: str) -> str:

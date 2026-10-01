@@ -551,7 +551,7 @@ def test_downstream_consumer_requirements_are_frozen_in_the_public_contract() ->
     } <= set(transfer["forbidden_material"])
     assert {"DATA_ONLY_INDEX_OMITTED"} <= set(transfer["index_states"])
 
-    assert frozen["package_version_status"] == "1.0.0.dev0"
+    assert frozen["package_version_status"] == "1.0.0"
 
 
 def test_downstream_consumer_refuses_before_vault_access_without_any_vault(

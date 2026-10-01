@@ -1,7 +1,7 @@
 # Threat model
 
 This document describes the concrete threat model of the DBF_Anonymizer
-1.0.0.dev0 development line (stable 1.0 release closure is not yet achieved):
+1.0.0 stable release (the frozen 1.0 contract):
 what is protected, what is transferable, where the trust boundaries are, which
 attack/failure classes the design defends against, and — equally important —
 what the tool does NOT protect against.

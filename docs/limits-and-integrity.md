@@ -1,7 +1,7 @@
 # Index, VFP and DBC limitations (truthful capability boundaries)
 
-This document states exactly what DBF_Anonymizer (the current 1.0.0.dev0
-development line, targeting the stable 1.0 contract) does and does not claim
+This document states exactly what DBF_Anonymizer (the 1.0.0 stable release,
+implementing the frozen 1.0 contract) does and does not claim
 about Visual FoxPro indexes, DBC containers and VFP project integration. It is
 deliberately conservative: unsupported or unverified capabilities are reported
 honestly, never glossed over.

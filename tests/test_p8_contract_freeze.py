@@ -274,10 +274,10 @@ def test_snapshot_contains_no_sensitive_rows_or_recovery_material() -> None:
     assert "production data" not in frozen_text
 
 
-def test_semver_policy_is_complete_and_keeps_prerelease_version() -> None:
+def test_semver_policy_is_complete_and_freezes_the_stable_version() -> None:
     frozen = _frozen_contract()
     semver = frozen["semantic_versioning"]
-    assert frozen["package_version_status"] == "1.0.0.dev0"
+    assert frozen["package_version_status"] == "1.0.0"
     assert semver["patch"] == "BUGFIX_WITHOUT_INCOMPATIBLE_PUBLIC_CONTRACT_CHANGE"
     assert semver["minor"] == ("BACKWARD_COMPATIBLE_ADDITION_SUBJECT_TO_SCHEMA_VERSION_POLICY")
     assert len(semver["major_required_for"]) == 11
