@@ -1161,7 +1161,11 @@
         "relationship_fingerprint",
         "relation_count",
         "authoritative",
-        "metadata_path"
+        "metadata_path",
+        "external_metadata_schema_version",
+        "producer_id",
+        "producer_version",
+        "authority_summary"
       ],
       "StandaloneIdxAssociationResult": [
         "schema_version",
@@ -1259,6 +1263,7 @@
     "schema_versions": {
       "error": "1.1",
       "error_registry": "1.5",
+      "external_metadata": "1.0",
       "field_capability_matrix": "1.0",
       "index_backend_protocol": "1.2",
       "model": "1.8",
@@ -1652,6 +1657,29 @@
       "UNSPECIFIED"
     ],
     "evidence_schema_version": "1.0",
+    "external_metadata": {
+      "claim_assurances": [
+        "VERIFIED",
+        "UNVERIFIED"
+      ],
+      "claim_authorities": [
+        "CONTRACT_AUTHORITATIVE",
+        "INFERRED"
+      ],
+      "contract_owner": "DBF_ANONYMIZER",
+      "index_kinds": [
+        "STRUCTURAL_CDX",
+        "STANDALONE_IDX"
+      ],
+      "index_verification_states": [
+        "VERIFIED",
+        "UNVERIFIED"
+      ],
+      "producer_independent": true,
+      "schema_resource": "schemas/external-vfp-metadata-1.0.schema.json",
+      "schema_sha256": "075d22a1ffc5a51401a082ee8098440fb02d242b992887eb77ba689dd0f4b429",
+      "schema_version": "1.0"
+    },
     "key_roles": [
       "PRIMARY",
       "CANDIDATE",
@@ -1669,7 +1697,8 @@
     ],
     "provenances": [
       "POLICY_FILE",
-      "MCP_VFP9SP2_TOOLCHAIN"
+      "MCP_VFP9SP2_TOOLCHAIN",
+      "EXTERNAL_VFP_METADATA"
     ],
     "supported_dbf_types": [
       "C",

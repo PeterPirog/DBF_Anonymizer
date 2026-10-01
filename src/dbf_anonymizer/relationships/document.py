@@ -29,7 +29,8 @@ from dbf_anonymizer.relationships.models import (
     KEY_ROLES,
     NUMERIC_STRATEGIES,
     NUMERIC_STRATEGY_IDENTITY,
-    PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+    NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
+    PROVENANCE_MIXED,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
     RELATIONSHIP_PROVENANCES,
     SUPPORTED_RELATIONSHIP_DBF_TYPES,
@@ -37,6 +38,18 @@ from dbf_anonymizer.relationships.models import (
     RelationMember,
     RelationshipDocument,
     _validate_bounded_token,
+)
+from dbf_anonymizer.relationships.external_metadata import (
+    AUTHORITY_CONTRACT_AUTHORITATIVE,
+    AUTHORITY_INFERRED,
+    CLAIM_ASSURANCE_VERIFIED,
+    EXTERNAL_METADATA_SCHEMA_VERSION,
+    external_provenance_class_allowed,
+    parse_claim_assurance,
+    parse_external_authority,
+    parse_index_claims,
+    parse_producer,
+    validate_authority_assurance,
 )
 
 __all__ = [
@@ -58,8 +71,18 @@ _GROUP_KEYS = frozenset(
         "source_digest",
         "members",
         "numeric_strategy",
+        "assurance",
+        "authority",
     }
 )
+#: REQ-P6-006 (revised): the ADDITIVE optional top-level keys of the external
+#: VFP metadata envelope.  A document WITHOUT them is byte-identical to the
+#: pre-P6-006 shape; a document WITH them is one external metadata payload.
+_EXTERNAL_ENVELOPE_KEYS = frozenset(
+    {"external_metadata_schema_version", "producer", "authority", "index_claims"}
+)
+_MAX_RELATION_GROUPS = 256
+_MAX_RELATION_MEMBERS = 512
 
 
 def _document_invalid(detail_code: str) -> PolicyError:
@@ -117,7 +140,7 @@ def _require_mapping(value: object, detail: str) -> Mapping[str, Any]:
     return value
 
 
-def _parse_member(payload: object) -> RelationMember:
+def _parse_member(payload: object, *, external_authority: str | None = None) -> RelationMember:
     if not isinstance(payload, Mapping):
         raise _document_invalid("RELATIONSHIP_MEMBER_INVALID")
     unknown = set(payload) - _MEMBER_KEYS
@@ -140,6 +163,23 @@ def _parse_member(payload: object) -> RelationMember:
     raw_width: Any = payload.get("byte_width")
     raw_encoding: Any = payload.get("encoding")
     raw_nullable: Any = payload.get("nullable")
+    # REQ-P6-006 (revised): for EXTERNAL metadata, enforce canonical
+    # forward-slash paths and reject backslash forms (fail closed).  A table
+    # identity additionally requires the .dbf suffix, mirroring the shipped
+    # schema's relativeTablePath definition.
+    if external_authority is not None:
+        from dbf_anonymizer.relationships.external_metadata import validate_external_metadata_path
+
+        try:
+            raw_table = validate_external_metadata_path(
+                raw_table,
+                "RELATIONSHIP_MEMBER_TABLE_PATH_INVALID",
+                require_table_suffix=True,
+            )
+        except PolicyError:
+            raise
+        except Exception:
+            raise _document_invalid("RELATIONSHIP_MEMBER_TABLE_PATH_INVALID")
     return RelationMember(
         table_path=raw_table,
         field_name=raw_field,
@@ -152,7 +192,7 @@ def _parse_member(payload: object) -> RelationMember:
     )
 
 
-def _parse_group(payload: object) -> RelationGroup:
+def _parse_group(payload: object, *, external_authority: str | None = None) -> RelationGroup:
     group_payload = _require_mapping(payload, "RELATIONSHIP_GROUP_INVALID")
     unknown = set(group_payload) - _GROUP_KEYS
     if unknown:
@@ -171,9 +211,15 @@ def _parse_group(payload: object) -> RelationGroup:
         # Unknown numeric strategies fail closed (no silent normalization).
         raise _document_invalid("RELATIONSHIP_NUMERIC_STRATEGY_INVALID")
     raw_members = group_payload.get("members")
-    if not isinstance(raw_members, list) or not raw_members:
+    if (
+        not isinstance(raw_members, list)
+        or not raw_members
+        or len(raw_members) > _MAX_RELATION_MEMBERS
+    ):
         raise _document_invalid("RELATIONSHIP_MEMBERS_EMPTY")
-    members = tuple(_parse_member(member) for member in raw_members)
+    members = tuple(
+        _parse_member(member, external_authority=external_authority) for member in raw_members
+    )
     source_digest = group_payload.get("source_digest")
     if source_digest is not None:
         _validate_bounded_token(source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
@@ -183,6 +229,54 @@ def _parse_group(payload: object) -> RelationGroup:
     raw_relation_id: Any = group_payload.get("relation_id")
     raw_comparison: Any = comparison
     raw_provenance: Any = provenance
+    claim_assurance = None
+    claim_authority = None
+    if external_authority is not None:
+        if "assurance" not in group_payload:
+            raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_MISSING")
+        claim_assurance = parse_claim_assurance(group_payload["assurance"])
+        # REQ-P6-006 (revised): EVERY external relation claim carries its OWN
+        # explicit authority - the envelope authority is supplied contract
+        # metadata, never a silent per-claim default (a claim without its own
+        # authority fails closed, matching the shipped JSON Schema's required
+        # per-claim ``authority``).
+        if "authority" not in group_payload:
+            raise _document_invalid("EXTERNAL_METADATA_RELATION_AUTHORITY_MISSING")
+        claim_authority = parse_external_authority(group_payload["authority"])
+        validate_authority_assurance(claim_authority, claim_assurance)
+        if (
+            claim_authority == AUTHORITY_CONTRACT_AUTHORITATIVE
+            and claim_assurance == CLAIM_ASSURANCE_VERIFIED
+            and not external_provenance_class_allowed(raw_provenance)
+        ):
+            # REQ-P6-006 (revised): a claim that claims authoritative relation
+            # strength must carry an authoritative VFP-metadata-class
+            # provenance; POLICY_FILE provenance is retained only as
+            # non-authoritative planning/reporting information and can never
+            # cross the authoritative boundary (the shipped JSON Schema
+            # encodes the same eligibility, so public build_plan ingestion
+            # and the parser agree fail closed).
+            raise _document_invalid("EXTERNAL_METADATA_RELATION_PROVENANCE_INAUTHORITATIVE")
+        # REQ-P6-006 (revised, parity with the shipped JSON Schema and PUBLIC
+        # build_plan ingestion): a REVERSIBLE_BIJECTIVE strategy declaration
+        # is a strengthening-capability declaration (reversible
+        # mapping-domain grouping).  Non-effective claims are retained ONLY
+        # as non-authoritative planning/reporting information, so such a
+        # declaration is an inconsistent authority/strategy combination and
+        # fails closed AT PARSE TIME with the SAME stable codes the planner
+        # uses - no schema-valid / parser-valid / public-rejected shape
+        # remains.
+        if raw_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE and (
+            claim_authority != AUTHORITY_CONTRACT_AUTHORITATIVE
+            or claim_assurance != CLAIM_ASSURANCE_VERIFIED
+        ):
+            raise _document_invalid(
+                "EXTERNAL_METADATA_INFERRED_GROUPING_UNSUPPORTED"
+                if claim_authority == AUTHORITY_INFERRED
+                else "EXTERNAL_METADATA_UNVERIFIED_GROUPING_UNSUPPORTED"
+            )
+    elif "assurance" in group_payload:
+        raise _document_invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_WITHOUT_ENVELOPE")
     return RelationGroup(
         relation_id=raw_relation_id,
         members=members,
@@ -190,6 +284,8 @@ def _parse_group(payload: object) -> RelationGroup:
         provenance=raw_provenance,
         source_digest=None if source_digest is None else str(source_digest),
         numeric_strategy=(NUMERIC_STRATEGY_IDENTITY if raw_strategy is None else str(raw_strategy)),
+        claim_assurance=claim_assurance,
+        claim_authority=claim_authority,
     )
 
 
@@ -206,9 +302,19 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
     refusal, never a silent ``None`` coercion; ``source_digest`` and
     ``numeric_strategy`` (REQ-P3-005, default ``IDENTITY``) remain the two
     optional bounded group keys.
+
+    REQ-P6-006 (revised): the document MAY additionally carry the external
+    VFP metadata envelope (``external_metadata_schema_version``,
+    ``producer``, ``authority``, ``index_claims``).  Without those keys the
+    parse result is byte-identical to the pre-P6-006 behavior; with them the
+    envelope is validated fail closed (contract version, structured
+    producer provenance, bounded authority, value-free index claims) and
+    carried additively on the SAME document so the canonical bytes - and
+    therefore the EXISTING relationship fingerprint - cover the whole
+    supplied metadata.
     """
     document = _require_mapping(payload, "RELATIONSHIP_DOCUMENT_INVALID")
-    unknown_top = set(document) - {"metadata_schema_version", "relations"}
+    unknown_top = set(document) - {"metadata_schema_version", "relations"} - _EXTERNAL_ENVELOPE_KEYS
     if unknown_top:
         raise _document_invalid("RELATIONSHIP_DOCUMENT_KEY_UNKNOWN")
     missing_top = {"metadata_schema_version", "relations"} - set(document)
@@ -216,11 +322,43 @@ def parse_relationship_document(payload: Mapping[str, Any]) -> RelationshipDocum
         raise _document_invalid("RELATIONSHIP_DOCUMENT_KEY_MISSING")
     if document.get("metadata_schema_version") != RELATIONSHIP_METADATA_SCHEMA_VERSION:
         raise _document_invalid("RELATIONSHIP_METADATA_VERSION_UNSUPPORTED")
+
+    external_version = document.get("external_metadata_schema_version")
+    producer_id = producer_version = authority = None
+    index_claims: tuple[Any, ...] = ()
+    envelope_keys = _EXTERNAL_ENVELOPE_KEYS & set(document)
+    if envelope_keys:
+        # The external envelope is ALL-OR-NOTHING: the contract version key
+        # requires the complete required envelope (producer + authority);
+        # index_claims stays the one OPTIONAL additive envelope key.  A
+        # partial envelope fails closed.
+        required_envelope = {"external_metadata_schema_version", "producer", "authority"}
+        if not required_envelope <= envelope_keys:
+            raise _document_invalid("RELATIONSHIP_EXTERNAL_ENVELOPE_INCOMPLETE")
+        if document["external_metadata_schema_version"] != EXTERNAL_METADATA_SCHEMA_VERSION:
+            raise _document_invalid("RELATIONSHIP_EXTERNAL_METADATA_VERSION_UNSUPPORTED")
+        producer = parse_producer(document["producer"])
+        producer_id, producer_version = producer.producer_id, producer.producer_version
+        authority = parse_external_authority(document["authority"])
+        if "index_claims" in document:
+            index_claims = parse_index_claims(document["index_claims"])
+            for claim in index_claims:
+                validate_authority_assurance(claim.authority, claim.assurance)
+
     raw_relations = document.get("relations")
-    if not isinstance(raw_relations, list):
+    if not isinstance(raw_relations, list) or len(raw_relations) > _MAX_RELATION_GROUPS:
         raise _document_invalid("RELATIONSHIP_RELATIONS_INVALID")
-    groups = tuple(_parse_group(relation) for relation in raw_relations)
-    return RelationshipDocument(groups=groups)
+    groups = tuple(
+        _parse_group(relation, external_authority=authority) for relation in raw_relations
+    )
+    return RelationshipDocument(
+        groups=groups,
+        external_metadata_schema_version=external_version,
+        producer_id=producer_id,
+        producer_version=producer_version,
+        external_authority=authority,
+        index_claims=index_claims,
+    )
 
 
 def canonical_relationship_bytes(document: RelationshipDocument) -> bytes:
@@ -256,16 +394,43 @@ def relationship_metadata_from_document(
     NON-authoritative: declared planning metadata never masquerades as
     injected authoritative VFP metadata (see
     :func:`authoritative_vfp_metadata_from_document`).
+
+    REQ-P6-006 (revised): preserves external metadata schema version and
+    producer provenance at the public API boundary.
     """
-    provenances = {group.provenance for group in document.groups}
-    provenance = next(iter(provenances)) if len(provenances) == 1 else "MIXED"
+    effective_groups = document.effective_groups()
+    provenance_groups = effective_groups or document.groups
+    provenances = {group.provenance for group in provenance_groups}
+    # REQ-P6-006 (revised): for index-only payloads, fall back to index claim provenances
+    if not provenances and document.index_claims:
+        index_provenances = {claim.provenance for claim in document.index_claims}
+        provenances = index_provenances
+    provenance = next(iter(provenances)) if len(provenances) == 1 else PROVENANCE_MIXED
+    # Compute authority summary for external metadata
+    authority_summary = None
+    if document.external_metadata_schema_version is not None:
+        authorities = set()
+        for group in document.groups:
+            if group.claim_authority is not None:
+                authorities.add(group.claim_authority)
+        for claim in document.index_claims:
+            if claim.authority is not None:
+                authorities.add(claim.authority)
+        if len(authorities) == 1:
+            authority_summary = next(iter(authorities))
+        elif authorities:
+            authority_summary = PROVENANCE_MIXED
     return RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
         provenance=provenance,
         relationship_fingerprint=relationship_fingerprint(document),
-        relation_count=len(document.groups),
+        relation_count=len(effective_groups),
         authoritative=False,
         metadata_path=metadata_path,
+        external_metadata_schema_version=document.external_metadata_schema_version,
+        producer_id=document.producer_id,
+        producer_version=document.producer_version,
+        authority_summary=authority_summary,
     )
 
 
@@ -282,13 +447,17 @@ def authoritative_vfp_metadata_from_document(
     internal trust binding:
 
     * the document declares at least one relation;
-    * EVERY group provenance is exactly ``MCP_VFP9SP2_TOOLCHAIN`` — a
-      POLICY_FILE document or a MIXED-provenance document never qualifies;
+    * every effective group carries an accepted VFP-metadata-class provenance
+      (PER CLAIM - the SOT requires explicit provenance/authority/assurance
+      for every supplied claim); a POLICY_FILE provenance never qualifies,
+      while DIFFERENT authoritative VFP-metadata classes within one document
+      qualify (the public provenance summary is then the truthful MIXED
+      token);
     * the canonical relationship fingerprint of THIS document becomes the
       metadata fingerprint (authority is bound to the same document the
       verification report must bind to);
     * the metadata version is the supported schema (the typed parser already
-      refuses every other version);
+      refuses every version);
     * paths stay normalized-relative and no key value or absolute path is
       added.
 
@@ -306,29 +475,60 @@ def authoritative_vfp_metadata_from_document(
     metadata; it is never by itself sufficient to cross the authoritative
     assurance boundary.
     """
-    if not document.groups:
+    effective_groups = document.effective_groups()
+    if not effective_groups:
         raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_EMPTY")
-    provenances = {group.provenance for group in document.groups}
-    if provenances != {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN}:
-        # A POLICY_FILE or MIXED-provenance document is never authoritative
-        # VFP metadata — the provenance label alone is never evidence, and
-        # mixed provenance is ambiguous by definition.
-        raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
+    provenances = {group.provenance for group in effective_groups}
+    for provenance in provenances:
+        if not external_provenance_class_allowed(provenance):
+            # A POLICY_FILE provenance (or any non-VFP-metadata class) can
+            # never be authoritative VFP metadata - the provenance label alone
+            # is never evidence.  REQ-P6-006 (revised): the class is
+            # PRODUCER-INDEPENDENT - both the toolchain-class token and the
+            # external-contract token are VFP-metadata classes, and the
+            # concrete producer is carried by the envelope's structured
+            # provenance, never hardcoded here.
+            raise _document_invalid("RELATIONSHIP_AUTHORITATIVE_PROVENANCE_INVALID")
+    # REQ-P6-006 (revised): provenance eligibility is PER CLAIM - the SOT
+    # requires explicit provenance/authority/assurance for every supplied
+    # claim and does NOT require a whole-document uniform provenance token,
+    # so a document mixing DIFFERENT authoritative VFP-metadata classes
+    # qualifies (each claim was already per-claim validated above); the
+    # public provenance summary stays truthful (single token or MIXED).
+    document_provenance = next(iter(provenances)) if len(provenances) == 1 else PROVENANCE_MIXED
     fingerprint = relationship_fingerprint(document)
+    # Compute authority summary for external metadata
+    authority_summary = None
+    if document.external_metadata_schema_version is not None:
+        authorities = set()
+        for group in document.groups:
+            if group.claim_authority is not None:
+                authorities.add(group.claim_authority)
+        for claim in document.index_claims:
+            if claim.authority is not None:
+                authorities.add(claim.authority)
+        if len(authorities) == 1:
+            authority_summary = next(iter(authorities))
+        elif authorities:
+            authority_summary = PROVENANCE_MIXED
     metadata = RelationshipMetadata(
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
-        provenance=PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+        provenance=document_provenance,
         relationship_fingerprint=fingerprint,
-        relation_count=len(document.groups),
+        relation_count=len(effective_groups),
         authoritative=True,
         metadata_path=metadata_path,
+        external_metadata_schema_version=document.external_metadata_schema_version,
+        producer_id=document.producer_id,
+        producer_version=document.producer_version,
+        authority_summary=authority_summary,
     )
     # The binding is minted ONLY here, after the typed validation above: it
     # is the in-process authority proof, not a cryptographic secret and not a
     # public credential.
     binding = _AuthoritativeVFPBinding(
         relationship_fingerprint=fingerprint,
-        relation_count=len(document.groups),
+        relation_count=len(effective_groups),
         metadata_schema_version=RELATIONSHIP_METADATA_SCHEMA_VERSION,
     )
     return _AuthoritativeVFPMetadata(metadata=metadata, binding=binding)

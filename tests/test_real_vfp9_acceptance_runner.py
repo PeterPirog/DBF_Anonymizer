@@ -16,6 +16,21 @@ _TEST_HEAD = "a" * 40
 _TEST_BRANCH = "p6/standalone-idx-handling"
 
 
+def test_runner_is_bound_to_the_current_architecture_source_of_truth() -> None:
+    """The operational runner binds to the CURRENT immutable architecture.
+
+    The canonical architecture identity is the sole authoritative Source of
+    Truth (the converged 2026-09-29 document) resolved next to the repository
+    root and verified by the supplied ``--expected-architecture-sha256``.  This
+    test objectively fails if the obsolete 2026-09-10 filename is ever
+    silently restored.
+    """
+    assert runner.ARCHITECTURE_FILENAME == (
+        "DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-29.md"
+    )
+    assert runner.ARCHITECTURE_PATH == (runner.REPO_ROOT.parent / runner.ARCHITECTURE_FILENAME)
+
+
 def _configure_git_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

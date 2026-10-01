@@ -80,7 +80,7 @@ PRIVILEGED_RELEASE_POLICY_SPEC = ".github/release-publishing-policy.json"
 CANONICAL_SELECTED_WORKFLOW_TEMPLATE = (
     "<FINAL_OWNER>/DBF_Anonymizer/.github/workflows/p6-trusted-vfp-acceptance.yml@refs/heads/main"
 )
-ARCHITECTURE_SHA256 = "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+ARCHITECTURE_SHA256 = "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587"
 IMMUTABLE_ACCEPTANCE_EVIDENCE = "version-controlled workflows and green mandatory jobs"
 FORBIDDEN_EXACT_HEAD_WORDING = "exact reviewed HEAD"
 EXACT_REVISION_CLAIM = re.compile(r"\bexact\b[^.]*\b(?:HEAD|SHA)\b", re.IGNORECASE)

@@ -306,7 +306,7 @@ def build_engine_plan(
             NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE,
         )
 
-        for group in relationship_document.groups:
+        for group in relationship_document.effective_groups():
             if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE:
                 numeric_groups.append(
                     (
@@ -417,7 +417,7 @@ def build_engine_plan(
         # misread as NULL in the BEFORE evidence.
         numeric_by_group: dict[RelationGroup, str] = dict(numeric_groups)
         relation_fields_by_table: dict[str, set[str]] = {}
-        for group in relationship_document.groups:
+        for group in relationship_document.effective_groups():
             group_domain: str | None = numeric_by_group.get(group)
             domain: NumericKeyDomain | None = None
             if group_domain is not None:
@@ -537,7 +537,7 @@ def _revalidate_execution_identity(
     if relationship_document is not None:
         if relationship_fingerprint(relationship_document) != (declared.relationship_fingerprint):
             raise _identity_failure("ENGINE_RELATIONSHIP_IDENTITY_MISMATCH")
-        if len(relationship_document.groups) != declared.relation_count:
+        if len(relationship_document.effective_groups()) != declared.relation_count:
             raise _identity_failure("ENGINE_RELATIONSHIP_COUNT_MISMATCH")
     elif declared.relation_count > 0:
         raise _identity_failure("ENGINE_RELATIONSHIP_DOCUMENT_MISSING")

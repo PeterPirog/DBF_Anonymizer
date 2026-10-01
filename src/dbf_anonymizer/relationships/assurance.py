@@ -43,7 +43,9 @@ from dbf_anonymizer.models import (
 )
 from dbf_anonymizer.relationships.document import _AuthoritativeVFPBinding
 from dbf_anonymizer.relationships.models import (
+    PROVENANCE_EXTERNAL_VFP_METADATA,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+    PROVENANCE_MIXED,
     RELATIONSHIP_METADATA_SCHEMA_VERSION,
 )
 from dbf_anonymizer.relationships.verification import (
@@ -199,6 +201,8 @@ def bounded_evidence_fingerprint(
 def _derive_relational_assurance_from_bounded_evidence(
     relationships: RelationshipMetadata,
     evidence: Sequence[_BoundedRelationEvidence],
+    *,
+    authority_binding: _AuthoritativeVFPBinding | None = None,
 ) -> RelationalAssurance:
     """Adapt bounded P4 relation summaries into the canonical P3 derivation.
 
@@ -206,6 +210,14 @@ def _derive_relational_assurance_from_bounded_evidence(
     not a second public evidence model. The digest binds every bounded,
     value-free fact used by the production comparison (ONE shared recipe —
     see :func:`bounded_evidence_fingerprint`).
+
+    REQ-P6-006 (revised): when the authoritative ingestion adapter minted an
+    in-process authority binding for CONTRACT-AUTHORITATIVE external metadata,
+    the binding is passed here so the kernel can grant
+    ``VFP_METADATA_VERIFIED`` - which requires BOTH the authoritative supplied
+    metadata/provenance AND successful relevant post-transform verification.
+    The binding is structurally validated against the metadata (mismatch is a
+    typed fail-closed refusal); metadata alone is never verification.
     """
     if len(evidence) != relationships.relation_count:
         raise _evidence_failure("RELATIONSHIP_EVIDENCE_RELATION_COUNT_MISMATCH")
@@ -214,12 +226,17 @@ def _derive_relational_assurance_from_bounded_evidence(
     )
     ordered = sorted(evidence, key=lambda item: item.relation_id)
     verified = sum(1 for item in ordered if item.verified)
+    authoritative_verified = _validated_authority_binding(
+        relationships,
+        report=None,
+        binding=authority_binding,
+    )
     return _assurance_from_counts(
         relationships,
         verified=verified,
         failed=len(ordered) - verified,
         evidence_fingerprint=evidence_fingerprint,
-        authoritative_verified=False,
+        authoritative_verified=authoritative_verified,
     )
 
 
@@ -255,6 +272,19 @@ def _validated_authority_binding(
     if (
         binding.metadata_schema_version != RELATIONSHIP_METADATA_SCHEMA_VERSION
         or relationships.metadata_schema_version != binding.metadata_schema_version
+        or not relationships.authoritative
+        or (
+            relationships.provenance
+            not in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+            # REQ-P6-006 (revised): a MIXED public provenance summary is
+            # accepted ONLY here, together with the complete binding
+            # validation below - the binding is minted exclusively by the
+            # authoritative ingestion adapter AFTER per-claim provenance
+            # eligibility was enforced, so a MIXED document can only carry
+            # authoritative VFP-metadata-class effective claims.  POLICY_FILE
+            # provenance never passes this boundary.
+            and relationships.provenance != PROVENANCE_MIXED
+        )
         or binding.relationship_fingerprint != relationships.relationship_fingerprint
         or binding.relation_count != relationships.relation_count
         or (
@@ -298,8 +328,8 @@ def derive_relational_assurance(
     * every declared relation ``VERIFIED`` (at least one declared relation):
 
       * ``VFP_METADATA_VERIFIED`` requires the COMPLETE trust boundary: the
-        descriptive public ``authoritative`` flag AND the
-        ``MCP_VFP9SP2_TOOLCHAIN`` provenance AND complete verified evidence
+        descriptive public ``authoritative`` flag AND an accepted
+        VFP-metadata-class provenance AND complete verified evidence
         AND a VALID internal ``_AuthoritativeVFPBinding`` minted ONLY by the
         tested authoritative ingestion adapter for the SAME relationship
         fingerprint, the SAME declared relation count and the SAME supported
@@ -343,7 +373,19 @@ def derive_relational_assurance(
         if verified == relation_count and relation_count > 0:
             if (
                 relationships.authoritative
-                and relationships.provenance == PROVENANCE_MCP_VFP9SP2_TOOLCHAIN
+                # REQ-P6-006 (revised): the VFP-metadata provenance CLASS is
+                # producer-independent - both the toolchain-class token and
+                # the external-contract token qualify; a POLICY_FILE document
+                # never qualifies.  A MIXED summary token qualifies ONLY
+                # together with the valid adapter-minted binding below (the
+                # adapter enforced per-claim provenance eligibility before
+                # minting it).  The concrete producer is carried by the
+                # envelope's structured provenance, never hardcoded.
+                and (
+                    relationships.provenance
+                    in {PROVENANCE_MCP_VFP9SP2_TOOLCHAIN, PROVENANCE_EXTERNAL_VFP_METADATA}
+                    or relationships.provenance == PROVENANCE_MIXED
+                )
                 # The trust credential: a valid internal binding minted ONLY
                 # by the tested authoritative ingestion adapter.  The public
                 # boolean and provenance label alone are descriptive facts.

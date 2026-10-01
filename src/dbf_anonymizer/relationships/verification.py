@@ -590,7 +590,10 @@ def verify_relationships(
       is deterministic regardless of declaration order.
     """
     fingerprint = relationship_fingerprint(document)
-    declared = {group.relation_id: group for group in document.canonical_groups()}
+    declared = {
+        group.relation_id: group
+        for group in sorted(document.effective_groups(), key=lambda item: item.relation_id)
+    }
     for side_name, side in (("before", before), ("after", after)):
         for relation_id, counts in side.items():
             if not isinstance(relation_id, str) or relation_id not in declared:

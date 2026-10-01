@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PeterPirog/DBF_Anonymizer/schemas/external-vfp-metadata-1.0.schema.json",
+  "x-contract-schema-version": "1.0",
+  "x-contract-owner": "DBF_ANONYMIZER",
+  "title": "DBF_Anonymizer external VFP relationship/index metadata contract",
+  "description": "Producer-independent, transport-neutral consumer contract (REQ-P6-006, revised). A higher-level analyzer (including mcp-vfp9sp2-toolchain) emits one conforming JSON document; DBF_Anonymizer validates, preserves provenance and normalizes the claims into its ONE typed relationship model. Value-free: no original record values, no absolute or private machine paths. This schema is the SYNTACTIC acceptance contract; the runtime additionally enforces cross-claim structural rules (identity/ordinal/arity consistency) and dataset-reference validation that JSON Schema cannot express - the runtime is a fail-closed superset: it never accepts a payload this schema rejects.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metadata_schema_version", "external_metadata_schema_version", "producer", "authority", "relations"],
+  "properties": {
+    "metadata_schema_version": {
+      "const": "1.0",
+      "description": "The DBF_Anonymizer relationship-metadata schema version of the normalized relation claims."
+    },
+    "external_metadata_schema_version": {
+      "const": "1.0",
+      "description": "The DBF_Anonymizer-owned external metadata CONTRACT schema version. Any other version is rejected fail closed."
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_id", "producer_version"],
+      "description": "Structured, bounded, producer-independent provenance of the concrete emitter. No producer is hardcoded; both tokens are free bounded identifiers.",
+      "properties": {
+        "producer_id": {"$ref": "#/$defs/boundedToken"},
+        "producer_version": {"$ref": "#/$defs/boundedToken"}
+      }
+    },
+    "authority": {
+      "enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"],
+      "description": "The supplied envelope-level authority classification, carried as contract metadata and participating in the relationship fingerprint. It is NOT a per-claim default: EVERY relation claim and index claim carries its own explicit authority, and only per-claim CONTRACT_AUTHORITATIVE + VERIFIED claims may influence authoritative grouping or support VFP_METADATA_VERIFIED."
+    },
+    "index_claims": {
+      "type": "array",
+      "maxItems": 256,
+      "description": "Optional value-free index claims. Only a CONTRACT_AUTHORITATIVE claim whose verification state and assurance are both VERIFIED and whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) may ever support an index-validity guarantee; other claims are planning/reporting information only.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "table", "index_file", "index_kind", "tags", "verification_state", "assurance", "provenance", "authority"],
+        "properties": {
+          "claim_id": {"$ref": "#/$defs/boundedToken"},
+          "table": {"$ref": "#/$defs/relativeTablePath"},
+          "index_file": {"$ref": "#/$defs/relativePath"},
+          "index_kind": {"enum": ["STRUCTURAL_CDX", "STANDALONE_IDX"]},
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "sort_order"],
+              "properties": {
+                "name": {"$ref": "#/$defs/boundedToken"},
+                "sort_order": {"enum": ["ASCENDING", "DESCENDING"]},
+                "expression": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[ -~]+$",
+                  "not": {"pattern": "(?:^[A-Za-z]:[\\\\/]|^[/\\\\]{1,2}|(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))"}
+                }
+              }
+            }
+          },
+          "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]},
+          "authority": {"enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"]}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"verification_state": {"const": "VERIFIED"}}},
+            "then": {"properties": {"assurance": {"const": "VERIFIED"}}},
+            "else": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "INFERRED"}}},
+            "then": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          {
+            "if": {"properties": {"index_kind": {"const": "STRUCTURAL_CDX"}}},
+            "then": {"properties": {"index_file": {"pattern": "[.][Cc][Dd][Xx]$"}}}
+          },
+          {
+            "if": {"properties": {"index_kind": {"const": "STANDALONE_IDX"}}},
+            "then": {"properties": {"index_file": {"pattern": "[.][Ii][Dd][Xx]$"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "CONTRACT_AUTHORITATIVE"}, "assurance": {"const": "VERIFIED"}, "verification_state": {"const": "VERIFIED"}}},
+            "then": {"properties": {"provenance": {"enum": ["MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}}}
+          }
+        ]
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 256,
+      "description": "The normalized relation claims (the existing P3 relationship-document group shape). Every claim carries its own explicit authority; only CONTRACT_AUTHORITATIVE + VERIFIED claims whose provenance is an authoritative VFP-metadata class (MCP_VFP9SP2_TOOLCHAIN or EXTERNAL_VFP_METADATA) are effective; a REVERSIBLE_BIJECTIVE strategy declaration is a strengthening capability and is only valid on such effective claims with at least one numeric member.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relation_id", "provenance", "assurance", "comparison", "members", "authority"],
+        "properties": {
+          "relation_id": {"$ref": "#/$defs/boundedToken"},
+          "comparison": {"enum": ["EXACT_VALUE", "UNSPECIFIED"]},
+          "provenance": {"enum": ["POLICY_FILE", "MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]},
+          "assurance": {"enum": ["VERIFIED", "UNVERIFIED"]},
+          "authority": {"enum": ["CONTRACT_AUTHORITATIVE", "INFERRED"]},
+          "numeric_strategy": {"enum": ["IDENTITY", "REVERSIBLE_BIJECTIVE"]},
+          "source_digest": {"$ref": "#/$defs/boundedToken"},
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 512,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["table", "field", "role", "ordinal", "dbf_type", "byte_width", "encoding", "nullable"],
+              "properties": {
+                "table": {"$ref": "#/$defs/relativeTablePath"},
+                "field": {"$ref": "#/$defs/boundedToken"},
+                "role": {"enum": ["PRIMARY", "CANDIDATE", "FOREIGN"]},
+                "ordinal": {"type": "integer", "minimum": 1},
+                "dbf_type": {"enum": ["C", "V", "I", "N"]},
+                "byte_width": {"type": "integer", "minimum": 1},
+                "encoding": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.-]+$"},
+                "nullable": {"type": "boolean"}
+              },
+              "allOf": [
+                {
+                  "if": {"properties": {"dbf_type": {"const": "I"}}},
+                  "then": {"properties": {"byte_width": {"const": 4}, "encoding": {"const": "none"}}}
+                },
+                {
+                  "if": {"properties": {"dbf_type": {"const": "N"}}},
+                  "then": {"properties": {"byte_width": {"minimum": 1, "maximum": 20}, "encoding": {"const": "none"}}}
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"authority": {"const": "INFERRED"}}},
+            "then": {"properties": {"assurance": {"const": "UNVERIFIED"}}}
+          },
+          {
+            "if": {"properties": {"authority": {"const": "CONTRACT_AUTHORITATIVE"}, "assurance": {"const": "VERIFIED"}}},
+            "then": {"properties": {"provenance": {"enum": ["MCP_VFP9SP2_TOOLCHAIN", "EXTERNAL_VFP_METADATA"]}}}
+          },
+          {
+            "if": {"properties": {"numeric_strategy": {"const": "REVERSIBLE_BIJECTIVE"}}, "required": ["numeric_strategy"]},
+            "then": {
+              "properties": {
+                "authority": {"const": "CONTRACT_AUTHORITATIVE"},
+                "assurance": {"const": "VERIFIED"},
+                "members": {"contains": {"properties": {"dbf_type": {"enum": ["I", "N"]}}}}
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "boundedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "relativeTablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Normalized relative dataset table identity: forward-slash separated segments of [A-Za-z0-9_. -], no absolute/drive/UNC/backslash form, no '.'/'..' segments, requiring the .dbf suffix (case-insensitive).",
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_. -]+(?:/[A-Za-z0-9_. -]+)*[.][Dd][Bb][Ff]$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Normalized relative dataset artifact identity: forward-slash separated segments of [A-Za-z0-9_. -], no absolute/drive/UNC/backslash form and no '.'/'..' segments.",
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_. -]+(?:/[A-Za-z0-9_. -]+)*$"
+    }
+  }
+}

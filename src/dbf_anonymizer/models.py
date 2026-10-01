@@ -525,6 +525,9 @@ class RelationshipMetadata(PublicModel):
     the internal non-public binding minted ONLY by the validated
     authoritative ingestion adapter (REQ-P3-007), never the public boolean or
     the provenance label.
+
+    REQ-P6-006 (revised): additional fields to preserve external metadata
+    contract version and producer provenance at the public API boundary.
     """
 
     metadata_schema_version: str
@@ -533,6 +536,10 @@ class RelationshipMetadata(PublicModel):
     relation_count: int
     authoritative: bool
     metadata_path: str | None = None
+    external_metadata_schema_version: str | None = None
+    producer_id: str | None = None
+    producer_version: str | None = None
+    authority_summary: str | None = None
 
     def __post_init__(self) -> None:
         # REQ-P1-002: the public model is typed AND versioned — the declared
@@ -557,9 +564,19 @@ class RelationshipMetadata(PublicModel):
             raise ValueError("authoritative must be a genuine boolean")
         if self.metadata_path is not None:
             object.__setattr__(self, "metadata_path", _normalized_relative_path(self.metadata_path))
+        if self.external_metadata_schema_version is not None:
+            _validated_code(
+                self.external_metadata_schema_version, field_name="external_metadata_schema_version"
+            )
+        if self.producer_id is not None:
+            _validated_code(self.producer_id, field_name="producer_id")
+        if self.producer_version is not None:
+            _validated_code(self.producer_version, field_name="producer_version")
+        if self.authority_summary is not None:
+            _validated_code(self.authority_summary, field_name="authority_summary")
 
     def to_dict(self) -> JsonDict:
-        return _payload(
+        payload = _payload(
             "RelationshipMetadata",
             metadata_schema_version=self.metadata_schema_version,
             provenance=self.provenance,
@@ -568,6 +585,16 @@ class RelationshipMetadata(PublicModel):
             authoritative=self.authoritative,
             metadata_path=self.metadata_path,
         )
+        if self.external_metadata_schema_version is not None:
+            payload["external_metadata_schema_version"] = self.external_metadata_schema_version
+        if self.producer_id is not None and self.producer_version is not None:
+            payload["producer"] = {
+                "producer_id": self.producer_id,
+                "producer_version": self.producer_version,
+            }
+        if self.authority_summary is not None:
+            payload["authority_summary"] = self.authority_summary
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -658,6 +685,11 @@ class _PlanExecutionContext:
     vault_path: str
     relationship_document: Any = None
     relationship_bindings: Any = None
+    #: REQ-P6-006 (revised): the in-process P3-007 authority binding minted by
+    #: the authoritative ingestion adapter for CONTRACT-AUTHORITATIVE external
+    #: metadata.  Non-public, in-process trust proof: never serialized and
+    #: never part of any public model.
+    authoritative_binding: Any = None
     resolved_policy: Any = None
 
     def __repr__(self) -> str:
@@ -859,6 +891,7 @@ class _PseudonymizationExecutionContext:
     output_root: str
     source_root: str
     vault_path: str
+    authoritative_binding: Any = None
 
     def __repr__(self) -> str:
         return "<_PseudonymizationExecutionContext>"

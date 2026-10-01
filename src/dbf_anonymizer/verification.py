@@ -103,6 +103,7 @@ from dbf_anonymizer.relationships.assurance import (
     _derive_relational_assurance_from_bounded_evidence,
     bounded_evidence_fingerprint,
 )
+from dbf_anonymizer.relationships.models import RELATIONSHIP_METADATA_SCHEMA_VERSION
 from dbf_anonymizer.transforms.numeric_keys import canonical_integer_text
 from dbf_anonymizer.transforms.temporal import temporal_shift
 from dbf_anonymizer.vault.memo_allocation import mask_memo_value
@@ -266,7 +267,9 @@ def _load_completed_result(plan: Plan) -> PseudonymizationResult:
             raise _verification_failure("RECEIPT_IDENTITY_MISMATCH")
 
         assurance = _derive_relational_assurance_from_bounded_evidence(
-            plan.relationships, receipt.relations
+            plan.relationships,
+            receipt.relations,
+            authority_binding=getattr(plan.execution_context, "authoritative_binding", None),
         )
         return PseudonymizationResult(
             operation_id=operation_id,
@@ -283,6 +286,7 @@ def _load_completed_result(plan: Plan) -> PseudonymizationResult:
                 output_root=context.output_root,
                 source_root=context.source_root,
                 vault_path=context.vault_path,
+                authoritative_binding=getattr(context, "authoritative_binding", None),
             ),
         )
     finally:
@@ -1023,7 +1027,17 @@ def _verify_vault(
 
     # The public relational assurance is cross-validated against the DURABLE
     # receipt evidence (never simply trusted).
-    _verify_assurance(result.assurance, receipt.relations, findings)
+    result_context = result.execution_context
+    _verify_assurance(
+        result.assurance,
+        receipt.relations,
+        findings,
+        authority_binding=(
+            getattr(result_context, "authoritative_binding", None)
+            if result_context is not None
+            else None
+        ),
+    )
 
     # Mapping-domain invariants per kind: bijection + NULL never mapped for
     # TEXT, bijection for NUMERIC_KEY, non-zero parameter existence for
@@ -1060,6 +1074,8 @@ def _verify_assurance(
     assurance: RelationalAssurance,
     receipt_relations: Sequence[object],
     findings: _Findings,
+    *,
+    authority_binding: object | None = None,
 ) -> None:
     """Cross-validate the public assurance against the durable receipt."""
     declared = assurance.declared_relations
@@ -1081,11 +1097,19 @@ def _verify_assurance(
         if assurance.level is not RelationalAssuranceLevel.GLOBAL_EXACT_VALUE:
             findings.fail("ASSURANCE_EVIDENCE_MISMATCH")
     elif verified == declared and failed == 0:
-        # Ordinary P3/P4 relation evidence establishes at most
-        # DECLARED_RELATIONS_VERIFIED: VFP_METADATA_VERIFIED without the
-        # authoritative P6 evidence input is an assurance overclaim that
-        # the read-only verifier can never confirm (REQ-P3-007).
+        binding_matches = authority_binding is not None and (
+            getattr(authority_binding, "relationship_fingerprint", None)
+            == assurance.relationship_fingerprint
+            and getattr(authority_binding, "relation_count", None) == declared
+            and getattr(authority_binding, "metadata_schema_version", None)
+            == RELATIONSHIP_METADATA_SCHEMA_VERSION
+        )
         if assurance.level is RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED:
+            pass
+        elif assurance.level is RelationalAssuranceLevel.VFP_METADATA_VERIFIED and binding_matches:
+            # The private adapter binding proves acceptable authoritative
+            # metadata; the durable receipt evidence above proves successful
+            # post-transform verification. Both are required.
             pass
         else:
             findings.fail("ASSURANCE_EVIDENCE_MISMATCH")

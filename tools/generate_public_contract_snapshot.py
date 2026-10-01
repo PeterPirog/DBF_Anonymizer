@@ -7,6 +7,7 @@ the committed snapshot; normal test execution only calls ``build_contract``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import re
@@ -51,6 +52,16 @@ from dbf_anonymizer.policy import (
 from dbf_anonymizer.progress import PROGRESS_QUANTUM_VERSION
 from dbf_anonymizer.recovery_policy import RecoveryPolicy
 from dbf_anonymizer.relationships.assurance import RELATIONAL_ASSURANCE_SCOPE_NOTE
+from dbf_anonymizer.relationships.external_metadata import (
+    CLAIM_ASSURANCES,
+    EXTERNAL_METADATA_AUTHORITIES,
+    EXTERNAL_METADATA_CONTRACT_OWNER,
+    EXTERNAL_METADATA_SCHEMA_RESOURCE,
+    EXTERNAL_METADATA_SCHEMA_VERSION,
+    INDEX_CLAIM_KINDS,
+    INDEX_VERIFICATION_STATES,
+    load_external_metadata_schema,
+)
 from dbf_anonymizer.relationships.models import (
     COMPARISON_SEMANTICS,
     KEY_ROLES,
@@ -356,6 +367,12 @@ def _capability_contract(policy: RecoveryPolicy) -> dict[str, object]:
 
 def build_contract() -> dict[str, object]:
     """Return the normalized actual 1.0 contract without writing files."""
+    external_schema = load_external_metadata_schema()
+    external_schema_sha256 = hashlib.sha256(
+        json.dumps(
+            external_schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    ).hexdigest()
     enums = (
         public.TransferProfile,
         public.OutputDataState,
@@ -385,6 +402,7 @@ def build_contract() -> dict[str, object]:
                 "index_backend_protocol": public.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,
                 "relationship_metadata": RELATIONSHIP_METADATA_SCHEMA_VERSION,
                 "relationship_evidence": EVIDENCE_SCHEMA_VERSION,
+                "external_metadata": EXTERNAL_METADATA_SCHEMA_VERSION,
                 "transfer_manifest": TRANSFER_MANIFEST_SCHEMA_VERSION,
                 "vault": VAULT_SCHEMA_VERSION,
                 "field_capability_matrix": FIELD_CAPABILITY_MATRIX_VERSION,
@@ -442,6 +460,17 @@ def build_contract() -> dict[str, object]:
             "numeric_member_encoding": NUMERIC_MEMBER_ENCODING,
             "assurance_levels": [item.value for item in public.RelationalAssuranceLevel],
             "assurance_scope": RELATIONAL_ASSURANCE_SCOPE_NOTE,
+            "external_metadata": {
+                "schema_version": EXTERNAL_METADATA_SCHEMA_VERSION,
+                "schema_resource": EXTERNAL_METADATA_SCHEMA_RESOURCE,
+                "schema_sha256": external_schema_sha256,
+                "contract_owner": EXTERNAL_METADATA_CONTRACT_OWNER,
+                "producer_independent": True,
+                "index_kinds": list(INDEX_CLAIM_KINDS),
+                "index_verification_states": list(INDEX_VERIFICATION_STATES),
+                "claim_authorities": list(EXTERNAL_METADATA_AUTHORITIES),
+                "claim_assurances": list(CLAIM_ASSURANCES),
+            },
         },
         "index_backend": {
             "protocol_schema_version": public.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION,

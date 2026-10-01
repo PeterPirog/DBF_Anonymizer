@@ -232,9 +232,17 @@ def pseudonymize(
             ),
         )
     output_name = Path(context.output_root).name
-    assurance = _derive_relational_assurance_from_bounded_evidence(
-        plan.relationships, result.relations
-    )
+    authority_binding = getattr(context, "authoritative_binding", None)
+    if authority_binding is None:
+        assurance = _derive_relational_assurance_from_bounded_evidence(
+            plan.relationships, result.relations
+        )
+    else:
+        assurance = _derive_relational_assurance_from_bounded_evidence(
+            plan.relationships,
+            result.relations,
+            authority_binding=authority_binding,
+        )
     public_result = PseudonymizationResult(
         operation_id=result.operation_id,
         dataset=plan.dataset,
@@ -250,6 +258,7 @@ def pseudonymize(
             output_root=context.output_root,
             source_root=context.source_root,
             vault_path=context.vault_path,
+            authoritative_binding=getattr(context, "authoritative_binding", None),
         ),
     )
     # The PUBLIC operation owns its single terminal completion: emitted only

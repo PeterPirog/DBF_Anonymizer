@@ -1,0 +1,10 @@
+{
+  "metadata_schema_version": "1.0",
+  "external_metadata_schema_version": "1.0",
+  "producer": {"producer_id": "another-producer", "producer_version": "2.0"},
+  "authority": "CONTRACT_AUTHORITATIVE",
+  "relations": [],
+  "index_claims": [
+    {"claim_id": "legacy-idx", "table": "archive/data.dbf", "index_file": "archive/data.idx", "index_kind": "STANDALONE_IDX", "tags": [{"name": "ARCH_KEY", "sort_order": "DESCENDING"}], "verification_state": "UNVERIFIED", "assurance": "UNVERIFIED", "provenance": "EXTERNAL_VFP_METADATA", "authority": "CONTRACT_AUTHORITATIVE"}
+  ]
+}

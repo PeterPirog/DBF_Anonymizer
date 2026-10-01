@@ -46,7 +46,8 @@ from tools.build_release_evidence import (
 from tools.check_p7_offline_wheelhouse import _wheel_identity
 from tools.generate_release_sbom import build_sbom, render_sbom
 from tools.verify_release_evidence import (
-    ARCHITECTURE_SHA256,
+    CURRENT_ARCHITECTURE_SHA256,
+    HISTORICAL_ARCHITECTURE_SHA256,
     VerificationFailure,
     verify_evidence,
 )
@@ -114,37 +115,61 @@ def live_pipeline(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]
     }
 
 
-def _run_verifier(manifest: Path, evidence_root: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(VERIFIER),
-            "--manifest",
-            str(manifest),
-            "--evidence-root",
-            str(evidence_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _run_verifier(
+    manifest: Path, evidence_root: Path, *, historical: bool = False
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(VERIFIER),
+        "--manifest",
+        str(manifest),
+        "--evidence-root",
+        str(evidence_root),
+    ]
+    if historical:
+        command.append("--historical")
+    return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
 # ---------------------------------------------------------------------------
-# Layer 1: the committed evidence bundle
+# Layer 1: the committed evidence bundle (an explicitly HISTORICAL record)
 # ---------------------------------------------------------------------------
 
 
 def test_committed_evidence_bundle_verifies() -> None:
-    completed = _run_verifier(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT)
+    """The committed bundle is a REAL historical run: it verifies ONLY through
+    the explicit non-default historical mode."""
+    completed = _run_verifier(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT, historical=True)
     assert completed.returncode == 0, completed.stderr
     verdict = json.loads(completed.stdout.strip().splitlines()[-1])
     assert verdict["result"] == "PASS"
+    assert verdict["architecture_mode"] == "HISTORICAL"
 
 
 def test_committed_manifest_verifies_in_process() -> None:
-    verdict = verify_evidence(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT)
+    verdict = verify_evidence(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT, historical=True)
     assert verdict["result"] == "PASS"
+    assert verdict["architecture_mode"] == "HISTORICAL"
+
+
+def test_committed_historical_bundle_rejected_by_current_verification(
+    tmp_path: Path,
+) -> None:
+    """The CURRENT verification mode must fail closed on the stale digest.
+
+    The committed historical bundle records the obsolete 2026-09-10
+    architecture identity; the default CURRENT mode exists for fresh bundles
+    only and must never accept that stale identity (no historical bytes are
+    modified for this proof).
+    """
+    historical_copy = tmp_path / "historical-copy"
+    shutil.copytree(FIXTURE_ROOT, historical_copy)
+    with pytest.raises(VerificationFailure) as expected:
+        verify_evidence(historical_copy / MANIFEST_NAME, historical_copy)
+    assert "architecture" in str(expected.value)
+    completed = _run_verifier(historical_copy / MANIFEST_NAME, historical_copy)
+    assert completed.returncode != 0
+    shutil.rmtree(historical_copy, ignore_errors=True)
 
 
 def test_manifest_schema_and_identity_are_complete(
@@ -158,7 +183,10 @@ def test_manifest_schema_and_identity_are_complete(
     assert package["version"] == "1.0.0.dev0"
     source = fixture_manifest["source"]
     assert isinstance(source, dict)
-    assert source["architecture_sha256"] == ARCHITECTURE_SHA256
+    # The committed bundle is an explicitly HISTORICAL evidence record: it was
+    # produced by a real run under the former 2026-09-10 architecture and its
+    # recorded digest is the HISTORICAL one (never the current identity).
+    assert source["architecture_sha256"] == HISTORICAL_ARCHITECTURE_SHA256
     commit = source["git_commit_sha"]
     assert isinstance(commit, str) and len(commit) == 40
     # Exact-source provenance: cleanliness + commit-object export protocol.
@@ -259,7 +287,7 @@ def test_sbom_regeneration_is_byte_identical(
         source_date_epoch=int(build_environment["source_date_epoch"]),
         wheelhouse_manifest=REPO_ROOT / "requirements" / "p7-offline-wheelhouse.txt",
         wheelhouse_dir=wheelhouse_dir,
-        architecture_sha256=ARCHITECTURE_SHA256,
+        architecture_sha256=HISTORICAL_ARCHITECTURE_SHA256,
         exclude_filenames=frozenset(application_wheel),
     )
     regenerated = render_sbom(document)
@@ -372,8 +400,8 @@ def _fixture_trusted_digest() -> str:
 
 def _expect_verification_failure(manifest: Path, evidence_root: Path) -> str:
     with pytest.raises(VerificationFailure):
-        verify_evidence(manifest, evidence_root)
-    completed = _run_verifier(manifest, evidence_root)
+        verify_evidence(manifest, evidence_root, historical=True)
+    completed = _run_verifier(manifest, evidence_root, historical=True)
     assert completed.returncode != 0
     return completed.stderr
 
@@ -412,7 +440,7 @@ def test_missing_artifact_fails_verification(tmp_path: Path) -> None:
     manifest, case_dir = _tampered_copy(tmp_path, None, None)
     (case_dir / "dist" / "dbf_anonymizer-1.0.0.dev0.tar.gz").unlink()
     with pytest.raises(VerificationFailure):
-        verify_evidence(manifest, case_dir)
+        verify_evidence(manifest, case_dir, historical=True)
     shutil.rmtree(case_dir, ignore_errors=True)
 
 
@@ -436,6 +464,7 @@ def test_correct_manifest_with_correct_expected_digest_passes() -> None:
         FIXTURE_ROOT / MANIFEST_NAME,
         FIXTURE_ROOT,
         expected_manifest_sha256=_fixture_trusted_digest(),
+        historical=True,
     )
     assert verdict["result"] == "PASS"
 
@@ -444,7 +473,7 @@ def test_wrong_expected_manifest_digest_fails(tmp_path: Path) -> None:
     manifest, case_dir = _tampered_copy(tmp_path, None, None)
     wrong = "0" * 64  # valid 64-hex, but not this manifest's digest
     with pytest.raises(VerificationFailure) as expected:
-        verify_evidence(manifest, case_dir, expected_manifest_sha256=wrong)
+        verify_evidence(manifest, case_dir, expected_manifest_sha256=wrong, historical=True)
     assert "trusted expected" in str(expected.value)
     completed = _run_verifier_with_expected(manifest, case_dir, wrong)
     assert completed.returncode != 0
@@ -454,7 +483,9 @@ def test_wrong_expected_manifest_digest_fails(tmp_path: Path) -> None:
 def test_malformed_expected_manifest_digest_fails(tmp_path: Path) -> None:
     manifest, case_dir = _tampered_copy(tmp_path, None, None)
     with pytest.raises(VerificationFailure) as expected:
-        verify_evidence(manifest, case_dir, expected_manifest_sha256="not-a-digest")
+        verify_evidence(
+            manifest, case_dir, expected_manifest_sha256="not-a-digest", historical=True
+        )
     assert "malformed" in str(expected.value)
     shutil.rmtree(tmp_path / "evidence-copy", ignore_errors=True)
 
@@ -464,7 +495,7 @@ def test_missing_manifest_digest_source_fails(tmp_path: Path) -> None:
     shutil.copytree(FIXTURE_ROOT, case_dir)
     (case_dir / MANIFEST_DIGEST_SIDECAR).unlink()
     with pytest.raises(VerificationFailure) as expected:
-        verify_evidence(case_dir / MANIFEST_NAME, case_dir)
+        verify_evidence(case_dir / MANIFEST_NAME, case_dir, historical=True)
     assert "missing manifest integrity binding" in str(expected.value)
     shutil.rmtree(case_dir, ignore_errors=True)
 
@@ -478,7 +509,7 @@ def test_tampered_manifest_digest_sidecar_fails(tmp_path: Path) -> None:
     flipped = ("0" if digest[0] != "0" else "1") + digest[1:]
     sidecar.write_text(f"{flipped}  {filename}\n", encoding="utf-8")
     with pytest.raises(VerificationFailure) as expected:
-        verify_evidence(case_dir / MANIFEST_NAME, case_dir)
+        verify_evidence(case_dir / MANIFEST_NAME, case_dir, historical=True)
     assert "sidecar" in str(expected.value)
     shutil.rmtree(case_dir, ignore_errors=True)
 
@@ -512,13 +543,14 @@ def test_coherent_artifact_manifest_substitution_rejected_against_trusted_digest
         f"{copy_digest}  {MANIFEST_NAME}\n", encoding="utf-8"
     )
 
-    # Internally self-consistent: the plain (sidecar-mode) verifier accepts.
-    assert verify_evidence(manifest, case_dir)["result"] == "PASS"
+    # Internally self-consistent: the plain (sidecar-mode) HISTORICAL verifier
+    # accepts.
+    assert verify_evidence(manifest, case_dir, historical=True)["result"] == "PASS"
 
     # Against the TRUSTED original digest: rejected fail-closed.
     trusted = _fixture_trusted_digest()
     with pytest.raises(VerificationFailure) as expected:
-        verify_evidence(manifest, case_dir, expected_manifest_sha256=trusted)
+        verify_evidence(manifest, case_dir, expected_manifest_sha256=trusted, historical=True)
     assert "trusted expected" in str(expected.value)
     completed = _run_verifier_with_expected(manifest, case_dir, trusted)
     assert completed.returncode != 0
@@ -538,6 +570,7 @@ def _run_verifier_with_expected(
             str(evidence_root),
             "--expected-manifest-sha256",
             expected,
+            "--historical",
         ],
         capture_output=True,
         text=True,
@@ -546,7 +579,7 @@ def _run_verifier_with_expected(
 
 
 def test_verifier_accepts_bundle_without_expected_digest_via_sidecar() -> None:
-    completed = _run_verifier(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT)
+    completed = _run_verifier(FIXTURE_ROOT / MANIFEST_NAME, FIXTURE_ROOT, historical=True)
     assert completed.returncode == 0, completed.stderr
     verdict = json.loads(completed.stdout.strip().splitlines()[-1])
     assert verdict["result"] == "PASS"
@@ -567,9 +600,22 @@ def test_verifier_rejects_bundle_when_sidecar_and_expected_disagree(tmp_path: Pa
             case_dir / MANIFEST_NAME,
             case_dir,
             expected_manifest_sha256=different,
+            historical=True,
         )
     assert "trusted expected" in str(expected.value)
     shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_current_architecture_digest_is_the_operational_identity() -> None:
+    """The verifier's CURRENT mode is bound to the live architecture identity
+    and the historical digest is an explicitly separate constant."""
+    assert CURRENT_ARCHITECTURE_SHA256 == (
+        "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587"
+    )
+    assert HISTORICAL_ARCHITECTURE_SHA256 == (
+        "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615"
+    )
+    assert CURRENT_ARCHITECTURE_SHA256 != HISTORICAL_ARCHITECTURE_SHA256
 
 
 # ---------------------------------------------------------------------------

@@ -33,9 +33,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dbf_anonymizer.errors import ErrorCode, ErrorContext, PolicyError
+
+if TYPE_CHECKING:
+    from dbf_anonymizer.relationships.external_metadata import ExternalIndexClaim
 
 __all__ = [
     "RELATIONSHIP_METADATA_SCHEMA_VERSION",
@@ -56,6 +59,8 @@ __all__ = [
     "COMPARISON_UNSPECIFIED",
     "PROVENANCE_POLICY_FILE",
     "PROVENANCE_MCP_VFP9SP2_TOOLCHAIN",
+    "PROVENANCE_EXTERNAL_VFP_METADATA",
+    "PROVENANCE_MIXED",
     "RelationMember",
     "RelationGroup",
     "RelationshipDocument",
@@ -76,9 +81,24 @@ COMPARISON_SEMANTICS: tuple[str, ...] = (COMPARISON_EXACT_VALUE, COMPARISON_UNSP
 
 PROVENANCE_POLICY_FILE = "POLICY_FILE"
 PROVENANCE_MCP_VFP9SP2_TOOLCHAIN = "MCP_VFP9SP2_TOOLCHAIN"
+#: REQ-P6-006 (revised): the producer-INDEPENDENT provenance class of VFP
+#: relationship/index metadata supplied through the DBF_Anonymizer-owned
+#: external metadata contract.  The concrete producer is carried by the
+#: envelope's structured provenance (``producer_id``/``producer_version``),
+#: never hardcoded in this vocabulary.  ADDITIVE vocabulary member: the
+#: previously frozen tokens stay untouched and POLICY_FILE documents remain
+#: non-authoritative.
+PROVENANCE_EXTERNAL_VFP_METADATA = "EXTERNAL_VFP_METADATA"
+#: The truthful public provenance SUMMARY token for a document whose
+#: effective authoritative claims use MORE THAN ONE authoritative VFP-metadata
+#: class.  It is NOT a claim provenance vocabulary member (every claim carries
+#: its own explicit provenance); it is only the bounded public summary used by
+#: :class:`RelationshipMetadata` and the assurance kernel.
+PROVENANCE_MIXED = "MIXED"
 RELATIONSHIP_PROVENANCES: tuple[str, ...] = (
     PROVENANCE_POLICY_FILE,
     PROVENANCE_MCP_VFP9SP2_TOOLCHAIN,
+    PROVENANCE_EXTERNAL_VFP_METADATA,
 )
 
 SUPPORTED_RELATIONSHIP_DBF_TYPES: tuple[str, ...] = ("C", "V", "I", "N")
@@ -234,6 +254,8 @@ class RelationGroup:
     provenance: str
     source_digest: str | None = None
     numeric_strategy: str = NUMERIC_STRATEGY_IDENTITY
+    claim_assurance: str | None = None
+    claim_authority: str | None = None
 
     def __post_init__(self) -> None:
         _validate_bounded_token(self.relation_id, "RELATIONSHIP_ID_INVALID")
@@ -246,6 +268,10 @@ class RelationGroup:
         if self.numeric_strategy not in NUMERIC_STRATEGIES:
             # Unknown numeric strategies FAIL CLOSED (no silent inference).
             raise _invalid("RELATIONSHIP_NUMERIC_STRATEGY_INVALID")
+        if self.claim_assurance not in {None, "VERIFIED", "UNVERIFIED"}:
+            raise _invalid("EXTERNAL_METADATA_RELATION_ASSURANCE_INVALID")
+        if self.claim_authority not in {None, "CONTRACT_AUTHORITATIVE", "INFERRED"}:
+            raise _invalid("EXTERNAL_METADATA_RELATION_AUTHORITY_INVALID")
         if self.source_digest is not None:
             _validate_bounded_token(self.source_digest, "RELATIONSHIP_SOURCE_DIGEST_INVALID")
         seen: set[tuple[str, str, str]] = set()
@@ -297,7 +323,7 @@ class RelationGroup:
 
     def to_dict(self) -> dict[str, Any]:
         """Bounded provenance serialization (never any key/source values)."""
-        return {
+        payload: dict[str, Any] = {
             "relation_id": self.relation_id,
             "comparison": self.comparison,
             "provenance": self.provenance,
@@ -320,17 +346,55 @@ class RelationGroup:
                 )
             ],
         }
+        if self.claim_assurance is not None:
+            payload["assurance"] = self.claim_assurance
+        if self.claim_authority is not None:
+            payload["authority"] = self.claim_authority
+        return payload
 
 
 @dataclass(frozen=True)
 class RelationshipDocument:
-    """The ONE deterministic versioned relationship metadata document."""
+    """The ONE deterministic versioned relationship metadata document.
+
+    REQ-P6-006 (revised): the external VFP metadata envelope is carried
+    ADDITIVELY on the same document - when the envelope keys are absent the
+    document is byte-identical to the pre-P6-006 shape (canonical bytes,
+    fingerprint and every public serialization unchanged); when present the
+    structured external metadata participates deterministically in the SAME
+    relationship fingerprint (no second compatibility identity).
+    """
 
     groups: tuple[RelationGroup, ...]
+    external_metadata_schema_version: str | None = None
+    producer_id: str | None = None
+    producer_version: str | None = None
+    external_authority: str | None = None
+    index_claims: tuple[ExternalIndexClaim, ...] = ()
 
     def canonical_groups(self) -> tuple[RelationGroup, ...]:
         """Groups in canonical order (stable relation_id; order-irrelevant)."""
         return tuple(sorted(self.groups, key=lambda group: group.relation_id))
+
+    def effective_groups(self) -> tuple[RelationGroup, ...]:
+        """Claims allowed to affect grouping and relational assurance.
+
+        Legacy P3 documents have no external envelope and retain their exact
+        behavior. External claims are effective only when the claim's authority
+        is CONTRACT_AUTHORITATIVE and the individual claim is verified.
+        """
+        if self.external_metadata_schema_version is None:
+            return self.groups
+        return tuple(
+            group
+            for group in self.groups
+            if group.claim_authority == "CONTRACT_AUTHORITATIVE"
+            and group.claim_assurance == "VERIFIED"
+        )
+
+    def verified_index_claims(self) -> tuple[ExternalIndexClaim, ...]:
+        """External index claims eligible to support existing index assurance."""
+        return tuple(claim for claim in self.index_claims if claim.verified)
 
     def __post_init__(self) -> None:
         if not isinstance(self.groups, tuple):
@@ -340,7 +404,22 @@ class RelationshipDocument:
             raise _invalid("RELATIONSHIP_ID_DUPLICATE")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "metadata_schema_version": RELATIONSHIP_METADATA_SCHEMA_VERSION,
             "relations": [group.to_dict() for group in self.canonical_groups()],
         }
+        if self.external_metadata_schema_version is not None:
+            payload["external_metadata_schema_version"] = self.external_metadata_schema_version
+        if self.producer_id is not None and self.producer_version is not None:
+            payload["producer"] = {
+                "producer_id": self.producer_id,
+                "producer_version": self.producer_version,
+            }
+        if self.external_authority is not None:
+            payload["authority"] = self.external_authority
+        if self.index_claims:
+            payload["index_claims"] = [
+                claim.to_dict()
+                for claim in sorted(self.index_claims, key=lambda item: item.claim_id)
+            ]
+        return payload

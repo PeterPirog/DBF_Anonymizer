@@ -70,7 +70,7 @@
     "ref_guard": "refs/heads/main only, verified before any checkout",
     "checkout": "no explicit ref and no caller-provided SHA/branch; never github.event.pull_request.head.sha",
     "revision_identity": "git rev-parse HEAD must equal origin/main and be recorded with the sanitized evidence",
-    "architecture_hash_required": "483932970d44770b05fcfad7430b85820d771458110f004b0397bd5d56398615",
+    "architecture_hash_required": "126af414b2ba6497760a866475b2517b5470ce3b9681da3863401156bf235587",
     "acceptance_tool": "tools/run_real_vfp9_acceptance.py (the established REQ-P6-003 boundary; no second acceptance protocol)",
     "runner_targeting": {
       "syntax": "runs-on mapping with group and labels",

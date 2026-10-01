@@ -1046,7 +1046,7 @@ def _numeric_relation_capacity(
 
     reversible_groups = [
         group
-        for group in document.groups
+        for group in document.effective_groups()
         if group.numeric_strategy == NUMERIC_STRATEGY_REVERSIBLE_BIJECTIVE
     ]
     if not reversible_groups:
