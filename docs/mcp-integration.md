@@ -10,10 +10,10 @@ the mcp-vfp9sp2-toolchain project, which owns:
 - authentication and authorization,
 - allowed-root/path policy for filesystem access,
 - asynchronous/job orchestration,
-- authoritative VFP project/DBC/CDX knowledge (when a frozen authoritative
-  metadata contract becomes available; see
-  [limits-and-integrity.md](limits-and-integrity.md) for the current
-  P6-006 status),
+- authoritative VFP project/DBC/CDX knowledge: the host gathers authoritative
+  project knowledge and emits a conforming producer-independent JSON metadata
+  document into DBF_Anonymizer's public planning boundary (see
+  [external-vfp-metadata-contract.md](external-vfp-metadata-contract.md)),
 - server-side policy for consumers.
 
 DBF_Anonymizer does not import mcp-vfp9sp2-toolchain, and the boundary is
@@ -46,6 +46,30 @@ return typed public results or raise the typed public error hierarchy
 (`AnonymizerError` and its categories — see
 [errors-1.0.md](errors-1.0.md)). The host converts results/exceptions into
 whatever its transport needs.
+
+## The authoritative-metadata flow (completed P6-006 contract)
+
+DBF_Anonymizer owns and ships the external VFP relationship/index metadata
+consumer contract: a versioned, transport-neutral, producer-independent JSON
+Schema is shipped inside the package and loaded through the public
+`importlib.resources` resource path (see
+[external-vfp-metadata-contract.md](external-vfp-metadata-contract.md)). The
+current downstream pattern:
+
+mcp-vfp9sp2-toolchain
+→ gathers authoritative VFP/DBC/CDX project knowledge,
+→ emits a conforming producer-independent transport-neutral JSON metadata document,
+→ passes it into DBF_Anonymizer through the existing public synchronous API
+  (`build_plan(..., relationship_document=<envelope>)`),
+→ DBF_Anonymizer validates it fail-closed, preserves the supplied structured
+  producer provenance and external schema version, fingerprints it, and uses
+  authoritative claims only under the implemented per-claim
+  provenance/authority/assurance/verification rules.
+
+An injected verified index metadata claim does NOT by itself prove that an
+output CDX/IDX was rebuilt: output index validity still requires the
+appropriate authoritative backend rebuild/verification evidence. External
+metadata does NOT recreate source DBC semantics in standalone output.
 
 ## What the downstream host supplies (and DBF_Anonymizer does not)
 

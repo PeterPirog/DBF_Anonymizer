@@ -360,9 +360,11 @@ non-empty list of relation groups). Each relation group:
 | Key | Required | Values |
 | --- | --- | --- |
 | `relation_id` | yes | bounded stable token, unique in the document |
-| `provenance` | yes | `POLICY_FILE` or `MCP_VFP9SP2_TOOLCHAIN` |
+| `provenance` | yes | `POLICY_FILE`, `MCP_VFP9SP2_TOOLCHAIN` or `EXTERNAL_VFP_METADATA` |
 | `comparison` | yes | `EXACT_VALUE` or `UNSPECIFIED` |
 | `numeric_strategy` | optional | `IDENTITY` (default) or `REVERSIBLE_BIJECTIVE` |
+| `assurance` | external envelope: yes | `VERIFIED` or `UNVERIFIED` (external claims must state it) |
+| `authority` | external envelope: yes | `CONTRACT_AUTHORITATIVE` or `INFERRED` (per claim; only CONTRACT_AUTHORITATIVE + VERIFIED claims are effective) |
 | `source_digest` | optional | bounded token |
 | `members` | yes | ordered member list (see below) |
 
@@ -553,6 +555,74 @@ try:
     )
 except public.PolicyError as refusal:
     assert refusal.code is public.ErrorCode.POLICY_INVALID
+```
+
+## External VFP metadata envelope (completed P6-006 contract)
+
+The completed P6-006 contract defines the full EXTERNAL metadata envelope,
+owned and shipped by DBF_Anonymizer (see
+[external-vfp-metadata-contract.md](external-vfp-metadata-contract.md)): the
+envelope carries the external `external_metadata_schema_version` ("1.0"), the
+structured producer provenance (`producer_id`/`producer_version`), the
+envelope-level `authority` classification, and — on EVERY relation claim and
+index claim — its own explicit `provenance`, `authority` and `assurance`.
+Only a claim that is both `CONTRACT_AUTHORITATIVE` and `VERIFIED` (index
+claims additionally `VERIFIED` in `verification_state`) and whose provenance
+is an authoritative VFP-metadata class may affect authoritative
+relationship-domain grouping or become eligible for
+`VFP_METADATA_VERIFIED`; inferred or unverified claims remain retained as
+non-authoritative planning/reporting information. The following executable
+example injects a conforming external envelope through the same public
+planning boundary:
+
+```python p7-009-exec
+external_document = {
+    "metadata_schema_version": "1.0",
+    "external_metadata_schema_version": "1.0",
+    "producer": {"producer_id": "doc-example-analyzer", "producer_version": "1.0.0"},
+    "authority": "CONTRACT_AUTHORITATIVE",
+    "relations": [
+        {
+            "relation_id": "doc-example-fk",
+            "comparison": "EXACT_VALUE",
+            "provenance": "EXTERNAL_VFP_METADATA",
+            "assurance": "VERIFIED",
+            "authority": "CONTRACT_AUTHORITATIVE",
+            "members": [
+                {
+                    "table": "people.dbf",
+                    "field": "ID",
+                    "role": "PRIMARY",
+                    "ordinal": 1,
+                    "dbf_type": "I",
+                    "byte_width": 4,
+                    "encoding": "none",
+                    "nullable": False,
+                },
+                {
+                    "table": "orders.dbf",
+                    "field": "PERSON_ID",
+                    "role": "FOREIGN",
+                    "ordinal": 1,
+                    "dbf_type": "I",
+                    "byte_width": 4,
+                    "encoding": "none",
+                    "nullable": False,
+                },
+            ],
+        }
+    ],
+}
+external_plan = public.build_plan(
+    rel_source,
+    rel_output,
+    work_root / "protected" / "recovery-external-doc.sqlite3",
+    relationship_document=external_document,
+)
+assert external_plan.relationships.external_metadata_schema_version == "1.0"
+assert external_plan.relationships.producer_id == "doc-example-analyzer"
+assert external_plan.relationships.authoritative is True
+assert public.preflight(external_plan).ready
 ```
 
 ## DATA_ONLY transfer bundles

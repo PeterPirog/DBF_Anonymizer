@@ -26,8 +26,11 @@ Proves the user documentation objectively:
    reported without claiming DBC preservation in standalone output, the
    standalone core requires no VFP/COM/subprocess/network and never scans for
    VFP, the injected ``IndexBackend`` capability is not denied, P7-004 stays
-   the no-HTTP/no-Git/no-install/no-download guarantee, and P6-006 remains
-   BLOCKED/DEFERRED;
+   the no-HTTP/no-Git/no-install/no-download guarantee, and the completed
+   P6-006 external VFP metadata contract is documented truthfully
+   (package-owned, shipped schema, producer-independent, host-injected,
+   subject to the implemented per-claim provenance/authority/assurance/
+   verification rules — no automatic DBC discovery);
 10. DBF_Anonymizer is described as transport-neutral and NOT an MCP server;
 11. the pseudonymized-vs-anonymous distinction is present and explicit;
 12. docs contain no private paths, secrets or production-data instructions;
@@ -57,6 +60,7 @@ DOCUMENT_NAMES = (
     "README.md",
     "docs/operations.md",
     "docs/limits-and-integrity.md",
+    "docs/external-vfp-metadata-contract.md",
     "docs/mcp-integration.md",
     "docs/threat-model.md",
     "docs/pseudonymization-vs-anonymization.md",
@@ -314,12 +318,15 @@ def test_relationship_configuration_topic_is_covered() -> None:
             "metadata_schema_version",
             "POLICY_FILE",
             "MCP_VFP9SP2_TOOLCHAIN",
+            "EXTERNAL_VFP_METADATA",
+            "CONTRACT_AUTHORITATIVE",
             "EXACT_VALUE",
             "REVERSIBLE_BIJECTIVE",
             "PRIMARY",
             "FOREIGN",
             "no automatic DBC relationship discovery",
             "preflight",
+            "external-vfp-metadata-contract.md",
         )
     )
 
@@ -372,6 +379,8 @@ def test_mcp_consumer_integration_topic_is_covered() -> None:
             "DBF_Anonymizer is a synchronous, transport-neutral library",
             "NOT an MCP server",
             "does not import mcp-vfp9sp2-toolchain",
+            "external-vfp-metadata-contract.md",
+            "external_metadata_schema_version",
         )
     )
 
@@ -554,8 +563,20 @@ def test_documented_schema_and_version_constants_match_the_code() -> None:
         assert documented_requirements == {actual_requirement}
 
     # C. Relationship metadata schema: labelled documented value vs code.
-    relationship_labels = re.findall(r"metadata_schema_version\s*==\s*\"([^\"]+)\"", operations)
+    # The boundary is scoped so the DISTINCT external envelope field
+    # (external_metadata_schema_version) is verified on its own below.
+    relationship_labels = re.findall(
+        r"(?<!external_)metadata_schema_version\s*==\s*\"([^\"]+)\"", operations
+    )
     assert relationship_labels == [RELATIONSHIP_METADATA_SCHEMA_VERSION]
+    external_labels = re.findall(
+        r"external_metadata_schema_version\s*==\s*\"([^\"]+)\"", operations
+    )
+    from dbf_anonymizer.relationships.external_metadata import (  # noqa: PLC0415
+        EXTERNAL_METADATA_SCHEMA_VERSION,
+    )
+
+    assert external_labels == [EXTERNAL_METADATA_SCHEMA_VERSION]
 
     # D. Public model / error / index-protocol schemas: the docs that publish
     # them as user contract carry labelled values compared to the code
@@ -790,17 +811,58 @@ def test_vfp_index_documentation_is_truthful() -> None:
         "remains reported as DBC-bound",
         "does NOT imply preservation",
         "No automatic VFP project understanding",
-        "BLOCKED/DEFERRED",
+        # The completed P6-006 external metadata contract is documented
+        # truthfully as package-owned and host-injected (present tense).
+        "external-vfp-metadata-contract.md",
+        "existing public synchronous planning boundary",
+        "does NOT recreate source DBC semantics",
+        "does NOT by itself prove that an output CDX/IDX",
+        "authoritative backend rebuild/verification evidence",
         "mcp-vfp9sp2-toolchain",
     ):
         assert required in limits, required
-    # No overstatement of automatic discovery or P6-006 completion.
+    # No overstatement of automatic discovery, DBC preservation — and the
+    # obsolete blocked narrative must never return.
     for forbidden in (
         "automatically discovers DBC relationships",
-        "P6-006 is complete",
         "fully preserves DBC triggers",
+        # Obsolete narrative restored (P6-006 is complete on main):
+        "remains BLOCKED/DEFERRED",
     ):
         assert forbidden not in _all_text(), forbidden
+
+
+def test_external_metadata_documentation_matches_production() -> None:
+    """The external VFP metadata documentation cannot drift from production.
+
+    The documented external schema version and resource identity must equal
+    the ACTUAL production constants (never a hardcoded test literal), the
+    public loader must successfully load the shipped schema, and the
+    wheel-shipped schema resource must exist.
+    """
+    from importlib.resources import files
+
+    from dbf_anonymizer.relationships.external_metadata import (  # noqa: PLC0415
+        EXTERNAL_METADATA_SCHEMA_RESOURCE,
+        EXTERNAL_METADATA_SCHEMA_VERSION,
+        load_external_metadata_schema,
+    )
+
+    contract_doc = _documents()["docs/external-vfp-metadata-contract.md"]
+    documented_versions = set(
+        re.findall(r"external VFP metadata schema version [`\"](\d+\.\d+)[`\"]", contract_doc)
+    )
+    assert documented_versions == {EXTERNAL_METADATA_SCHEMA_VERSION}, documented_versions
+    documented_resources = set(
+        re.findall(r"(schemas/external-vfp-metadata-[\w.-]+\.schema\.json)", contract_doc)
+    )
+    assert EXTERNAL_METADATA_SCHEMA_RESOURCE in documented_resources, documented_resources
+    schema = load_external_metadata_schema()
+    assert schema["x-contract-schema-version"] == EXTERNAL_METADATA_SCHEMA_VERSION
+    # The wheel-shipped resource exists inside the installed package tree.
+    package_files = files("dbf_anonymizer")
+    shipped = package_files / "schemas" / EXTERNAL_METADATA_SCHEMA_RESOURCE.removeprefix("schemas/")
+    assert shipped.is_file(), EXTERNAL_METADATA_SCHEMA_RESOURCE
 
 
 def test_dbc_source_and_output_truth_semantics() -> None:
