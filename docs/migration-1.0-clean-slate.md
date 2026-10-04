@@ -1,9 +1,22 @@
 # Migration note — 1.0 clean-slate reset (REQ-P0-001)
 
-Status: 1.0 development baseline (`1.0.0.dev0`). Supersedes the historical 0.3
-line. This note is version-controlled evidence for REQ-P0-001 of the immutable
-target architecture
-(`DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md`).
+This is a HISTORICAL migration note. The Phase 0 reset described here
+originally established the 1.0.0 development baseline (`1.0.0.dev0`); the
+repository has since completed the Phases 1-8 convergence and the package now
+carries the frozen stable `1.0.0` version (see
+[public-contract-1.0.md](public-contract-1.0.md)).
+
+Chronology and architectural authority:
+
+- At the time of the Phase 0 reset, the requirement evidence for REQ-P0-001
+  was validated against the then-immutable target architecture
+  (`DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md`).
+- The CURRENT architectural authority is the immutable revision
+  `DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-29.md`; all
+  current requirement statuses are evaluated against that revision.
+
+Supersedes the historical 0.3 line. This note is version-controlled evidence
+for REQ-P0-001.
 
 ## What changed
 
@@ -25,9 +38,10 @@ of the 0.3 implementation; the installable package no longer carries it.
   `pipeline`, `worker_tasks`, `vfp`, and related modules);
 - the old VFP/CDX COM-automation coupling.
 
-None of these surfaces are preserved merely for compatibility. They are not
-replaced by fake or stub implementations of the future 1.0 API either: at the
-end of Phase 0 the package surface is intentionally small.
+None of these surfaces are preserved merely for compatibility. At the Phase 0
+reset they were also not replaced by fake or stub implementations of what was
+then the future 1.0 API: at the end of Phase 0 the package surface was
+intentionally small.
 
 ## Reuse rule for old implementation fragments
 
@@ -40,8 +54,10 @@ the 0.3 codebase.
 ## Removed in this reset
 
 All 0.3 runtime modules implementing the superseded architecture were removed
-from `src/dbf_anonymizer` (the active package now contains only the module
-`__init__.py` with the development version marker), together with their 0.3
+from `src/dbf_anonymizer` at the Phase 0 reset (at that point the active
+package contained only the module `__init__.py` with the development version
+marker; the package has since been rebuilt to the full frozen stable 1.0
+surface), together with their 0.3
 test modules, the 0.3 benchmark script, the 0.3 documentation pages, the
 `.env.example` private-path configuration file, and the release gates whose
 only purpose was preserving obsolete 0.3 behavior.
@@ -72,7 +88,10 @@ production data pipeline, does not depend on the `dbf` library directly, does
 not import dbfbridge private internals, and does not implement its own DBF/FPT
 binary parsing or writing.
 
-## Versioning
+## Versioning (historical)
 
-The development baseline is identified as `1.0.0.dev0`. No stable 1.0 release
-is declared by this reset.
+The Phase 0 reset identified the development baseline as `1.0.0.dev0`; no
+stable 1.0 release was declared by that reset. The repository has since
+completed the full 1.0 convergence: the package version is the frozen stable
+`1.0.0` and the contract freeze is documented in
+[public-contract-1.0.md](public-contract-1.0.md).

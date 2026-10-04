@@ -1,6 +1,9 @@
 # DBF_Anonymizer
 
-Stable 1.0 release (clean-slate architecture). DBF_Anonymizer pseudonymizes
+Stable 1.0 contract (clean-slate architecture); the package version is
+`1.0.0` (stable). Public PyPI publication is a separate privileged release
+process and is not proven by repository metadata alone. DBF_Anonymizer
+pseudonymizes
 Visual FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
 recovery vault inside the internal environment, and produces transferable
 pseudonymized data-only bundles.

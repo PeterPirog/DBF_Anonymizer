@@ -4,8 +4,9 @@ Proves the user documentation objectively:
 
 1. every required REQ-P7-009 topic is covered by version-controlled English
    docs (semantic multi-marker coverage, not single-sentence matching);
-2. every relative documentation link resolves and every doc is reachable from
-   the README;
+2. every relative documentation link resolves (file existence AND GitHub-
+   compatible in-page/cross-document anchor validation) and every user doc is
+   reachable from the README;
 3. documented public Python symbols actually exist on the public package root;
 4. documented CLI command names match the real CLI command set exactly and
    every command advertises its ``--json`` machine mode;
@@ -34,9 +35,16 @@ Proves the user documentation objectively:
 10. DBF_Anonymizer is described as transport-neutral and NOT an MCP server;
 11. the pseudonymized-vs-anonymous distinction is present and explicit;
 12. docs contain no private paths, secrets or production-data instructions;
-13. English-first is proven structurally: explicit English primary headings,
+13. English-first is proven structurally over the COMPLETE user documentation
+    set (README plus every docs/*.md page): explicit English primary headings,
     explicit English operational/security terms, and no Polish or Chinese
-    user-facing markers in the P7-009 user documents.
+    user-facing markers;
+14. the stable current state cannot regress into stale narratives: the frozen
+    contract page documents the completed P6-006/P8-002/P8-003 state, the
+    model/error pages describe the frozen stable 1.0 contract (not a
+    pre-freeze development contract), and the ``1.0.0.dev0`` baseline stays
+    legitimate HISTORICAL provenance (migration note / committed fixture
+    evidence) without returning as a false current-state claim.
 
 The examples use synthetic fixtures only; the harness never touches
 production datasets.
@@ -56,19 +64,27 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 DOCS_DIR = REPO_ROOT / "docs"
-DOCUMENT_NAMES = (
+
+#: The COMPLETE user-facing documentation set: the README plus EVERY tracked
+#: ``docs/*.md`` page. The set is derived from the repository tree instead of
+#: a manually maintained list, so a newly added documentation page is covered
+#: by default (regression guard for the stale public-contract-1.0.md /
+#: release-acceptance.md coverage gap).
+ALL_USER_DOCUMENT_NAMES: tuple[str, ...] = (
     "README.md",
-    "docs/operations.md",
-    "docs/limits-and-integrity.md",
-    "docs/external-vfp-metadata-contract.md",
-    "docs/mcp-integration.md",
-    "docs/threat-model.md",
-    "docs/pseudonymization-vs-anonymization.md",
-    "docs/public-models-1.0.md",
-    "docs/errors-1.0.md",
-    "docs/vault-protection.md",
-    "docs/migration-1.0-clean-slate.md",
+    *(f"docs/{path.name}" for path in sorted(DOCS_DIR.glob("*.md"))),
 )
+
+DOCUMENT_NAMES = ALL_USER_DOCUMENT_NAMES
+
+#: Internal (non-user-facing) English provenance/benchmark documentation that
+#: must stay English-first as well.
+INTERNAL_ENGLISH_DOCUMENT_NAMES = (
+    "benchmarks/final-pipeline-baseline.md",
+    "tests/fixtures/p0/PROVENANCE.md",
+    "tests/fixtures/p0/vfp/PROVENANCE_VFP.md",
+)
+
 EXECUTABLE_INFO_MARKER = "p7-009-exec"
 OPERATIONS = "docs/operations.md"
 LIMITS = "docs/limits-and-integrity.md"
@@ -450,25 +466,109 @@ def test_documentation_is_english_first() -> None:
     ]
     assert not missing, f"required English operational terms missing: {missing}"
 
-    for name in P7_009_DOCUMENT_NAMES:
+    for name in ALL_USER_DOCUMENT_NAMES:
         marker = POLISH_USER_MARKERS.search(documents[name])
         assert marker is None, f"{name} contains a Polish user-facing marker: {marker.group(0)!r}"
 
 
 _LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
+_HEADING = re.compile(r"^(#{1,6}) (.+?)\s*$")
+_FENCE = re.compile(r"^(```|~~~)")
+
+
+def _github_heading_slug(heading_text: str) -> str:
+    """Deterministic GitHub-compatible Markdown heading slug.
+
+    Mirrors GitHub's anchor algorithm for ATX headings: strip Markdown
+    code/emphasis formatting (backticks, asterisks, tildes), lowercase, drop
+    every character that is not an ASCII word character, a hyphen or a space,
+    then replace spaces with hyphens. Underscores are PRESERVED exactly like
+    GitHub preserves them in ``## DATA_ONLY transfer bundles`` ->
+    ``#data_only-transfer-bundles``. (This documentation does not use
+    underscore-emphasis inside headings; underscore-emphasis markers are
+    processed by Markdown rendering on GitHub, whereas word-internal
+    underscores are preserved — matching GitHub's behaviour for DATA_ONLY.)
+    """
+    text = re.sub(r"[`*~]", "", heading_text.strip())
+    text = text.lower()
+    text = re.sub(r"[^\w\- ]", "", text, flags=re.ASCII)
+    return text.replace(" ", "-")
+
+
+def _heading_slugs(text: str) -> list[str]:
+    """GitHub-compatible slugs of every ATX heading outside code fences.
+
+    Duplicate headings get the deterministic GitHub ``-1``/``-2`` suffixes.
+    """
+    slugs: list[str] = []
+    counts: dict[str, int] = {}
+    inside_fence = False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            inside_fence = not inside_fence
+            continue
+        if inside_fence:
+            continue
+        match = _HEADING.match(line)
+        if match is None:
+            continue
+        base = _github_heading_slug(match.group(2))
+        count = counts.get(base, 0)
+        counts[base] = count + 1
+        slugs.append(base if count == 0 else f"{base}-{count}")
+    return slugs
+
+
+def _assert_document_links(name: str, text: str) -> None:
+    """Every non-external link of one document resolves.
+
+    A. relative file targets must exist;
+    B. pure in-page anchors (``#...``) must match a real GitHub-compatible
+       heading slug of the SAME document (pure anchors are NOT skipped);
+    C. anchors attached to relative ``.md`` links must match a real heading
+       slug of the TARGET document.
+    """
+    for target in _LINK.findall(text):
+        if target.startswith(("http://", "https://", "mailto:")):
+            continue
+        path_part, _, anchor = target.partition("#")
+        if not path_part:
+            assert anchor, f"{name}: empty link target {target!r}"
+            slugs = _heading_slugs(text)
+            assert anchor in slugs, f"{name}: broken in-page anchor {target!r}"
+            continue
+        resolved = (REPO_ROOT / name).parent / path_part
+        assert resolved.is_file(), f"{name}: broken relative link {target!r}"
+        if anchor and path_part.endswith(".md"):
+            target_text = resolved.read_text(encoding="utf-8")
+            assert anchor in _heading_slugs(target_text), (
+                f"{name}: broken anchor {target!r} in {path_part!r}"
+            )
+
+
+def test_github_heading_slug_is_github_compatible_for_data_only() -> None:
+    """The slug algorithm handles ``DATA_ONLY`` exactly like GitHub: the
+    underscore of ``## DATA_ONLY transfer bundles`` is preserved."""
+    assert _github_heading_slug("DATA_ONLY transfer bundles") == "data_only-transfer-bundles"
+
+
+def test_pure_in_page_anchor_validation_rejects_nonexistent_anchor() -> None:
+    """Regression proof: the link validation cannot silently accept a
+    nonexistent pure in-page anchor (previously such links were skipped)."""
+    broken_text = "# Real heading\n\n[missing](#no-such-anchor)\n"
+    failed: AssertionError | None = None
+    try:
+        _assert_document_links("docs/__anchor_regression__.md", broken_text)
+    except AssertionError as error:
+        failed = error
+    assert failed is not None, "a nonexistent pure in-page anchor was accepted"
+    assert "broken in-page anchor" in str(failed)
 
 
 def test_all_relative_documentation_links_resolve() -> None:
-    for name, text in _documents().items():
-        base = (REPO_ROOT / name).parent
-        for target in _LINK.findall(text):
-            if target.startswith(("http://", "https://", "mailto:")):
-                continue
-            path_part = target.split("#", 1)[0]
-            if not path_part:
-                continue  # pure in-page anchor
-            resolved = (base / path_part).resolve()
-            assert resolved.is_file(), f"{name}: broken relative link {target!r}"
+    documents = _documents()
+    for name, text in documents.items():
+        _assert_document_links(name, text)
 
 
 def test_every_doc_is_reachable_from_the_readme() -> None:
@@ -492,6 +592,18 @@ def test_every_doc_is_reachable_from_the_readme() -> None:
                     queue.append(name)
     unreachable = sorted(set(documents) - reachable)
     assert not unreachable, f"documentation files not reachable from README: {unreachable}"
+
+
+def test_all_user_document_names_cover_every_docs_page() -> None:
+    """The user-documentation set is the FULL tracked set: README plus every
+    ``docs/*.md`` page on disk (regression: stale text in omitted pages, for
+    example ``docs/public-contract-1.0.md`` or ``docs/release-acceptance.md``,
+    can no longer pass CI)."""
+    assert ALL_USER_DOCUMENT_NAMES[0] == "README.md"
+    on_disk = {f"docs/{path.name}" for path in DOCS_DIR.glob("*.md")}
+    assert {name for name in ALL_USER_DOCUMENT_NAMES if name.startswith("docs/")} == on_disk
+    assert "docs/public-contract-1.0.md" in ALL_USER_DOCUMENT_NAMES
+    assert "docs/release-acceptance.md" in ALL_USER_DOCUMENT_NAMES
 
 
 def test_documented_public_symbols_exist() -> None:
@@ -595,7 +707,53 @@ def test_documented_schema_and_version_constants_match_the_code() -> None:
     index_labels = re.findall(r"index-backend protocol schema version\s+`([0-9][^`]*)`", limits)
     assert index_labels == [public.INDEX_BACKEND_PROTOCOL_SCHEMA_VERSION]
 
-    # E. The CLI command set is proven separately (exact COMMANDS comparison)
+    # D2. README version bullet: labelled value vs the installed metadata.
+    readme_labels = re.findall(r"- Version: `([^`]+)`", readme)
+    assert readme_labels == [package_version]
+
+    # E. The frozen-contract documentation page: every labelled value matches
+    # the actual public code constants (never a hardcoded test literal).
+    from dbf_anonymizer.transfer_bundle import (  # noqa: PLC0415
+        TRANSFER_MANIFEST_SCHEMA_VERSION,
+    )
+    from dbf_anonymizer.vault.schema import VAULT_SCHEMA_VERSION  # noqa: PLC0415
+
+    contract_doc = (REPO_ROOT / "docs/public-contract-1.0.md").read_text(encoding="utf-8")
+    frozen_version = re.findall(r"frozen package version state is `([^`]+)`", contract_doc)
+    assert frozen_version == [package_version]
+    model_matrix = re.findall(
+        r"\| Model JSON schema \| `MODEL_SCHEMA_VERSION` \| `([^`]+)` \|", contract_doc
+    )
+    assert model_matrix == [public.MODEL_SCHEMA_VERSION]
+    error_matrix = re.findall(
+        r"\| Error JSON schema \| `ERROR_SCHEMA_VERSION` \| `([^`]+)` \|", contract_doc
+    )
+    assert error_matrix == [public.ERROR_SCHEMA_VERSION]
+    registry_matrix = re.findall(
+        r"\| Error registry version \| `ERROR_REGISTRY_VERSION` \| `([^`]+)` \|", contract_doc
+    )
+    assert registry_matrix == [public.ERROR_REGISTRY_VERSION]
+    vault_matrix = re.findall(
+        r"\| SQLite vault schema \| `vault/schema\.py` DDL \| Schema `([^`]+)`,", contract_doc
+    )
+    assert vault_matrix == [VAULT_SCHEMA_VERSION]
+    transfer_matrix = re.findall(
+        r"\| DATA_ONLY bundle/manifest \| `transfer_bundle\.py` \| Manifest `([^`]+)`,",
+        contract_doc,
+    )
+    assert transfer_matrix == [TRANSFER_MANIFEST_SCHEMA_VERSION]
+    relationship_matrix = re.findall(
+        r"\| Relationship metadata schema \| relationship models/parser \| `([^`]+)`,",
+        contract_doc,
+    )
+    assert relationship_matrix == [RELATIONSHIP_METADATA_SCHEMA_VERSION]
+    # The dbfbridge range documented by the frozen-contract page equals the
+    # actual pyproject.toml requirement.
+    contract_range = re.findall(r"dbfbridge\[write\]([^\s`|)\"]+)", contract_doc)
+    assert contract_range, "public-contract-1.0.md must publish the dbfbridge range"
+    assert {f"dbfbridge[write]{suffix}" for suffix in contract_range} == {actual_requirement}
+
+    # F. The CLI command set is proven separately (exact COMMANDS comparison)
     # and the relative links separately (exact resolution); this test covers
     # only the published version/schema labels.
 
@@ -1077,3 +1235,82 @@ def test_documented_json_contract_names_are_public() -> None:
     assert {name for name, _, _ in command_rows} == set(COMMANDS)
     for name, _purpose, machine_mode in command_rows:
         assert "--json" in machine_mode, f"{name} must advertise --json machine mode"
+
+
+# ---------------------------------------------------------------------------
+# 14. Stable current-state truth (stale narrative regression guards)
+# ---------------------------------------------------------------------------
+
+
+def test_public_contract_states_the_completed_current_state() -> None:
+    """The frozen-contract page must document the COMPLETED P6-006/P8-002/
+    P8-003 state; the obsolete pre-freeze narrative cannot return."""
+    contract = _documents()["docs/public-contract-1.0.md"]
+    for required in ("REQ-P6-006", "REQ-P8-002", "REQ-P8-003", "are complete"):
+        assert required in contract, required
+    for stale in (
+        "BLOCKED/DEFERRED",
+        "NOT STARTED",
+        "Gap before P8-001",
+    ):
+        assert stale not in contract, stale
+
+
+def test_public_models_states_the_frozen_stable_contract() -> None:
+    """The model page describes the FROZEN STABLE 1.0 model contract, not the
+    pre-freeze development contract; P1-004 is complete and the public root
+    operations exist."""
+    models = _documents()["docs/public-models-1.0.md"]
+    for required in ("frozen stable 1.0 contract", "public-contract-1.0.md"):
+        assert required in models, required
+    for stale in (
+        "development contract",
+        "Future service functions",
+        "absent until",
+        "Compatibility policy before 1.0",
+    ):
+        assert stale not in models, stale
+
+
+def test_errors_contract_states_the_frozen_stable_contract() -> None:
+    """The error page describes the FROZEN STABLE 1.0 error contract; the
+    Phase 8 freeze is complete and is not narrated as a future event."""
+    errors = _documents()["docs/errors-1.0.md"]
+    for required in ("frozen stable 1.0 contract", "public-contract-1.0.md"):
+        assert required in errors, required
+    for stale in (
+        "development contract",
+        "Compatibility before stable 1.0",
+        "Until the Phase 8 contract freeze",
+    ):
+        assert stale not in errors, stale
+
+
+def test_stable_current_state_is_not_regressed_to_a_development_baseline() -> None:
+    """The ``1.0.0.dev0`` baseline is legitimate HISTORICAL provenance (the
+    migration note, committed fixture/benchmark evidence) but must never
+    return as a false CURRENT-STATE claim in the user documentation."""
+    for name in ALL_USER_DOCUMENT_NAMES:
+        if name == "docs/migration-1.0-clean-slate.md":
+            continue  # historical provenance may discuss 1.0.0.dev0
+        text = _documents()[name]
+        assert "1.0.0.dev0" not in text, name
+    migration = _documents()["docs/migration-1.0-clean-slate.md"]
+    # The stale CURRENT-TENSE claims are forbidden even in the historical note;
+    # chronology must be explicit.
+    for stale in (
+        "No stable 1.0 release is declared",
+        "the active package now contains only",
+    ):
+        assert stale not in migration, stale
+    for required in ("HISTORICAL migration note", "2026-09-29"):
+        assert required in migration, required
+
+
+def test_internal_provenance_and_benchmark_documents_are_english_first() -> None:
+    """Internal provenance/benchmark documentation stays English-first too."""
+    for name in INTERNAL_ENGLISH_DOCUMENT_NAMES:
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        assert CJK_MARKER.search(text) is None, name
+        marker = POLISH_USER_MARKERS.search(text)
+        assert marker is None, f"{name} contains a Polish user-facing marker: {marker.group(0)!r}"

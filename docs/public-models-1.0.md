@@ -1,8 +1,8 @@
 # DBF_Anonymizer 1.0 — public model contract
 
-Status: development contract for `REQ-P1-002`.
+Status: frozen stable 1.0 contract (REQ-P8-001 freeze; REQ-P1-002 delivered).
 
-DBF_Anonymizer 1.0 is a clean-slate API. The historical 0.3 Python API is not a compatibility target. The first public contract is therefore the set of immutable data models exported from `dbf_anonymizer`.
+DBF_Anonymizer 1.0 is a clean-slate API. The historical 0.3 Python API is not a compatibility target. The public contract is the set of immutable data models exported from `dbf_anonymizer`.
 
 ## Design rules
 
@@ -12,7 +12,7 @@ DBF_Anonymizer 1.0 is a clean-slate API. The historical 0.3 Python API is not a 
 - Public paths are relative only and are normalized to POSIX separators (`/`). Absolute paths, drive-qualified Windows paths and `..` traversal are rejected.
 - Public result/progress models contain operational codes, counters, fingerprints and normalized relative paths, not original DBF values, memo payloads, reverse mappings, vault contents, secrets or arbitrary diagnostic messages.
 - The package ships `py.typed`; the public source tree is checked with `mypy --strict`.
-- Future service functions are intentionally absent until `REQ-P1-004`. No placeholder operation reports success.
+- The complete frozen operation surface (the synchronous public root operations and the standalone CLI) is part of the same stable 1.0 contract; see [public-contract-1.0.md](public-contract-1.0.md) and [operations.md](operations.md).
 
 ## Public models
 
@@ -54,6 +54,11 @@ print(identity.to_dict())
 
 The resulting dictionary is suitable for JSON transport. It deliberately contains no absolute source location or source record values.
 
-## Compatibility policy before 1.0
+## Compatibility policy
 
-These contracts are being designed for the first real release. Until the repository reaches the Phase 8 contract freeze, breaking improvements may still be made when they improve correctness, privacy, or usability. Historical 0.3 names and semantics do not constrain this design.
+This is a frozen stable 1.0 contract. Backward-incompatible changes to the
+model contract require a MAJOR version bump under the semantic-versioning
+rules of [public-contract-1.0.md](public-contract-1.0.md); additive changes
+still require deliberate updates to the relevant schema version, snapshot,
+tests and documentation. Historical 0.3 names and semantics do not constrain
+this contract.

@@ -1,7 +1,7 @@
 # DBF_Anonymizer operations guide
 
 This guide documents the public operation surface of the DBF_Anonymizer
-1.0.0 stable release (the frozen 1.0 contract): internal-network offline
+1.0.0 stable version (the frozen 1.0 contract): internal-network offline
 installation, one-vault-per-dataset
 operation, policy configuration, relationship configuration, the
 pseudonymization workflow, dataset verification, protected recovery, and
@@ -226,7 +226,7 @@ dataset (`VaultStrategy.SINGLE_DATASET_SQLITE`):
 - the vault is what makes the output RECOVERABLE: pseudonymized data plus the
   vault is reversible by authorized operators;
 - the vault must NEVER be copied into a DATA_ONLY transfer (see
-  [DATA_ONLY transfer bundles](#data-only-transfer-bundles)); SQLite
+  [DATA_ONLY transfer bundles](#data_only-transfer-bundles)); SQLite
   WAL/SHM/journal files and any other recovery material are excluded from
   transfer by construction (they are forbidden artifacts, not merely
   discouraged).
