@@ -181,12 +181,75 @@ def test_external_metadata_workflow_proves_the_injected_envelope(tmp_path: Path)
 
 def test_field_semantics_workflow_proves_the_field_facts(tmp_path: Path) -> None:
     stdout = _run_example("field_semantics_workflow.py", tmp_path / "work")
+    assert "C/V cross-type proof passed" in stdout
+    assert "VARCHAR SHARES THE TEXT DOMAIN (proven above)" in stdout
+    assert "NULL and empty values stay identities" in stdout
     assert "deleted records: marker + physical order preserved, content transformed" in stdout
-    assert "NULL/empty: preserved as identities" in stdout
     assert "memo/FPT: freshly written, masked, no canary in output DBF/FPT or bundle" in stdout
     assert "verification status: PASS" in stdout
     assert "recovery: canonical_verified=True" in stdout
     assert "bundle verified standalone: True" in stdout
+
+
+def test_field_semantics_fixture_provides_a_cross_type_shared_value(tmp_path: Path) -> None:
+    """NON-VACUITY GUARD: the advanced fixture really carries THE SAME
+    non-empty logical value in a Character and a Varchar field (also inside
+    the deleted record), plus the NULL/empty/distinct/memo coverage."""
+    import dbfbridge
+    from examples import synthetic_dataset
+
+    source = synthetic_dataset.create_field_semantics_dataset(tmp_path / "source")
+    records = tuple(
+        dbfbridge.iter_records(source / "registry.dbf", include_deleted=True, memo="inline")
+    )
+    by_id = {record.values["ID"]: record for record in records}
+    shared = by_id[1].values["NAME"]
+    assert (
+        shared == by_id[1].values["VARVAL"] == by_id[3].values["NAME"] == by_id[3].values["VARVAL"]
+    )
+    assert isinstance(shared, str) and shared != ""
+    assert by_id[2].values["NAME"] is None and by_id[2].values["VARVAL"] is None
+    assert by_id[4].values["VARVAL"] == ""
+    assert by_id[4].values["NAME"] not in (None, "", shared)
+    assert by_id[3].deleted is True
+    assert all(
+        isinstance(by_id[identifier].values["NOTE"], str) and by_id[identifier].values["NOTE"]
+        for identifier in (1, 2, 3, 4)
+    )
+
+
+def test_varchar_character_shared_domain_value_level_proof(tmp_path: Path) -> None:
+    """VALUE-LEVEL C/V CROSS-TYPE REGRESSION: after the public workflow the
+    SAME original logical text in a Character and a Varchar field yields the
+    SAME pseudonym — also for the deleted record.  Public dbfbridge reads
+    only; no SQLite mapping inspection."""
+    import dbfbridge
+    from examples import synthetic_dataset
+
+    source = synthetic_dataset.create_field_semantics_dataset(tmp_path / "source")
+    output = tmp_path / "output"
+    vault = tmp_path / "vault" / "dictionary.sqlite3"
+    plan = public.build_plan(source, output, vault)
+    assert public.preflight(plan).ready
+    result = public.pseudonymize(plan)
+    verification = public.verify_dataset(result, source=source, vault=vault)
+    assert verification.status is public.VerificationStatus.PASS
+
+    records = tuple(
+        dbfbridge.iter_records(output / "registry.dbf", include_deleted=True, memo="inline")
+    )
+    by_id = {record.values["ID"]: record for record in records}
+    pseudonym = by_id[1].values["NAME"]
+    assert (
+        pseudonym
+        == by_id[1].values["VARVAL"]
+        == by_id[3].values["NAME"]
+        == by_id[3].values["VARVAL"]
+    )
+    assert pseudonym not in (None, "")
+    assert by_id[2].values["NAME"] is None and by_id[2].values["VARVAL"] is None
+    assert by_id[4].values["VARVAL"] == ""
+    assert by_id[4].values["NAME"] not in (None, "", pseudonym)
 
 
 def test_consumer_adapter_runs_a_synthetic_host_workflow(tmp_path: Path) -> None:

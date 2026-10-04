@@ -1,9 +1,9 @@
 # DBF_Anonymizer
 
 Stable 1.0 contract (clean-slate architecture); the package version is
-`1.0.0` (stable). Public PyPI publication is a separate privileged release
-process and is not proven by repository metadata alone. DBF_Anonymizer
-pseudonymizes
+`1.0.0` (stable). Repository metadata alone does not prove public
+availability: PyPI publication is performed only by the privileged release
+workflow. DBF_Anonymizer pseudonymizes
 Visual FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
 recovery vault inside the internal environment, and produces transferable
 pseudonymized data-only bundles.
@@ -17,7 +17,7 @@ pseudonymized data-only bundles.
 
 The 1.0 line has no compatibility obligation toward the historical 0.3 API,
 CLI, JSONL pipeline, salt-based generator or legacy recovery formats; see
-[docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md).
+[docs/migration-1.0-clean-slate.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/migration-1.0-clean-slate.md).
 
 The public 1.0-line operation surface (the frozen stable 1.0 contract) is the
 synchronous, transport-neutral
@@ -28,18 +28,21 @@ with exactly nine commands: `capabilities`, `plan`, `preflight`,
 `pseudonymize`, `verify`, `recover`, `export-bundle`, `verify-bundle`,
 `self-test`. DBF_Anonymizer is not an MCP server: it ships no transport, no
 authentication/authorization and no job orchestration — those belong to the
-downstream host (see [docs/mcp-integration.md](docs/mcp-integration.md)).
+downstream host (see
+[docs/mcp-integration.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/mcp-integration.md)).
 
 **Pseudonymized is not anonymous.** Reversible data with a protected recovery
 vault is pseudonymized data; DATA_ONLY output removes direct recovery
 material but is still not anonymized. See
-[docs/pseudonymization-vs-anonymization.md](docs/pseudonymization-vs-anonymization.md).
+[docs/pseudonymization-vs-anonymization.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/pseudonymization-vs-anonymization.md).
 
 ## Installation
 
-The package version is stable `1.0.0`. Public PyPI publication is a separate
-privileged release lane and has NOT happened; repository metadata alone does
-not prove a public package. Until publication, install from a built wheel:
+The stable version is `1.0.0`. Public availability on the approved package
+index is established ONLY by the privileged release workflow — repository
+metadata alone does not prove it. If the version is not yet available from
+the approved index, install from a built wheel; after publication, the
+approved published distribution is the supported route:
 
 ```powershell
 python -m build
@@ -48,14 +51,14 @@ python -m pip install --no-cache-dir dist\dbf_anonymizer-1.0.0-py3-none-any.whl
 
 For the internal-network offline installation (pinned wheelhouse, `--no-index`,
 `--find-links`, no runtime downloads), see
-[docs/operations.md](docs/operations.md).
+[docs/operations.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/operations.md).
 
 ## 5-minute quick start
 
 The complete public API is the package root `dbf_anonymizer`. Replace the
 placeholder paths with YOUR OWN authorized dataset paths (the fully
 executable synthetic version of this workflow is
-[examples/basic_workflow.py](examples/basic_workflow.py)):
+[examples/basic_workflow.py](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/examples/basic_workflow.py)):
 
 ```python
 from pathlib import Path
@@ -90,8 +93,9 @@ except public.PolicyError as error:
 ```
 
 Executable recipes (synthetic data, progressive complexity) live in
-[examples/README.md](examples/README.md); the authoritative detailed guide is
-[docs/operations.md](docs/operations.md).
+[examples/README.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/examples/README.md);
+the authoritative detailed guide is
+[docs/operations.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/operations.md).
 
 ## Safety model
 
@@ -108,34 +112,39 @@ Executable recipes (synthetic data, progressive complexity) live in
 English-first operational and security documentation (validated by
 `tests/test_p7_documentation_contract.py`, including executable examples):
 
-- [examples/README.md](examples/README.md) — the executable example recipes
-  (synthetic data, progressive complexity, downstream-consumer adapter).
-- [docs/operations.md](docs/operations.md) — internal-network offline
-  installation, one-vault-per-dataset operation, policy configuration,
-  relationship configuration, pseudonymization, verification, recovery, and
-  DATA_ONLY transfer bundles, with executable examples.
-- [docs/limits-and-integrity.md](docs/limits-and-integrity.md) — index/VFP/DBC
-  limitations, the VFP_INDEXED backend-evidence requirement and the
-  authoritative-metadata boundaries.
-- [docs/external-vfp-metadata-contract.md](docs/external-vfp-metadata-contract.md) —
+- [examples/README.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/examples/README.md) —
+  the executable example recipes (synthetic data, progressive complexity,
+  downstream-consumer adapter).
+- [docs/operations.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/operations.md) —
+  internal-network offline installation, one-vault-per-dataset operation,
+  policy configuration, relationship configuration, pseudonymization,
+  verification, recovery, and DATA_ONLY transfer bundles, with executable
+  examples.
+- [docs/limits-and-integrity.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/limits-and-integrity.md) —
+  index/VFP/DBC limitations, the VFP_INDEXED backend-evidence requirement and
+  the authoritative-metadata boundaries.
+- [docs/external-vfp-metadata-contract.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/external-vfp-metadata-contract.md) —
   the package-owned, producer-independent external VFP relationship/index
   metadata consumer contract (versioned JSON Schema shipped with the wheel).
-- [docs/mcp-integration.md](docs/mcp-integration.md) — how a downstream host
-  (mcp-vfp9sp2-toolchain) wraps the synchronous public API.
-- [docs/threat-model.md](docs/threat-model.md) — protected/transferable
-  assets, trust boundaries, attack/failure classes.
-- [docs/pseudonymization-vs-anonymization.md](docs/pseudonymization-vs-anonymization.md) —
+- [docs/mcp-integration.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/mcp-integration.md) —
+  how a downstream host (mcp-vfp9sp2-toolchain) wraps the synchronous public
+  API.
+- [docs/threat-model.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/threat-model.md) —
+  protected/transferable assets, trust boundaries, attack/failure classes.
+- [docs/pseudonymization-vs-anonymization.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/pseudonymization-vs-anonymization.md) —
   the pseudonymized-vs-anonymous distinction.
-- [docs/public-models-1.0.md](docs/public-models-1.0.md) — public model
-  contract.
-- [docs/errors-1.0.md](docs/errors-1.0.md) — public error contract.
-- [docs/public-contract-1.0.md](docs/public-contract-1.0.md) — frozen 1.0
-  contract matrix and semantic-versioning rules.
-- [docs/release-acceptance.md](docs/release-acceptance.md) — the one-command
-  REQ-P8-002 release-acceptance entry point and evidence manifest.
-- [docs/vault-protection.md](docs/vault-protection.md) — protected vault
-  security notes.
-- [docs/migration-1.0-clean-slate.md](docs/migration-1.0-clean-slate.md) —
+- [docs/public-models-1.0.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/public-models-1.0.md) —
+  public model contract.
+- [docs/errors-1.0.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/errors-1.0.md) —
+  public error contract.
+- [docs/public-contract-1.0.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/public-contract-1.0.md) —
+  frozen 1.0 contract matrix and semantic-versioning rules.
+- [docs/release-acceptance.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/release-acceptance.md) —
+  the one-command REQ-P8-002 release-acceptance entry point and evidence
+  manifest.
+- [docs/vault-protection.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/vault-protection.md) —
+  protected vault security notes.
+- [docs/migration-1.0-clean-slate.md](https://github.com/PeterPirog/DBF_Anonymizer/blob/main/docs/migration-1.0-clean-slate.md) —
   1.0 clean-slate reset.
 
 ## Development

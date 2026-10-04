@@ -63,6 +63,20 @@ def test_console_script_mapping_is_declared() -> None:
     assert matches[0].value == "dbf_anonymizer.cli:main"
 
 
+def test_project_urls_are_declared() -> None:
+    """The stable distribution carries the canonical repository navigation
+    URLs (additive metadata; the P8 frozen contract snapshot does not collect
+    project URLs)."""
+    urls = _metadata().get_all("Project-URL") or []
+    declared = {line.split(",", 1)[0].strip(): line.split(",", 1)[1].strip() for line in urls}
+    repository = "https://github.com/PeterPirog/DBF_Anonymizer"
+    assert declared == {
+        "Repository": repository,
+        "Documentation": f"{repository}#documentation",
+        "Issues": f"{repository}/issues",
+    }
+
+
 def test_runtime_dbfbridge_contract_unchanged() -> None:
     requirements = [
         requirement.replace(" ", "")

@@ -202,9 +202,14 @@ def create_field_semantics_dataset(root: Path) -> Path:
 
     - ``ID`` (Integer, kept as a key under the default policy);
     - ``NAME`` (nullable Character) — NULL stays NULL, "" stays "";
-    - ``VARVAL`` (nullable Varchar) — same pseudonym domain as Character;
+    - ``VARVAL`` (nullable Varchar) — the SHARED synthetic value
+      ``SYNTH-SHARED`` occurs in BOTH the Character and the Varchar field
+      (compatible widths), so the shared GLOBAL_TEXT mapping domain is
+      provable cross-type;
+    - that same shared value also occurs in the DELETED record, so the
+      example simultaneously proves deleted-record participation;
     - ``NOTE`` (text memo, FPT companion) — freshly written and masked;
-    - one DELETED record whose sensitive content is still transformed.
+    - one distinct non-empty Character original and one empty Varchar value.
     """
     root.mkdir(parents=True)
     _write_table(
@@ -216,10 +221,26 @@ def create_field_semantics_dataset(root: Path) -> Path:
             _field("NOTE", "M", 4),
         ),
         (
-            ({"ID": 1, "NAME": "SYNTH-A", "VARVAL": "V-SYNTH-A", "NOTE": "MEMO-CANARY-A"}, False),
+            (
+                {
+                    "ID": 1,
+                    "NAME": "SYNTH-SHARED",
+                    "VARVAL": "SYNTH-SHARED",
+                    "NOTE": "MEMO-CANARY-A",
+                },
+                False,
+            ),
             ({"ID": 2, "NAME": None, "VARVAL": None, "NOTE": "MEMO-CANARY-B"}, False),
-            ({"ID": 3, "NAME": "SYNTH-A", "VARVAL": "V-SYNTH-A", "NOTE": "MEMO-CANARY-A"}, True),
-            ({"ID": 4, "NAME": "SYNTH-B", "VARVAL": "", "NOTE": "MEMO-CANARY-C"}, False),
+            (
+                {
+                    "ID": 3,
+                    "NAME": "SYNTH-SHARED",
+                    "VARVAL": "SYNTH-SHARED",
+                    "NOTE": "MEMO-CANARY-A",
+                },
+                True,
+            ),
+            ({"ID": 4, "NAME": "SYNTH-DISTINCT", "VARVAL": "", "NOTE": "MEMO-CANARY-C"}, False),
         ),
     )
     return root

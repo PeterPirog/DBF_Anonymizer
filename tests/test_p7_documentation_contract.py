@@ -476,6 +476,24 @@ _LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
 _HEADING = re.compile(r"^(#{1,6}) (.+?)\s*$")
 _FENCE = re.compile(r"^(```|~~~)")
 
+#: The canonical repository URL — trusted absolute links of this shape are
+#: validated OFFLINE against the local checkout (README is the PyPI long
+#: description, so its repository navigation must stay portable).
+GITHUB_REPO_URL = "https://github.com/PeterPirog/DBF_Anonymizer"
+_GITHUB_BLOB_PREFIX = GITHUB_REPO_URL + "/blob/main/"
+
+
+def _trusted_link_local_path(target: str) -> str | None:
+    """Map a trusted absolute GitHub repository URL back to the local
+    checkout path (``None`` for non-trusted targets)."""
+    path_part, _, anchor = target.partition("#")
+    fragment = f"#{anchor}" if anchor else ""
+    if path_part.startswith(_GITHUB_BLOB_PREFIX):
+        return path_part[len(_GITHUB_BLOB_PREFIX) :] + fragment
+    if path_part in (GITHUB_REPO_URL, GITHUB_REPO_URL + "/"):
+        return "README.md" + fragment
+    return None
+
 
 def _github_heading_slug(heading_text: str) -> str:
     """Deterministic GitHub-compatible Markdown heading slug.
@@ -527,10 +545,25 @@ def _assert_document_links(name: str, text: str) -> None:
     B. pure in-page anchors (``#...``) must match a real GitHub-compatible
        heading slug of the SAME document (pure anchors are NOT skipped);
     C. anchors attached to relative ``.md`` links must match a real heading
-       slug of the TARGET document.
+       slug of the TARGET document;
+    D. TRUSTED absolute GitHub repository URLs are validated OFFLINE against
+       the local checkout (target exists, .md anchor resolves) — README is
+       the PyPI long description, so its repository navigation must stay
+       portable without any network test.
     """
     for target in _LINK.findall(text):
         if target.startswith(("http://", "https://", "mailto:")):
+            trusted = _trusted_link_local_path(target)
+            if trusted is None:
+                continue  # ordinary external URL (never fetched, no network)
+            local_relative, _, anchor = trusted.partition("#")
+            local = REPO_ROOT / local_relative
+            assert local.is_file(), f"{name}: trusted GitHub link target missing: {target!r}"
+            if anchor and local_relative.endswith(".md"):
+                target_text = local.read_text(encoding="utf-8")
+                assert anchor in _heading_slugs(target_text), (
+                    f"{name}: broken trusted-link anchor {target!r}"
+                )
             continue
         path_part, _, anchor = target.partition("#")
         if not path_part:
@@ -581,8 +614,14 @@ def test_every_doc_is_reachable_from_the_readme() -> None:
         base = (REPO_ROOT / current).parent
         for target in _LINK.findall(documents[current]):
             if target.startswith(("http://", "https://", "mailto:")):
-                continue
-            path_part = target.split("#", 1)[0]
+                # Trusted absolute GitHub links resolve locally (README is the
+                # PyPI long description) and keep the reachability proof whole.
+                trusted = _trusted_link_local_path(target)
+                if trusted is None:
+                    continue
+                path_part = trusted.split("#", 1)[0]
+            else:
+                path_part = target.split("#", 1)[0]
             if not path_part.endswith(".md"):
                 continue
             resolved = (base / path_part).resolve().as_posix()
@@ -593,6 +632,34 @@ def test_every_doc_is_reachable_from_the_readme() -> None:
                     queue.append(name)
     unreachable = sorted(set(documents) - reachable)
     assert not unreachable, f"documentation files not reachable from README: {unreachable}"
+
+
+def test_readme_links_are_pypi_portable_absolute() -> None:
+    """README is the PyPI long description: its repository navigation links
+    MUST be absolute trusted GitHub URLs (a renderer-relative base URL does
+    not exist on the package index).  No relative docs/ or examples/ link
+    target may return to README; trusted links are validated OFFLINE against
+    the local checkout."""
+    readme = _documents()["README.md"]
+    targets = _LINK.findall(readme)
+    assert targets, "README must contain navigation links"
+    trusted_paths: set[str] = set()
+    for target in targets:
+        assert target.startswith(("https://", "http://")), (
+            f"README link is not PyPI-portable (relative): {target!r}"
+        )
+        trusted = _trusted_link_local_path(target)
+        assert trusted is not None, f"README link is not a trusted repository URL: {target!r}"
+        local_relative, _, anchor = trusted.partition("#")
+        trusted_paths.add(local_relative)
+        local = REPO_ROOT / local_relative
+        assert local.is_file(), f"trusted link target missing: {target!r}"
+        if anchor and local_relative.endswith(".md"):
+            assert anchor in _heading_slugs(local.read_text(encoding="utf-8")), (
+                f"broken trusted-link anchor: {target!r}"
+            )
+    # The reachability proof stays whole (see test_every_doc_is_reachable_from_the_readme).
+    assert "docs/public-contract-1.0.md" in trusted_paths
 
 
 def test_all_user_document_names_cover_every_docs_page() -> None:

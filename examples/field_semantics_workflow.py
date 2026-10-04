@@ -8,14 +8,19 @@ One deterministic synthetic table (``registry.dbf``) exercises the
 privacy-critical VFP field facts end to end through the PUBLIC dbfbridge
 writer/reader APIs and the public DBF_Anonymizer workflow:
 
-- DELETED RECORDS — a deleted record remains deleted (same physical order
-  and deleted flag in the output) AND its sensitive content (text and memo)
-  is transformed like every active record;
-- NULL — a NULL stays NULL and an empty string stays empty (both are
-  identities, never transformed values);
-- VARCHAR — ``V`` fields join the SAME text mapping domain as ``C`` fields:
-  equal original values (also across deleted records) receive the SAME
-  pseudonym, distinct values stay distinct;
+- SHARED TEXT DOMAIN (cross-type) — the SAME non-empty logical value
+  ``SYNTH-SHARED`` occurs in the Character field ``NAME`` AND the Varchar
+  field ``VARVAL`` (compatible widths); after pseudonymization both fields
+  MUST carry the same pseudonym (one GLOBAL_TEXT mapping domain spans all
+  text fields of the dataset);
+- DELETED RECORDS — the deleted record also carries the shared value: the
+  deleted marker and the physical order stay truthful, the sensitive content
+  (Character, Varchar and memo) is transformed like every active record, and
+  the shared value maps to the SAME pseudonym as in the active records;
+- DISTINCT ORIGINALS — a distinct non-empty Character original receives a
+  DISTINCT pseudonym (bijectivity of the shared domain);
+- NULL/EMPTY — NULL stays NULL and an empty Varchar stays empty (identities,
+  never transformed values);
 - MEMO/FPT — the memo companion is freshly written; memo content is masked
   type-preservingly and the ORIGINAL memo canaries cannot survive in the
   pseudonymized output (DBF or FPT) or in the DATA_ONLY bundle;
@@ -41,8 +46,9 @@ try:
 except ImportError:  # pragma: no cover - plain script execution
     import synthetic_dataset  # script execution
 
+_SHARED_ORIGINAL = "SYNTH-SHARED"
 _MEMO_CANARIES = ("MEMO-CANARY-A", "MEMO-CANARY-B", "MEMO-CANARY-C")
-_TEXT_CANARIES = ("SYNTH-A", "SYNTH-B", "V-SYNTH-A")
+_TEXT_CANARIES = ("SYNTH-SHARED", "SYNTH-DISTINCT")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -88,22 +94,36 @@ def main() -> None:
         "the deleted marker or the physical record order was not preserved",
     )
 
-    # 2) NULL and empty identities; 3) Varchar joins the Character domain.
     by_id = {record.values["ID"]: record for record in output_records}
+
+    # CROSS-TYPE SHARED DOMAIN: the same original logical value occurs in the
+    # Character and the Varchar field (active AND deleted record) — all four
+    # cells must carry ONE identical pseudonym, and no original may survive.
+    shared_pseudonym = by_id[1].values["NAME"]
+    _require(
+        shared_pseudonym
+        == by_id[1].values["VARVAL"]
+        == by_id[3].values["NAME"]
+        == by_id[3].values["VARVAL"],
+        "equal Character/Varchar originals (active and deleted) must map to one shared pseudonym",
+    )
+    _require(
+        shared_pseudonym not in (None, "", _SHARED_ORIGINAL),
+        "the shared pseudonym must be a genuine transformed value",
+    )
+
+    # DISTINCT ORIGINALS stay distinct (bijectivity of the shared domain).
+    _require(
+        by_id[4].values["NAME"] not in (None, "", "SYNTH-DISTINCT", shared_pseudonym),
+        "a distinct original must map to a distinct pseudonym",
+    )
+
+    # NULL and empty identities.
     _require(
         by_id[2].values["NAME"] is None and by_id[2].values["VARVAL"] is None,
         "NULL was not preserved",
     )
     _require(by_id[4].values["VARVAL"] == "", "an empty string was not preserved as empty")
-    active_name = by_id[1].values["NAME"]
-    _require(
-        active_name == by_id[3].values["NAME"] and active_name not in (None, "", "SYNTH-A"),
-        "equal original values must map to the same non-original pseudonym",
-    )
-    _require(
-        by_id[4].values["NAME"] not in (None, "", "SYNTH-B", active_name),
-        "distinct original values must map to distinct pseudonyms",
-    )
 
     # 4) Memo content is masked type-preservingly — including the DELETED row.
     for identifier in (1, 2, 3, 4):
@@ -143,7 +163,8 @@ def main() -> None:
     recovered_records = _records(work_root / "recovered" / "registry.dbf")
     recovered_by_id = {record.values["ID"]: record for record in recovered_records}
     _require(
-        recovered_by_id[1].values["NAME"] == "SYNTH-A"
+        recovered_by_id[1].values["NAME"] == _SHARED_ORIGINAL
+        and recovered_by_id[1].values["VARVAL"] == _SHARED_ORIGINAL
         and recovered_by_id[2].values["NAME"] is None
         and recovered_by_id[1].values["NOTE"] == "MEMO-CANARY-A"
         and recovered_by_id[3].deleted,
@@ -169,8 +190,10 @@ def main() -> None:
     )
 
     print("DBF_Anonymizer field-semantics workflow (synthetic data)")
+    print("C/V cross-type proof passed: equal Character+Varchar originals (active and deleted)")
+    print("  -> one shared pseudonym; VARCHAR SHARES THE TEXT DOMAIN (proven above)")
+    print("distinct originals stay distinct; NULL and empty values stay identities")
     print("deleted records: marker + physical order preserved, content transformed")
-    print("NULL/empty: preserved as identities; VARCHAR shares the text domain")
     print("memo/FPT: freshly written, masked, no canary in output DBF/FPT or bundle")
     print(f"verification status: {verification.status.value}")
     print("recovery: canonical_verified=True (originals restored in the trusted workspace only)")

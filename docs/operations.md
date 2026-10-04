@@ -206,6 +206,9 @@ result = public.pseudonymize(plan, progress=on_progress, cancel_check=lambda: Fa
 
 A caller-supplied callback failure is contained as the typed `CallbackError`
 (the raw exception text never escapes), so callbacks can be host-owned code.
+A deterministic REAL-cancellation demonstration (typed `OPERATION_CANCELLED`,
+no published output, source byte-identical) is
+[../examples/progress_cancellation.py](../examples/progress_cancellation.py).
 
 ## Recovery
 
@@ -341,7 +344,10 @@ policy schema version is `1` (`schema_version` must be exactly the integer
 `1`); unknown top-level or nested keys, unknown actions and non-JSON leaf
 values are typed refusals, never silent normalization. The resolved policy is
 bound to the plan through a deterministic SHA-256 fingerprint
-(`plan.policy.policy_fingerprint`).
+(`plan.policy.policy_fingerprint`). For an end-to-end synthetic demonstration
+of the field-level semantics (NULL/empty identities, Character/Varchar shared
+domain, deleted records, memo/FPT masking), see
+[../examples/field_semantics_workflow.py](../examples/field_semantics_workflow.py).
 
 The supported top-level sections and their documented defaults:
 

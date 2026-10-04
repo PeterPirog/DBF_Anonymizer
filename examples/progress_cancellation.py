@@ -14,14 +14,17 @@ Two deterministic demonstrations on synthetic data:
    point stops the operation deterministically (event-driven, no sleeps, no
    timing assumptions): the public API raises the typed ``CancellationError``
    with the stable ``OPERATION_CANCELLED`` code, emits NO terminal
-   ``COMPLETED`` event, produces NO published pseudonymized output, and
-   leaves the source unchanged.
+   ``COMPLETED`` event, produces NO published pseudonymized output, and the
+   source dataset stays byte-identical (bounded hash-tree comparison).
 
 No async API is involved.  No private module imports; no network; no VFP.
 The optional ``WORK_ROOT`` argument must NOT exist yet (fail-closed).
 """
 
 from __future__ import annotations
+
+import hashlib
+from pathlib import Path
 
 import dbf_anonymizer as public
 
@@ -35,6 +38,16 @@ def _require(condition: bool, message: str) -> None:
     """An explicit safety check that cannot disappear under ``python -O``."""
     if not condition:
         raise RuntimeError(message)
+
+
+def _hash_tree(root: Path) -> dict[str, str]:
+    """Bounded source-immutability evidence (same pattern as the
+    architecture acceptance tests)."""
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def main() -> None:
@@ -69,6 +82,7 @@ def main() -> None:
 
     # Part 2 — deterministic cooperative cancellation (event-driven).
     cancel_source = synthetic_dataset.create_single_table_dataset(work_root / "cancel-source")
+    cancel_source_before = _hash_tree(cancel_source)
     cancel_plan = public.build_plan(
         cancel_source,
         work_root / "cancel-output",
@@ -104,9 +118,16 @@ def main() -> None:
         not any(event.event_code == "COMPLETED" for event in cancel_events),
         "a cancelled operation must not emit the terminal COMPLETED event",
     )
+    _require(
+        _hash_tree(cancel_source) == cancel_source_before,
+        "the cancelled operation must leave the source byte-identical",
+    )
 
     print("DBF_Anonymizer cancellation workflow (synthetic data)")
-    print(f"cancellation code: {refusal} (no COMPLETED event, no published output)")
+    print(
+        f"cancellation code: {refusal} "
+        "(no COMPLETED event, no published output, source byte-identical)"
+    )
 
 
 if __name__ == "__main__":
