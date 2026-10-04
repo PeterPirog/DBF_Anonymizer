@@ -4,14 +4,25 @@ The examples are downstream-consumer code and must not rot:
 
 1. every canonical example runs end to end against task-owned TEMP synthetic
    data (no network, no VFP, no production dataset, nothing outside the test
-   TEMP/repository);
-2. the consumer adapter executes a synthetic host workflow (a focused check,
+   TEMP/repository); the printed summaries stay privacy-safe: the exact test
+   TEMP path, any drive-qualified path form and any user-profile fragment
+   must NOT appear in stdout or stderr;
+2. an explicitly supplied example workspace is REFUSED fail-closed when it
+   already exists — before any DBF/FPT write, sentinel bytes preserved;
+3. the consumer adapter executes a synthetic host workflow (a focused check,
    not a duplicate of the P8 acceptance suite);
-3. examples import ONLY supported public DBF_Anonymizer surfaces (the
+4. the DOCUMENTED worked CLI recipe (the marker-marked block in
+   ``docs/operations.md``) is extracted, validated for operation-binding
+   consistency and executed end to end — the automated run cannot silently
+   diverge from the documentation.  (Functional ``dbf_anonymizer.cli:main``
+   coverage; the installed console entry point itself is proven by
+   ``tests/test_p1_packaging.py::test_console_script_mapping_is_declared``
+   and the installed-wheel probes in ``tests/test_p7_transport_boundary.py``.)
+5. examples import ONLY supported public DBF_Anonymizer surfaces (the
    package root, plus the documented ``relationships`` schema loader) and
    only the public ``dbfbridge`` dependency — no private module, no DBF/FPT
    parser, no vault reading, no network/transport/COM/async import;
-4. the example configuration JSON files parse and match the synthetic demo
+6. the example configuration JSON files parse and match the synthetic demo
    dataset the CLI recipe uses.
 """
 
@@ -19,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,8 +48,10 @@ CANONICAL_EXAMPLES = (
     "basic_workflow.py",
     "relationship_workflow.py",
     "recovery_workflow.py",
+    "progress_cancellation.py",
     "data_only_bundle.py",
     "external_metadata.py",
+    "field_semantics_workflow.py",
 )
 
 #: The ONLY supported DBF_Anonymizer import surfaces for consumer examples:
@@ -63,6 +77,19 @@ FORBIDDEN_EXAMPLE_ROOTS = FORBIDDEN_TRANSPORT_ROOTS | frozenset(
         "dbf",
     }
 )
+
+#: The documented worked CLI recipe block marker (docs/operations.md).
+CLI_RECIPE_MARKER = "p7-009-cli-recipe"
+
+#: The CLI commands that reconstruct the plan/operation identity and must
+#: therefore carry the SAME --policy/--relationships inputs when the
+#: documented recipe uses them.
+PLAN_RECONSTRUCTING_COMMANDS = ("plan", "preflight", "pseudonymize", "verify", "export-bundle")
+
+#: The CLI commands that work on durable artifacts and must NOT re-derive a
+#: plan from policy/relationship documents (the production CLI does not even
+#: accept those options for them).
+ARTIFACT_COMMANDS = ("capabilities", "recover", "verify-bundle", "self-test")
 
 
 def _example_sources() -> dict[str, str]:
@@ -93,14 +120,29 @@ def _run_example(example: str, work_root: Path) -> str:
 
 @pytest.mark.parametrize("example", CANONICAL_EXAMPLES)
 def test_canonical_example_runs_on_synthetic_temp_data(example: str, tmp_path: Path) -> None:
-    stdout = _run_example(example, tmp_path / "work")
-    assert stdout.strip(), f"{example} printed no summary"
+    completed = subprocess.run(  # noqa: S603 - task-owned synthetic example run
+        [sys.executable, str(EXAMPLES_DIR / example), str(tmp_path / "work")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    assert completed.returncode == 0, f"{example} failed:\n{completed.stdout}\n{completed.stderr}"
+    assert completed.stdout.strip(), f"{example} printed no summary"
+    # Privacy-safe stdout/stderr: the exact test TEMP path, any drive-qualified
+    # path form and any user-profile fragment must NOT appear.
+    for stream in (completed.stdout, completed.stderr):
+        assert str(tmp_path) not in stream, example
+        assert re.search(r"[A-Za-z]:[\\/]", stream) is None, example
+        assert "Users/" not in stream and "Users\\" not in stream, example
 
 
 def test_basic_workflow_outcome(tmp_path: Path) -> None:
     stdout = _run_example("basic_workflow.py", tmp_path / "work")
     assert "verification status: PASS" in stdout
     assert "assurance level: GLOBAL_EXACT_VALUE" in stdout
+    assert "SOURCE role:" in stdout and "VAULT role:" in stdout
 
 
 def test_relationship_workflow_proves_the_declared_fk(tmp_path: Path) -> None:
@@ -115,6 +157,14 @@ def test_recovery_workflow_proves_both_authorization_paths(tmp_path: Path) -> No
     assert "DISABLED: typed refusal RECOVERY_NOT_PERMITTED" in stdout
 
 
+def test_progress_cancellation_example_is_deterministic(tmp_path: Path) -> None:
+    stdout = _run_example("progress_cancellation.py", tmp_path / "work")
+    assert "verification status: PASS" in stdout
+    assert "cancellation code: OPERATION_CANCELLED" in stdout
+    assert "no COMPLETED event, no published output" in stdout
+    assert "phases in order:" in stdout
+
+
 def test_data_only_workflow_proves_the_transferable_bundle(tmp_path: Path) -> None:
     stdout = _run_example("data_only_bundle.py", tmp_path / "work")
     assert "bundle verified standalone:   True" in stdout
@@ -125,7 +175,18 @@ def test_external_metadata_workflow_proves_the_injected_envelope(tmp_path: Path)
     stdout = _run_example("external_metadata.py", tmp_path / "work")
     assert "verification status: PASS" in stdout
     assert "assurance level: VFP_METADATA_VERIFIED" in stdout
+    assert "does NOT cause relational assurance" in stdout
     assert "does NOT by itself prove that an output CDX/IDX was rebuilt" in stdout
+
+
+def test_field_semantics_workflow_proves_the_field_facts(tmp_path: Path) -> None:
+    stdout = _run_example("field_semantics_workflow.py", tmp_path / "work")
+    assert "deleted records: marker + physical order preserved, content transformed" in stdout
+    assert "NULL/empty: preserved as identities" in stdout
+    assert "memo/FPT: freshly written, masked, no canary in output DBF/FPT or bundle" in stdout
+    assert "verification status: PASS" in stdout
+    assert "recovery: canonical_verified=True" in stdout
+    assert "bundle verified standalone: True" in stdout
 
 
 def test_consumer_adapter_runs_a_synthetic_host_workflow(tmp_path: Path) -> None:
@@ -171,96 +232,152 @@ def _run_cli(*arguments: str) -> int:
 
 
 def test_complete_cli_workflow_recipe(tmp_path: Path) -> None:
-    """The documented CLI recipe (operations.md) works end to end with the
-    shipped example configuration files on synthetic data only."""
-    created = subprocess.run(  # noqa: S603 - task-owned synthetic dataset creation
-        [sys.executable, str(EXAMPLES_DIR / "synthetic_dataset.py"), str(tmp_path / "source")],
+    """The DOCUMENTED worked CLI recipe (the marker-marked block in
+    ``docs/operations.md``) is extracted verbatim, validated for
+    operation-binding consistency, and executed end to end — the automated
+    run cannot silently diverge from the documentation."""
+    recipe = _documented_cli_recipe_lines()
+    work = tmp_path / "demo-work"
+    executed: set[str] = set()
+    for line in recipe:
+        normalized = line.replace("$work", str(work)).replace("\\", "/")
+        tokens = [token.strip('"') for token in normalized.split()]
+        program = tokens[0]
+        if program == "python":
+            # The demo-dataset creation line of the recipe itself.
+            assert tokens[1].endswith("synthetic_dataset.py"), line
+            created = subprocess.run(  # noqa: S603 - task-owned documented recipe step
+                [sys.executable, *tokens[1:]],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=300,
+            )
+            assert created.returncode == 0, f"recipe step failed: {line}\n{created.stderr}"
+            continue
+        assert program == "dbf-anonymizer", f"unexpected recipe line: {line}"
+        command = tokens[1]
+        executed.add(command)
+        code = _run_cli(*tokens[1:])
+        assert code == 0, f"documented recipe command failed ({code}): {line}"
+    assert executed == set(public_commands()), f"recipe commands mismatch: {executed}"
+
+
+def public_commands() -> tuple[str, ...]:
+    from dbf_anonymizer.cli import COMMANDS
+
+    return COMMANDS
+
+
+def _documented_cli_recipe_lines() -> list[str]:
+    """Extract the EXACT dbf-anonymizer/python command lines of the ONE
+    documented worked recipe (deliberately narrow, deterministic extraction:
+    only the marker-marked fenced block, only real command lines)."""
+    text = (REPO_ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    recipe: list[str] = []
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```") and CLI_RECIPE_MARKER in stripped:
+            assert not inside, "the documented CLI recipe marker must appear once"
+            inside = True
+            continue
+        if inside and stripped.startswith("```"):
+            inside = False
+            continue
+        if inside and stripped and not stripped.startswith("#") and not stripped.startswith("$"):
+            recipe.append(stripped)
+    assert not inside, "the documented CLI recipe block is not closed"
+    assert recipe, "the documented worked CLI recipe is missing from operations.md"
+    return recipe
+
+
+def test_documented_cli_recipe_is_operation_binding_consistent() -> None:
+    """The documented worked recipe must keep the completed-operation identity
+    intact: every plan-reconstructing command carries the SAME policy and
+    relationship inputs, and the artifact commands carry none (the production
+    CLI does not accept them there).  Removing ``--policy`` or
+    ``--relationships`` from the documented ``export-bundle`` command FAILS
+    this test."""
+    recipe = _documented_cli_recipe_lines()
+    commands: dict[str, list[str]] = {}
+    dataset_created = False
+    for line in recipe:
+        tokens = [token.strip('"') for token in line.split()]
+        if tokens[0] == "python":
+            assert tokens[1].replace("\\", "/").endswith("examples/synthetic_dataset.py"), line
+            dataset_created = True
+            continue
+        assert tokens[0] == "dbf-anonymizer", f"unexpected recipe line: {line}"
+        commands[tokens[1]] = tokens[2:]
+    assert dataset_created, "the recipe must create its synthetic demo dataset"
+    assert set(commands) == set(public_commands()), commands
+    config_arguments = (
+        "examples/config/policy-data-only.json",
+        "examples/config/relationships.json",
+    )
+    for command in PLAN_RECONSTRUCTING_COMMANDS:
+        arguments = commands[command]
+        for required in ("--policy", "--relationships"):
+            assert required in arguments, f"{command}: missing {required}"
+            index = arguments.index(required)
+            value = arguments[index + 1].replace("\\", "/")
+            assert value in config_arguments, f"{command}: unexpected {required} {value!r}"
+            assert (REPO_ROOT / value).is_file(), f"{command}: {value} does not exist"
+    for command in ARTIFACT_COMMANDS:
+        arguments = commands[command]
+        for forbidden in ("--policy", "--relationships"):
+            assert forbidden not in arguments, f"{command} must not carry {forbidden}"
+
+
+# ---------------------------------------------------------------------------
+# 1b. Fail-closed example workspaces (examples-only safety policy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("example", CANONICAL_EXAMPLES)
+def test_example_refuses_an_existing_workspace_before_any_write(
+    example: str, tmp_path: Path
+) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    sentinel = existing / "sentinel.txt"
+    sentinel.write_bytes(b"SENTINEL-BYTES-KEEP")
+    completed = subprocess.run(  # noqa: S603 - task-owned fail-closed refusal probe
+        [sys.executable, str(EXAMPLES_DIR / example), str(existing)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
         timeout=300,
     )
-    assert created.returncode == 0, created.stderr
-    work = tmp_path
-    source = str(work / "source")
-    output = str(work / "output")
-    vault = str(work / "protected" / "recovery.sqlite3")
-    policy = str(EXAMPLES_DIR / "config" / "policy-data-only.json")
-    relationships = str(EXAMPLES_DIR / "config" / "relationships.json")
-    commands = (
-        ("capabilities", "--json"),
-        (
-            "plan",
-            source,
-            output,
-            vault,
-            "--policy",
-            policy,
-            "--relationships",
-            relationships,
-            "--json",
-        ),
-        (
-            "preflight",
-            source,
-            output,
-            vault,
-            "--policy",
-            policy,
-            "--relationships",
-            relationships,
-            "--json",
-        ),
-        (
-            "pseudonymize",
-            source,
-            output,
-            vault,
-            "--policy",
-            policy,
-            "--relationships",
-            relationships,
-            "--json",
-        ),
-        (
-            "verify",
-            source,
-            output,
-            vault,
-            "--policy",
-            policy,
-            "--relationships",
-            relationships,
-            "--json",
-        ),
-        (
-            "recover",
-            output,
-            vault,
-            str(work / "recovered"),
-            "--recovery-policy",
-            "enabled",
-            "--json",
-        ),
-        (
-            "export-bundle",
-            source,
-            output,
-            vault,
-            str(work / "bundle"),
-            "--policy",
-            policy,
-            "--relationships",
-            relationships,
-            "--json",
-        ),
-        ("verify-bundle", str(work / "bundle"), "--json"),
-        ("self-test", "--json"),
-    )
-    for command in commands:
-        code = _run_cli(*command)
-        assert code == 0, f"CLI command failed ({code}): {command[0]}"
+    assert completed.returncode != 0, f"{example} reused an existing workspace"
+    assert "refused" in completed.stdout + completed.stderr, example
+    assert sentinel.read_bytes() == b"SENTINEL-BYTES-KEEP", example
+    assert not list(existing.glob("*.dbf")), example
+    assert not list(existing.glob("*.fpt")), example
+
+
+def test_synthetic_helper_refuses_existing_dataset_roots(tmp_path: Path) -> None:
+    """The helper functions themselves are fail-closed: an existing root is
+    never reused and nothing is written before the refusal."""
+    from examples import synthetic_dataset
+
+    existing = tmp_path / "dataset"
+    existing.mkdir()
+    sentinel = existing / "sentinel.txt"
+    sentinel.write_bytes(b"KEEP")
+    for create in (
+        synthetic_dataset.create_single_table_dataset,
+        synthetic_dataset.create_related_dataset,
+        synthetic_dataset.create_field_semantics_dataset,
+    ):
+        with pytest.raises(FileExistsError):
+            create(existing)
+    assert sentinel.read_bytes() == b"KEEP"
+    assert not list(existing.glob("*.dbf"))
 
 
 # ---------------------------------------------------------------------------

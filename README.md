@@ -68,11 +68,13 @@ vault = Path("<protected>/recovery.sqlite3")  # ONE protected vault per dataset 
 
 plan = public.build_plan(source, output, vault)
 preflight_result = public.preflight(plan)
-assert preflight_result.ready
+if not preflight_result.ready:
+    raise RuntimeError("preflight refused the plan; nothing was executed")
 
 result = public.pseudonymize(plan)
 verification = public.verify_dataset(result, source=source, vault=vault)
-assert verification.status is public.VerificationStatus.PASS
+if verification.status is not public.VerificationStatus.PASS:
+    raise RuntimeError("dataset verification did not reach PASS")
 ```
 
 Failures are typed, privacy-safe, registry-controlled objects — never parse
@@ -83,7 +85,8 @@ try:
     plan = public.build_plan(source, output, vault, policy={"schema_version": 99})
 except public.PolicyError as error:
     payload = error.to_dict()  # versioned JSON contract, no private material
-    assert error.code is public.ErrorCode.POLICY_INVALID
+    if error.code is not public.ErrorCode.POLICY_INVALID:
+        raise RuntimeError("unexpected error code") from error
 ```
 
 Executable recipes (synthetic data, progressive complexity) live in

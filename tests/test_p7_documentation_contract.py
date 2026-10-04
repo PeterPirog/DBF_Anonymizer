@@ -64,6 +64,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 DOCS_DIR = REPO_ROOT / "docs"
+EXAMPLES_DIR = REPO_ROOT / "examples"
 
 #: The COMPLETE user-facing documentation set: the README plus EVERY tracked
 #: ``docs/*.md`` page. The set is derived from the repository tree instead of
@@ -1343,3 +1344,78 @@ def test_internal_provenance_and_benchmark_documents_are_english_first() -> None
         assert CJK_MARKER.search(text) is None, name
         marker = POLISH_USER_MARKERS.search(text)
         assert marker is None, f"{name} contains a Polish user-facing marker: {marker.group(0)!r}"
+
+
+# ---------------------------------------------------------------------------
+# 15. External-metadata evidence-domain truthfulness
+# ---------------------------------------------------------------------------
+
+
+#: A VERIFIED index claim is INDEPENDENT index metadata: it must never be
+#: described as causing/raising relational assurance (production truth: the
+#: ``VFP_METADATA_VERIFIED`` level is granted by the assurance kernel from
+#: authoritative eligible RELATION claims plus the adapter-minted
+#: authoritative binding plus successful post-transform relationship
+#: verification — never from index claims).
+INDEX_CLAIM_ASSURANCE_MISATTRIBUTIONS = (
+    r"index\s+claims?\s+(?:additionally\s+)?(?:raised?|granted?|caused?)\b[^.\n]{0,60}\bassurance\b",
+    r"\braised?\s+(?:the\s+)?(?:relational\s+)?assurance\b",
+)
+
+#: Reordered causation phrasing; negation is searched within the WHOLE
+#: matched span (e.g. "index claim ... does NOT cause ... assurance"), not
+#: only before it.
+_INDEX_CLAIM_CAUSATION_SPAN = re.compile(
+    r"index\s+claims?\s+[^.\n]{0,60}\b(?:causes?|raises?|grants?)\b[^.\n]{0,40}\bassurance\b",
+    re.IGNORECASE,
+)
+
+
+def _assert_no_span_negated_match(text: str, pattern: re.Pattern[str], *, label: str) -> None:
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 40) : match.start()]
+        if NEGATION_TOKEN.search(match.group(0)) or NEGATION_TOKEN.search(prefix):
+            continue
+        raise AssertionError(
+            f"unnegated forbidden documentation claim ({label}): {match.group(0)!r}"
+        )
+
+
+def test_index_claims_never_cause_relational_assurance() -> None:
+    """The two external-metadata evidence domains stay separated in ALL user
+    documentation AND in the examples: only negated (truthful) mentions of an
+    index claim touching assurance remain."""
+    texts: dict[str, str] = dict(_documents())
+    for example in sorted(EXAMPLES_DIR.glob("*.py")):
+        texts[f"examples/{example.name}"] = example.read_text(encoding="utf-8")
+    for name, text in texts.items():
+        for pattern in INDEX_CLAIM_ASSURANCE_MISATTRIBUTIONS:
+            _assert_no_unnegated_claim(
+                text, pattern, label=f"index-claim assurance misattribution ({name})"
+            )
+        _assert_no_span_negated_match(
+            text, _INDEX_CLAIM_CAUSATION_SPAN, label=f"index-claim assurance causation ({name})"
+        )
+    # The truthful positive explanation must be present where the envelope is
+    # documented.
+    operations = _normalized(_documents()[OPERATIONS])
+    for required in (
+        "index claims — independent index metadata",
+        "does not cause relational assurance",
+        "does not select the assurance level",
+        "successful post-transform relationship verification",
+    ):
+        assert _normalized(required) in operations, required
+    example = _normalized(
+        (REPO_ROOT / "examples" / "external_metadata.py").read_text(encoding="utf-8")
+    )
+    for required in (
+        "two separate evidence domains",
+        "does not cause relational assurance",
+        "does not select the assurance level",
+    ):
+        assert _normalized(required) in example, required
+    # The documented worked CLI recipe block must exist (the extraction test
+    # in tests/test_examples.py binds to it).
+    contract = _documents()["docs/operations.md"]
+    assert "p7-009-cli-recipe" in contract, "the documented CLI recipe marker is missing"

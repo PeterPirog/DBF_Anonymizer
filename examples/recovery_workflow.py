@@ -17,13 +17,11 @@ Recovery authorization is a HOST decision expressed through the public
 All material stays inside the trusted workspace: the recovered copy belongs
 to the internal environment and must never be transferred.  Synthetic data
 only; no network, no VFP, no private module imports, no vault-row reading.
+The optional ``WORK_ROOT`` argument must NOT exist yet (fail-closed).
+Output stays privacy-safe: bounded summaries only, never resolved paths.
 """
 
 from __future__ import annotations
-
-import sys
-import tempfile
-from pathlib import Path
 
 import dbf_anonymizer as public
 
@@ -33,11 +31,14 @@ except ImportError:  # pragma: no cover - plain script execution
     import synthetic_dataset  # script execution
 
 
+def _require(condition: bool, message: str) -> None:
+    """An explicit safety check that cannot disappear under ``python -O``."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def main() -> None:
-    if len(sys.argv) > 1:
-        work_root = Path(sys.argv[1])
-    else:
-        work_root = Path(tempfile.mkdtemp(prefix="dbf-anonymizer-example-recovery-"))
+    work_root = synthetic_dataset.workspace_from_arguments("recovery")
 
     source = synthetic_dataset.create_single_table_dataset(work_root / "source")
     output = work_root / "output"
@@ -45,7 +46,7 @@ def main() -> None:
 
     plan = public.build_plan(source, output, vault)
     preflight_result = public.preflight(plan)
-    assert preflight_result.ready
+    _require(preflight_result.ready, "preflight refused the plan; nothing was executed")
     result = public.pseudonymize(plan)
 
     # Path A — authorized recovery inside the trusted environment.
@@ -55,9 +56,12 @@ def main() -> None:
         output=work_root / "recovered",
         recovery_policy=public.RecoveryPolicy.ENABLED,
     )
-    assert recovered.canonical_verified
-    assert recovered.table_count == result.table_count
-    assert recovered.record_count == result.record_count
+    _require(recovered.canonical_verified, "recovery did not verify the canonical dataset")
+    _require(
+        recovered.table_count == result.table_count
+        and recovered.record_count == result.record_count,
+        "recovered dataset shape is inconsistent with the pseudonymized dataset",
+    )
 
     # Path B — a host that must NOT be able to recover data sets DISABLED.
     # The refusal happens BEFORE any vault access and creates no output.
@@ -70,16 +74,19 @@ def main() -> None:
             recovery_policy=public.RecoveryPolicy.DISABLED,
         )
     except public.RecoveryError as error:
-        assert error.code is public.ErrorCode.RECOVERY_NOT_PERMITTED
+        _require(
+            error.code is public.ErrorCode.RECOVERY_NOT_PERMITTED,
+            "DISABLED recovery must refuse with RECOVERY_NOT_PERMITTED",
+        )
         refusal = error.code.value
     else:  # pragma: no cover - DISABLED must always refuse
-        raise AssertionError("DISABLED recovery did not refuse")
-    assert not refused_output.exists()
+        raise RuntimeError("DISABLED recovery did not refuse")
+    _require(not refused_output.exists(), "a refused recovery must not create output")
 
     print("DBF_Anonymizer recovery workflow (synthetic data)")
-    print(f"ENABLED:  canonical_verified=True, records={recovered.record_count}")
-    print(f"DISABLED: typed refusal {refusal} (before any vault access)")
-    print("recovered material stays in the trusted environment; it is never transferable")
+    print("ENABLED:  canonical_verified=True (recovered copy stays in the trusted workspace)")
+    print(f"DISABLED: typed refusal {refusal} (before any vault access; no output created)")
+    print("recovered material is internal-environment data; it is never transferable")
 
 
 if __name__ == "__main__":

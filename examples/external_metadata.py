@@ -11,33 +11,31 @@ and ships the external metadata contract: the versioned JSON Schema is inside
 the wheel and is loaded through the documented public loader
 ``dbf_anonymizer.relationships.load_external_metadata_schema()``.
 
-The envelope demonstrates:
+The envelope demonstrates TWO SEPARATE evidence domains:
 
-- ``external_metadata_schema_version`` and the structured producer identity;
-- the envelope-level ``authority`` classification (contract metadata only —
-  it is NOT a per-claim default);
-- ONE authoritative relation claim: explicit ``provenance``, ``authority``
-  and ``assurance`` on the claim itself;
-- ONE index claim with its own explicit ``verification_state``.
+1. RELATION CLAIM — an eligible authoritative relation claim (per-claim
+   ``CONTRACT_AUTHORITATIVE`` + ``assurance: VERIFIED`` + an authoritative
+   VFP-metadata provenance class) can support ``VFP_METADATA_VERIFIED``;
+   that level additionally requires the adapter-minted authoritative
+   binding AND successful post-transform relationship verification.
+2. INDEX CLAIM — independent index metadata with its own explicit
+   ``verification_state``.  A VERIFIED index claim may become eligible to
+   support the EXISTING index-validity machinery; it does NOT cause
+   relational assurance, does NOT select the assurance level, and NEVER by
+   itself proves that an output CDX/IDX artifact was rebuilt.  Output index
+   validity still requires the authoritative ``IndexBackend`` rebuild/
+   verification evidence (injected by the host under the opt-in
+   ``VFP_INDEXED`` profile).
 
-TRUTHFUL INDEX LIMITATION — stated by the example itself:
+This example launches NO VFP, provides NO backend and claims NO index
+publication validity; it stays planning/preflight oriented.
 
-- a VERIFIED injected index metadata claim is planning/reporting information
-  that can raise relational assurance; it does NOT by itself prove that an
-  OUTPUT CDX/IDX artifact was rebuilt. Output index validity still requires
-  the appropriate authoritative ``IndexBackend`` rebuild/verification
-  evidence (injected by the host under the opt-in ``VFP_INDEXED`` profile).
-- this example launches NO VFP, provides NO backend and claims NO index
-  publication validity; it stays planning/preflight oriented.
-
-Synthetic data only; no network; no VFP/COM.
+Synthetic data only; no network; no VFP/COM.  The optional ``WORK_ROOT``
+argument must NOT exist yet (fail-closed).  Output stays privacy-safe.
 """
 
 from __future__ import annotations
 
-import sys
-import tempfile
-from pathlib import Path
 from typing import Any
 
 import dbf_anonymizer as public
@@ -50,6 +48,12 @@ try:
     from examples import synthetic_dataset  # package-style execution
 except ImportError:  # pragma: no cover - plain script execution
     import synthetic_dataset  # script execution
+
+
+def _require(condition: bool, message: str) -> None:
+    """An explicit safety check that cannot disappear under ``python -O``."""
+    if not condition:
+        raise RuntimeError(message)
 
 
 def external_document() -> dict[str, Any]:
@@ -108,15 +112,15 @@ def external_document() -> dict[str, Any]:
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        work_root = Path(sys.argv[1])
-    else:
-        work_root = Path(tempfile.mkdtemp(prefix="dbf-anonymizer-example-external-"))
+    work_root = synthetic_dataset.workspace_from_arguments("external")
 
     # The shipped, versioned external-metadata schema is a wheel resource and
     # a documented public loader (producer-independent consumers can use it).
     schema = load_external_metadata_schema()
-    assert schema["x-contract-schema-version"] == EXTERNAL_METADATA_SCHEMA_VERSION
+    _require(
+        schema["x-contract-schema-version"] == EXTERNAL_METADATA_SCHEMA_VERSION,
+        "the shipped external schema version is unexpected",
+    )
 
     document = external_document()
     source = synthetic_dataset.create_related_dataset(work_root / "source")
@@ -125,16 +129,22 @@ def main() -> None:
 
     plan = public.build_plan(source, output, vault, relationship_document=document)
     relationships = plan.relationships
-    assert relationships.provenance == "EXTERNAL_VFP_METADATA"
-    assert relationships.producer_id == "example-analyzer"
-    assert relationships.authoritative is True
+    _require(relationships.provenance == "EXTERNAL_VFP_METADATA", "provenance was not preserved")
+    _require(relationships.producer_id == "example-analyzer", "producer was not preserved")
+    _require(relationships.authoritative is True, "authoritative relation metadata was not bound")
     preflight_result = public.preflight(plan)
-    assert preflight_result.ready
+    _require(preflight_result.ready, "preflight refused the external envelope")
 
     result = public.pseudonymize(plan)
     verification = public.verify_dataset(result, source=source, vault=vault)
-    assert verification.status is public.VerificationStatus.PASS
-    assert verification.assurance.level is (public.RelationalAssuranceLevel.VFP_METADATA_VERIFIED)
+    _require(
+        verification.status is public.VerificationStatus.PASS,
+        "dataset verification did not reach PASS",
+    )
+    _require(
+        verification.assurance.level is (public.RelationalAssuranceLevel.VFP_METADATA_VERIFIED),
+        "the verified authoritative relation metadata did not reach VFP_METADATA_VERIFIED",
+    )
 
     print("DBF_Anonymizer external-metadata workflow (synthetic data)")
     print(f"shipped external schema version: {EXTERNAL_METADATA_SCHEMA_VERSION}")
@@ -142,9 +152,12 @@ def main() -> None:
     print(f"verification status: {verification.status.value}")
     print(f"assurance level: {verification.assurance.level.value}")
     print(
-        "NOTE: the VERIFIED injected index claim raised relational assurance; "
-        "it does NOT by itself prove that an output CDX/IDX was rebuilt "
-        "(no backend was launched, none is implied)"
+        "evidence domains: the assurance level comes from the VERIFIED "
+        "authoritative RELATION claim plus successful relationship "
+        "verification; the VERIFIED INDEX claim is independent index "
+        "metadata — it does NOT cause relational assurance and does NOT by "
+        "itself prove that an output CDX/IDX was rebuilt (no backend was "
+        "launched, none is implied)"
     )
 
 

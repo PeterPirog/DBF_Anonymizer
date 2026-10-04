@@ -23,10 +23,14 @@ a private `dbf_anonymizer.*` module, never MCP/transport/server code.
   launches VFP; `VFP_INDEXED` is an OPT-IN profile that requires an
   authoritative `IndexBackend` explicitly injected by the host — the
   examples use the default DATA_ONLY output profile.
-- Each example creates a disposable workspace and prints every artifact
-  path. Pass an optional argument to choose the workspace root (it must not
-  exist yet), otherwise a fresh system-TEMP directory is used. Synthetic
-  canaries are the only "data" involved.
+- Each example creates a disposable workspace and prints a BOUNDED,
+  PRIVACY-SAFE summary (roles, counts, stable status/level vocabulary) —
+  never resolved absolute paths, never TEMP roots, never original values,
+  never vault contents. Pass an optional argument to choose the workspace
+  root; a supplied workspace must NOT exist yet (the examples refuse an
+  existing target fail-closed, before writing anything), otherwise a fresh
+  system-TEMP directory is used. Synthetic canaries are the only "data"
+  involved.
 
 ## Recommended order
 
@@ -39,13 +43,23 @@ a private `dbf_anonymizer.*` module, never MCP/transport/server code.
 3. [recovery_workflow.py](recovery_workflow.py) — both authorization paths:
    `RecoveryPolicy.ENABLED` (canonical recovery) and
    `RecoveryPolicy.DISABLED` (typed refusal before any vault access).
-4. [data_only_bundle.py](data_only_bundle.py) — create and standalone-verify
+4. [progress_cancellation.py](progress_cancellation.py) — bounded
+   synchronous progress callbacks and deterministic cooperative
+   cancellation (typed `OPERATION_CANCELLED`, no published output).
+5. [data_only_bundle.py](data_only_bundle.py) — create and standalone-verify
    the transferable DATA_ONLY bundle; the vault never becomes part of it.
-5. [external_metadata.py](external_metadata.py) — inject a
+6. [external_metadata.py](external_metadata.py) — inject a
    producer-independent external VFP metadata envelope (one VERIFIED
    relation claim + one index claim) through the public planning boundary,
-   and load the shipped schema through the documented public loader.
-6. [consumer_adapter.py](consumer_adapter.py) — the thin, synchronous,
+   and load the shipped schema through the documented public loader. The
+   two evidence domains are kept separate: relational assurance comes from
+   the authoritative RELATION claim plus relationship verification; the
+   INDEX claim never causes relational assurance.
+7. [field_semantics_workflow.py](field_semantics_workflow.py) — advanced
+   DBF/VFP field semantics on synthetic data: deleted records stay deleted
+   with transformed content, NULL/empty identities, Varchar domain sharing,
+   memo/FPT masking with canary leakage checks, recovery and DATA_ONLY.
+8. [consumer_adapter.py](consumer_adapter.py) — the thin, synchronous,
    transport-neutral reference adapter for a downstream host (NOT an MCP
    server; the host owns transport, authentication and orchestration).
 
@@ -55,13 +69,15 @@ Standalone execution:
 python examples/basic_workflow.py
 python examples/relationship_workflow.py
 python examples/recovery_workflow.py
+python examples/progress_cancellation.py
 python examples/data_only_bundle.py
 python examples/external_metadata.py
+python examples/field_semantics_workflow.py
 ```
 
-Each example prints a concise privacy-safe summary (counts, status codes,
-fingerprint/level vocabulary) — never original values, never vault rows,
-never reverse mappings.
+Each example prints a concise privacy-safe summary (roles, counts, status
+codes, fingerprint/level vocabulary) — never resolved paths, never original
+values, never vault rows, never reverse mappings.
 
 ## Artifacts and trust boundaries
 
@@ -72,6 +88,9 @@ never reverse mappings.
 | protected VAULT | workspace `protected/recovery.sqlite3` | NEVER — stays in the trusted environment |
 | DATA_ONLY bundle | workspace `bundle/` | YES — the only transferable artifact |
 | recovered copy | workspace `recovered/` | NEVER — internal-environment material |
+
+(Roles are shown relative to the example workspace; the examples never print
+resolved absolute paths.)
 
 The protected vault (and every recovery artifact) must stay inside the
 trusted internal environment and must NEVER be copied into a transfer.

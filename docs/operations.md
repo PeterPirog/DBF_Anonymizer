@@ -72,10 +72,12 @@ import dbf_anonymizer as public
 
 plan = public.build_plan(source, output, vault)  # read-only, deterministic
 preflight_result = public.preflight(plan)  # fail-closed readiness evaluation
-assert preflight_result.ready
+if not preflight_result.ready:
+    raise RuntimeError("preflight refused the plan; nothing was executed")
 result = public.pseudonymize(plan)  # the mutable operation
 verification = public.verify_dataset(result, source=source, vault=vault)
-assert verification.status is public.VerificationStatus.PASS
+if verification.status is not public.VerificationStatus.PASS:
+    raise RuntimeError("dataset verification did not reach PASS")
 ```
 
 ### Executable synthetic fixture setup
@@ -602,12 +604,23 @@ envelope carries the external `external_metadata_schema_version` ("1.0"), the
 structured producer provenance (`producer_id`/`producer_version`), the
 envelope-level `authority` classification, and — on EVERY relation claim and
 index claim — its own explicit `provenance`, `authority` and `assurance`.
-Only a claim that is both `CONTRACT_AUTHORITATIVE` and `VERIFIED` (index
-claims additionally `VERIFIED` in `verification_state`) and whose provenance
-is an authoritative VFP-metadata class may affect authoritative
-relationship-domain grouping or become eligible for
-`VFP_METADATA_VERIFIED`; inferred or unverified claims remain retained as
-non-authoritative planning/reporting information. The following executable
+
+The TWO EVIDENCE DOMAINS are kept strictly separate:
+
+- RELATION CLAIMS — only a relation claim that is `CONTRACT_AUTHORITATIVE`
+  and `VERIFIED` with an authoritative VFP-metadata provenance class may
+  affect authoritative relationship-domain grouping and — after successful
+  post-transform relationship verification — support `VFP_METADATA_VERIFIED`;
+- INDEX CLAIMS — independent index metadata with its own explicit
+  `verification_state`: a contract-authoritative VERIFIED index claim may
+  support the existing index-validity machinery, but it does NOT cause
+  relational assurance, does NOT select the assurance level, and NEVER by
+  itself proves that an output CDX/IDX artifact was rebuilt (output index
+  validity still requires the authoritative backend rebuild/verification
+  evidence).
+
+Inferred or unverified claims remain retained as non-authoritative
+planning/reporting information. The following executable
 example injects a conforming external envelope through the same public
 planning boundary:
 
@@ -712,17 +725,18 @@ try:
     )
 except public.AnonymizerError as error:
     payload = error.to_dict()  # versioned contract fields only
-    assert error.code is public.ErrorCode.RECOVERY_NOT_PERMITTED
+    if error.code is not public.ErrorCode.RECOVERY_NOT_PERMITTED:
+        raise RuntimeError("unexpected error code") from error
 ```
 
 The complete code vocabulary and categories are documented in
 [errors-1.0.md](errors-1.0.md).
 
-## The complete CLI workflow
+## CLI command reference
 
 Every CLI command mirrors the Python API above. Machine results print to
-stdout with `--json`; progress and human messages stay on stderr. Example
-invocations (paths are placeholders — use your own dataset directories):
+stdout with `--json`; progress and human messages stay on stderr. Command
+syntax reference (paths are placeholders — use your own dataset directories):
 
 ```text
 dbf-anonymizer capabilities --json
@@ -736,18 +750,27 @@ dbf-anonymizer verify-bundle DESTINATION --json
 dbf-anonymizer self-test --json
 ```
 
+`plan`, `preflight`, `pseudonymize`, `verify` and `export-bundle` accept
+`--policy` / `--relationships` (both optional); when supplied, the SAME
+values must be used by every command that re-derives the same operation
+identity. `recover` and `verify-bundle` work on the durable artifacts
+(pseudonymized dataset + vault, or the bundle) without re-deriving a plan.
+The console entry point itself is the installed `dbf-anonymizer` script
+(proven by `tests/test_p1_packaging.py::test_console_script_mapping_is_declared`
+and the installed-wheel probes in `tests/test_p7_transport_boundary.py`).
 `self-test` runs the complete workflow (plan → preflight → pseudonymize →
 verify → recovery → bundle) against its own synthetic dataset in one call and
 is the quickest end-to-end health check of an installed environment.
 
-### Worked CLI recipe (synthetic example data)
+## Worked CLI recipe (synthetic example data)
 
-The repository ships ready-made example configuration files, so the complete
-workflow can be reproduced without inventing any JSON. Run this from a
-repository checkout with the package installed (Windows PowerShell; the same
-commands work in any shell with forward slashes):
+The complete, operation-binding-consistent end-to-end recipe. The repository
+ships ready-made example configuration files, so it can be reproduced without
+inventing any JSON. Run this from a repository checkout with the package
+installed (Windows PowerShell; the same commands work in any shell with
+forward slashes):
 
-```powershell
+```powershell p7-009-cli-recipe
 # Synthetic demo dataset only — never production data.
 $work = "demo-work"
 python examples\synthetic_dataset.py "$work\source"
@@ -758,7 +781,7 @@ dbf-anonymizer preflight "$work\source" "$work\output" "$work\protected\recovery
 dbf-anonymizer pseudonymize "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
 dbf-anonymizer verify "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
 dbf-anonymizer recover "$work\output" "$work\protected\recovery.sqlite3" "$work\recovered" --recovery-policy enabled --json
-dbf-anonymizer export-bundle "$work\source" "$work\output" "$work\protected\recovery.sqlite3" "$work\bundle" --json
+dbf-anonymizer export-bundle "$work\source" "$work\output" "$work\protected\recovery.sqlite3" "$work\bundle" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
 dbf-anonymizer verify-bundle "$work\bundle" --json
 dbf-anonymizer self-test --json
 ```
@@ -769,4 +792,7 @@ The configuration files are
 [examples/config/relationships.json](../examples/config/relationships.json)
 (the declared PK/FK relationship matching the synthetic
 `people.dbf`/`orders.dbf` demo dataset). Every command prints exactly one
-machine-readable JSON result with `--json`.
+machine-readable JSON result with `--json`; `plan`, `preflight`,
+`pseudonymize`, `verify` and `export-bundle` deliberately share the SAME
+`--policy`/`--relationships` inputs so the re-derived operation identity stays
+identical across the workflow.

@@ -18,13 +18,11 @@ The verified DATA_ONLY bundle is the ONLY transferable artifact:
 
 DATA_ONLY is pseudonymized data whose recovery material is absent — it is
 NOT anonymous data.  Synthetic data only; no network, no VFP.
+The optional ``WORK_ROOT`` argument must NOT exist yet (fail-closed).
+Output stays privacy-safe: bounded summaries only, never resolved paths.
 """
 
 from __future__ import annotations
-
-import sys
-import tempfile
-from pathlib import Path
 
 import dbf_anonymizer as public
 
@@ -34,11 +32,14 @@ except ImportError:  # pragma: no cover - plain script execution
     import synthetic_dataset  # script execution
 
 
+def _require(condition: bool, message: str) -> None:
+    """An explicit safety check that cannot disappear under ``python -O``."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def main() -> None:
-    if len(sys.argv) > 1:
-        work_root = Path(sys.argv[1])
-    else:
-        work_root = Path(tempfile.mkdtemp(prefix="dbf-anonymizer-example-bundle-"))
+    work_root = synthetic_dataset.workspace_from_arguments("bundle")
 
     source = synthetic_dataset.create_single_table_dataset(work_root / "source")
     output = work_root / "output"
@@ -46,22 +47,28 @@ def main() -> None:
 
     plan = public.build_plan(source, output, vault)
     preflight_result = public.preflight(plan)
-    assert preflight_result.ready
+    _require(preflight_result.ready, "preflight refused the plan; nothing was executed")
     result = public.pseudonymize(plan)
 
     bundle_path = work_root / "bundle"
     bundle = public.create_transfer_bundle(result, destination=bundle_path, profile="DATA_ONLY")
-    assert bundle.verified
+    _require(bundle.verified, "the bundle was not verified at creation")
     standalone = public.verify_transfer_bundle(bundle_path)
-    assert standalone.verified
-    assert standalone.manifest_fingerprint == bundle.manifest_fingerprint
+    _require(standalone.verified, "the bundle was not verified standalone")
+    _require(
+        standalone.manifest_fingerprint == bundle.manifest_fingerprint,
+        "standalone verification saw a different manifest",
+    )
 
     # Observable public outcome only: no vault database or SQLite sidecar is
     # part of the bundle tree. The authoritative security claim is owned by
     # the bundle creation/verification API itself.
     bundle_files = tuple(path for path in bundle_path.rglob("*") if path.is_file())
-    assert bundle_files
-    assert not tuple(bundle_path.rglob("*.sqlite3*"))
+    _require(bool(bundle_files), "the bundle tree is empty")
+    _require(
+        not tuple(bundle_path.rglob("*.sqlite3*")),
+        "no SQLite database may appear inside a DATA_ONLY bundle",
+    )
 
     print("DBF_Anonymizer DATA_ONLY workflow (synthetic data)")
     print(f"bundle verified at creation:  {bundle.verified}")

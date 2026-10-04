@@ -20,12 +20,11 @@ pseudonymization — value-level FK-join evidence through the public
   original values.
 
 No original value is printed.  Synthetic data only; no network, no VFP.
+The optional ``WORK_ROOT`` argument must NOT exist yet (fail-closed).
 """
 
 from __future__ import annotations
 
-import sys
-import tempfile
 from pathlib import Path
 
 import dbf_anonymizer as public
@@ -37,6 +36,12 @@ except ImportError:  # pragma: no cover - plain script execution
     import synthetic_dataset  # script execution
 
 
+def _require(condition: bool, message: str) -> None:
+    """An explicit safety check that cannot disappear under ``python -O``."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def _integer_column(dbf_path: Path, field_name: str) -> list[int]:
     """One column of public pseudonymized values (public streaming reads)."""
     return [
@@ -46,10 +51,7 @@ def _integer_column(dbf_path: Path, field_name: str) -> list[int]:
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        work_root = Path(sys.argv[1])
-    else:
-        work_root = Path(tempfile.mkdtemp(prefix="dbf-anonymizer-example-rel-"))
+    work_root = synthetic_dataset.workspace_from_arguments("rel")
 
     source = synthetic_dataset.create_related_dataset(work_root / "source")
     output = work_root / "output"
@@ -61,29 +63,36 @@ def main() -> None:
         vault,
         relationship_document=synthetic_dataset.policy_relationship_document(),
     )
-    assert plan.relationships.relation_count == 1
+    _require(plan.relationships.relation_count == 1, "the declared relation was not planned")
     preflight_result = public.preflight(plan)
-    assert preflight_result.ready
+    _require(preflight_result.ready, "preflight refused the declared relationship")
 
     result = public.pseudonymize(plan)
     verification = public.verify_dataset(result, source=source, vault=vault)
-    assert verification.status is public.VerificationStatus.PASS
-    assert verification.assurance.level is (
-        public.RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED
+    _require(
+        verification.status is public.VerificationStatus.PASS,
+        "dataset verification did not reach PASS",
     )
-    assert verification.assurance.declared_relations == 1
-    assert verification.assurance.verified_relations == 1
-    assert verification.assurance.failed_relations == 0
+    _require(
+        verification.assurance.level
+        is (public.RelationalAssuranceLevel.DECLARED_RELATIONS_VERIFIED),
+        "the declared relationship was not verified after transformation",
+    )
+    _require(
+        verification.assurance.declared_relations == 1
+        and verification.assurance.verified_relations == 1
+        and verification.assurance.failed_relations == 0,
+        "relationship evidence counts are inconsistent",
+    )
 
     # Record-level PK/FK evidence through public reads only: the FK join
     # stays valid inside the pseudonymized domain, and the transformed key
     # domain is a genuine bijective pseudonym set (no original survived).
     people_ids = _integer_column(output / "people.dbf", "ID")
     person_ids = _integer_column(output / "orders.dbf", "PERSON_ID")
-    assert set(person_ids) <= set(people_ids)
-    assert len(set(people_ids)) == len(people_ids)
-    original_ids = {1, 2, 3}
-    assert not (set(people_ids) & original_ids)
+    _require(set(person_ids) <= set(people_ids), "pseudonymized FK join is broken")
+    _require(len(set(people_ids)) == len(people_ids), "pseudonymized PK is not bijective")
+    _require(not (set(people_ids) & {1, 2, 3}), "original key values survived pseudonymization")
 
     print("DBF_Anonymizer relationship workflow (synthetic data)")
     print(f"declared relations: {plan.relationships.relation_count}")
