@@ -18,7 +18,8 @@ Pass a conforming JSON mapping to the existing `relationship_document`
 argument of `dbf_anonymizer.build_plan`. The same parsed relationship document
 drives planning, preflight, operation binding, vault compatibility, verification,
 and the existing relationship fingerprint. Root-public function signatures are
-unchanged.
+unchanged. A runnable synthetic demonstration is
+[../examples/external_metadata.py](../examples/external_metadata.py).
 
 Every external relation claim carries explicit provenance, authority and
 assurance. Envelope-level `authority` is supplied contract metadata carried in

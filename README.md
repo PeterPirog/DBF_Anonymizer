@@ -35,11 +35,78 @@ vault is pseudonymized data; DATA_ONLY output removes direct recovery
 material but is still not anonymized. See
 [docs/pseudonymization-vs-anonymization.md](docs/pseudonymization-vs-anonymization.md).
 
+## Installation
+
+The package version is stable `1.0.0`. Public PyPI publication is a separate
+privileged release lane and has NOT happened; repository metadata alone does
+not prove a public package. Until publication, install from a built wheel:
+
+```powershell
+python -m build
+python -m pip install --no-cache-dir dist\dbf_anonymizer-1.0.0-py3-none-any.whl
+```
+
+For the internal-network offline installation (pinned wheelhouse, `--no-index`,
+`--find-links`, no runtime downloads), see
+[docs/operations.md](docs/operations.md).
+
+## 5-minute quick start
+
+The complete public API is the package root `dbf_anonymizer`. Replace the
+placeholder paths with YOUR OWN authorized dataset paths (the fully
+executable synthetic version of this workflow is
+[examples/basic_workflow.py](examples/basic_workflow.py)):
+
+```python
+from pathlib import Path
+
+import dbf_anonymizer as public
+
+source = Path("<your-source-dataset>")  # read-only input (trusted environment)
+output = Path("<your-pseudonymized-output>")  # written by pseudonymize
+vault = Path("<protected>/recovery.sqlite3")  # ONE protected vault per dataset (trusted)
+
+plan = public.build_plan(source, output, vault)
+preflight_result = public.preflight(plan)
+assert preflight_result.ready
+
+result = public.pseudonymize(plan)
+verification = public.verify_dataset(result, source=source, vault=vault)
+assert verification.status is public.VerificationStatus.PASS
+```
+
+Failures are typed, privacy-safe, registry-controlled objects — never parse
+exception text:
+
+```python
+try:
+    plan = public.build_plan(source, output, vault, policy={"schema_version": 99})
+except public.PolicyError as error:
+    payload = error.to_dict()  # versioned JSON contract, no private material
+    assert error.code is public.ErrorCode.POLICY_INVALID
+```
+
+Executable recipes (synthetic data, progressive complexity) live in
+[examples/README.md](examples/README.md); the authoritative detailed guide is
+[docs/operations.md](docs/operations.md).
+
+## Safety model
+
+- `SOURCE` stays in the trusted internal environment and is never modified.
+- Exactly ONE protected `VAULT` spans the whole dataset. The vault is what
+  makes the output recoverable — it belongs to the trusted environment and
+  must NEVER be transferred or published.
+- `DATA_ONLY` transfer bundles are the only transferable artifact: verified,
+  standalone, free of vault/recovery material — pseudonymized data, NOT
+  anonymous data.
+
 ## Documentation
 
 English-first operational and security documentation (validated by
 `tests/test_p7_documentation_contract.py`, including executable examples):
 
+- [examples/README.md](examples/README.md) — the executable example recipes
+  (synthetic data, progressive complexity, downstream-consumer adapter).
 - [docs/operations.md](docs/operations.md) — internal-network offline
   installation, one-vault-per-dataset operation, policy configuration,
   relationship configuration, pseudonymization, verification, recovery, and

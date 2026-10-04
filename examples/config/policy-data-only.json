@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "profile": "SAFE_TRANSFER",
+  "text": {
+    "default_action": "PSEUDONYMIZE_REVERSIBLE",
+    "domain": "GLOBAL_TEXT"
+  },
+  "memo": {
+    "text": "MASK_REVERSIBLE",
+    "binary": "MASK_REVERSIBLE"
+  },
+  "temporal": {
+    "date": "SHIFT_REVERSIBLE",
+    "datetime": "SHIFT_REVERSIBLE"
+  },
+  "numeric": {
+    "default_action": "KEEP"
+  },
+  "relationships": {
+    "metadata_file": null
+  },
+  "indexes": {
+    "profile": "DATA_ONLY"
+  }
+}

@@ -62,10 +62,30 @@ to stderr), and unknown invocations fail rather than pretend success.
 
 ## Quick start (Python API)
 
+The core public workflow is five calls. Replace the placeholders with YOUR
+OWN authorized dataset paths; the fully executable synthetic version of this
+workflow is [../examples/basic_workflow.py](../examples/basic_workflow.py)
+(with the complete recipe index in [../examples/README.md](../examples/README.md)):
+
+```python
+import dbf_anonymizer as public
+
+plan = public.build_plan(source, output, vault)  # read-only, deterministic
+preflight_result = public.preflight(plan)  # fail-closed readiness evaluation
+assert preflight_result.ready
+result = public.pseudonymize(plan)  # the mutable operation
+verification = public.verify_dataset(result, source=source, vault=vault)
+assert verification.status is public.VerificationStatus.PASS
+```
+
+### Executable synthetic fixture setup
+
 The following executable example builds a small SYNTHETIC dataset through the
-public dbfbridge boundary, then reports capabilities. Synthetic canary values
-(such as `DOC-CANARY-1`) stand in for what would be production data; never run
-these examples against production files.
+public dbfbridge boundary (this is the deterministic fixture construction the
+documentation acceptance test executes in CI — the pedagogic examples keep
+this boilerplate in one reusable helper), then reports capabilities. Synthetic
+canary values (such as `DOC-CANARY-1`) stand in for what would be production
+data; never run these examples against production files.
 
 ```python p7-009-exec
 from pathlib import Path
@@ -168,6 +188,22 @@ support cooperative cancellation and bounded progress through keyword-only
 `progress` and `cancel_check` arguments. `verify_dataset` re-reads the
 pseudonymized output and the source independently and returns a typed
 `VerificationResult`; `PASS` is the only success value.
+
+The progress/cancellation pattern is synchronous (no async API): the callback
+receives bounded structured `ProgressEvent` objects (codes and counters, not
+free-form text), and a `cancel_check` returning `True` stops the operation at
+the next safe point with the typed `CancellationError`:
+
+```python
+def on_progress(event: public.ProgressEvent) -> None:
+    print(event.phase_code, event.event_code, event.completed_units)
+
+
+result = public.pseudonymize(plan, progress=on_progress, cancel_check=lambda: False)
+```
+
+A caller-supplied callback failure is contained as the typed `CallbackError`
+(the raw exception text never escapes), so callbacks can be host-owned code.
 
 ## Recovery
 
@@ -660,6 +696,28 @@ The transferable output never includes recovery material; copying the vault
 (or any WAL/SHM/journal/recovery sidecar) into a transfer is neither supported
 nor permitted.
 
+## Typed errors
+
+Every public failure derives from `public.AnonymizerError` and serializes to
+the versioned privacy-safe JSON contract. Classify failures by the stable
+machine code — never by parsing exception text:
+
+```python
+try:
+    public.recover(
+        output,
+        vault=vault,
+        output=work_root / "blocked",
+        recovery_policy=public.RecoveryPolicy.DISABLED,
+    )
+except public.AnonymizerError as error:
+    payload = error.to_dict()  # versioned contract fields only
+    assert error.code is public.ErrorCode.RECOVERY_NOT_PERMITTED
+```
+
+The complete code vocabulary and categories are documented in
+[errors-1.0.md](errors-1.0.md).
+
 ## The complete CLI workflow
 
 Every CLI command mirrors the Python API above. Machine results print to
@@ -681,3 +739,34 @@ dbf-anonymizer self-test --json
 `self-test` runs the complete workflow (plan → preflight → pseudonymize →
 verify → recovery → bundle) against its own synthetic dataset in one call and
 is the quickest end-to-end health check of an installed environment.
+
+### Worked CLI recipe (synthetic example data)
+
+The repository ships ready-made example configuration files, so the complete
+workflow can be reproduced without inventing any JSON. Run this from a
+repository checkout with the package installed (Windows PowerShell; the same
+commands work in any shell with forward slashes):
+
+```powershell
+# Synthetic demo dataset only — never production data.
+$work = "demo-work"
+python examples\synthetic_dataset.py "$work\source"
+
+dbf-anonymizer capabilities --json
+dbf-anonymizer plan "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer preflight "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer pseudonymize "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer verify "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer recover "$work\output" "$work\protected\recovery.sqlite3" "$work\recovered" --recovery-policy enabled --json
+dbf-anonymizer export-bundle "$work\source" "$work\output" "$work\protected\recovery.sqlite3" "$work\bundle" --json
+dbf-anonymizer verify-bundle "$work\bundle" --json
+dbf-anonymizer self-test --json
+```
+
+The configuration files are
+[examples/config/policy-data-only.json](../examples/config/policy-data-only.json)
+(the documented default policy with the DATA_ONLY index profile) and
+[examples/config/relationships.json](../examples/config/relationships.json)
+(the declared PK/FK relationship matching the synthetic
+`people.dbf`/`orders.dbf` demo dataset). Every command prints exactly one
+machine-readable JSON result with `--json`.

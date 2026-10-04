@@ -606,6 +606,35 @@ def test_all_user_document_names_cover_every_docs_page() -> None:
     assert "docs/release-acceptance.md" in ALL_USER_DOCUMENT_NAMES
 
 
+def test_readme_and_examples_index_integrity() -> None:
+    """README onboards to the executable examples suite: the examples index
+    exists and is linked, every documented example/config path is real, the
+    index links resolve, and the index stays English-first. Execution of the
+    examples themselves is proven by ``tests/test_examples.py``."""
+    readme = _documents()["README.md"]
+    assert "examples/README.md" in readme
+    # Every examples/... path referenced by the user docs and the index exists.
+    for name in ("README.md", "docs/operations.md"):
+        for relative in re.findall(
+            r"examples[/\\]([A-Za-z0-9_/\\.-]+\.(?:py|json|md))", _documents()[name]
+        ):
+            assert (REPO_ROOT / "examples" / relative.replace("\\", "/")).is_file(), (
+                f"{name}: documented example path missing: examples/{relative}"
+            )
+    examples_readme = (REPO_ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+    _assert_document_links("examples/README.md", examples_readme)
+    for relative in re.findall(r"examples[/\\]([A-Za-z0-9_/\\.-]+\.(?:py|json))", examples_readme):
+        assert (REPO_ROOT / "examples" / relative.replace("\\", "/")).is_file(), (
+            f"examples/README.md: documented path missing: examples/{relative}"
+        )
+    # The examples index stays English-first (deterministic structural guard).
+    assert CJK_MARKER.search(examples_readme) is None
+    polish = sorted(set(examples_readme) & set("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"))
+    assert not polish, f"examples/README.md contains Polish diacritics: {polish}"
+    marker = POLISH_USER_MARKERS.search(examples_readme)
+    assert marker is None, f"examples/README.md Polish marker: {marker.group(0)!r}"
+
+
 def test_documented_public_symbols_exist() -> None:
     public = importlib.import_module("dbf_anonymizer")
     used: set[str] = set()
