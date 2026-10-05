@@ -107,7 +107,11 @@ the CLI recipe in `docs/operations.md` can be reproduced:
 - [config/relationships.json](config/relationships.json) — the declared
   PK/FK relationship for the synthetic `people.dbf`/`orders.dbf` dataset
   (created by [synthetic_dataset.py](synthetic_dataset.py), which doubles as
-  the demo-dataset generator for CLI experiments).
+  the demo-dataset generator for CLI experiments and carries the shared
+  bounded transient-read resilience wrapper: the FIRST post-write read of a
+  fresh DBF/FPT can transiently fail on Windows (antivirus/indexer file
+  locks), so the examples retry ONLY the typed dependency error a few
+  times).
 
 ## Pseudonymized is not anonymous
 

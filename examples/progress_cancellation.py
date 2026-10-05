@@ -60,8 +60,8 @@ def main() -> None:
     )
     events: list[public.ProgressEvent] = []
     result = public.pseudonymize(progress_plan, progress=events.append, cancel_check=lambda: False)
-    verification = public.verify_dataset(
-        result, source=progress_source, vault=work_root / "protected" / "recovery.sqlite3"
+    verification = synthetic_dataset.verify_dataset_with_transient_retry(
+        result, progress_source, work_root / "protected" / "recovery.sqlite3"
     )
     _require(
         verification.status is public.VerificationStatus.PASS,

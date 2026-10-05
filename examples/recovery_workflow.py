@@ -50,7 +50,8 @@ def main() -> None:
     result = public.pseudonymize(plan)
 
     # Path A — authorized recovery inside the trusted environment.
-    recovered = public.recover(
+    recovered = synthetic_dataset.call_with_transient_retry(
+        public.recover,
         output,
         vault=vault,
         output=work_root / "recovered",

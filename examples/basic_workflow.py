@@ -52,7 +52,7 @@ def main() -> None:
     _require(preflight_result.ready, "preflight refused the plan; nothing was executed")
 
     result = public.pseudonymize(plan)
-    verification = public.verify_dataset(result, source=source, vault=vault)
+    verification = synthetic_dataset.verify_dataset_with_transient_retry(result, source, vault)
     _require(
         verification.status is public.VerificationStatus.PASS,
         "dataset verification did not reach PASS",

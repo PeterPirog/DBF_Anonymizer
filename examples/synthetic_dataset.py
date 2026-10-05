@@ -283,6 +283,40 @@ def policy_relationship_document() -> dict[str, Any]:
     }
 
 
+def call_with_transient_retry(function: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call one public operation with a SMALL bounded retry for TRANSIENT
+    Windows file-lock races on freshly written files (an antivirus scanner or
+    the system indexer can hold a brand-new DBF/FPT/vault briefly on hosted
+    runners, which makes the very first post-write read fail with a
+    structured dependency error).
+
+    Retries ONLY the public typed ``DBFBridgeError``; every other failure
+    propagates immediately.  Example-support resilience: production
+    operation semantics are untouched.
+    """
+    import time
+
+    import dbf_anonymizer as public
+
+    last_error: Exception | None = None
+    for attempt in range(4):
+        try:
+            return function(*args, **kwargs)
+        except public.DBFBridgeError as error:  # transient fresh-file read race
+            last_error = error
+            time.sleep(0.5 * (attempt + 1))
+    assert last_error is not None  # the loop re-raises before returning
+    raise last_error
+
+
+def verify_dataset_with_transient_retry(result: Any, source: Path, vault: Path) -> Any:
+    """Verify the dataset through the transient-retry resilience helper
+    (the verification is the FIRST post-write read of the output files)."""
+    import dbf_anonymizer as public
+
+    return call_with_transient_retry(public.verify_dataset, result, source=source, vault=vault)
+
+
 def workspace_from_arguments(
     example_name: str,
 ) -> Path:
