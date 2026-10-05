@@ -145,7 +145,7 @@ def main() -> None:
     # 6) The source stayed byte-identical (read-only by contract).
     _require(_hash_tree(source) == source_before, "the source dataset was modified")
 
-    verification = public.verify_dataset(result, source=source, vault=vault)
+    verification = synthetic_dataset.verify_dataset_with_transient_retry(result, source, vault)
     _require(
         verification.status is public.VerificationStatus.PASS,
         "dataset verification did not reach PASS",
@@ -153,7 +153,8 @@ def main() -> None:
 
     # 7) Authorized recovery restores the originals INSIDE the trusted
     #    workspace (never printed, never transferred).
-    recovered = public.recover(
+    recovered = synthetic_dataset.call_with_transient_retry(
+        public.recover,
         output,
         vault=vault,
         output=work_root / "recovered",
@@ -174,9 +175,16 @@ def main() -> None:
     # 8) The DATA_ONLY bundle excludes recovery material: no canary and no
     #    SQLite artifact inside it.
     bundle_path = work_root / "bundle"
-    bundle = public.create_transfer_bundle(result, destination=bundle_path, profile="DATA_ONLY")
+    bundle = synthetic_dataset.call_with_transient_retry(
+        public.create_transfer_bundle,
+        result,
+        destination=bundle_path,
+        profile="DATA_ONLY",
+    )
     _require(bundle.verified, "the bundle was not verified at creation")
-    standalone = public.verify_transfer_bundle(bundle_path)
+    standalone = synthetic_dataset.call_with_transient_retry(
+        public.verify_transfer_bundle, bundle_path
+    )
     _require(standalone.verified, "the bundle was not verified standalone")
     bundle_blob = _bytes_with_canaries(bundle_path)
     for canary in (*_TEXT_CANARIES, *_MEMO_CANARIES):

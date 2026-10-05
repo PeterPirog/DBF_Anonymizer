@@ -51,9 +51,16 @@ def main() -> None:
     result = public.pseudonymize(plan)
 
     bundle_path = work_root / "bundle"
-    bundle = public.create_transfer_bundle(result, destination=bundle_path, profile="DATA_ONLY")
+    bundle = synthetic_dataset.call_with_transient_retry(
+        public.create_transfer_bundle,
+        result,
+        destination=bundle_path,
+        profile="DATA_ONLY",
+    )
     _require(bundle.verified, "the bundle was not verified at creation")
-    standalone = public.verify_transfer_bundle(bundle_path)
+    standalone = synthetic_dataset.call_with_transient_retry(
+        public.verify_transfer_bundle, bundle_path
+    )
     _require(standalone.verified, "the bundle was not verified standalone")
     _require(
         standalone.manifest_fingerprint == bundle.manifest_fingerprint,
