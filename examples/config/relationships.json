@@ -1,0 +1,33 @@
+{
+  "metadata_schema_version": "1.0",
+  "relations": [
+    {
+      "relation_id": "orders-person-id-people-id",
+      "provenance": "POLICY_FILE",
+      "comparison": "EXACT_VALUE",
+      "numeric_strategy": "REVERSIBLE_BIJECTIVE",
+      "members": [
+        {
+          "table": "people.dbf",
+          "field": "ID",
+          "role": "PRIMARY",
+          "ordinal": 1,
+          "dbf_type": "I",
+          "byte_width": 4,
+          "encoding": "none",
+          "nullable": false
+        },
+        {
+          "table": "orders.dbf",
+          "field": "PERSON_ID",
+          "role": "FOREIGN",
+          "ordinal": 1,
+          "dbf_type": "I",
+          "byte_width": 4,
+          "encoding": "none",
+          "nullable": false
+        }
+      ]
+    }
+  ]
+}

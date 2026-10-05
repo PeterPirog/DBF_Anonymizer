@@ -49,6 +49,9 @@ whatever its transport needs.
 
 ## The authoritative-metadata flow (completed P6-006 contract)
 
+A runnable, synthetic-only demonstration of this exact flow is
+[../examples/external_metadata.py](../examples/external_metadata.py).
+
 DBF_Anonymizer owns and ships the external VFP relationship/index metadata
 consumer contract: a versioned, transport-neutral, producer-independent JSON
 Schema is shipped inside the package and loaded through the public

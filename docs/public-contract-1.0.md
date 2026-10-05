@@ -2,7 +2,9 @@
 
 REQ-P8-001 freezes the stable 1.0 contract in
 [`contracts/public-contract-1.0.json`](../contracts/public-contract-1.0.json).
-The frozen package version state is `1.0.0` (the stable release).
+The frozen package version state is `1.0.0` (the stable version). Public PyPI
+publication is a separate privileged release process; repository metadata alone
+does not prove that a public publication has happened.
 Normal test execution never updates the snapshot. A maintainer may explicitly
 regenerate it with:
 
@@ -16,13 +18,16 @@ the committed literal values. Its negative tests mutate an in-memory copy of
 that normalized actual contract and require the detector to report the
 affected contract path.
 
-This freeze covers only the existing DBF_Anonymizer-side contract.
-REQ-P6-006 remains **BLOCKED/DEFERRED**; no external consumer fixture is
-invented. REQ-P8-002 and REQ-P8-003 are **NOT STARTED**.
+This freeze covers the completed DBF_Anonymizer-side contract: REQ-P6-006
+(the producer-independent external VFP metadata contract), REQ-P8-002 (the
+release-acceptance entry point) and REQ-P8-003 (the downstream-consumer
+acceptance contract) are complete, with acceptance evidence in
+[release-acceptance.md](release-acceptance.md) and the P8 test suites. No
+external consumer fixture was invented for the freeze itself.
 
 ## Freeze matrix
 
-| Contract surface | Authoritative source | Current value/version | Existing test evidence | Gap before P8-001 | Freeze evidence |
+| Contract surface | Authoritative source | Current value/version | Existing test evidence | Pre-freeze gap (historical) | Freeze evidence |
 | --- | --- | --- | --- | --- | --- |
 | Package-root Python API | `dbf_anonymizer.__all__` | Exact exported 1.0 symbol set | `test_root_public_api.py` | No cross-contract snapshot | `python_api.root_exports` |
 | Public callable signatures | Package-root callables | Eight synchronous operations with normalized parameter kinds/defaults | `test_p7_transport_boundary.py` | Signatures not frozen together | `python_api.callables` |

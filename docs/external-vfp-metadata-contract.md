@@ -18,21 +18,26 @@ Pass a conforming JSON mapping to the existing `relationship_document`
 argument of `dbf_anonymizer.build_plan`. The same parsed relationship document
 drives planning, preflight, operation binding, vault compatibility, verification,
 and the existing relationship fingerprint. Root-public function signatures are
-unchanged.
+unchanged. A runnable synthetic demonstration is
+[../examples/external_metadata.py](../examples/external_metadata.py).
 
 Every external relation claim carries explicit provenance, authority and
 assurance. Envelope-level `authority` is supplied contract metadata carried in
 the document fingerprint; it is NOT a per-claim default — every relation and
-index claim carries its OWN explicit `authority`. Only a claim that is
+index claim carries its OWN explicit `authority`.
 
-- `CONTRACT_AUTHORITATIVE` and `VERIFIED` (index claims additionally
-  `VERIFIED` in `verification_state`), AND
-- whose provenance is an authoritative VFP-metadata class
-  (`MCP_VFP9SP2_TOOLCHAIN` or `EXTERNAL_VFP_METADATA`),
+The relation and index claim domains are separate:
 
-may affect relationship-driven mapping or become eligible for
-`VFP_METADATA_VERIFIED`. That level additionally requires successful
-post-transform relationship verification. A `POLICY_FILE` provenance claim is
+- an authoritative ELIGIBLE RELATION claim (`CONTRACT_AUTHORITATIVE` +
+  `VERIFIED` + an authoritative VFP-metadata provenance class) may affect
+  relationship-driven mapping and — after successful post-transform
+  relationship verification — support `VFP_METADATA_VERIFIED`;
+- an INDEX claim is independent index metadata: it does not affect
+  relationship-driven mapping, does not cause relational assurance and never
+  by itself proves that an output CDX/IDX was rebuilt (see the index-claim
+  section below).
+
+A `POLICY_FILE` provenance claim is
 retained as non-authoritative planning/reporting information — the shipped
 schema and the runtime both refuse any `POLICY_FILE` claim that claims
 authoritative strength — and `INFERRED` or `UNVERIFIED` claims are retained in

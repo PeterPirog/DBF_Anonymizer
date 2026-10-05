@@ -1,8 +1,8 @@
 # DBF_Anonymizer 1.0 — public error contract
 
-Status: development contract for `REQ-P1-003`.
+Status: frozen stable 1.0 contract (REQ-P8-001 freeze; REQ-P1-003 delivered).
 
-DBF_Anonymizer exposes a typed error hierarchy for machine consumers, CLI adapters and future MCP/toolchain integration. Error classification is based only on stable structured codes. Human-readable exception text is never an API discriminator.
+DBF_Anonymizer exposes a typed error hierarchy for machine consumers, CLI adapters and MCP/toolchain integration. Error classification is based only on stable structured codes. Human-readable exception text is never an API discriminator.
 
 ## Contract
 
@@ -61,8 +61,8 @@ assert error.dependency_code == "DBF_HEADER_INVALID"
 
 ## Categories
 
-The 1.0 development registry separates path, policy, dbfbridge, vault, mapping, relationship, publication, verification, recovery and cancellation failures. Codes are intentionally more specific than categories so future CLI/MCP hosts can decide whether a failure is retryable, requires policy correction, requires protected-vault access, or represents an integrity failure without parsing prose.
+The 1.0 registry separates path, policy, dbfbridge, vault, mapping, relationship, publication, verification, recovery and cancellation failures. Codes are intentionally more specific than categories so CLI/MCP hosts can decide whether a failure is retryable, requires policy correction, requires protected-vault access, or represents an integrity failure without parsing prose.
 
-## Compatibility before stable 1.0
+## Compatibility and semantic versioning
 
-This is the first product API. Until the Phase 8 contract freeze, the project may make breaking improvements to the code vocabulary or payload shape when required for correctness, privacy or usability. Historical 0.3 exceptions do not constrain this contract.
+This is a frozen stable 1.0 contract. Backward-incompatible changes to the code vocabulary or payload shape require a MAJOR version bump under the semantic-versioning rules of [public-contract-1.0.md](public-contract-1.0.md); additive changes still require a deliberate version bump of the affected schema/registry version together with its snapshot, tests and documentation. Historical 0.3 exceptions do not constrain this contract.

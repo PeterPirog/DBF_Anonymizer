@@ -1,8 +1,20 @@
 # REQ-P0-003 — Synthetic fixture corpus provenance
 
 Status: deterministic, redistributable, synthetic-only evidence corpus for the
-immutable requirement `REQ-P0-003` of
-`DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md`.
+immutable requirement `REQ-P0-003`.
+
+## Architectural authority (historical vs current)
+
+This fixture corpus was ORIGINALLY generated while
+`DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-10.md` was the
+architectural authority for REQ-P0-003; that reference records the original
+fixture-generation context and is intentionally preserved as history.
+
+The CURRENT authoritative architecture is the immutable revision
+`DBF_ANONYMIZER_TARGET_ARCHITECTURE_CONVERGE_FINAL_2026-09-29.md`; REQ-P0-003
+is evaluated against that revision. The committed fixture bytes were not
+regenerated for the authority change.
+
 Machine-readable inventory: `manifest.json` (schema `req-p0-003/1`).
 
 ## Synthetic origin — objective statement

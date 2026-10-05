@@ -1,7 +1,7 @@
 # DBF_Anonymizer operations guide
 
 This guide documents the public operation surface of the DBF_Anonymizer
-1.0.0 stable release (the frozen 1.0 contract): internal-network offline
+1.0.0 stable version (the frozen 1.0 contract): internal-network offline
 installation, one-vault-per-dataset
 operation, policy configuration, relationship configuration, the
 pseudonymization workflow, dataset verification, protected recovery, and
@@ -62,10 +62,32 @@ to stderr), and unknown invocations fail rather than pretend success.
 
 ## Quick start (Python API)
 
+The core public workflow is five calls. Replace the placeholders with YOUR
+OWN authorized dataset paths; the fully executable synthetic version of this
+workflow is [../examples/basic_workflow.py](../examples/basic_workflow.py)
+(with the complete recipe index in [../examples/README.md](../examples/README.md)):
+
+```python
+import dbf_anonymizer as public
+
+plan = public.build_plan(source, output, vault)  # read-only, deterministic
+preflight_result = public.preflight(plan)  # fail-closed readiness evaluation
+if not preflight_result.ready:
+    raise RuntimeError("preflight refused the plan; nothing was executed")
+result = public.pseudonymize(plan)  # the mutable operation
+verification = public.verify_dataset(result, source=source, vault=vault)
+if verification.status is not public.VerificationStatus.PASS:
+    raise RuntimeError("dataset verification did not reach PASS")
+```
+
+### Executable synthetic fixture setup
+
 The following executable example builds a small SYNTHETIC dataset through the
-public dbfbridge boundary, then reports capabilities. Synthetic canary values
-(such as `DOC-CANARY-1`) stand in for what would be production data; never run
-these examples against production files.
+public dbfbridge boundary (this is the deterministic fixture construction the
+documentation acceptance test executes in CI — the pedagogic examples keep
+this boilerplate in one reusable helper), then reports capabilities. Synthetic
+canary values (such as `DOC-CANARY-1`) stand in for what would be production
+data; never run these examples against production files.
 
 ```python p7-009-exec
 from pathlib import Path
@@ -169,6 +191,25 @@ support cooperative cancellation and bounded progress through keyword-only
 pseudonymized output and the source independently and returns a typed
 `VerificationResult`; `PASS` is the only success value.
 
+The progress/cancellation pattern is synchronous (no async API): the callback
+receives bounded structured `ProgressEvent` objects (codes and counters, not
+free-form text), and a `cancel_check` returning `True` stops the operation at
+the next safe point with the typed `CancellationError`:
+
+```python
+def on_progress(event: public.ProgressEvent) -> None:
+    print(event.phase_code, event.event_code, event.completed_units)
+
+
+result = public.pseudonymize(plan, progress=on_progress, cancel_check=lambda: False)
+```
+
+A caller-supplied callback failure is contained as the typed `CallbackError`
+(the raw exception text never escapes), so callbacks can be host-owned code.
+A deterministic REAL-cancellation demonstration (typed `OPERATION_CANCELLED`,
+no published output, source byte-identical) is
+[../examples/progress_cancellation.py](../examples/progress_cancellation.py).
+
 ## Recovery
 
 Exactly one protected vault backs the whole dataset (see
@@ -226,7 +267,7 @@ dataset (`VaultStrategy.SINGLE_DATASET_SQLITE`):
 - the vault is what makes the output RECOVERABLE: pseudonymized data plus the
   vault is reversible by authorized operators;
 - the vault must NEVER be copied into a DATA_ONLY transfer (see
-  [DATA_ONLY transfer bundles](#data-only-transfer-bundles)); SQLite
+  [DATA_ONLY transfer bundles](#data_only-transfer-bundles)); SQLite
   WAL/SHM/journal files and any other recovery material are excluded from
   transfer by construction (they are forbidden artifacts, not merely
   discouraged).
@@ -303,7 +344,10 @@ policy schema version is `1` (`schema_version` must be exactly the integer
 `1`); unknown top-level or nested keys, unknown actions and non-JSON leaf
 values are typed refusals, never silent normalization. The resolved policy is
 bound to the plan through a deterministic SHA-256 fingerprint
-(`plan.policy.policy_fingerprint`).
+(`plan.policy.policy_fingerprint`). For an end-to-end synthetic demonstration
+of the field-level semantics (NULL/empty identities, Character/Varchar shared
+domain, deleted records, memo/FPT masking), see
+[../examples/field_semantics_workflow.py](../examples/field_semantics_workflow.py).
 
 The supported top-level sections and their documented defaults:
 
@@ -566,12 +610,23 @@ envelope carries the external `external_metadata_schema_version` ("1.0"), the
 structured producer provenance (`producer_id`/`producer_version`), the
 envelope-level `authority` classification, and — on EVERY relation claim and
 index claim — its own explicit `provenance`, `authority` and `assurance`.
-Only a claim that is both `CONTRACT_AUTHORITATIVE` and `VERIFIED` (index
-claims additionally `VERIFIED` in `verification_state`) and whose provenance
-is an authoritative VFP-metadata class may affect authoritative
-relationship-domain grouping or become eligible for
-`VFP_METADATA_VERIFIED`; inferred or unverified claims remain retained as
-non-authoritative planning/reporting information. The following executable
+
+The TWO EVIDENCE DOMAINS are kept strictly separate:
+
+- RELATION CLAIMS — only a relation claim that is `CONTRACT_AUTHORITATIVE`
+  and `VERIFIED` with an authoritative VFP-metadata provenance class may
+  affect authoritative relationship-domain grouping and — after successful
+  post-transform relationship verification — support `VFP_METADATA_VERIFIED`;
+- INDEX CLAIMS — independent index metadata with its own explicit
+  `verification_state`: a contract-authoritative VERIFIED index claim may
+  support the existing index-validity machinery, but it does NOT cause
+  relational assurance, does NOT select the assurance level, and NEVER by
+  itself proves that an output CDX/IDX artifact was rebuilt (output index
+  validity still requires the authoritative backend rebuild/verification
+  evidence).
+
+Inferred or unverified claims remain retained as non-authoritative
+planning/reporting information. The following executable
 example injects a conforming external envelope through the same public
 planning boundary:
 
@@ -660,11 +715,34 @@ The transferable output never includes recovery material; copying the vault
 (or any WAL/SHM/journal/recovery sidecar) into a transfer is neither supported
 nor permitted.
 
-## The complete CLI workflow
+## Typed errors
+
+Every public failure derives from `public.AnonymizerError` and serializes to
+the versioned privacy-safe JSON contract. Classify failures by the stable
+machine code — never by parsing exception text:
+
+```python
+try:
+    public.recover(
+        output,
+        vault=vault,
+        output=work_root / "blocked",
+        recovery_policy=public.RecoveryPolicy.DISABLED,
+    )
+except public.AnonymizerError as error:
+    payload = error.to_dict()  # versioned contract fields only
+    if error.code is not public.ErrorCode.RECOVERY_NOT_PERMITTED:
+        raise RuntimeError("unexpected error code") from error
+```
+
+The complete code vocabulary and categories are documented in
+[errors-1.0.md](errors-1.0.md).
+
+## CLI command reference
 
 Every CLI command mirrors the Python API above. Machine results print to
-stdout with `--json`; progress and human messages stay on stderr. Example
-invocations (paths are placeholders — use your own dataset directories):
+stdout with `--json`; progress and human messages stay on stderr. Command
+syntax reference (paths are placeholders — use your own dataset directories):
 
 ```text
 dbf-anonymizer capabilities --json
@@ -678,6 +756,49 @@ dbf-anonymizer verify-bundle DESTINATION --json
 dbf-anonymizer self-test --json
 ```
 
+`plan`, `preflight`, `pseudonymize`, `verify` and `export-bundle` accept
+`--policy` / `--relationships` (both optional); when supplied, the SAME
+values must be used by every command that re-derives the same operation
+identity. `recover` and `verify-bundle` work on the durable artifacts
+(pseudonymized dataset + vault, or the bundle) without re-deriving a plan.
+The console entry point itself is the installed `dbf-anonymizer` script
+(proven by `tests/test_p1_packaging.py::test_console_script_mapping_is_declared`
+and the installed-wheel probes in `tests/test_p7_transport_boundary.py`).
 `self-test` runs the complete workflow (plan → preflight → pseudonymize →
 verify → recovery → bundle) against its own synthetic dataset in one call and
 is the quickest end-to-end health check of an installed environment.
+
+## Worked CLI recipe (synthetic example data)
+
+The complete, operation-binding-consistent end-to-end recipe. The repository
+ships ready-made example configuration files, so it can be reproduced without
+inventing any JSON. Run this from a repository checkout with the package
+installed (Windows PowerShell; the same commands work in any shell with
+forward slashes):
+
+```powershell p7-009-cli-recipe
+# Synthetic demo dataset only — never production data.
+$work = "demo-work"
+python examples\synthetic_dataset.py "$work\source"
+
+dbf-anonymizer capabilities --json
+dbf-anonymizer plan "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer preflight "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer pseudonymize "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer verify "$work\source" "$work\output" "$work\protected\recovery.sqlite3" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer recover "$work\output" "$work\protected\recovery.sqlite3" "$work\recovered" --recovery-policy enabled --json
+dbf-anonymizer export-bundle "$work\source" "$work\output" "$work\protected\recovery.sqlite3" "$work\bundle" --policy examples\config\policy-data-only.json --relationships examples\config\relationships.json --json
+dbf-anonymizer verify-bundle "$work\bundle" --json
+dbf-anonymizer self-test --json
+```
+
+The configuration files are
+[examples/config/policy-data-only.json](../examples/config/policy-data-only.json)
+(the documented default policy with the DATA_ONLY index profile) and
+[examples/config/relationships.json](../examples/config/relationships.json)
+(the declared PK/FK relationship matching the synthetic
+`people.dbf`/`orders.dbf` demo dataset). Every command prints exactly one
+machine-readable JSON result with `--json`; `plan`, `preflight`,
+`pseudonymize`, `verify` and `export-bundle` deliberately share the SAME
+`--policy`/`--relationships` inputs so the re-derived operation identity stays
+identical across the workflow.

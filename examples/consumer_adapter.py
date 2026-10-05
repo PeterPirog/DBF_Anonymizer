@@ -3,6 +3,13 @@
 An external host can wrap this function in its own transport, authorization,
 path policy, timeout, or job orchestration layer.  This module deliberately
 knows nothing about those concerns and imports only the public package root.
+
+Separation of host concerns: recovery authorization is a host decision.  A
+host that must never be able to reverse data calls
+``public.recover(..., recovery_policy=public.RecoveryPolicy.DISABLED)`` (or
+refuses to expose recovery at all) in ITS layer — the adapter stays a thin,
+transport-neutral synchronous wrapper and never becomes an MCP/server
+implementation.
 """
 
 from __future__ import annotations
