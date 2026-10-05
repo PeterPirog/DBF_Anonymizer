@@ -42,10 +42,30 @@
       "github_environment": "pypi",
       "note": "The REQUIRED identity the future externally configured PyPI Trusted Publisher must match EXACTLY. The publication job is bound to the GitHub Environment 'pypi' (see .github/workflows/dbf-release-publish.yml, job publish-pypi). This identity is a specification, NOT proof of configuration: neither the GitHub Environment nor the PyPI Trusted Publisher exists yet (see evidence_classes.external_live_configuration_evidence)."
     },
+    "github_environment_requirement": {
+      "name": "pypi",
+      "must_be_precreated_before_gate_enablement": true,
+      "deployment_protection_and_manual_approval_required": true,
+      "live_configuration_verification_required": true,
+      "automatic_unprotected_environment_creation_is_not_accepted_as_configuration": true,
+      "evidence_status": "SPECIFICATION_NOT_PROOF",
+      "note": "GitHub documents that a workflow referencing an environment that does not yet exist may create that environment automatically, with NO protection rules. The workflow 'environment: pypi' binding is required for the OIDC identity but by itself does NOT prove deliberate pre-creation, protection rules or manual approval. The 'pypi' GitHub Environment MUST therefore be deliberately created and configured (deployment protection with manual approval) and LIVE-VERIFIED before the gate variable may ever be enabled; an implicitly auto-created, unprotected environment does NOT satisfy this requirement."
+    },
+    "gate_enablement_sequence": {
+      "note": "The authoritative external sequence; enabling the gate variable before ANY of the earlier steps is verified is FORBIDDEN by this policy.",
+      "steps": [
+        "1. pre-create the GitHub Environment 'pypi' (deliberately, in GitHub Settings)",
+        "2. configure deployment protection / required manual approval for the environment",
+        "3. LIVE-VERIFY the environment configuration on GitHub",
+        "4. configure the PyPI Pending Trusted Publisher with the EXACT identity: project dbf-anonymizer, owner PeterPirog, repository DBF_Anonymizer, workflow dbf-release-publish.yml, environment pypi",
+        "5. LIVE-VERIFY the PyPI Trusted Publisher configuration",
+        "6. only then set the repository variable DBF_PYPI_TRUSTED_PUBLISHING_ENABLED = 'true'"
+      ]
+    },
     "external_configuration_required": [
-      "The GitHub Environment 'pypi' must exist in the privileged workflow (job publish-pypi) and SHOULD carry deployment protection (manual approval) before the first publication.",
+      "The GitHub Environment 'pypi' MUST be deliberately pre-created (in GitHub Settings) with deployment protection and manual approval, and LIVE-VERIFIED, before the gate variable is enabled; an environment implicitly auto-created by workflow execution without protection rules does NOT satisfy this requirement.",
       "The PyPI project owner must configure the dbf-anonymizer project's Pending Trusted Publisher on PyPI with the EXACT publisher identity (owner PeterPirog, repository DBF_Anonymizer, workflow filename dbf-release-publish.yml, environment pypi) before any publication can succeed.",
-      "The repository owner must set the repository variable DBF_PYPI_TRUSTED_PUBLISHING_ENABLED to 'true' only after BOTH the GitHub Environment and the PyPI-side configuration are live."
+      "The repository owner must set the repository variable DBF_PYPI_TRUSTED_PUBLISHING_ENABLED to 'true' only after BOTH the protected GitHub Environment and the PyPI-side configuration are live-verified."
     ],
     "external_configuration_verified": false
   },

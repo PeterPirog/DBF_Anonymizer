@@ -122,10 +122,19 @@ OIDC Trusted Publishing and its `publish-pypi` job is bound to the GitHub
 Environment `pypi` behind the fail-closed gate variable
 (`DBF_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true'`).
 
+IMPORTANT — the YAML binding is identity, not proof of protection. The
+`environment: pypi` entry binds the job's OIDC identity; it does NOT prove
+that the external GitHub Environment has protection rules. GitHub can create
+an environment implicitly (when a workflow references a name that does not
+exist yet) WITHOUT any protection rules — for this project such an
+implicitly created, unprotected environment is NOT accepted as release
+authorization.
+
 REQUIRED before any publication (not yet configured — the repository records
 no external configuration as proof):
 
-- the GitHub Environment `pypi` (with deployment protection/manual approval);
+- the GitHub Environment `pypi` deliberately pre-created in GitHub Settings
+  with deployment protection and manual approval, and live-verified;
 - the PyPI Pending Trusted Publisher configured with the EXACT identity:
 
   | Field | Value |
@@ -135,6 +144,13 @@ no external configuration as proof):
   | Repository | `DBF_Anonymizer` |
   | Workflow filename | `dbf-release-publish.yml` |
   | Environment | `pypi` |
+
+The authoritative gate-enablement sequence (enabling the gate variable
+before earlier steps are verified is forbidden by policy): pre-create the
+protected environment → configure deployment protection/manual approval →
+live-verify the environment → configure the PyPI Pending Trusted Publisher
+with the exact identity → live-verify the publisher → only then set
+`DBF_PYPI_TRUSTED_PUBLISHING_ENABLED = 'true'`.
 
 The authoritative specification (including the truthful external-state
 records) is `.github/release-publishing-policy.json`.
