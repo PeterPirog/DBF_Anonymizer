@@ -8,6 +8,8 @@ Visual FoxPro DBF/FPT datasets while keeping one protected, reversible SQLite
 recovery vault inside the internal environment, and produces transferable
 pseudonymized data-only bundles.
 
+![DBF_Anonymizer overview](https://raw.githubusercontent.com/PeterPirog/DBF_Anonymizer/main/docs/assets/dbf-anonymizer-overview.png)
+
 - Distribution: `dbf-anonymizer`
 - Import package: `dbf_anonymizer`
 - Version: `1.0.0` (stable)

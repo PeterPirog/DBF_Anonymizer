@@ -478,8 +478,10 @@ _FENCE = re.compile(r"^(```|~~~)")
 
 #: The canonical repository URL — trusted absolute links of this shape are
 #: validated OFFLINE against the local checkout (README is the PyPI long
-#: description, so its repository navigation must stay portable).
+#: description, so its repository navigation must stay portable).  The RAW
+#: prefix carries repository MEDIA (e.g. the README project image).
 GITHUB_REPO_URL = "https://github.com/PeterPirog/DBF_Anonymizer"
+GITHUB_RAW_URL_PREFIX = "https://raw.githubusercontent.com/PeterPirog/DBF_Anonymizer/main/"
 _GITHUB_BLOB_PREFIX = GITHUB_REPO_URL + "/blob/main/"
 
 
@@ -490,6 +492,8 @@ def _trusted_link_local_path(target: str) -> str | None:
     fragment = f"#{anchor}" if anchor else ""
     if path_part.startswith(_GITHUB_BLOB_PREFIX):
         return path_part[len(_GITHUB_BLOB_PREFIX) :] + fragment
+    if path_part.startswith(GITHUB_RAW_URL_PREFIX):
+        return path_part[len(GITHUB_RAW_URL_PREFIX) :] + fragment
     if path_part in (GITHUB_REPO_URL, GITHUB_REPO_URL + "/"):
         return "README.md" + fragment
     return None
