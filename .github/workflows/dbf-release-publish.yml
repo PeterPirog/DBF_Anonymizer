@@ -139,6 +139,14 @@ jobs:
     name: PyPI publication via OIDC Trusted Publishing (fail-closed gate)
     needs: attest-release-artifacts
     if: vars.DBF_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true'
+    # The publication approval boundary: this job is bound to the GitHub
+    # Environment "pypi", so the PyPI-side Trusted Publisher identity is
+    # exactly (project dbf-anonymizer, owner PeterPirog, repository
+    # DBF_Anonymizer, workflow dbf-release-publish.yml, environment pypi).
+    # The GitHub Environment must exist BEFORE the gate variable is enabled
+    # (a required-release-workflow environment cannot be configured on PyPI
+    # after the fact without reconfiguring the publisher).
+    environment: pypi
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

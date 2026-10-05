@@ -113,3 +113,28 @@ REQ-P6-006 (the producer-independent external VFP relationship/index metadata
 contract) and REQ-P8-003 (the frozen downstream-consumer acceptance contract)
 are complete. The package version is `1.0.0` (stable); PyPI publication has
 not happened and remains the fail-closed privileged release lane.
+
+## Privileged publication lane (GitHub Environment binding)
+
+The privileged publication workflow
+(`.github/workflows/dbf-release-publish.yml`) publishes only through GitHub
+OIDC Trusted Publishing and its `publish-pypi` job is bound to the GitHub
+Environment `pypi` behind the fail-closed gate variable
+(`DBF_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true'`).
+
+REQUIRED before any publication (not yet configured — the repository records
+no external configuration as proof):
+
+- the GitHub Environment `pypi` (with deployment protection/manual approval);
+- the PyPI Pending Trusted Publisher configured with the EXACT identity:
+
+  | Field | Value |
+  | --- | --- |
+  | PyPI project | `dbf-anonymizer` |
+  | Owner | `PeterPirog` |
+  | Repository | `DBF_Anonymizer` |
+  | Workflow filename | `dbf-release-publish.yml` |
+  | Environment | `pypi` |
+
+The authoritative specification (including the truthful external-state
+records) is `.github/release-publishing-policy.json`.

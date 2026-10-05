@@ -254,6 +254,38 @@ def test_publication_job_is_fail_closed_behind_the_gate_variable() -> None:
     assert "pypi_api_token" not in serialized
 
 
+def test_publication_job_requires_the_pypi_environment() -> None:
+    """The publication approval boundary: ONLY the publish-pypi job is bound
+    to the GitHub Environment ``pypi`` — the PyPI-side Trusted Publisher
+    identity must match it exactly."""
+    document = _load(PRIVILEGED_WORKFLOW)
+    publish = _jobs(document)["publish-pypi"]
+    assert publish.get("environment") == "pypi"
+
+
+def test_publication_environment_is_exclusive_to_the_publish_job() -> None:
+    """The build and attestation stages stay executable independently of the
+    PyPI publication approval boundary: neither may gain the ``pypi``
+    environment (no publication authorization outside the publish job)."""
+    document = _load(PRIVILEGED_WORKFLOW)
+    for job_name in ("build-reproducible-release", "attest-release-artifacts"):
+        job = _jobs(document)[job_name]
+        assert "environment" not in job, f"{job_name} must not carry an environment"
+
+
+def test_release_policy_binds_the_exact_publisher_identity() -> None:
+    """The release policy records the REQUIRED future PyPI Trusted Publisher
+    identity (specification, NOT proof of configuration)."""
+    identity = _policy()["publication"]["publisher_identity"]
+    assert identity["pypi_project"] == "dbf-anonymizer"
+    assert identity["github_owner"] == "PeterPirog"
+    assert identity["github_repository"] == "DBF_Anonymizer"
+    assert identity["workflow_filename"] == PRIVILEGED_WORKFLOW.rsplit("/", 1)[-1]
+    assert identity["github_environment"] == "pypi"
+    lowered = json.dumps(identity).lower()
+    assert "not proof of configuration" in lowered
+
+
 # ---------------------------------------------------------------------------
 # Release-publishing policy specification
 # ---------------------------------------------------------------------------
